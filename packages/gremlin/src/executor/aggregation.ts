@@ -169,22 +169,37 @@ export const fusableValuesAggregate = (
 };
 
 /**
- * A residual that is ONE ORDER-INVARIANT aggregate, for the already-projected values a fused hop
- * walk produced — item 1857.
+ * A residual that is ONE global aggregate, for the already-projected values a fused hop walk
+ * produced — item 1857 for `min`/`max`, item 2408 for `sum`/`mean`.
  *
- * ⚠️ WHY ONLY `min`/`max`, when `fusableValuesAggregate` above also takes `sum` and `mean`. Those
- * two are ORDER-SENSITIVE in the last ulp of an f64 addition, and byte-identity with the Rust
- * engine is a hard invariant here — a different summation order is a different answer. The fused
- * walk's visit order is not the traverser pipeline's by construction, and item 1834's
- * `gremlin-walk-order-probe.mjs` reports agreement as EVIDENCE rather than proof. `min`/`max` over
- * a total order do not care, so they can be taken without that question: items 1830 and 1853 made
- * the same split on the GQL side.
+ * ⚠️⚠️ **`sum`/`mean` WERE REFUSED HERE FOR FIVE HUNDRED ITEMS, AND THE REASON IS NOW RETIRED
+ * RATHER THAN FORGOTTEN.** This gate used to read: "those two are ORDER-SENSITIVE in the last ulp
+ * of an f64 addition, and byte-identity with the Rust engine is a hard invariant here — a different
+ * summation order is a different answer." Both halves were true as stated, and the second one no
+ * longer is:
  *
- * ⚠️ IT IS A DIFFERENT ENTRY POINT, NOT A WIDENING, because the inputs differ: that one sees a
- * `values` step still in the plan and reads the property off each element; here the fused walk has
- * already extracted the values, so the fold takes them raw.
+ *   - **item 2401's OWNER RULING** gave float aggregates a PRECISION contract instead of a
+ *     bit-identity one — `sum`/`avg` are accurate to within `n·ε·Σ|xᵢ|` and are NOT bit-identical
+ *     across engines, because a left fold over a different walk order re-associates. So a
+ *     re-association is no longer a different answer; it is the contract.
+ *   - **item 2400's OWNER RULING** had already freed the premise it rested on, that the fused
+ *     walk's visit order must match the pipeline's: walk order is implementation-dependent.
+ *
+ * 🔑 **AND THE INVARIANT HELD ANYWAY, WHICH IS WHY THIS COSTS NOTHING TO TAKE.** Item 1918 built
+ * this exact fusion, measured it against the RUST engine over the FFI on a reciprocal ramp — 12
+ * shapes, **12/12 bit-identical**, with a control proving the fixture can see summation order — and
+ * reverted it, because overturning a refusal two prior items had made deliberately was the owner's
+ * call rather than its own. Item 2401 made that call. ⚠️ Do NOT re-pin that bit-identity as a test
+ * invariant: it is a measured fact about today's walks, not the contract, and pinning it would
+ * rebuild the lock in a new place.
+ *
+ * ⚠️ IT IS A DIFFERENT ENTRY POINT FROM {@link fusableValuesAggregate}, NOT A WIDENING, because the
+ * inputs differ: that one sees a `values` step still in the plan and reads the property off each
+ * element; here the fused walk has already extracted the values, so the fold takes them raw.
  */
-export const fusableProjectedAggregate = (rest: readonly Step[]): 'min' | 'max' | undefined => {
+export const fusableProjectedAggregate = (
+  rest: readonly Step[],
+): 'min' | 'max' | 'sum' | 'mean' | undefined => {
   if (rest.length !== 1) {
     return undefined;
   }
@@ -192,7 +207,7 @@ export const fusableProjectedAggregate = (rest: readonly Step[]): 'min' | 'max' 
   const [step] = rest;
   const { kind } = step;
 
-  if (kind !== 'min' && kind !== 'max') {
+  if (kind !== 'min' && kind !== 'max' && kind !== 'sum' && kind !== 'mean') {
     return undefined;
   }
 
@@ -203,6 +218,71 @@ export const fusableProjectedAggregate = (rest: readonly Step[]): 'min' | 'max' 
   }
 
   return kind;
+};
+
+/**
+ * Fold already-projected values to one `sum`/`mean` — item 2408, built and reverted at item 1918.
+ *
+ * ⚠️ THE SEMANTICS ARE `fusedValuesAggregate`'S NUMERIC ARM, deliberately mirrored line for line,
+ * exactly as {@link foldProjectedMinMax} mirrors its non-numeric one: a `null` is SKIPPED (not
+ * added as 0), `asNumber` THROWS on a non-number rather than coercing — TinkerPop raises — `mean`
+ * divides by the count of NON-NULL values, and an input with no non-null value answers `null`
+ * rather than nothing. Each of those five is a named mutant in `numfold-mutants-1918.mjs`.
+ *
+ * ⚠️⚠️ **IT TAKES ITEM 1919's EAGER DRAIN, AND I PREDICTED IT WOULD NOT — 1.58x on `sum`, 1.49x on
+ * `mean`, measured only because the claim was written down and then checked.** The reasoning
+ * against it was specific and wrong: item 1919 priced the drain at 2.09x on a STRING column but
+ * only 1.15x on a numeric one, and a `sum` column is numeric BY CONSTRUCTION (`asNumber` throws
+ * otherwise) — so a drain looked like an 800,000-slot allocation bought for ~15% on a reduce that
+ * needs one accumulator.
+ *
+ * 🔑 **WHAT REFUTED IT WAS THE TWIN'S OWN NUMBER IN THE SAME RUN.** After the fusion landed,
+ * `values(k).min()` — which drains — sat at 65.51 ms against the bare walk's 62.18, while this
+ * fold, iterating, sat at 97.77. Two folds over the same walk, one ON its floor and one 1.57x
+ * above it, differing in exactly the drain. `numfold-drain-ab-2408.sh`, 3 order-alternated rounds:
+ *
+ * ```text
+ *             ITER     DRAIN
+ *   sum      99.48  ->  63.09    1.58x      <- and 1.03x over the 61.14 floor: ON it
+ *   mean     94.07  ->  63.30    1.49x
+ *   values   61.14      63.11    CONTROL, flat
+ *   min      66.44      64.87    CONTROL, flat
+ * ```
+ *
+ * ⚠️ AND THE ALLOCATION ARGUMENT WAS NOT WRONG, IT WAS OUTWEIGHED: the array is still built, and
+ * the generator boundary it removes costs more than the 800,000 slots cost. That is item 1919's
+ * finding — a value crossing a generator boundary is the per-element term, not the work done with
+ * it — and the numeric column pays it too.
+ *
+ * ⚠️ THE DRAIN CANNOT CHANGE THE ANSWER even for an order-sensitive reduce: it yields the same
+ * elements in the same order, so the left fold re-associates nothing. Order is why this fold needed
+ * an owner ruling at all, and the drain is the one part of it that never did.
+ */
+export const foldProjectedNumeric = (values: HopWalk, kind: 'sum' | 'mean'): unknown[] => {
+  let total = 0;
+  let count = 0;
+  let sawNonNull = false;
+
+  // ⚠️ NAMED `drained` RATHER THAN `src`, which is the twin's name for the same thing, so that a
+  // mutation anchor on this loop reaches ONE of the two folds. The first A/B here lost a run to a
+  // line that occurred twice ([[ambiguous-anchor-strings]]).
+  const drained = values.drain === undefined ? values : values.drain();
+
+  for (const v of drained) {
+    if (v == null) {
+      continue;
+    }
+
+    sawNonNull = true;
+    total += asNumber(v);
+    count += 1;
+  }
+
+  if (!sawNonNull) {
+    return [null];
+  }
+
+  return [kind === 'sum' ? total : total / count];
 };
 
 /**
@@ -248,9 +328,11 @@ export const foldProjectedMinMax = (values: HopWalk, kind: 'min' | 'max'): unkno
    * **nothing at all** once 1 string in 1000 carries a surrogate. Do not re-attempt it for this
    * fold.
    *
-   * ⚠️ ORDER IS NOT A QUESTION HERE, unlike item 1918's `sum`/`mean`: `min`/`max` over a total order
-   * are order-INVARIANT, so draining cannot change the answer even in the last ulp. That is the
-   * same split items 1830/1853 made, and it is why this needed no decision.
+   * ⚠️ ORDER WAS NEVER A QUESTION HERE, which is why this arm needed no decision while
+   * `sum`/`mean` waited for one until item 2408: `min`/`max` over a total order are
+   * order-INVARIANT, so draining cannot change the answer even in the last ulp. ✅ And item 2408
+   * took the same drain for {@link foldProjectedNumeric}, where it is worth 1.58x/1.49x — the
+   * drain is order-PRESERVING, so even an order-sensitive reduce can have it.
    */
   const src = values.drain === undefined ? values : values.drain();
 

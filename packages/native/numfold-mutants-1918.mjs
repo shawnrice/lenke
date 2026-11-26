@@ -44,15 +44,26 @@ const MUTANTS = [
   [
     'a null is added as 0 instead of skipped',
     'agg',
-    '  for (const v of values) {\n    if (v == null) {\n      continue;\n    }\n\n    sawNonNull = true;\n    total += asNumber(v);',
-    '  for (const v of values) {\n    sawNonNull = true;\n    total += asNumber(v);',
+    '  for (const v of drained) {\n    if (v == null) {\n      continue;\n    }\n\n    sawNonNull = true;\n    total += asNumber(v);',
+    '  for (const v of drained) {\n    sawNonNull = true;\n    total += asNumber(v);',
     1,
   ],
+  /*
+   * ⚠️⚠️ THIS MUTANT WAS A NO-OP AS WRITTEN AND SURVIVED FOR THAT REASON (found at item 2408, the
+   * first time the battery ran against live code). It replaced `count += 1` with
+   * `count = count + 1 + 0` — the same arithmetic, so there was nothing for a test to catch, and
+   * the ❌ SURVIVED line read as a coverage gap in the fold rather than a defect in the battery.
+   * Item 1918 wrote all twelve and reported none of their verdicts, which is how it shipped.
+   *
+   * 🔑 THE INTENT WAS "`mean` DIVIDES BY EVERY VALUE, NULLS INCLUDED", and this is that: a null is
+   * COUNTED but not added, so `sum` is untouched and only `mean` moves — which is what makes it a
+   * sharp mutant rather than a blunt one.
+   */
   [
     'mean divides by EVERY value, nulls included',
     'agg',
-    '    sawNonNull = true;\n    total += asNumber(v);\n    count += 1;',
-    '    sawNonNull = true;\n    total += asNumber(v);\n    count = count + 1 + 0;',
+    '  for (const v of drained) {\n    if (v == null) {\n      continue;\n    }',
+    '  for (const v of drained) {\n    if (v == null) {\n      count += 1;\n      continue;\n    }',
     1,
   ],
   [
@@ -79,16 +90,40 @@ const MUTANTS = [
   [
     '⚠️ THE ADDITION ORDER IS REVERSED (a last-ulp wrong answer)',
     'agg',
-    '  let total = 0;\n  let count = 0;\n  let sawNonNull = false;\n\n  for (const v of values) {',
-    '  let total = 0;\n  let count = 0;\n  let sawNonNull = false;\n\n  for (const v of [...values].reverse()) {',
+    '  for (const v of drained) {\n    if (v == null) {\n      continue;\n    }\n\n    sawNonNull = true;\n    total += asNumber(v);\n    count += 1;',
+    '  for (const v of [...drained].reverse()) {\n    if (v == null) {\n      continue;\n    }\n\n    sawNonNull = true;\n    total += asNumber(v);\n    count += 1;',
+    1,
+  ],
+  /*
+   * ⚠️ THE DRAIN IS REVERTED — item 2408's second measurement, and the one I got wrong by
+   * prediction: iterating the walk instead of draining it costs **1.58x on `sum` and 1.49x on
+   * `mean`** and is otherwise ANSWER-IDENTICAL, since a drain yields the same elements in the same
+   * order. So only `projected-numeric-fold.test.ts`'s walk-with-disagreeing-drain can see it.
+   */
+  [
+    'the eager drain is reverted to lazy iteration',
+    'agg',
+    '  const drained = values.drain === undefined ? values : values.drain();',
+    '  const drained = values;',
     1,
   ],
   // ---- the gate ----
+  /*
+   * ⚠️⚠️ THESE TWO ANCHORS CARRY `const { kind } = step;`, AND THE BARE `if` THEY USED TO USE WENT
+   * AMBIGUOUS THE MOMENT THE CHANGE LANDED (item 2408). `fusableValuesAggregate` twenty lines above
+   * tests the IDENTICAL four kinds; while the projected gate still read `min`/`max` only, the
+   * four-kind line was unique to that OTHER function — taking the fusion made it match twice, and
+   * an unqualified anchor would have mutated the scan-side gate instead of this one.
+   *
+   * Both were reported as ANCHOR DRIFT rather than run, which is item 1914's harness fix earning
+   * itself, and [[ambiguous-anchor-strings]] is the standing lesson: count a string's occurrences
+   * before anchoring on it. `= step` is the projected gate; `= next` is the scan-side one.
+   */
   [
     'the gate admits any terminal kind',
     'agg',
-    "  if (kind !== 'min' && kind !== 'max' && kind !== 'sum' && kind !== 'mean') {\n    return undefined;\n  }",
-    '',
+    "  const { kind } = step;\n\n  if (kind !== 'min' && kind !== 'max' && kind !== 'sum' && kind !== 'mean') {\n    return undefined;\n  }",
+    '  const { kind } = step;\n',
     1,
   ],
   [
@@ -121,26 +156,35 @@ const MUTANTS = [
     1,
   ],
   [
-    'the sum/mean fusion is never taken (the pre-1918 route)',
+    'the sum/mean fusion is never taken (the pre-2408 route)',
     'agg',
-    "  if (kind !== 'min' && kind !== 'max' && kind !== 'sum' && kind !== 'mean') {",
-    "  if (kind !== 'min' && kind !== 'max') {",
+    "  const { kind } = step;\n\n  if (kind !== 'min' && kind !== 'max' && kind !== 'sum' && kind !== 'mean') {",
+    "  const { kind } = step;\n\n  if (kind !== 'min' && kind !== 'max') {",
     1,
   ],
 ];
 
-/** Names that MUST survive, each with its reason. */
-const EXPECTED_SURVIVORS = new Set([
-  /*
-   * ⚠️ ROUTE-ONLY: declining the fusion sends `values(k).sum()` back through the generic residual,
-   * which answers the SAME f64 in the SAME order — that equality is the whole point of the item, so
-   * by construction no answer test can see the route. Its gates are the two instruments:
-   * `gremlin-route-screen.mjs`'s `agg: hop values sum` row (`generic, 1 applyStep call [sum]`
-   * before, `SHORTCUT, 0` after) and `minmax-prof-1918.mjs` (177.03 -> 71.30 ms, three controls
-   * flat across 3 interleaved rounds). [[perf-gate-needs-its-own-test]].
-   */
-  'the sum/mean fusion is never taken (the pre-1918 route)',
-]);
+/**
+ * Names that MUST survive, each with its reason.
+ *
+ * ⚠️⚠️ **IT IS EMPTY, AND IT HELD ONE ENTRY UNTIL ITEM 2408 — the route-only mutant, which turned
+ * out to be reachable by a test after all.** Item 1918 reasoned, correctly for the code it had,
+ * that "declining the fusion sends `values(k).sum()` back through the generic residual, which
+ * answers the SAME f64 in the SAME order … so by construction no answer test can see the route",
+ * and left its gates to two instruments.
+ *
+ * 🔑 **WHAT CHANGED IS THE TEST, NOT THE ARGUMENT.** No ANSWER test can see the route — that part
+ * stands. But [[perf-gate-needs-its-own-test]]'s actual remedy is to test the GATE as a pure
+ * function, and item 1918's test file asserted the REFUSAL (`sum and mean are NOT folded`), so
+ * narrowing the gate made that file greener rather than redder. `projected-aggregate.test.ts` now
+ * asserts the ADMISSION — `fusableProjectedAggregate([{kind:'sum'}])` is `'sum'` — and the mutant
+ * is caught by a unit test instead of only by the route screen.
+ *
+ * ⚠️ The two instruments are still the gates for the SPEED, which no unit test can be: the route
+ * screen's `agg: hop values sum` row (`generic, 1 applyStep call [sum]` before, `SHORTCUT, 0`
+ * after) and `numfold-ab-2408.sh` (1.81x / 1.95x, three controls flat, 3 order-alternated rounds).
+ */
+const EXPECTED_SURVIVORS = new Set([]);
 
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
@@ -193,21 +237,23 @@ const runTests = () => {
 };
 
 /*
- * ⚠️ THE CHANGE THIS BATTERY TESTS WAS REVERTED, and the battery is kept rather than deleted
- * because the work it represents is the evidence a decision needs. Item 1918 built the `sum`/`mean`
- * fusion, measured it at 2.48x/2.42x with 12/12 bit-identical agreement against the Rust engine —
- * and then found that the refusal it overturns is locked in by a TEST
- * (`projected-aggregate.test.ts`'s "sum and mean are NOT folded"), not merely by a comment. Items
- * 1830/1831 declined this trade deliberately, so it is the owner's call and the change is not
- * shipped.
+ * ✅ **THE CHANGE THIS BATTERY TESTS SHIPPED AT ITEM 2408**, and this guard is kept rather than
+ * deleted because it is also the "has the fold been reverted again?" check.
  *
- * This exits 0 and explains itself when the fold is absent, so it can never fail a sweep; if the
- * change is ever taken, it runs as written.
+ * ⚠️ IT RAN AS WRITTEN AND IT WAS NOT CLEAN, which is worth recording: item 1918 wrote all twelve
+ * mutants, reported none of their verdicts, and reverted — so the first execution against live
+ * code was item 2408's, and it found THREE defects in the battery itself. One mutant was a NO-OP
+ * (`count += 1` -> `count = count + 1 + 0`, the same arithmetic) and survived for that reason,
+ * reading as a coverage gap in the fold; two anchors went ambiguous the moment the fusion landed,
+ * because the projected gate then matched `fusableValuesAggregate`'s identical four-kind test.
+ * A battery that was written but never run is item 1918's own lesson about generative tests whose
+ * teeth were never verified, applied to itself.
  */
 if (!readFileSync(SRCS.agg, 'utf8').includes('foldProjectedNumeric')) {
   console.log(
-    'the sum/mean fusion is NOT present in aggregation.ts — item 1918 was reverted pending an ' +
-      'owner decision, so this battery has nothing to mutate. See docs/reviews/CLOSED.md item 1918.',
+    'the sum/mean fusion is NOT present in aggregation.ts — it shipped at item 2408, so its ' +
+      'absence means it has been reverted. This battery has nothing to mutate. See ' +
+      'docs/reviews/CLOSED.md item 2408.',
   );
   process.exit(0);
 }

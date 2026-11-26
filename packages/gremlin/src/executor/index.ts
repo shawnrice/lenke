@@ -30,6 +30,7 @@ import {
   countProjectedWalk,
   foldProjectedList,
   foldProjectedMinMax,
+  foldProjectedNumeric,
   fusableProjectedAggregate,
   fusableProjectedBagCap,
   fusableProjectedBagCount,
@@ -2772,15 +2773,32 @@ const fusedProjectedResidual = (
    * — the reduce was costing more than the walk it reduces, which is the same shape item 1630
    * found for a residual `order()` below.
    *
-   * ⚠️ `sum`/`mean` ARE NOT HERE and that is a correctness decision, not an omission: an f64
-   * addition is order-sensitive in its last ulp, the fused walk's visit order is not the
-   * pipeline's by construction, and byte-identity with the Rust engine is a hard invariant. Items
-   * 1830 and 1853 declined the same pair on the GQL side for the same reason.
+   * ✅ **`sum`/`mean` ARE NOW HERE TOO (item 2408), AND THEY WERE THE LARGEST OF THE FOUR.** The
+   * same walk at 200,000 vertices / 1,000,000 edges, one shape per process, median of 9:
+   *
+   *     V().out(E).values(k)            91.94 ms   <- the FLOOR: it MATERIALIZES all 800,000 values
+   *     V().out(E).values(k).sum()     226.66      <- 2.47x the arm that allocates 800,000 slots
+   *     V().out(E).values(k).mean()    224.62
+   *     V().out(E).values(k).min()     103.54      <- already folded here since item 1857
+   *
+   * ⚠️ THEY WERE REFUSED FOR AN INVARIANT THAT NO LONGER BINDS, not forgotten. This read: "an f64
+   * addition is order-sensitive in its last ulp … and byte-identity with the Rust engine is a hard
+   * invariant." Item **2401** replaced that with a PRECISION contract (`n·ε·Σ|xᵢ|`, explicitly not
+   * bit-identical across engines) and item **2400** freed the walk-order premise underneath it, so
+   * a re-association is the contract rather than a different answer. `fusableProjectedAggregate`
+   * carries the full argument, and item 1918's 12/12 bit-identical FFI measurement is why taking it
+   * costs nothing.
+   *
+   * ⚠️ TWO FOLDS, NOT ONE WIDENED LOOP: `min`/`max` reduce over `compareTotal`'s total order and
+   * `sum`/`mean` add through `asNumber`, so a single accumulator would have to branch per element on
+   * a decision the gate already made per plan.
    */
   const folded = fusableProjectedAggregate(projected.rest);
 
   if (folded !== undefined) {
-    return foldProjectedMinMax(projected.values, folded);
+    return folded === 'sum' || folded === 'mean'
+      ? foldProjectedNumeric(projected.values, folded)
+      : foldProjectedMinMax(projected.values, folded);
   }
 
   /*

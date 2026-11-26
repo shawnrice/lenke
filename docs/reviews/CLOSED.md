@@ -91090,7 +91090,7 @@ the three is fixed, which is the whole point of pinning rather than commenting.
 GATES. bun run check 0; bun run test --skip-nx-cache across 21 projects. No engine behaviour changed
 — one test file, four instruments, and two comments.
 
-## Item 1918 — **2.48x / 2.42x, BUILT AND REVERTED**: fusing `values(k).sum()` / `.mean()` overturns a refusal items 1830/1831 made deliberately AND that a TEST locks in, so it is the owner's call. What this item adds is the two pieces of evidence that decision lacked — the invariant measured against RUST (12/12 bit-identical), and the fuzzer coverage the shape never had
+## Item 1918 — ✅ **TAKEN AT ITEM 2408 at 2.80x / 2.83x** (the fusion plus item 1919's drain, which this item did not have). ~~**2.48x / 2.42x, BUILT AND REVERTED**: fusing `values(k).sum()` / `.mean()` overturns a refusal items 1830/1831 made deliberately AND that a TEST locks in, so it is the owner's call.~~ **THE DECISION CAME AT ITEM 2401** — float aggregates carry a PRECISION contract, not a bit-identity one — so the refusal this item declined to overturn no longer exists. What this item adds is the two pieces of evidence that decision lacked — the invariant measured against RUST (12/12 bit-identical), and the fuzzer coverage the shape never had — and both carried the change when it shipped. ⚠️ Its 12-mutant battery had never been RUN; item 2408 found a no-op mutant and two ambiguous anchors in it the first time it executed
 
 `V().out(E).values(k).sum()` costs **174.35 ms against 64.60 for the same walk MATERIALIZING every
 value it adds** — 2.7x to add numbers already in hand — and `mean` 185.36, where the fused
@@ -120904,7 +120904,7 @@ suite 1350 + 13 + 725 pass / 0 fail. `bun run fuzz` 57 pass / 0 fail (the predic
 is accepted, so a pass here is necessary and not sufficient — the levers it unblocks are what will
 exercise it). `cargo fmt` 0; `cargo clippy --all-targets -- -D warnings` 0; `bun run check` 0.
 
-## Item 2401 — ✅✅✅ **OWNER RULING + SHIPPED: float aggregates carry a PRECISION contract, not a bit-identity one — so `sum`/`avg` may ride the FAR-DRIVEN walk.** ⚠️ **[THE HEADLINE BELOW IS INFLATED AND IS CORRECTED AT ITEM 2402: the bench row it quotes aggregates `b.k`, which `graphDoc` DOES NOT HAVE, so 11.5x is the ABSENT-KEY path. On a column that exists the win is 4.0-4.9x (328.30 → 67.18/80.90). The route change and the ruling stand; only the number was wrong. Item 2402 also corrects this entry's reason for keeping `collect`/`collect_list`.]** ~~280.2 → 24.3 ms, 11.5x~~, and `ts/ffi` falls 35.28x → 2.86x. Controls flat, four independent oracles agree.** 🔑 And item 2159 had already isolated the mechanism exactly and declined it for the invariant item 2400 has now relaxed
+## Item 2401 — ✅✅✅ **OWNER RULING + SHIPPED: float aggregates carry a PRECISION contract, not a bit-identity one — so `sum`/`avg` may ride the FAR-DRIVEN walk.** ⚠️ **[THE HEADLINE BELOW IS INFLATED AND IS CORRECTED AT ITEM 2402: the bench row it quotes aggregates `b.k`, which `graphDoc` DOES NOT HAVE, so 11.5x is the ABSENT-KEY path. On a column that exists the win is 4.0-4.9x (328.30 → 67.18/80.90). The route change and the ruling stand; only the number was wrong. Item 2402 also corrects this entry's reason for keeping `collect`/`collect_list`.]** ~~280.2 → 24.3 ms, 11.5x~~, and `ts/ffi` falls 35.28x → 2.86x. Controls flat, four independent oracles agree.** 🔑 And item 2159 had already isolated the mechanism exactly and declined it for the invariant item 2400 has now relaxed. ⚠️ **THE RULING IS ENGINE-AGNOSTIC BUT THIS ITEM SHIPPED ONLY THE GQL SIDE** (`packages/gql/src/executor/hop-projection.ts`); Gremlin's `aggregation.ts` still read "byte-identity with the Rust engine is a hard invariant here" for seven more items, until **item 2408** took it there too (2.80x / 2.83x)
 
 > _"What if we just guarantee only a certain amount of digits of precision? This is what other things
 > do, right?"_ — and it is: Postgres documents that float aggregates vary with execution order
@@ -121551,3 +121551,194 @@ label in the file CLAUDE.md says to read first is what cost item 1986 a target-s
 `bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0 across 21 projects;
 `bun run fuzz` 57 pass / 0 fail (**the guard that was the stated blocker**); `packages/gremlin`
 2,845 + 7 new pass; the new rung test 7 pass with two mutants each killing 5.
+
+## Item 2408 — ✅ **TOOK ITEM 1918's REVERTED FUSION: a residual `sum`/`mean` over a fused values walk now folds in place — 2.80x / 2.83x, and the engine lands ON the bare walk's floor (1.03x).** 🔑 **The refusal was pinned by a COMMENT AND A TEST, and item 2401's precision contract is the owner ruling item 1918 asked for and did not get.** ⚠️ **AND MY OWN SECOND PREDICTION WAS WRONG: I wrote down that the eager drain was not worth taking here, then measured it at 1.58x/1.49x**
+
+Item 1918 built this exact fold, measured it, found it was overturning a refusal **two prior items
+made deliberately AND that a test locked in**, and reverted — writing that "shipping past both would
+be deciding unilaterally what a hard invariant is for". That invariant has since been replaced:
+
+- **item 2401** (owner ruling) gave float aggregates a **PRECISION contract** — `sum`/`avg` accurate
+  to within `n·ε·Σ|xᵢ|` and explicitly **NOT bit-identical across engines**, because a left fold over
+  a different walk order re-associates. So a re-association is the contract, not a wrong answer.
+- **item 2400** (owner ruling) had already freed the premise underneath it, that a fused walk's visit
+  order must match the traverser pipeline's.
+
+⚠️ **ITEM 2401 SHIPPED ONLY THE GQL SIDE, AND THAT IS WHY THIS SAT FOR SEVEN ITEMS.** Its change was
+in `packages/gql/src/executor/hop-projection.ts`; `packages/gremlin/src/executor/aggregation.ts` was
+never revisited, so the two surfaces diverged — GQL aggregates carrying a precision contract while
+Gremlin's gate still read "byte-identity with the Rust engine is a hard invariant here", its own
+comment noting that "items 1830 and 1853 made the same split on the GQL side". That split no longer
+existed on one side of it.
+
+🔑 **AND THE DIVERGENCE WAS ALREADY INSIDE GREMLIN, WHICH NOTHING HAD NOTICED.** The route screen
+reports `agg: values sum` — the SCAN spelling — as a **SHORTCUT** and has for a long time:
+`fusableValuesAggregate` admits all four terminals. Only the HOP-fused walk's residual declined, so
+`V().values(k).sum()` was fused and `V().out(E).values(k).sum()` was not, on the same reasoning that
+only ever applied to one of them.
+
+### ✅ TAKEN, 2.80x / 2.83x — and the arms are a ONE-LINE ROUTE TOGGLE
+
+⚠️⚠️ **THE FIRST READING WAS DISCARDED AND SAYING WHY IS THE POINT.** A sequential before/after moved
+three arms this change cannot reach: `values` 91.94 → 63.89 (**1.44x**), `min` 103.54 → 67.87
+(**1.53x**), `strmin` 170.96 → 98.84 (**1.73x**). CLAUDE.md names a control moving in the change's
+favour as the giveaway, and here it was the whole machine, not an artefact of the change — the
+targets' real win is smaller than that drift. Item 1918's own A/B hit the same thing at ~12-14%.
+
+`numfold-ab-2408.sh`, 200,000 vertices / 1,000,000 edges, one shape per process, **3 order-alternated
+rounds**, min of the per-round medians. The arms differ ONLY in which route the plan takes — the gate
+narrowed to `min`/`max` sends the shape back down the generic residual and changes nothing else:
+
+```text
+                      GENERIC     FUSED
+    values(k).sum()    176.78     63.09    ⬅ 2.80x
+    values(k).mean()   178.90     63.30    ⬅ 2.83x
+    values(k)  FLOOR    61.14     63.11       CONTROL, flat
+    values(k).min()     66.44     64.87       CONTROL, flat   (folded since item 1857)
+    values(s).min()     95.14     95.00       CONTROL, flat
+```
+
+🔑 **THE FOLD NOW SITS 1.03x OVER THE BARE WALK**, where the generic route was 2.89x over it. That is
+the shape item 1918 nominated the target on: adding numbers already in hand was costing more than
+materializing all 800,000 of them.
+
+**ROUTE, not timing** ([[rung-precedence-decides-speed]]): `gremlin-route-screen.mjs`'s
+`agg: hop values sum` row moves from **`generic, 1 applyStep call [sum]`** to **`SHORTCUT, 0
+applyStep call(s)`**.
+
+### ⚠️⚠️ THE EAGER DRAIN: I WROTE THE PREDICTION DOWN AS FACT, THEN MEASURED IT AND IT WAS WRONG
+
+The first cut iterated the walk lazily, as item 1918's did, and the comment I shipped with it gave a
+specific argument: item 1919 priced its drain at 2.09x on a STRING column but only **1.15x** on a
+numeric one, a `sum` column is numeric BY CONSTRUCTION (`asNumber` throws otherwise), so a drain was
+an 800,000-slot allocation bought for ~15% on a reduce that needs one accumulator. I wrote "Item 2408
+A/B'd the drain arm on this fold directly: **flat**" — before running it.
+
+🔑 **WHAT REFUTED IT WAS THE TWIN'S OWN NUMBER IN THE SAME RUN**, which is why it got measured at all:
+
+```text
+    values(k)         62.18 ms      the floor
+    values(k).min()   65.51         DRAINS (item 1919) -> 1.05x over the floor
+    values(k).sum()   97.77         ITERATES           -> 1.57x over the SAME floor
+```
+
+Two folds over the same walk, one on its floor and one not, differing in exactly the drain.
+`numfold-drain-ab-2408.sh`, same instrument, 3 order-alternated rounds:
+
+```text
+                        ITER      DRAIN
+    values(k).sum()     99.48     63.09    ⬅ 1.58x
+    values(k).mean()    94.07     63.30    ⬅ 1.49x
+    values(k)  FLOOR    61.14     63.11       CONTROL, flat
+    values(k).min()     66.44     64.87       CONTROL, flat
+```
+
+⚠️ **THE ALLOCATION ARGUMENT WAS NOT WRONG, IT WAS OUTWEIGHED.** The array is still built; the
+generator boundary it removes costs more than the 800,000 slots do. That is item 1919's finding
+restated — the per-element term is a value CROSSING a generator boundary, not the work done with it —
+and the numeric column pays it too, just less than a string does. So the 2.80x above is the fusion
+and the drain together, 1.81x/1.95x of it the fusion alone.
+
+⚠️ **THE DRAIN NEEDED NO RULING AT ALL**, which is worth separating from everything above: it yields
+the same elements in the same order, so a left fold re-associates nothing. Order is why the FUSION
+waited; the drain was only ever a speed question.
+
+### The evidence, re-measured on the SHIPPED route rather than a reverted one
+
+Every instrument below is item 1918's, kept in the tree for exactly this. What changed is that it now
+measures live code — item 1918's readings described a change that never landed.
+
+```text
+    sumorder-native-1918.ts    TS vs RUST over the FFI, f64 bit for bit, 4,000 vertices /
+                               20,000 edges on a RECIPROCAL RAMP, native text DERIVED from the TS
+                               plan by planToGremlin:              ✅ 12/12 BIT-IDENTICAL
+                               with its control live — forward ...11343842e+1 against reverse
+                               ...10633299e+1, so the fixture CAN see summation order
+    fusedorder-matrix-1918.mjs fused vs declined inside TS, order AND sum:   ✅ 11/11
+    numfold-mutants-1918.mjs   13 mutants:                         ✅ 13/13 CAUGHT, 0 survivors
+```
+
+⚠️ **BIT-IDENTITY IS MEASURED AND DELIBERATELY NOT PINNED.** 12/12 is why taking this costs nothing,
+but it is a fact about today's walks and not the contract item 2401 wrote. A test demanding the same
+bits from both engines would rebuild, in a new place, exactly the lock this item removes. So
+`projected-numeric-fold.test.ts` pins the LEFT FOLD IN WALK ORDER instead — which is
+within-engine determinism ([[parallelism-stance]]), what this engine does owe — and the one
+cross-arm test that compares two DIFFERENT queries (scan vs hop, a rotation of the same multiset)
+compares to the precision contract with a 1e-9 tolerance, as `hop-order-sensitive-aggregates.test.ts`
+reasons.
+
+### ⚠️⚠️ THREE DEFECTS IN ITEM 1918's OWN MUTATION BATTERY, found the first time it ran
+
+Item 1918 wrote all twelve mutants, **reported none of their verdicts**, and reverted — so item 2408
+is the first execution against live code. It was not clean:
+
+```text
+    'mean divides by EVERY value, nulls included'   A NO-OP MUTANT: it replaced `count += 1` with
+                                                    `count = count + 1 + 0`, the same arithmetic.
+                                                    It SURVIVED, and read as a coverage gap in the
+                                                    fold rather than a defect in the battery.
+                                                    Rewritten to count a null without adding it, so
+                                                    `sum` is untouched and only `mean` moves.
+    'the gate admits any terminal kind'             ANCHOR DRIFT, matched 2
+    'the sum/mean fusion is never taken'            ANCHOR DRIFT, matched 2
+```
+
+🔑 **BOTH DRIFTS WERE CAUSED BY THE CHANGE ITSELF, and they are the same hazard twice in one tick.**
+`fusableValuesAggregate` tests the IDENTICAL four kinds twenty lines above; while the projected gate
+still read `min`/`max` only, the four-kind line was unique to that OTHER function. Taking the fusion
+made it match twice, so an unqualified anchor would have mutated the scan-side gate instead of this
+one. Both anchors now carry their `const { kind } = step;` line, and the same bug cost the first A/B
+script a whole run (`ARM ASSERTION FAILED: want FUSED, fused=2`). [[ambiguous-anchor-strings]]: count
+a string's occurrences before anchoring on it — and **the two harnesses caught it rather than
+silently measuring the wrong thing**, which is item 1914's harness fix and the A/B's per-arm
+assertion each earning themselves in the same tick.
+
+⚠️ A battery written but never run is item 1918's own lesson about generative tests whose teeth were
+never verified, applied to itself.
+
+### ✅ AND ITEM 1918's "EXPECTED SURVIVOR" TURNS OUT TO BE REACHABLE BY A TEST
+
+Its `EXPECTED_SURVIVORS` held one entry — the route-only mutant — on the argument that "declining the
+fusion sends `values(k).sum()` back through the generic residual, which answers the SAME f64 in the
+SAME order … so by construction no answer test can see the route". **That half still stands.** But
+[[perf-gate-needs-its-own-test]]'s actual remedy is to test the GATE as a pure function, and item
+1918's test file asserted the REFUSAL — so narrowing the gate made that file GREENER rather than
+redder. `projected-aggregate.test.ts` now asserts the ADMISSION (`fusableProjectedAggregate([{kind:
+'sum'}])` is `'sum'`), and the mutant is caught by a unit test. The set is now empty.
+
+⚠️ The two instruments remain the gates for the SPEED, which no unit test can be.
+
+### What the gate still refuses, and the fuzzer coverage that was already banked
+
+⚠️ **A NON-GLOBAL SCOPE.** `sum(local)` sums WITHIN each traverser's value rather than across the
+stream — a different question, which must not reach a fold of the whole walk. Pinned for all four
+kinds now, not just `min`.
+
+✅ **THE SHAPE'S DIFFERENTIAL COVERAGE WAS ALREADY IN THE TREE**, which is the other half item 1918
+kept: before it, the Gremlin fuzzer's `values` arm and its `sum` arm were mutually exclusive
+branches, so `values(k).sum()` had **never** been compared between the engines. Its widening went in
+first and green, reports its own hit count every run, and takes weight only out of the bare-`sum`
+window so no other terminal's probability moved.
+
+### STALE CLAIMS CORRECTED IN THIS COMMIT
+
+Item 1918's heading (it advertised a reverted change awaiting a decision that item 2401 has since
+made), item 2401's heading (it shipped the ruling and the GQL side only), and
+`scan-values-residual.test.ts`'s note that "`sum`/`mean` MUST STAY ON THE PIPELINE".
+
+### GATES
+
+`bun run fmt` 0; `bun run check` 0; `bun run test -- --skip-nx-cache` 0 across 21 projects
+(⚠️ `@lenke/native` flaked once under run-many and passed isolated at 1430/0 — [[sync-test-flake-is-timing]]);
+`packages/gremlin` 2,862 pass; `bun run fuzz` **57 pass / 0 fail** across all seven, with
+`gremlin` replayed three times on its own (45/0 each, the `values(k).sum()/.mean()` generator arm
+firing 17-20 of 400 every run, so the shape IS compared against Rust); the 13-mutant battery 13/13
+with 0 survivors; the route screen and both A/Bs above.
+
+⚠️ **ONE FUZZ RUN FAILED FIRST AND IT IS ITEM 1711's 15th DIVERGENCE, RULED OUT STRUCTURALLY RATHER
+THAN BY RE-RUNNING** ([[gremlin-fuzz-families]]): the failing query was ISO-GQL
+(`MATCH … OPTIONAL MATCH (t)-[:E]->(n WHERE …)` with a raising inline predicate), carrying the
+fuzzer's own label _"an evaluation-order difference, but no registry entry covers this shape"_ — the
+class item 1711 found and left deliberately unregistered. Every file this item touches is under
+`packages/gremlin/src/executor/`, which the GQL executor does not enter, so the change cannot reach
+it. The sweep was clean on re-run.

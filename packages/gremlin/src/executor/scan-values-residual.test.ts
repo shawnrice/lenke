@@ -16,10 +16,12 @@
 // every selective label, up to 678x), so with a label that covers EVERY vertex it is the same
 // question answered by the general route. Compared element for element.
 //
-// ⚠️ AND `sum`/`mean` MUST STAY ON THE PIPELINE. `fusableProjectedAggregate` admits only `min`/`max`
-// because f64 addition is order-sensitive in its last ulp and the fused walk's visit order is not
-// the pipeline's — byte-identity with the Rust engine is a hard invariant. Their answers are pinned
-// here so a later widening that reached for them has to break this file.
+// ⚠️ ~~AND `sum`/`mean` MUST STAY ON THE PIPELINE. `fusableProjectedAggregate` admits only
+// `min`/`max` because f64 addition is order-sensitive in its last ulp and the fused walk's visit
+// order is not the pipeline's — byte-identity with the Rust engine is a hard invariant.~~ **ITEM
+// 2408 ADMITTED THEM**, after item 2401 replaced that bit-identity invariant with a PRECISION
+// contract and item 2400 freed the walk-order premise under it. Their answers stay pinned here —
+// the same numbers by a different route, which is the claim worth a test either way.
 import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';

@@ -14,10 +14,16 @@ import { describe, expect, test } from 'bun:test';
  * `toArray` of the same traversal WITHOUT the aggregate gives exactly the values being reduced;
  * `Math.min` over them cannot share a mistake with either engine path.
  *
- * ⚠️ `sum`/`mean` MUST STAY REFUSED, and that is tested rather than assumed. They are
- * order-sensitive in the last ulp of an f64 addition, the fused walk's order is not the pipeline's,
- * and byte-identity with the Rust engine is a hard invariant. A test that only checked `min`/`max`
- * would not notice the pair being quietly admitted.
+ * ⚠️⚠️ **THIS FILE USED TO HOLD A TEST NAMED `sum and mean are NOT folded`, AND IT IS GONE
+ * DELIBERATELY (item 2408).** It pinned a refusal whose stated reason — "byte-identity with the
+ * Rust engine is a hard invariant" — item **2401** retired in favour of a PRECISION contract, so
+ * the test was asserting a contract the repo no longer has. That assertion is what told item 1918
+ * it was overturning a LOCK rather than filling a gap, which is worth keeping as a method note: a
+ * mutation battery's own BASELINE check failed, on a test asserting the refusal, and the diff had
+ * not said so out loud.
+ *
+ * The replacement below asserts the ADMISSION, and `projected-numeric-fold.test.ts` holds the
+ * numeric fold's own answer tests.
  */
 import { Graph } from '@lenke/core';
 
@@ -183,23 +189,41 @@ describe('a residual min/max over the fused values walk', () => {
   });
 });
 
-describe('the residual fold refuses what it must', () => {
-  test('sum and mean are NOT folded', () => {
-    expect(fusableProjectedAggregate([{ kind: 'sum' }] as never)).toBeUndefined();
-    expect(fusableProjectedAggregate([{ kind: 'mean' }] as never)).toBeUndefined();
+describe('the residual fold admits what it must and refuses the rest', () => {
+  test('all four global aggregates are folded, each reporting its own kind', () => {
     expect(fusableProjectedAggregate([{ kind: 'min' }] as never)).toBe('min');
     expect(fusableProjectedAggregate([{ kind: 'max' }] as never)).toBe('max');
+    // ⚠️ ADMITTED AT ITEM 2408, having been explicitly refused here since 1857 — see the file note.
+    expect(fusableProjectedAggregate([{ kind: 'sum' }] as never)).toBe('sum');
+    expect(fusableProjectedAggregate([{ kind: 'mean' }] as never)).toBe('mean');
+  });
+
+  /**
+   * ⚠️ THE KIND MUST SURVIVE THE GATE, not merely be accepted by it. A gate returning a truthy
+   * constant for all four would pass the test above if it only checked `toBeDefined`, and the
+   * dispatch then picks the WRONG FOLD — `numfold-mutants-1918.mjs` names both directions of that
+   * swap (`sum/mean folded by the MIN/MAX fold`, `min/max folded by the NUMERIC fold`).
+   * [[gate-returning-a-value]]: assert the VALUE's content.
+   */
+  test('a terminal this fold has no arm for is refused', () => {
+    expect(fusableProjectedAggregate([{ kind: 'count' }] as never)).toBeUndefined();
+    expect(fusableProjectedAggregate([{ kind: 'fold' }] as never)).toBeUndefined();
+    expect(fusableProjectedAggregate([{ kind: 'order' }] as never)).toBeUndefined();
   });
 
   test('a non-global scope, a longer residual and an empty one are refused', () => {
     expect(fusableProjectedAggregate([{ kind: 'min', scope: 'local' }] as never)).toBeUndefined();
+    // ⚠️ THE NUMERIC PAIR CARRIES A SCOPE TOO, and `sum(local)` sums WITHIN each value rather than
+    // across the stream — a different question, which must not reach a fold of the whole walk.
+    expect(fusableProjectedAggregate([{ kind: 'sum', scope: 'local' }] as never)).toBeUndefined();
+    expect(fusableProjectedAggregate([{ kind: 'mean', scope: 'local' }] as never)).toBeUndefined();
     expect(
       fusableProjectedAggregate([{ kind: 'min' }, { kind: 'count' }] as never),
     ).toBeUndefined();
     expect(fusableProjectedAggregate([])).toBeUndefined();
   });
 
-  /** And `sum`/`mean` still ANSWER correctly down the pipeline. */
+  /** `sum`/`mean` answer the same number they did on the pipeline — now via the fold. */
   test('sum and mean still answer', () => {
     const g = build(FIXTURES.plain);
     const walked = toArray(traversal(V(), out('E'), values('k')), g) as number[];
