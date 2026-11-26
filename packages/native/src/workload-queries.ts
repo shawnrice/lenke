@@ -374,6 +374,21 @@ const aggregate = (r: () => number): Workload => {
     'MATCH (n:T) WHERE n.n >= $p0 RETURN collect(n.n) AS x',
     'MATCH (a:T)-[:E]->(b:T) RETURN collect(b.n) AS x',
     'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T) RETURN collect(c.n) AS x',
+    /**
+     * THREE HOPS, ADDED AT ITEM 2413 BECAUSE THE LIST ABOVE STOPPED AT TWO. That item gave
+     * `collect` a rung at three-plus hops (`chainFoldedAggregate`) as well as two
+     * (`hop2FoldedAggregate`), so without this line the wider rung shipped with no cross-engine
+     * coverage - item 1831's own finding, one width over. The comparison is a real ORDER check
+     * rather than a reduction over one, because `canonValue` compares arrays POSITIONALLY.
+     */
+    'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)-[:E]->(d:T) RETURN collect(d.n) AS x',
+    'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)-[:E]->(d:T) RETURN collect_list(d.n) AS x',
+    /**
+     * AND A NON-FAR ARGUMENT, which item 2410 found answering `0`/`null` on the level fold and which
+     * now routes to the path-walk rung instead. Nothing generated an aggregate over a chain's START.
+     */
+    `MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T) RETURN ${fn === 'count' ? 'count(a.n)' : `${fn}(a.n)`} AS x`,
+    'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T) RETURN collect(a.n) AS x',
   ]);
 
   return {

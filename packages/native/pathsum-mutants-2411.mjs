@@ -1,4 +1,4 @@
-// Item 2411 — DOES THE SUITE CATCH A BROKEN PER-PATH `sum`/`avg` FOLD?
+// Items 2411 and 2413 — DOES THE SUITE CATCH A BROKEN PER-PATH `sum`/`avg`/`collect` FOLD?
 //
 // This rung is ANSWER-EQUIVALENT to the general path up to item 2401's precision bound, which is
 // exactly the shape where a green suite says nothing (`[[perf-gate-needs-its-own-test]]`). So the
@@ -96,6 +96,50 @@ const MUTANTS = [
     "if (typeof v !== 'number') {",
     'if (false) {',
   ],
+  // --- collect, item 2413 --------------------------------------------------------------------
+  /*
+   * THE ORDER MUTANT IS THE ONE THAT MATTERS. `collect`'s licence is that the rung reproduces the
+   * general path's list EXACTLY - item 2404's ruling would permit a reordering, but `canonValue`
+   * compares arrays POSITIONALLY and the differential fuzzer's 2-hop `collect(c.n)` is therefore a
+   * real cross-engine order check. A reordering that no test caught would ship a fuzzer failure.
+   */
+  [
+    'collect ORDER is reversed (the design claim: it must equal the row form)',
+    FOLD,
+    '        return [{ [outName]: out }];',
+    '        return [{ [outName]: out.reverse() }];',
+  ],
+  [
+    'collect keeps nulls instead of excluding them',
+    FOLD,
+    '          if (v !== null && v !== undefined) {',
+    '          if (true) {',
+  ],
+  [
+    'collect answers null for an empty column instead of []',
+    FOLD,
+    '        return [{ [outName]: out }];',
+    '        return [{ [outName]: out.length === 0 ? null : out }];',
+  ],
+  [
+    'collect drops the LAST element',
+    FOLD,
+    '        return [{ [outName]: out }];',
+    '        return [{ [outName]: out.slice(0, -1) }];',
+  ],
+  [
+    'collect_list is refused while collect is admitted (the two must not drift)',
+    FOLD,
+    "const ADMITTED: ReadonlySet<string> = new Set(['sum', 'avg', 'collect', 'collect_list']);",
+    "const ADMITTED: ReadonlySet<string> = new Set(['sum', 'avg', 'collect']);",
+  ],
+  [
+    'collect takes the NUMERIC fold, so a temporal element bails the whole query',
+    FOLD,
+    "    if (name === 'collect' || name === 'collect_list') {",
+    '    if (false) {',
+  ],
+
   // --- the gate ----------------------------------------------------------------------------
   [
     'the gate admits sum(DISTINCT), which this accumulator cannot dedup',

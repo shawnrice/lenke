@@ -85905,7 +85905,7 @@ meant to guard.
 GATES. bun run check 0 read unpiped. gql 4,611 pass / 0 fail. core 458 pass / 0 fail.
 gremlin 2,134 pass / 0 fail. native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail (x3).
 
-### Item 1829 — **SIX MORE MODIFIERS, AND THE WHOLE AGGREGATE FAMILY LOSES ITS ROUTE PAST ONE HOP IN GQL**: `sum`, `max`, `collect`, `grouped`, `topk` and a skip-only page all jump **~15-25x between depth 1 and depth 2**, where Gremlin is FLAT on every one of them but `grouped`. Priced and open, with the order-sensitivity analysis a fix must respect — **FOUR OF THE SIX ARE NOW CLOSED: `max` by 1830, `grouped` by 1832, `topk` by 1852, and ~~`skiponly` is HERE TO WATCH, NOT TO FIX~~ TAKEN BY ITEM 1885 at 4.9x-13.8x (its licence is cross-engine order parity, not a timing argument). Only `sum` and `collect` remain, on the byte-identity refusal this entry states**
+### Item 1829 — **SIX MORE MODIFIERS, AND THE WHOLE AGGREGATE FAMILY LOSES ITS ROUTE PAST ONE HOP IN GQL**: `sum`, `max`, `collect`, `grouped`, `topk` and a skip-only page all jump **~15-25x between depth 1 and depth 2**, where Gremlin is FLAT on every one of them but `grouped`. Priced and open, with the order-sensitivity analysis a fix must respect — **FOUR OF THE SIX ARE NOW CLOSED: `max` by 1830, `grouped` by 1832, `topk` by 1852, and ~~`skiponly` is HERE TO WATCH, NOT TO FIX~~ TAKEN BY ITEM 1885 at 4.9x-13.8x (its licence is cross-engine order parity, not a timing argument). ~~Only `sum` and `collect` remain, on the byte-identity refusal this entry states~~ - **ALL SIX ARE NOW CLOSED: `sum` at 2409/2411 and `collect` at 2413, both on refusals item 2401 and item 2404 retired**
 
 EVERY WIDENING OF THIS AXIS HAS FOUND SOMETHING, so the axis was widened again — six modifiers added
 to BOTH arms (`topk`, `skiponly`, `sum`, `maxagg`, `grouped`, `collect`). The result is the largest
@@ -86033,7 +86033,7 @@ integer fixture.
 GATES. bun run check 0 read unpiped. gql 4,624 pass / 0 fail. gremlin 2,134 pass / 0 fail.
 native 1,165 pass / 0 fail. bun run fuzz 57 pass / 0 fail.
 
-### Item 1831 — **THE WALK-ORDER QUESTION IS ANSWERED (25 cases, identical sequences), AND ANSWERING IT EXPOSED THAT ITEM 1830's OWN RUNGS HAD NO CROSS-ENGINE COVERAGE AT ALL** — every multi-hop aggregate the differential fuzzer generates is a `count(*)`, `collect` was never generated, and `sum` was only ever fuzzed over integers, where summation order cannot matter. Generator widened; no engine change
+### Item 1831 — **ITS EVIDENCE IS WHAT LICENSED `collect` AT ITEM 2413: the chain rung's row order being identical to the general matcher's is why a rung that collects in row order reproduces the general path's list exactly, so no reordering and no harness change were needed.** **THE WALK-ORDER QUESTION IS ANSWERED (25 cases, identical sequences), AND ANSWERING IT EXPOSED THAT ITEM 1830's OWN RUNGS HAD NO CROSS-ENGINE COVERAGE AT ALL** — every multi-hop aggregate the differential fuzzer generates is a `count(*)`, `collect` was never generated, and `sum` was only ever fuzzed over integers, where summation order cannot matter. Generator widened; no engine change
 
 THE BLOCKER, carried forward from items 1829 and 1830: `sum`/`avg` are order-sensitive in the last
 ulp and `collect`'s order IS its answer, so neither may ride a rung whose row order differs from the
@@ -122326,3 +122326,131 @@ GATES. `bun run fmt` 0; `bun run fmt:check` 0; `bun run check` 0; `bun run test 
 0; `cargo fmt --check` 0 and `cargo clippy --all-targets -D warnings` 0 on all three crates;
 `cargo test --release` on `lenke-engine` 0 - run because 826 Rust comments changed; `bun run fuzz` 57
 pass / 0 fail; and item 2411's mutation battery re-run on two mutants to confirm no anchor moved.
+
+## Item 2413 — **TOOK THE LAST OF ITEM 1829's SIX MODIFIERS: `collect`/`collect_list` over a 2+-hop chain now ride the path-walk rungs, 5.01x at three hops and 3.23x at two, landing at 1.3x the cost of materializing the same values.** **And its licence is STRONGER than item 2404's ruling — the rung reproduces the general path's list ELEMENT FOR ELEMENT, so nothing is reordered and `canonValue` is untouched.** **The reading that nominated it was BIMODAL and I nearly quoted it: the same row reads 170 ms and 740 ms on one binary**
+
+Item 1829 priced six modifiers that lose their route past one hop. `max` went at 1830, `grouped` at
+1832, `topk` at 1852, `skiponly` at 1885, `sum`/`avg` at 2409/2411. **`collect` was the last**, and
+its refusal was stated as _"its order IS its answer -> must NOT be admitted blind"_.
+
+### PROFILED BEFORE BUILDING, BECAUSE THE ROUTE WAS ONLY ONE CANDIDATE
+
+A 3-hop `collect` cost ~7x its own `rows` cell, but the general matcher over the SAME rows already
+costs ~4x that cell - so at most half the gap could be the missing rung and guessing which would have
+been items 2408/2409/2410's mistake a fourth time. `collectprof-2413.mjs` settled it, self time over
+three reps:
+
+```text
+                    collect          rows (rung)        rows via general matcher
+  walkSegments       34.0% 1111 ms         -                 32.0% 1187 ms
+  withBinding        11.7%  384            -                 11.4%  425
+  directedBucket     13.0%  426            -                  9.7%  359
+  sweepBlock             -            30.9%  234                  -
+  applyProjection     3.3%  109            -                      -
+  TOTAL PROFILED          3267 ms          757 ms                3713 ms
+```
+
+**`collect` and the general matcher have the SAME profile, and `applyProjection` is 3.3%.** The
+aggregation adds nothing measurable - the whole gap is the route, which is what made this worth
+building.
+
+### THE LICENCE IS NOT ITEM 2404's RULING ALONE, AND THAT MATTERS
+
+Item 2404 freed an aggregate-built list's element order, so a reordering would be LEGAL. But
+`canonValue` compares every array **positionally**, which makes the differential fuzzer's 2-hop
+`collect(c.n)` a real cross-engine ORDER check - and CLOSED.md already names a harness change as the
+prerequisite for any reordering. So a rung that emitted a different order would have broken that
+fuzzer and owed the harness work first.
+
+`collectorder-2413.mjs` asked whether it has to:
+
+```text
+  1 hop    ORDER DIFFERENT   MULTISET same     <- two routes, and this PREDATES the item
+  2 hops   ORDER SAME        MULTISET same
+  3 hops   ORDER SAME        MULTISET same
+```
+
+At 2+ hops the general path's `collect` order IS its own row order, and item 1831 proved the chain
+rung's row order identical to the general matcher's across 25 cases (re-run here: still 25/25). **So
+collecting in the rung's own row order reproduces the general path's list exactly** - no reordering,
+no ruling invoked, no harness change, and the order is PINNED element-for-element against the row
+form rather than compared as a multiset. The one-hop disagreement (`hopAggregate` against
+`hopProjection`) is item 2404's ruling showing in the engine as it stands, and the test says so.
+
+### THE NUMBERS, and the instrument is half the story
+
+`pathsum-ab-2411.sh`, route toggle, 3 order-alternated rounds, min of the per-round medians:
+
+```text
+  THREE HOPS   20,000 vertices / 320,000 paths     GENERIC   FOLDED
+    collect                                         128.29    25.63   5.01x
+    rows    FLOOR + CONTROL                          20.24    20.43   flat
+    count(x)       CONTROL                            0.32     0.33   flat
+  TWO HOPS     20,000 vertices / 320,000 paths
+    collect                                         172.27    53.28   3.23x
+    rows    FLOOR + CONTROL                          40.21    44.38   flat
+```
+
+`collect` lands at **1.27x its own materialization floor** at three hops and 1.32x at two: holding
+320,000 values now costs about what producing them does.
+
+### **THE FIRST FIXTURE'S READING WAS BIMODAL AND I ALMOST SHIPPED IT AS A FLOOR**
+
+At 20,000 vertices / FANOUT 4 / 3 hops - 1,280,000 paths - the `rows` row swings between a ~170 ms
+and a ~740 ms mode, and which one a run reports depends on when V8 settles mid-series:
+
+```text
+  series  635.2 716.0 625.6 747.6 659.3 | 320.9 242.1 184.5 147.5 152.9 182.6
+```
+
+Two earlier runs reported ~170 (and item 2410's grid 171.59); two later ones reported ~740 on the
+same binary and the same fixture. **A median-of-11 lands in whichever mode dominated the run**, so
+the first A/B read `collect` FOLDED at 751 against a 738 "floor" and would have claimed it sat on it
+
+- when the floor's fast mode is ~170 and it does not. This is CLAUDE.md's own bimodal warning at 4x
+  rather than the documented ~2x, and the per-rep SERIES is the only thing that shows it. The fixture
+  was re-sized to 5,000 vertices (320,000 paths), where the same row is 21 ms +-10% across 21 reps, and
+  every number above comes from there.
+
+### MUTATION: 16 of 16 CAUGHT, ALL THREE SURVIVORS PREDICTED
+
+`pathsum-mutants-2411.mjs`, extended with six `collect` mutants. The order mutant is the one that
+matters, since a reordering is the thing the design promises not to do:
+
+```text
+  collect ORDER is reversed                                  CAUGHT   5 fail
+  collect keeps nulls instead of excluding them              CAUGHT   1
+  collect answers null for an empty column instead of []     CAUGHT   1
+  collect drops the LAST element                             CAUGHT  10
+  collect_list refused while collect admitted (no drift)     CAUGHT   1
+  collect takes the NUMERIC fold (a temporal then bails)     CAUGHT   9
+  ... plus item 2411's ten, all still caught
+  [EQUIV] x3, including the NO-OP control                    SURVIVED
+```
+
+Every verdict matched its prediction, the second item running.
+
+### TWO GUARDS THAT FAILED CLOSED, WHICH IS THE POINT OF BOTH
+
+- **The workload had no 3-hop `collect`.** Item 1831 added multi-hop folds and a 2-hop `collect`; the
+  new rung is wider than that, so it would have shipped with no cross-engine coverage - item 1831's
+  own finding one width over. Added, with a non-far-argument aggregate (item 2410's shape) alongside.
+  **Correction to my own first reading: I scanned `differential-fuzz.test.ts` for multi-hop
+  aggregates, found all 16 templates were `count(*)`, and concluded the chain rungs had no coverage at
+  all. That was wrong - the coverage lives in `workload-queries.ts`, which I had not looked at.**
+- **`workload-queries.test.ts`'s ordered-allowlist rejected `collect_list`.** Item 1817 wrote that
+  list as an ALLOWLIST so a new aggregate breaks the test rather than silently widening what counts
+  as "ordered" - and it did exactly that, for the second time (`collect` itself tripped it at 1831).
+
+### STILL OPEN
+
+`collect` stays off the LEVEL fold (`chainFoldLevels`), and that refusal is real rather than stale: a
+multiplicity-weighted fold cannot emit `u_v` copies of a value without materializing the list it
+exists to avoid. `collect(DISTINCT)` stays refused everywhere - a set operation this accumulator does
+not perform. The `WHERE`, inline-properties and relationship-variable modifiers remain priced FLAT at
+item 2411 and are not targets.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run typecheck` 0; `bun run check` 0; `bun run test --
+--skip-nx-cache` 0; `packages/gql` 5,494 pass / 0 fail; `bun run fuzz` 57 pass / 0 fail on three
+consecutive sweeps with `aggregate=1071/1071` non-empty; item 2410's 945-cell cross-route sweep still
+945/0; the A/B above and the 19-mutant battery.

@@ -115,6 +115,11 @@ const RETURNS: Record<string, string> = {
   // THE ADMITTED ARMS (item 1830): same rung, same property read, order-invariant.
   min: `min(${arg}.n)`,
   countx: `count(${arg}.n)`,
+  // ITEM 1829's LAST REMAINING MODIFIER (item 2413). `collect` has a rung at ONE hop
+  // (`hopAggregate`) and NOTHING at two or more, and its refusal - "its order IS its answer" - is
+  // what item 2404's owner ruling retired.
+  collect: `collect(${arg}.n)`,
+  collectd: `collect(DISTINCT ${arg}.n)`,
   // THE FLOOR: materialize every row the aggregate reduces.
   rows: `${arg}.n`,
   // CONTROL the change cannot reach: a closed-form tally over the same walk.
@@ -131,7 +136,15 @@ for (let r = 0; r < REPS; r += 1) {
   const out = query(g, text, {}) as unknown[];
   const ms = performance.now() - t0;
 
-  answer = out.length <= 2 ? JSON.stringify(out) : `${out.length} rows`;
+  answer = out.length <= 2 ? JSON.stringify(out).slice(0, 90) : `${out.length} rows`;
+
+  if (out.length === 1) {
+    const only = (out[0] as Record<string, unknown>).x;
+
+    if (Array.isArray(only)) {
+      answer = `list of ${only.length}`;
+    }
+  }
 
   // Drop the first three as JIT warm-up; median of the rest, per CLAUDE.md's TS-path rule.
   if (r >= 3) {

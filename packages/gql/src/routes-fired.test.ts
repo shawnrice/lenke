@@ -271,11 +271,44 @@ describe('every fast-path detector fires for its own shape', () => {
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN sum(DISTINCT d.k) AS s',
       [],
     ],
+    /*
+     * COLLECT IS ADMITTED TO THE PATH-WALK RUNGS AT ITEM 2413 - the LAST of item 1829's six
+     * modifiers. It stays off the LEVEL fold (`chainFoldLevels`), and that refusal is real rather
+     * than stale: a multiplicity-weighted fold cannot emit `u_v` copies of a value without
+     * materializing the list it exists to avoid.
+     */
     [
-      'COLLECT must stay OFF the rung',
+      'three-hop COLLECT is ADMITTED to the path-walk rung (item 2413)',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN collect(d.k) AS ks',
+      ['chainFoldedAggregate'],
+    ],
+    [
+      'two-hop COLLECT is ADMITTED to the path-walk rung (item 2413)',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN collect(c.k) AS ks',
+      ['hop2FoldedAggregate'],
+    ],
+    [
+      'collect_list rides the same rung',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN collect_list(d.k) AS ks',
+      ['chainFoldedAggregate'],
+    ],
+    [
+      'collect(DISTINCT) stays off - a SET operation the accumulator does not perform',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN collect(DISTINCT d.k) AS ks',
       [],
     ],
+    [
+      'a WRAPPED collect stays off - the row value is the subscript, not the list',
+      'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN collect(d.k)[0] AS k',
+      [],
+    ],
+    /*
+     * ~~COLLECT must stay OFF the rung~~ - REPLACED BY THE ADMISSION ROWS ABOVE AT ITEM 2413. Its
+     * licence is not item 2404's ruling alone: at two and three hops the general path's `collect`
+     * order IS its own row order, and item 1831 proved the rung's row order identical to the general
+     * matcher's, so the rung reproduces the same list exactly and `canonValue`'s POSITIONAL array
+     * comparison keeps working untouched.
+     */
     [
       'a WRAPPED aggregate stays off',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN max(d.k) + 0 AS m',

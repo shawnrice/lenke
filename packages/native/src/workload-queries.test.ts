@@ -97,7 +97,11 @@ describe('item 1817 — the workload generator', () => {
       // AND THIS EXCEPTION LIST FAILS CLOSED, which is why item 1817 wrote it as an allowlist:
       // adding `collect` to the generator without adding it here made this test FAIL rather than
       // silently widening what counts as "ordered". A denylist would have let it through.
-      const scalarAggregate = /RETURN (count|sum|avg|min|max|collect)\(/.test(w.text);
+      // `collect_list` ADDED AT ITEM 2413 - and this allowlist failed closed again, exactly as the
+      // comment above promised: adding the ISO spelling to the generator broke this test rather
+      // than quietly widening what counts as ordered. It is listed separately because `collect\(`
+      // requires the paren immediately, so it does not match `collect_list(`.
+      const scalarAggregate = /RETURN (count|sum|avg|min|max|collect|collect_list)\(/.test(w.text);
 
       if (w.ordered && !scalarAggregate) {
         expect({ text: w.text, hasOrderBy }).toEqual({ text: w.text, hasOrderBy: true });

@@ -263,3 +263,126 @@ describe('item 2411 — sum/avg on the path-walk chain rungs', () => {
     expect(one(g, `MATCH ${pattern} RETURN sum(d.n) + 1 AS x`)).toBe(plain + 1);
   });
 });
+
+/*
+ * Item 2413 — `collect`/`collect_list` on the same two rungs, which is the LAST of item 1829's six
+ * modifiers.
+ *
+ * THE ORDER IS PINNED EXACTLY, AND THAT IS THE DESIGN RATHER THAN A CONCESSION. Item 2404's owner
+ * ruling freed an aggregate-built list's element order, so a reordering would be LEGAL - but
+ * `canonValue` compares arrays POSITIONALLY, which makes the differential fuzzer's 2-hop
+ * `collect(c.n)` a real cross-engine order check, and CLOSED.md names a harness change as the
+ * prerequisite for any reordering. `collectorder-2413.mjs` measured that at two and three hops the
+ * general path's `collect` order IS its own row order, and item 1831 proved the chain rung's row
+ * order identical to the general matcher's across 25 cases. So collecting in the rung's own row
+ * order reproduces the general path's list exactly, needs no ruling and no harness change - and is
+ * therefore pinned here against the ROW FORM, which is the thing it must keep agreeing with.
+ *
+ * AT ONE HOP THE TWO ROUTES ALREADY DISAGREE on order (`hopAggregate` against `hopProjection`), so
+ * the one-hop row below asserts the MULTISET and says why. That disagreement predates this item.
+ */
+describe('item 2413 — collect on the path-walk chain rungs', () => {
+  const ORDERED: readonly (readonly [string, string, string])[] = [
+    ['2 hops', '(a:P)-[:E]->(b:P)-[:E]->(c:P)', 'c'],
+    ['3 hops', '(a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P)', 'd'],
+    ['3 hops, label expression', '(a:P)-[:E]->(b:P|Q)-[:E]->(c:P)-[:E]->(d:P)', 'd'],
+    ['3 hops, non-far argument', '(a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P)', 'a'],
+  ];
+
+  test.each(ORDERED)('%s: collect equals the row form ELEMENT FOR ELEMENT', (_n, pattern, v) => {
+    const g = layered();
+    const rows = (query(g, `MATCH ${pattern} RETURN ${v}.n AS x`, {}) as { x: unknown }[]).map(
+      (r) => r.x,
+    );
+
+    // NOT VACUOUS: a single-path fixture would make any order trivially right.
+    expect(rows.length).toBeGreaterThan(3);
+    expect(one(g, `MATCH ${pattern} RETURN collect(${v}.n) AS x`)).toEqual(rows);
+    // `collect_list` is the same fold under ISO's other spelling, and must not drift from it.
+    expect(one(g, `MATCH ${pattern} RETURN collect_list(${v}.n) AS x`)).toEqual(rows);
+  });
+
+  test('ONE HOP takes a different route and is compared as a MULTISET', () => {
+    const g = layered();
+    const rows = (query(g, 'MATCH (a:P)-[:E]->(b:P) RETURN b.n AS x', {}) as { x: number }[]).map(
+      (r) => r.x,
+    );
+    const got = one(g, 'MATCH (a:P)-[:E]->(b:P) RETURN collect(b.n) AS x') as number[];
+    const asc = (xs: readonly number[]): number[] => [...xs].sort((x, y) => x - y);
+
+    expect(got).toHaveLength(rows.length);
+    expect(asc(got)).toEqual(asc(rows));
+  });
+
+  /*
+   * NULL IS EXCLUDED, measured against the engine rather than assumed: over rows
+   * `[1, 1, null, null, 2, 2]` the general path collects `[1, 1, 2, 2]`. AND AN EMPTY COLLECT IS
+   * `[]`, NOT `null` - which is where this fold differs from `sum` (0) and `avg` (null), the three
+   * answers item 2410 had to measure one at a time rather than reason about together.
+   */
+  test('null is excluded and an all-null column collects []', () => {
+    const pattern = '(a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P)';
+    const g = layered([undefined, undefined, undefined, [{ n: 7 }, {}]]);
+    const rows = query(g, `MATCH ${pattern} RETURN d.n AS x`, {}) as { x: unknown }[];
+
+    expect(rows).toHaveLength(16);
+    expect(rows.filter((r) => r.x === null || r.x === undefined)).toHaveLength(8);
+    expect(one(g, `MATCH ${pattern} RETURN collect(d.n) AS x`)).toEqual(Array(8).fill(7));
+
+    const empty = layered([undefined, undefined, undefined, [{}, {}]]);
+
+    expect(query(empty, `MATCH ${pattern} RETURN d.n AS x`, {})).toHaveLength(16);
+    expect(one(empty, `MATCH ${pattern} RETURN collect(d.n) AS x`)).toEqual([]);
+    // CROSS-ROUTE CONTROL: one hop cannot reach either chain rung, and must agree on `[]`. The key
+    // is `zz`, absent on EVERY layer - `b.w` is present (b is layer 1, which keeps its defaults), so
+    // that spelling measured a full column and not an empty one.
+    expect(one(empty, 'MATCH (a:P)-[:E]->(b:P) RETURN collect(b.zz) AS x')).toEqual([]);
+    expect(one(empty, `MATCH ${pattern} RETURN collect(d.zz) AS x`)).toEqual([]);
+  });
+
+  /*
+   * A STORED TEMPORAL IS COLLECTED, NOT A FAULT - the opposite of `sum`, and the reason this fold
+   * has no bail. `collect` HOLDS values rather than adding them, so no element type can make it
+   * wrong, and the general path collects a temporal too.
+   */
+  test('a stored temporal is collected rather than faulting', () => {
+    const pattern = '(a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P)';
+    const g = layered([
+      undefined,
+      undefined,
+      undefined,
+      [{ n: 1 }, { n: { '@date': '2024-01-02' } }],
+    ]);
+
+    // The CONTROL first: the same column under `sum` FAULTS, so the two folds are being told apart
+    // rather than both happening to work.
+    expect(() => query(g, `MATCH ${pattern} RETURN sum(d.n) AS x`, {})).toThrow();
+
+    const got = one(g, `MATCH ${pattern} RETURN collect(d.n) AS x`) as unknown[];
+    const rows = (query(g, `MATCH ${pattern} RETURN d.n AS x`, {}) as { x: unknown }[]).map(
+      (r) => r.x,
+    );
+
+    expect(got).toHaveLength(16);
+    expect(got).toEqual(rows);
+  });
+
+  /*
+   * THE REFUSALS THAT STAY. `collect(DISTINCT …)` is a SET operation this accumulator does not
+   * perform, and an expression WRAPPING the aggregate must keep its arithmetic rather than being
+   * answered by the fold's list directly.
+   */
+  test('collect(DISTINCT) and a wrapped collect still answer correctly', () => {
+    const pattern = '(a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P)';
+    const g = layered();
+    const rows = (query(g, `MATCH ${pattern} RETURN d.n AS x`, {}) as { x: number }[]).map(
+      (r) => r.x,
+    );
+
+    expect(one(g, `MATCH ${pattern} RETURN collect(DISTINCT d.n) AS x`)).toHaveLength(
+      new Set(rows).size,
+    );
+    // The list's FIRST element, not the list: a rung answering its own fold here would drop the `[0]`.
+    expect(one(g, `MATCH ${pattern} RETURN collect(d.n)[0] AS x`)).toBe(rows[0]);
+  });
+});

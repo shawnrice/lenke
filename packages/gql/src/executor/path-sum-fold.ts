@@ -34,9 +34,25 @@ import type { Expr } from '../ast.js';
 import type { CompiledExpr, CProjection, FoldedAgg, Row } from './core.js';
 import { compileExpr } from './core.js';
 
+/**
+ * The aggregates this module folds, none of which `foldFor` has an entry for.
+ *
+ * `collect`/`collect_list` joined at item 2413, and their licence is NOT item 2404's ruling - it is
+ * stronger than that. At two and three hops the general path's `collect` order IS its own row order
+ * (`collectorder-2413.mjs`), and item 1831 proved the chain rung's row order identical to the
+ * general matcher's across 25 cases. So collecting in the rung's own row order reproduces the
+ * general path's list EXACTLY: no reordering, no contract question, and no change needed to
+ * `canonValue`, which compares arrays POSITIONALLY and is what makes the differential fuzzer's
+ * 2-hop `collect(c.n)` a real cross-engine order check.
+ *
+ * At ONE hop the two routes already disagree on order (`hopAggregate` against `hopProjection`), and
+ * that is item 2404's ruling showing in the engine as it stands - not something this module changed.
+ */
+const ADMITTED: ReadonlySet<string> = new Set(['sum', 'avg', 'collect', 'collect_list']);
+
 /** The aggregate this module folds, identified off the AST because no `foldedAggs` entry exists. */
 export type PathSumAgg = {
-  readonly name: 'sum' | 'avg';
+  readonly name: 'sum' | 'avg' | 'collect' | 'collect_list';
   readonly argFn: CompiledExpr;
   /** The aggregate's own AST node, so the caller's "the item IS the aggregate" test is unchanged. */
   readonly expr: Extract<Expr, { kind: 'func' }>;
@@ -57,7 +73,7 @@ export const pathSumAggFor = (proj: CProjection, item: Expr | undefined): PathSu
     // A `foldedAggs` entry means `foldFor` already lowered this one, so it is not ours.
     (proj.foldedAggs?.length ?? 0) !== 0 ||
     item?.kind !== 'func' ||
-    (item.name !== 'sum' && item.name !== 'avg') ||
+    !ADMITTED.has(item.name) ||
     item.star ||
     item.distinct ||
     item.args.length !== 1
@@ -65,7 +81,15 @@ export const pathSumAggFor = (proj: CProjection, item: Expr | undefined): PathSu
     return null;
   }
 
-  return { name: item.name, argFn: compileExpr(item.args[0]), expr: item };
+  // `ADMITTED.has` does not NARROW for TypeScript, so the name is widened explicitly - item 2409's
+  // `WEIGHTED.has` hit this exact wall.
+  const { name } = item;
+
+  if (name !== 'sum' && name !== 'avg' && name !== 'collect' && name !== 'collect_list') {
+    return null;
+  }
+
+  return { name, argFn: compileExpr(item.args[0]), expr: item };
 };
 
 /**
@@ -82,6 +106,32 @@ export const foldedRowsReducer = (
 ): ((inner: readonly Row[]) => Row[] | null) | null => {
   if (sumAgg !== null) {
     const { name } = sumAgg;
+
+    if (name === 'collect' || name === 'collect_list') {
+      /*
+       * APPEND IN THE RUNG'S OWN ROW ORDER, which is the whole design - see `ADMITTED` above. There
+       * is no bail here and there must not be: `collect` holds VALUES rather than adding them, so a
+       * stored temporal is a legal element (the general path collects it too) and nothing about the
+       * element type can make the fold wrong.
+       */
+      return (inner) => {
+        const out: unknown[] = [];
+
+        for (const row of inner) {
+          const v = (row as Record<string, unknown>)[column];
+
+          // NULL IS EXCLUDED, measured against the engine rather than assumed: over rows
+          // `[1, 1, null, null, 2, 2]` the general path collects `[1, 1, 2, 2]`. An EMPTY or
+          // all-null column therefore answers `[]` - not `null`, which is where `sum` and `avg`
+          // differ from this (item 2410).
+          if (v !== null && v !== undefined) {
+            out.push(v);
+          }
+        }
+
+        return [{ [outName]: out }];
+      };
+    }
 
     return (inner) => {
       let total = 0;
