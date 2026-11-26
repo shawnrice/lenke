@@ -63,7 +63,23 @@ import {
   values,
 } from '@lenke/gremlin';
 
-const NODES = Number(process.env.NODES ?? 20_000);
+/*
+ * 400,000, NOT 20,000, AND ITEM 2413 IS WHY. At 20,000 the whole aggregate band answers in 0.0-3.1
+ * ms, which is BELOW this row's own noise floor - CLAUDE.md's "anything under ~10% needs its own
+ * isolated harness" applied to a cell where 2.6 ms reads as 6x. The screen reported 14 FLAGS there
+ * and 10 of them were noise:
+ *
+ *     at NODES=20,000                              at NODES=400,000
+ *       maxagg  depth1 3.1 vs depth2 0.5   5.9x      24.7 vs 35.7   GONE, and the right way round
+ *       where   depth2 25.0 vs depth3 14.1 1.8x     338.9 vs 290.0  GONE
+ *       topk/skiponly/countdist inversions          GONE
+ *       4 collect pair gaps                         1 (depth1 only)
+ *
+ * Every surviving flag is at DEPTH 1, which is a real family and not an artifact. A screen whose
+ * cells are sub-millisecond manufactures depth inversions out of GC timing, and each one costs a
+ * reader the measurement that disproves it - this default is what stops that.
+ */
+const NODES = Number(process.env.NODES ?? 400_000);
 const REPS = Number(process.env.REPS ?? 9);
 const WARMUP = Number(process.env.WARMUP ?? 3);
 const DEPTHS = (process.env.DEPTHS ?? '1,2,3,4,5').split(',').map(Number);

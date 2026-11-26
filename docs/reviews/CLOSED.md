@@ -122454,3 +122454,52 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run typecheck` 0; `bun run check`
 --skip-nx-cache` 0; `packages/gql` 5,494 pass / 0 fail; `bun run fuzz` 57 pass / 0 fail on three
 consecutive sweeps with `aggregate=1071/1071` non-empty; item 2410's 945-cell cross-route sweep still
 945/0; the A/B above and the 19-mutant battery.
+
+## Item 2414 — **THE RUNG-GAP SCREEN'S DEFAULT FIXTURE WAS TOO SMALL AND 10 OF ITS 14 FLAGS WERE NOISE.** At 20,000 vertices its whole aggregate band answers in 0.0-3.1 ms, so a 2.6 ms GC wobble reads as a 5.9x depth inversion. Default raised to 400,000, where **4 flags survive and every one is at DEPTH 1** — a real family rather than an artifact
+
+Found while chasing the screen's loudest flag. `maxagg depth1 3.1 ms costs 5.9x depth2 (0.5)` is the
+item-1822 signature — a shorter chain costing more means that depth fell between two rungs — so it was
+measured at a size where the cells are readable. **It inverted back:**
+
+```text
+                                  NODES=20,000            NODES=400,000
+    maxagg   depth1 vs depth2    3.1 vs 0.5   5.9x       24.7 vs 35.7   GONE, right way round
+    where    depth2 vs depth3   25.0 vs 14.1  1.8x      338.9 vs 290.0  GONE
+    topk     depth2 vs depth3   13.4 vs  7.9  1.7x      295.2 vs 263.0  GONE
+    skiponly depth4 vs depth5   39.2 vs 13.2  3.0x      410.1 vs 520.7  GONE
+    countdist depth3 vs depth4   6.4 vs  2.5  2.5x       62.3 vs  70.5  GONE
+    collect  pair gaps            5 flags                1 (depth1 only)
+                                 14 FLAGS                4 FLAGS
+```
+
+A one-hop `min` reads **29.16 ms against a two-hop 35.60** at 400,000 — faster, as the depth axis
+says it should be. The 5.9x was 2.6 ms of absolute difference on a 3 ms cell, which is CLAUDE.md's own
+rule ("anything under ~10% needs its own isolated harness") applied to a row whose whole range is
+noise. The screen's header explains why `FANOUT=1` is deliberate and says nothing about the size,
+which is how the default survived 590 items.
+
+**THE COST IS MEASURED, NOT HYPOTHETICAL: each false flag costs a reader the measurement that
+disproves it.** Item 2413 spent one probe and one 12-cell grid disproving the `maxagg` one.
+
+### WHAT SURVIVES IS A FAMILY, AND IT IS WORTH PRICING
+
+All four remaining flags are ONE HOP, each a modifier costing ~3x its own `rows` cell at depth 1
+while the same modifier at depth 2-5 sits at or below it:
+
+```text
+    depth1    vs its rows cell (24.1 ms)        the same modifier at depth 2
+      topk        72.9    3.0x                    295.2  against a 326.4 rows cell
+      grouped     82.6    3.4x                    277.5  against 326.4
+      skiponly    67.4    2.8x                    281.4  against 326.4
+      collect     66.0    2.7x                    273.1  against 326.4   <- item 2413's rung
+```
+
+`collect` is the readable one: item 2413 gave it the 2+-hop rung and it now answers depth 2 FASTER
+than materializing the rows (273.1 against 326.4), because a fold builds no row objects. At depth 1 it
+still costs 2.7x that cell through `hopAggregate`. **So the deep halves of this family are taken
+(`grouped` at 1832, `topk` at 1852, `skiponly` at 1885, `collect` at 2413) and the ONE-HOP half of
+all four is open.** Not taken here, and not assumed to share one cause: four modifiers agreeing on a
+ratio is a nomination, and the one-hop rung they share (`hopAggregate`/`hopProjection`) has had its
+own measured ceilings before.
+
+GATES. `bun run fmt` 0; `bun run lint` 0. No engine change: one default and the reason for it.
