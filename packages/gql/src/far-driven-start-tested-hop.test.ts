@@ -23,12 +23,12 @@ import { query } from './index.js';
  *     control, a SELECTIVE start (gate declines) 24.4 -> 24.8  (+1.6%)
  * ```
  *
- * ⚠️ ROW ORDER DIFFERS FROM EVERY OTHER ARM — far-vertex order outermost, edge order within. Row
+ * ROW ORDER DIFFERS FROM EVERY OTHER ARM — far-vertex order outermost, edge order within. Row
  * order is unspecified for an unordered result (item 198), so every answer here is compared as a
  * MULTISET; item 1950 characterizes what an order-pinning test over such a fixture detects. An
  * `ORDER BY` sets `startDrivenForOrder` and never reaches this walk, which is its own test below.
  *
- * 🔑 THE SOUNDNESS OF THE PREDICATE HOIST IS THE CALLER'S GATE, so the tests that matter most here
+ * THE SOUNDNESS OF THE PREDICATE HOIST IS THE CALLER'S GATE, so the tests that matter most here
  * are the DECLINES: a start-reading predicate and a raising predicate must not reach this walk,
  * because it evaluates the predicate for far vertices whose every edge fails the start label.
  */
@@ -280,7 +280,7 @@ describe('farDrivenStartTestedPredicatedHopWalk — the declines that keep the h
   });
 
   /*
-   * ⚠️ THIS CASE WAS MISSING AND MUTATION FOUND IT. Removing the walk's per-far-vertex
+   * THIS CASE WAS MISSING AND MUTATION FOUND IT. Removing the walk's per-far-vertex
    * `matchesLabel(far, farLabel)` test survived the whole suite, because every other case here
    * uses a SIMPLE far label — and for a simple label `candidateVertexSource` already iterates that
    * label's bucket, so the test is redundant. For a COMPOUND far label `seedLabel` returns null and
@@ -293,7 +293,7 @@ describe('farDrivenStartTestedPredicatedHopWalk — the declines that keep the h
     // `W` is neither `T` nor `Z`, and it CARRIES IN-EDGES — which is what makes the far-label test
     // observable. An isolated off-label vertex could not catch this.
     //
-    // ⚠️ THE `T` COUNT IS LOAD-BEARING AND MY FIRST VERSION GOT IT WRONG. With 2 `T` of 6 vertices
+    // THE `T` COUNT IS LOAD-BEARING AND MY FIRST VERSION GOT IT WRONG. With 2 `T` of 6 vertices
     // the start coverage is 0.333, BELOW `EDGE_DRIVEN_MIN_COVERAGE`, so the gate declined and this
     // test exercised the general closure — it passed while testing nothing of the new walk, and
     // the mutation run is what said so. Ten `T` of thirteen puts coverage at 0.77.
@@ -344,7 +344,7 @@ describe('farDrivenStartTestedPredicatedHopWalk — the declines that keep the h
   });
 
   /*
-   * ⚠️ THE CLONE IS LOAD-BEARING AND ONLY THIS TEST SAYS SO. Item 1952 builds one row per far
+   * THE CLONE IS LOAD-BEARING AND ONLY THIS TEST SAYS SO. Item 1952 builds one row per far
    * vertex and spreads it for the rest of the bucket; replacing `{ ...template }` with `template`
    * survived every other test in the repo, because nothing INSIDE the engine mutates a projected
    * row and two aliased rows carry identical values. The rows are handed to the CALLER, though, so

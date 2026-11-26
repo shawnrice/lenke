@@ -16,7 +16,7 @@ import { Graph } from '@lenke/core';
  *              per-vertex one (`CLAUDE.md`'s "match the fixture to the claim").
  *   edge type  one in five is `F` rather than `E`, so a type-filtered walk has something to skip.
  *
- * ⚠️ THE EDGE TARGET MIXES THE REPEAT INDEX `r`, AND THAT IS LOAD-BEARING. Any `(a * i + b) % n` is
+ * THE EDGE TARGET MIXES THE REPEAT INDEX `r`, AND THAT IS LOAD-BEARING. Any `(a * i + b) % n` is
  * invariant under `i -> i + n`, so a generator that omits `r` gives every one of a vertex's edges
  * the SAME target: out-degree, in-degree and isolated-vertex counts all look perfect while the
  * graph never branches, which makes a k-hop count `deg^k * n` by construction. That is items

@@ -12,7 +12,7 @@
  * so the build dominates at every depth, and a cache keyed on a synchronous topology signal turns
  * the second and later calls into the dense read alone.
  *
- * ⚠️ THE ARMS THAT MATTER ARE THE ONES A CACHE CANNOT HELP, and they are here as controls:
+ * THE ARMS THAT MATTER ARE THE ONES A CACHE CANNOT HELP, and they are here as controls:
  *
  *   repeated          the same query N times, no writes       the cache's best case
  *   writeInterleaved  a 1-edge write between each query       every call misses, so this prices
@@ -20,13 +20,13 @@
  *   depth2            `{1,2}`, two levels                     the shape with least to amortize
  *   scanControl       a node scan, a different route           must not move at all
  *
- * ⚠️ FIXTURE: the targets are split on the REPEAT INDEX, not on `k` alone. `to = (a*k + b) % N` is
+ * FIXTURE: the targets are split on the REPEAT INDEX, not on `k` alone. `to = (a*k + b) % N` is
  * invariant under `k -> k + N`, so a loop over `k < N*FANOUT` gives one vertex's FANOUT edges the
  * same target every time — a FUNCTIONAL graph whose k-hop count is `F^k * N` by construction, with
  * perfect-looking degree statistics. The distinct-endpoint count is asserted below, which is the one
  * line that catches it.
  *
- * ⚠️ SWEEP THE SIZE, AND THE DEFAULT N UNDERSTATES THIS CACHE BY AN ORDER OF MAGNITUDE. At the
+ * SWEEP THE SIZE, AND THE DEFAULT N UNDERSTATES THIS CACHE BY AN ORDER OF MAGNITUDE. At the
  * default 50,000/150,000 the cache measures 2.45x; the repo's own `bun run bench` fixture
  * (200,000/1,000,000) measures the same rows at 3.8x to 27.2x. The two do not disagree — the thing
  * the cache ELIMINATES and the thing it LEAVES scale differently:
@@ -76,7 +76,7 @@ const build = () => {
   return g;
 };
 
-/** ⚠️ The one line that catches a functional fixture. */
+/** The one line that catches a functional fixture. */
 const assertBranches = (g) => {
   const seen = new Set();
   let sampled = 0;
@@ -105,7 +105,7 @@ const assertBranches = (g) => {
 };
 
 const DEPTH3 = 'MATCH (x:P)-[:E]->{1,3}(y:P) RETURN count(*) AS c';
-// ⚠️ `{1,1}` AND A PLAIN ONE-HOP COUNT BOTH READ 0.0 ms AND WERE REMOVED AS CONTROLS. Each takes an
+// `{1,1}` AND A PLAIN ONE-HOP COUNT BOTH READ 0.0 ms AND WERE REMOVED AS CONTROLS. Each takes an
 // O(1) shortcut rung rather than `walkLevelCount`, so neither can show perturbation and neither
 // prices the route. The depth-2 arm replaces `{1,1}` as the shape with least to amortize, and a node
 // scan replaces the one-hop count as a control that is measurable and cannot reach the CSR at all.
@@ -176,7 +176,7 @@ const seriesOf = {};
   const g = build();
   const { sampled, distinct } = assertBranches(g);
   const answer = Number(query(g, DEPTH3)[0].c);
-  const suspect = answer === N * FANOUT ** 3 ? '  ⚠️ EXACTLY F^k*N — suspect' : '';
+  const suspect = answer === N * FANOUT ** 3 ? '  EXACTLY F^k*N — suspect' : '';
 
   console.log(
     `\nfixture: ${N} vertices, ${N * FANOUT} edges, ${distinct}/${sampled} distinct endpoints sampled; depth-3 count = ${answer}${suspect}`,

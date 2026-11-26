@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Item 1746: unify the traverser's SHAPE across its three constructors.
 #
-# ⚠️ ITEM 1745 INTRODUCED A POLYMORPHISM AND DID NOT NOTICE. `extend` now sets `sack` as a plain
+# ITEM 1745 INTRODUCED A POLYMORPHISM AND DID NOT NOTICE. `extend` now sets `sack` as a plain
 # field (5 fields) while `startTraverser` still omits it (4), so source traversers and extended ones
 # have DIFFERENT hidden classes. Before 1745 the no-sack `extend` also produced 4, so they matched.
 # 1745's measurements improved anyway -- the spread cost more than the new polymorphism -- but

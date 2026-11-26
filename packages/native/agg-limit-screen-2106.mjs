@@ -1,19 +1,19 @@
 /*
  * Item 2106 — the vacuous-`LIMIT` screen over the AGGREGATE surface, which items 2104/2105 did not cover.
  *
- * 🔑 THE SCREEN (items 2104 -> 2105, worth 82x then 1521x): a vacuous `LIMIT` cannot change an answer
+ * THE SCREEN (items 2104 -> 2105, worth 82x then 1521x): a vacuous `LIMIT` cannot change an answer
  * smaller than itself, but it DOES defeat a length-gated rung — so if "as written" is slower than "as
  * written + LIMIT", that rung is LOSING TO DECLINING.
  *
- * ⚠️ AGGREGATES NEED A SECOND ARM, because a `LIMIT` after an aggregate limits the AGGREGATE ROWS (one
+ * AGGREGATES NEED A SECOND ARM, because a `LIMIT` after an aggregate limits the AGGREGATE ROWS (one
  * row for a bare `count(*)`), so it does NOT reach the walk and cannot defeat a length gate. The
  * spelling that does is the HAND-REVERSED pattern — writing the walk from the predicate's own end —
  * which is item 2101's 330x finding used as an instrument rather than a result.
  *
- * ⚠️ BOTH ARMS ASSERT THE SAME ANSWER. Two spellings that disagree are two questions, and the ratio
+ * BOTH ARMS ASSERT THE SAME ANSWER. Two spellings that disagree are two questions, and the ratio
  * would be meaningless.
  *
- * 🔑 IT ALSO RE-PRICES ITEM 2102'S RECORDED-OPEN "the `count(*)` path falls off at three segments
+ * IT ALSO RE-PRICES ITEM 2102'S RECORDED-OPEN "the `count(*)` path falls off at three segments
  * (31x)". That number was measured BEFORE items 2104/2105 changed what the row rungs do, and
  * CLAUDE.md's rule is to verify a heading against the source rather than trust its figure.
  */
@@ -59,7 +59,7 @@ const tails = {
   'sum(a.n)': 'RETURN sum(a.n) AS c',
   'avg(a.n)': 'RETURN avg(a.n) AS c',
   'grouped count': 'RETURN a.n AS k, count(*) AS c',
-  /* ⚠️ `count(collect(…))` is correctly REFUSED as a nested aggregate, so the list is sized instead. */
+  /* `count(collect(…))` is correctly REFUSED as a nested aggregate, so the list is sized instead. */
   'collect(a.n)': 'RETURN size(collect(a.n)) AS c',
   'max(a.n)': 'RETURN max(a.n) AS c',
 };
@@ -93,13 +93,13 @@ for (const [name, tail] of Object.entries(tails)) {
     const a = timeIt(`MATCH ${fwd} WHERE b.tag = $t ${tail}`);
     const b = timeIt(`MATCH ${rev} WHERE b.tag = $t ${tail}`);
 
-    // ⚠️ The two spellings must be ONE question.
+    // The two spellings must be ONE question.
     if (a.answer !== b.answer) {
       throw new Error(`${name} @${depth}: spellings disagree — ${a.answer} vs ${b.answer}`);
     }
 
     const ratio = a.ms / b.ms;
-    const flag = ratio > 2 ? '  ⚠️ SEED-SIDE GAP' : '';
+    const flag = ratio > 2 ? '  SEED-SIDE GAP' : '';
 
     if (ratio > 2) {
       flagged.push(`${name} @${depth} hops: ${ratio.toFixed(1)}x`);

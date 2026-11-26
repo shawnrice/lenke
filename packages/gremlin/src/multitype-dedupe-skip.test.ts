@@ -13,7 +13,7 @@ import { V, out, run, toArray, traversal, values } from './index.js';
  * almost no coverage of it before — the fixtures differ in exactly one bit (whether one edge carries
  * both labels), so a duplicated or lost row is visible as a changed MULTISET rather than a count.
  *
- * ⚠️ THE OPTIMIZATION THEY WERE WRITTEN FOR WAS DECLINED, and the numbers are why. A post-drain
+ * THE OPTIMIZATION THEY WERE WRITTEN FOR WAS DECLINED, and the numbers are why. A post-drain
  * profile put 60.1% of this row in the walk, so the plan was to skip the scan when
  * `graph.multiTypeEdgeCount === 0` — no edge with two labels means no edge in two buckets, the same
  * one-sided test GQL uses for `sumIsExact`. Measured on a DISJOINT fixture (`MULTILABEL=-1`, added
@@ -31,7 +31,7 @@ import { V, out, run, toArray, traversal, values } from './index.js';
  * file-perturbation effect already recorded for `exec::pull` (1.08-1.24x on unrelated clusters) and
  * for a walk inlined in a returned closure (4x on unrelated queries). Editing this file is not free.
  *
- * ⚠️ AND THE FIRST RUN OF THAT A/B WAS MEASURING NOTHING. At `MULTILABEL=0` every edge is `['E']`,
+ * AND THE FIRST RUN OF THAT A/B WAS MEASURING NOTHING. At `MULTILABEL=0` every edge is `['E']`,
  * so the `F` bucket is empty on every vertex and the scan never executes in EITHER arm. It reported
  * 5.5% against a control moving 4.8%. The same missing fixture shape the GQL bench had until item
  * 1405, found twice — the second time after it had already cost a reading.
@@ -86,7 +86,7 @@ describe('no edge in two buckets: the dedupe finds nothing and the answer is rig
   });
 
   test('and `multiTypeEdgeCount` distinguishes the two fixtures, which is what made them a pair', () => {
-    // ⚠️ WITHOUT THIS the suite could be testing the SLOW path on both fixtures and reporting
+    // WITHOUT THIS the suite could be testing the SLOW path on both fixtures and reporting
     // success for a skip that never happened — the same vacuity trap item 540's label drop sets.
     expect(build(false).multiTypeEdgeCount).toBe(0);
     expect(build(true).multiTypeEdgeCount).toBe(1);
@@ -105,7 +105,7 @@ describe('no edge in two buckets: the dedupe finds nothing and the answer is rig
 });
 
 describe('an edge IN two buckets: the dedupe must still fire (item 1413)', () => {
-  test('⚠️ the shared edge is emitted ONCE, not twice', () => {
+  test('the shared edge is emitted ONCE, not twice', () => {
     // `ae` carries both `E` and `F`, so it is in both buckets. With the dedupe wrongly skipped the
     // answer is [2, 3, 4, 5, 5] — the `5` doubled. This is the wrong-answer guard.
     expect(bag(build(true), EF)).toEqual([2, 3, 4, 5]);
@@ -152,7 +152,7 @@ describe('a multi-label edge ELSEWHERE does not disturb these labels (item 1413)
 });
 
 describe('the decision is PER CALL, not per compile (item 1413)', () => {
-  test('⚠️ adding a shared edge between two runs flips it', () => {
+  test('adding a shared edge between two runs flips it', () => {
     // THE PER-COMPILE GUARD. One graph, one plan shape, mutated in between. A hoist that decided
     // once would answer the second run with the first run's decision and emit `5` twice.
     const g = build(false);

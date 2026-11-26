@@ -11,7 +11,7 @@
  *     already refuted "the freeze costs the later reads" — but it tested a hoisted bag read with
  *     CONSTANT keys, which is a different load shape from this one.
  *   - **A VARIABLE key.** Item 1450 found "the whole win came from CONSTANT property keys". A
- *     closure-captured `valueKey` cannot use a constant-key inline cache. ⚠️ If that is the cause,
+ *     closure-captured `valueKey` cannot use a constant-key inline cache. If that is the cause,
  *     the win is UNREACHABLE rather than pending: specializing on a literal key needs runtime
  *     codegen, which `no-runtime-codegen` forbids outright (it forces `unsafe-eval` into every
  *     embedder's CSP).
@@ -19,7 +19,7 @@
  * The arms cross those two factors, so the result says which one to chase — and whether either is
  * worth chasing at all.
  *
- * ⚠️ THE KEY IS READ FROM AN ARRAY, not a literal, in the "variable" arms. Writing `o[k]` where `k`
+ * THE KEY IS READ FROM AN ARRAY, not a literal, in the "variable" arms. Writing `o[k]` where `k`
  * is a `const` in scope lets V8 treat it as a constant anyway, which would measure the wrong thing.
  */
 const N = Number(process.env.N ?? 2_000_000);
@@ -42,7 +42,7 @@ const makeBag = (i, freeze) => {
 };
 
 const COUNT = Number(process.env.COUNT ?? 20_000);
-// ⚠️ RANDOM order when asked: the walk reads bags in ADJACENCY order, effectively random across the
+// RANDOM order when asked: the walk reads bags in ADJACENCY order, effectively random across the
 // heap, where a sequential sweep is cache-friendly. Item 1770 found that distinction to be the
 // whole effect, so the probe must be able to express both.
 const ORDER = process.env.ORDER ?? 'seq';

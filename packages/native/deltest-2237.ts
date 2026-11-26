@@ -1,16 +1,16 @@
 /**
- * ⚠️⚠️ **THE DELETION TEST FOR item 2236's `get properties` FRAME (item 2237).** The profile put
+ * **THE DELETION TEST FOR item 2236's `get properties` FRAME (item 2237).** The profile put
  * `get properties` at 59.7 ns of a 346 ns/contribution grouped-hop count — but
  * [[frame-attribution-trap]] says a getter frame is ATTRIBUTION until a deletion test with a CONTROL says
  * otherwise, and `Vertex.ts` already carries a refutation of optimizing that exact getter. So the read is
  * DELETED from the far-keyed walk and the arms compared.
  *
- * 🔑 **THE DELETED ARM KEEPS THE KEY VARYING.** Substituting a CONSTANT would send every contribution to
+ * **THE DELETED ARM KEEPS THE KEY VARYING.** Substituting a CONSTANT would send every contribution to
  * one `bump` bucket instead of 97, making the Map behave differently and overstating the deletion. A cheap
  * module-scope counter mod 97 keeps the group count and the Map's hit pattern identical, so only the
  * getter call and the keyed index are removed.
  *
- * ⚠️ ONE SHAPE PER PROCESS (items 762, 2172-2175, 2214): `Q` picks one query, and the fixture load is
+ * ONE SHAPE PER PROCESS (items 762, 2172-2175, 2214): `Q` picks one query, and the fixture load is
  * outside the timed region.
  *
  *     Q=farkey   the target  — reads `b.k` PER EDGE   (the line the deletion edits)
@@ -69,7 +69,7 @@ for (let r = 0; r < REPS; r += 1) {
 }
 
 /*
- * ⚠️ MEDIAN OF THE POST-WARM-UP REPS, not min: the TS scalar path plateaus high and emits a RARE fast rep,
+ * MEDIAN OF THE POST-WARM-UP REPS, not min: the TS scalar path plateaus high and emits a RARE fast rep,
  * so `min` estimates the two arms differently. Drop the first three — visibly the JIT tiering up.
  */
 const warm = series.slice(3).sort((a, b) => a - b);

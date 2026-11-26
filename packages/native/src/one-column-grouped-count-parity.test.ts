@@ -1,6 +1,6 @@
 // Byte-identity for the ONE-COLUMN GROUPED COUNT, which NO fuzzer generates (item 1582).
 //
-// ⚠️ WHY THIS FILE EXISTS RATHER THAN A FUZZER SEED. Item 1582 admitted
+// WHY THIS FILE EXISTS RATHER THAN A FUZZER SEED. Item 1582 admitted
 // `RETURN count(*) AS c GROUP BY n.k` — a grouped count that does not project its key — to the
 // TS grouped-count tally, which changed WHICH COLUMNS the rung emits. That is exactly the kind
 // of change byte-identity exists to catch, and `bun run fuzz` was green BEFORE this file was
@@ -85,7 +85,7 @@ suite('one-column grouped count: TS vs native', () => {
       const ts = tsQuery(tsGraph, q) as Array<Record<string, unknown>>;
       const nat = nativeGraph.query(q) as Array<Record<string, unknown>>;
 
-      // ⚠️ Compared as MULTISETS of rows, because unordered row order is unspecified in this
+      // Compared as MULTISETS of rows, because unordered row order is unspecified in this
       // engine and deliberately so — but COLUMN order is bytes, so it is asserted exactly.
       // `columnOrderOf` reads the first row's key sequence out of a JSON STRING, which is the
       // form the differential fuzzer hands it (`ts.json`), so both sides are stringified here.
@@ -99,7 +99,7 @@ suite('one-column grouped count: TS vs native', () => {
     });
   }
 
-  // ⚠️⚠️ A WRONG ANSWER IN THE RUST ENGINE, found by this file and PRE-EXISTING — item 1582 did
+  // A WRONG ANSWER IN THE RUST ENGINE, found by this file and PRE-EXISTING — item 1582 did
   // not cause it and does not fix it.
   //
   //     SELECT count(*) AS c FROM MATCH (n:P) GROUP BY n.k

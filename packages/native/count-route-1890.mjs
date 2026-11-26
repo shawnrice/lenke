@@ -16,14 +16,14 @@
  * ever be the walk MINUS some rows, so a window that multiplies the cost is a window that
  * disqualified the rung.
  *
- * ⚠️ DEPTHS 0 AND 1 ARE ALREADY DONE, and by a mechanism this item has to respect rather than
+ * DEPTHS 0 AND 1 ARE ALREADY DONE, and by a mechanism this item has to respect rather than
  * rediscover. Item 1776 took the node shape; item 1777 took the hop at **8.14x / 4.87x**, and its
  * finding is the load-bearing one: a skip-only page is an ORDER-SENSITIVE consumer (it inherits the
  * walk's visit order and decides which rows vanish), so it may ride only a walk whose order is the
  * general path's. `detectHopProjection`'s `forceStartDriven` — built at item 551 for exactly this —
  * is what makes it answer-equivalent, not a carve-out by which end is read.
  *
- * ⚠️ AND ITEM 1829 SAYS THE SAME QUESTION IS UNSETTLED DEEPER: "that is exactly the
+ * AND ITEM 1829 SAYS THE SAME QUESTION IS UNSETTLED DEEPER: "that is exactly the
  * `forceStartDriven` question items 419 and 551 settled for the one-hop rung, and it has NOT been
  * settled for the deeper widths." So this file does not measure anything. It asks `compileLinear`
  * which rungs are WILLING for each spelling at each depth, because that names what a fix would have
@@ -66,9 +66,7 @@ const willing = (q) => {
 };
 
 console.log('# which rungs are WILLING (compileLinear fields that are non-null).');
-console.log(
-  "# ⚠️ THE FIRST NAME IS THE RUNG THAT FIRES — `runLinear`'s chain is lazy and its order",
-);
+console.log("# THE FIRST NAME IS THE RUNG THAT FIRES — `runLinear`'s chain is lazy and its order");
 console.log("#   IS this literal's field order (rung-precedence-census.mjs asserts that).\n");
 
 for (let d = 1; d <= 5; d += 1) {

@@ -1,13 +1,13 @@
 /**
- * ⚠️⚠️ **DOES THE SORTED HOP REACH A RUNG AT ALL? (item 2260)** Item 2259 measured a sorted hop at 344
+ * **DOES THE SORTED HOP REACH A RUNG AT ALL? (item 2260)** Item 2259 measured a sorted hop at 344
  * ns/row where an unsorted hop is 23 and a sorted SCAN is 87 — leaving **~230 ns/row explained by neither
- * term**. 🔑 [[rung-precedence-decides-speed]]'s rule is that **timing cannot distinguish "declined" from
+ * term**. [[rung-precedence-decides-speed]]'s rule is that **timing cannot distinguish "declined" from
  * "more work"**, so the route has to be read, not inferred.
  *
  * The reader is `gql-cliff-finder.ts`'s, which is `deferred-hop-order.test.ts`' `routes` helper:
  * `compileLinear` returns a record of ~22 NAMED rung fields, and the non-null ones are the rungs that fire.
  *
- * ⚠️ Its own warning matters here: **a willing rung can be STARVED by a broader one above it in
+ * Its own warning matters here: **a willing rung can be STARVED by a broader one above it in
  * `runLinear`'s chain** (1.80-6.00x at item 1583), so the fired-rung SET — not just "is any rung non-null"
  * — is what must be compared across the arms.
  */
@@ -25,7 +25,7 @@ const SHAPES: Array<[string, string]> = [
   ['project+order+limit', 'MATCH (a:Person)-[:KNOWS]->(x) RETURN x.name AS n ORDER BY n LIMIT 10'],
 ];
 
-/** The rungs that fire for `src`, by NAME. ⚠️ A `boolean` field is not a rung (item 1510 broke 13 tests). */
+/** The rungs that fire for `src`, by NAME. A `boolean` field is not a rung (item 1510 broke 13 tests). */
 const routes = (src: string): string[] => {
   const q = parse(src) as never as { parts: readonly never[] };
   const cl = compileLinear(q.parts[0]) as unknown as Record<string, unknown>;

@@ -152,7 +152,7 @@ export class Edge {
     if (this.#lbox) {
       this.#lbox.set = next;
       /*
-       * ⚠️⚠️ **`sole` IS MAINTAINED HERE TOO, AND THIS SITE IS WHY IT NEARLY WENT STALE.**
+       * **`sole` IS MAINTAINED HERE TOO, AND THIS SITE IS WHY IT NEARLY WENT STALE.**
        * `commitElementLabels`'s own doc calls itself "the single funnel for every label write" — and
        * that is true of the MAP ENTRY, not of the box's FIELDS: this branch writes the box directly
        * whenever the element already holds it, which is the common case. A derived field maintained
@@ -171,13 +171,13 @@ export class Edge {
   /**
    * This element's ONE label when it has exactly one, `undefined` for zero or many (item 2085).
    *
-   * 🔑 FOR THE HOT LABEL TEST. `labels.has(n)` is a pointer chase — element -> box -> `.set` -> hash
+   * FOR THE HOT LABEL TEST. `labels.has(n)` is a pointer chase — element -> box -> `.set` -> hash
    * bucket — and over 200,000 scattered candidates that measured **14.52 ns a test against 7.56** for
-   * a compare against this field (1.92x). ⚠️ At 400 candidates the same probe reads 4.73 against 3.89,
+   * a compare against this field (1.92x). At 400 candidates the same probe reads 4.73 against 3.89,
    * so the saving is a CACHE MISS and is nearly invisible cache-resident; that is why item 1599
    * priced this family as unreachable from 400 candidates.
    *
-   * ⚠️ `undefined` MEANS ZERO **OR** MANY, so a caller testing one label must fall back to
+   * `undefined` MEANS ZERO **OR** MANY, so a caller testing one label must fall back to
    * `labels.has(n)` when this is `undefined` — it is not "no label".
    */
   get soleLabel(): string | undefined {

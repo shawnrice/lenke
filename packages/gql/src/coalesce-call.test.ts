@@ -9,14 +9,14 @@
  *     a.k = 1 / upper(a.s) [controls]            flat
  * ```
  *
- * 🔑 `bufferedScalarCall` pays per ROW for things constant per call site: a `buf` array fill,
+ * `bufferedScalarCall` pays per ROW for things constant per call site: a `buf` array fill,
  * `assertScalarArgTypes`, and two table lookups before reaching the `coalesce` case.
  *
- * ⚠️⚠️ **THE 6.3x GAP TO `WHERE a.k = 1` IS NOT CLOSED — 8.0 against 2.6 is still 3.1x.** Item 2164
+ * **THE 6.3x GAP TO `WHERE a.k = 1` IS NOT CLOSED — 8.0 against 2.6 is still 3.1x.** Item 2164
  * established that an AST rewrite folding the two spellings is a NO-OP (the engine already converges them
  * below the AST), so what remains is per-row closure cost, not a routing difference.
  *
- * 🔑🔑 **THE SEMANTIC THIS FILE EXISTS TO PIN: every argument is still EVALUATED.** Short-circuiting would
+ * **THE SEMANTIC THIS FILE EXISTS TO PIN: every argument is still EVALUATED.** Short-circuiting would
  * be faster again, but `coalesce(a.k, <raises>)` raises today even when `a.k` is non-null, and changing
  * which errors surface is a semantic change rather than a speed-up.
  */
@@ -41,33 +41,33 @@ const val = (expr: string, tag: string): unknown =>
   query(g, `MATCH (a:P) WHERE a.tag = '${tag}' RETURN ${expr} AS c`)[0]?.c;
 
 describe('the coalesce closure (item 2165)', () => {
-  describe('🔑 the FIRST non-nullish argument wins', () => {
+  describe('the FIRST non-nullish argument wins', () => {
     test('a present first argument is returned', () => {
       expect(val('coalesce(a.k, 0)', 'has')).toBe(7);
     });
 
-    test('⚠️ an explicit NULL falls through to the default', () => {
+    test('an explicit NULL falls through to the default', () => {
       expect(val('coalesce(a.k, 0)', 'isnull')).toBe(0);
     });
 
-    test('⚠️ an ABSENT property falls through too', () => {
+    test('an ABSENT property falls through too', () => {
       /*
-       * 🔑 A missing property reads as `undefined` rather than `null`, and both are nullish here — a
+       * A missing property reads as `undefined` rather than `null`, and both are nullish here — a
        * closure testing only `=== null` would return `undefined` for this row.
        */
       expect(val('coalesce(a.k, 0)', 'absent')).toBe(0);
     });
 
-    test('🔑 the FIRST non-nullish, not the last', () => {
+    test('the FIRST non-nullish, not the last', () => {
       // Both present: `a.k` wins.
       expect(val('coalesce(a.k, 99)', 'has')).toBe(7);
       // First nullish, second present, third present: the SECOND wins.
       expect(val('coalesce(a.k, 5, 99)', 'isnull')).toBe(5);
     });
 
-    test('⚠️ ALL arguments nullish answers NULL, not undefined', () => {
+    test('ALL arguments nullish answers NULL, not undefined', () => {
       /*
-       * 🔑 `firstNonNullish` returns `null`, and a closure returning `undefined` instead would be a wrong
+       * `firstNonNullish` returns `null`, and a closure returning `undefined` instead would be a wrong
        * answer that `toBeNull` catches and a loose check would not.
        */
       expect(val('coalesce(a.k, a.s)', 'isnull')).toBeNull();
@@ -79,7 +79,7 @@ describe('the coalesce closure (item 2165)', () => {
       expect(val('coalesce(a.k)', 'isnull')).toBeNull();
     });
 
-    test('⚠️ FOUR arguments, with the live one last', () => {
+    test('FOUR arguments, with the live one last', () => {
       expect(val('coalesce(a.k, a.s, a.k, 42)', 'absent')).toBe(42);
     });
 
@@ -88,11 +88,11 @@ describe('the coalesce closure (item 2165)', () => {
     });
   });
 
-  describe('⚠️⚠️ every argument is still EVALUATED — no short-circuit', () => {
+  describe('every argument is still EVALUATED — no short-circuit', () => {
     test('a later argument that RAISES still raises, even when the first is non-null', () => {
       /*
-       * 🔑 THE SEMANTIC THE CLOSURE DELIBERATELY PRESERVES. `a.k` is 7 on this row, so a short-circuiting
-       * coalesce would never evaluate the second argument and would answer 7. ⚠️ The generic path
+       * THE SEMANTIC THE CLOSURE DELIBERATELY PRESERVES. `a.k` is 7 on this row, so a short-circuiting
+       * coalesce would never evaluate the second argument and would answer 7. The generic path
        * evaluated all arguments and raised; this must too, or the change alters which errors surface.
        */
       expect(() =>
@@ -100,17 +100,17 @@ describe('the coalesce closure (item 2165)', () => {
       ).toThrow();
     });
 
-    test('🔑 and the same expression with the raising argument FIRST also raises', () => {
+    test('and the same expression with the raising argument FIRST also raises', () => {
       expect(() =>
         query(g, "MATCH (a:P) WHERE a.tag = 'has' RETURN coalesce(upper(a.k), a.k) AS c"),
       ).toThrow();
     });
   });
 
-  describe('🔑 in the positions the measurement used', () => {
+  describe('in the positions the measurement used', () => {
     test('as a filter', () => {
       expect(query(g, 'MATCH (a:P) WHERE coalesce(a.k, 0) = 7 RETURN count(*) AS c')[0].c).toBe(1);
-      // ⚠️ `= 0` also matches the two nullish rows, which is why item 2164's rewrite needed `v !== d`.
+      // `= 0` also matches the two nullish rows, which is why item 2164's rewrite needed `v !== d`.
       expect(query(g, 'MATCH (a:P) WHERE coalesce(a.k, 0) = 0 RETURN count(*) AS c')[0].c).toBe(2);
     });
 
@@ -119,7 +119,7 @@ describe('the coalesce closure (item 2165)', () => {
       expect(query(g, 'MATCH (a:P) RETURN sum(coalesce(a.k, 0)) AS c')[0].c).toBe(7);
     });
 
-    test('⚠️ a PROJECTION keeps NULL, where a filter would drop the row', () => {
+    test('a PROJECTION keeps NULL, where a filter would drop the row', () => {
       expect(val('coalesce(a.k, a.s)', 'isnull')).toBeNull();
       expect(query(g, 'MATCH (a:P) RETURN count(coalesce(a.k, a.s)) AS c')[0].c).toBe(1);
     });

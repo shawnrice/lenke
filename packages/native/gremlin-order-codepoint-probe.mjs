@@ -13,22 +13,22 @@
  * `ir.rs`'s `SortKey` doc says both languages order non-nulls by `cmp_total` with only null
  * PLACEMENT differing (GQL last, Gremlin first).
  *
- * ⚠️ THE TWO TS ENGINES ALREADY DISAGREE WITH EACH OTHER, which is the cheap half of the evidence
+ * THE TWO TS ENGINES ALREADY DISAGREE WITH EACH OTHER, which is the cheap half of the evidence
  * and needs no native build. This probe adds the half that decides WHICH is wrong: the engine's own
  * answer, through the FFI backend.
  *
- * ⚠️ WHY NO FUZZER FOUND IT: `gremlin-fuzz.test.ts` calls `order(` 59 times and generates ZERO
+ * WHY NO FUZZER FOUND IT: `gremlin-fuzz.test.ts` calls `order(` 59 times and generates ZERO
  * astral and ZERO U+E000..U+FFFF characters, so the dangerous case is never CONSTRUCTED. That is
  * item 921's rule ("a corpus that does not construct the dangerous case will agree with anything")
  * firing in the other engine; the GQL differential fuzzer does build it, which is why GQL is right.
  *
- * ⚠️ THE CHARACTERS ARE BUILT FROM CODE POINTS AND WRITTEN AS JSON ESCAPES, never pasted. A literal
+ * THE CHARACTERS ARE BUILT FROM CODE POINTS AND WRITTEN AS JSON ESCAPES, never pasted. A literal
  * astral char in a source file is invisible to `grep` and can be mangled by any tool that rewrites
  * the file; and the NDJSON has to survive a round trip through the engine's own decoder.
  *
  *     bun gremlin-order-codepoint-probe.mjs
  */
-// ⚠️ RUN WITH BUN, NOT NODE: the harness is TypeScript and the `.ts` specifier below does not
+// RUN WITH BUN, NOT NODE: the harness is TypeScript and the `.ts` specifier below does not
 // resolve under node. That is also why this reaches the backend through `conformance-harness`
 // rather than `createFfiEngineBackend` directly -- the harness already knows where the `.so` is and
 // whether it exists.

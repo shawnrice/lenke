@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2020 — mutation round on the fused `count()` residual.
 #
-# ⚠️⚠️ **FIRST, DOES THE TEST FILE REACH THE NEW CODE AT ALL?** Item 2018 wrote 13 tests for a new
+# **FIRST, DOES THE TEST FILE REACH THE NEW CODE AT ALL?** Item 2018 wrote 13 tests for a new
 # path and every walk mutant SURVIVED them, because rungs above answered each shape and the new code
 # never ran. The `count-never-fused` mutant below is that check made permanent: it forces
 # `fusableProjectedCount` to return false, so the fused case declines everywhere. It is
@@ -56,13 +56,13 @@ MUTANTS=(
   # ---- THE GATE ----
   "gate-admits-local-scope@@  return !('scope' in step) || step.scope === undefined || step.scope === 'global';@@s@  return !('scope' in step) || step.scope === undefined || step.scope === 'global';@  return true;@"
   "gate-admits-any-kind@@  if (step.kind !== 'count') {@@s@  if (step.kind !== 'count') {@  if (false) {@"
-  # ⚠️⚠️ **`  if (rest.length !== 1) {` SITS AT THE SAME INDENT IN FOUR GATES IN THIS FILE** (lines
+  # **`  if (rest.length !== 1) {` SITS AT THE SAME INDENT IN FOUR GATES IN THIS FILE** (lines
   # 188/296/394/713), so a line-start anchor edited ALL FOUR and the verdict covered four decisions
   # at once — the same over-broad mutant item 2018 found and fixed by extracting its gate. Here a
   # sed ADDRESS RANGE scopes the edit to this function's body instead. `grep` still counts four
   # (it cannot see the range), but `n != after` still proves the edit landed.
   "gate-admits-longer-rest@@  if (rest.length !== 1) {@@/export const fusableProjectedCount/,/^};/s@  if (rest.length !== 1) {@  if (rest.length === 0) {@"
-  # ⚠️ ANSWER-EQUIVALENT: the generic route answers identically, so this SHOULD survive the answer
+  # ANSWER-EQUIVALENT: the generic route answers identically, so this SHOULD survive the answer
   # tests and must be caught by a ROUTE assertion. It is item 2018's lesson as a standing check.
   "count-never-fused@@  if (step.kind !== 'count') {@@s@  if (step.kind !== 'count') {@  if (true) {@"
 )

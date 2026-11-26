@@ -1,7 +1,7 @@
 /**
  * THE EMPTY-SEED FAST-PATH GATE on an inline `CALL` body (item 1661).
  *
- * ⚠️ WHY THIS FILE HAS TO ASSERT A ROUTE AND NOT JUST AN ANSWER. The change is a route choice, so
+ * WHY THIS FILE HAS TO ASSERT A ROUTE AND NOT JUST AN ANSWER. The change is a route choice, so
  * it is ANSWER-EQUIVALENT by construction: the whole 4,230-test gql suite passed on the very first
  * run, before any of this existed, and would pass just as well if the route were silently lost
  * again. `perf-gate-needs-its-own-test` is the rule; the instrument here is a SPY ON THE BODY'S
@@ -24,7 +24,7 @@
  *    the empty case. A rung handed a real imported binding would be answering a different question.
  * 4. **The answers are unchanged**, checked against the same question spelled without a `CALL`.
  *
- * ⚠️ AND THE WRITE BODY, which is the one shape where being wrong would CORRUPT rather than slow:
+ * AND THE WRITE BODY, which is the one shape where being wrong would CORRUPT rather than slow:
  * ISO runs an unscoped `CALL { INSERT … }` once per OUTER ROW. It must not be hoisted, and no read
  * rung may claim it. Pinned below because the fast-path ladder is the thing this change exposes it
  * to, even though every rung in that ladder is read-only today.
@@ -139,7 +139,7 @@ const rungHits = (text: string, g: Graph): { hits: number; rungs: number } => {
   for (const h of HOOKS) {
     const real = body[h];
 
-    // ⚠️ `typeof`, not `!== undefined`: some of these slots hold `null` rather than being absent,
+    // `typeof`, not `!== undefined`: some of these slots hold `null` rather than being absent,
     // and wrapping one of those replaced a null with a function, which `buildGroups` then CALLED.
     if (typeof real !== 'function') {
       continue;
@@ -159,8 +159,8 @@ const rungHits = (text: string, g: Graph): { hits: number; rungs: number } => {
   return { hits, rungs };
 };
 
-describe('⚠️ 1. an unscoped CALL body reaches the fast-path ladder', () => {
-  test('⚠️ THE ROUTE: the body rung fires — it fired ZERO times before item 1661', () => {
+describe('1. an unscoped CALL body reaches the fast-path ladder', () => {
+  test('THE ROUTE: the body rung fires — it fired ZERO times before item 1661', () => {
     const { hits, rungs } = rungHits(
       'MATCH (n:P) CALL { MATCH (z:P) RETURN count(*) AS c } RETURN sum(c) AS t',
       build(),
@@ -171,12 +171,12 @@ describe('⚠️ 1. an unscoped CALL body reaches the fast-path ladder', () => {
   });
 
   /**
-   * ⚠️ THE COMPLEMENT, and the reason `calltrivial` measured FLAT under this change. A body that is
+   * THE COMPLEMENT, and the reason `calltrivial` measured FLAT under this change. A body that is
    * a bare `RETURN` of a constant carries NO rung at all, so there was never anything for the gate
    * to unlock. Pinned so the flat result is read as "no rung exists" rather than "the gate does not
    * work" — and so that anyone adding a bare-RETURN rung later sees that this is where it lands.
    */
-  test('⚠️ a bare `RETURN 1` body carries NO rung, so the gate cannot help it', () => {
+  test('a bare `RETURN 1` body carries NO rung, so the gate cannot help it', () => {
     const { hits, rungs } = rungHits(
       'MATCH (n:P) CALL { RETURN 1 AS c } RETURN sum(c) AS t',
       build(),
@@ -202,13 +202,13 @@ describe('⚠️ 1. an unscoped CALL body reaches the fast-path ladder', () => {
   });
 
   /**
-   * ⚠️ THE REASON THE GATE IS `seed.size`, NOT `clause.scope.length`. A scope naming a variable
+   * THE REASON THE GATE IS `seed.size`, NOT `clause.scope.length`. A scope naming a variable
    * that is bound nowhere outside imports nothing, so the body's start is empty and the rungs are
    * sound for it. This engine ACCEPTS that spelling rather than rejecting it, which is what makes
    * this path reachable at all — so a `scope.length === 0` gate would be a silent miss here.
    */
-  test('⚠️ a scope whose names are ALL UNBOUND reaches it too (seed.size, not scope.length)', () => {
-    // ⚠️ THE YIELD IS WRAPPED IN A FUNCTION CALL, AND THAT IS LOAD-BEARING (item 1662). This
+  test('a scope whose names are ALL UNBOUND reaches it too (seed.size, not scope.length)', () => {
+    // THE YIELD IS WRAPPED IN A FUNCTION CALL, AND THAT IS LOAD-BEARING (item 1662). This
     // fixture read `RETURN z.k AS c` when it was written, with a comment claiming no rewrite
     // could claim it — item 1662 extended `inlineCorrelatedCall` to exactly that shape and this
     // test is what reported it. `abs(…)` is not `cheapPureExpr` (a function can raise, so it is
@@ -225,18 +225,18 @@ describe('⚠️ 1. an unscoped CALL body reaches the fast-path ladder', () => {
   });
 });
 
-describe('⚠️ 2. a NON-EMPTY seed still takes the general loop', () => {
+describe('2. a NON-EMPTY seed still takes the general loop', () => {
   /**
    * The control. A body handed a real imported binding must keep the general clause loop, because
    * the rungs assume an empty start — a rung answering `MATCH (z:P) RETURN count(*)` while `n` is
    * imported would be answering the uncorrelated question.
    */
-  test('⚠️ a scoped body with a BOUND name does NOT reach the rung', () => {
+  test('a scoped body with a BOUND name does NOT reach the rung', () => {
     // The `callprojx` shape: scope `(n)` is bound by the outer MATCH, so the seed is non-empty.
     // It carries a `hopProjection` rung, which makes the assertion meaningful — the rung EXISTS
     // and is still not reached.
     //
-    // ⚠️ `abs(…)` for the same reason as the unbound-scope case above (item 1662): the bare
+    // `abs(…)` for the same reason as the unbound-scope case above (item 1662): the bare
     // `RETURN x.k AS c` spelling this used to carry is now REWRITTEN to `[match, let]` and never
     // reaches `runCallInline` at all, so it could no longer test the seed gate.
     const { hits, rungs } = rungHits(
@@ -249,7 +249,7 @@ describe('⚠️ 2. a NON-EMPTY seed still takes the general loop', () => {
   });
 });
 
-describe('⚠️ 3. the answers are unchanged', () => {
+describe('3. the answers are unchanged', () => {
   for (const [label, callText, oracleText] of [
     [
       'an unscoped counting body',
@@ -288,7 +288,7 @@ describe('⚠️ 3. the answers are unchanged', () => {
   });
 
   /**
-   * ⚠️ A SCOPED UNION body, which is the one shape that pins the `bodyMore` loop SEPARATELY. The
+   * A SCOPED UNION body, which is the one shape that pins the `bodyMore` loop SEPARATELY. The
    * empty-seed test below cannot see a mutant that drops the seed only on the set-op parts, because
    * there is no seed there to drop. Here `n` is imported, so losing it would leave the body's `n`
    * unbound and change the answer.
@@ -318,7 +318,7 @@ describe('⚠️ 3. the answers are unchanged', () => {
   });
 });
 
-describe('⚠️ 4. a WRITING unscoped body runs once per OUTER ROW, never hoisted', () => {
+describe('4. a WRITING unscoped body runs once per OUTER ROW, never hoisted', () => {
   /**
    * ISO: `CALL { INSERT … }` with no scope is still executed once per outer row. The `invariant`
    * hoist is gated on `bodyIsReadOnly` for exactly this reason, and the fast-path ladder this
@@ -326,18 +326,18 @@ describe('⚠️ 4. a WRITING unscoped body runs once per OUTER ROW, never hoist
    * either of those two facts ever stops holding, this test is what says so.
    */
   /**
-   * ⚠️ THE ONE SHAPE WHERE THE SEED COPY IS LOAD-BEARING, found by diagnosing a surviving mutant
+   * THE ONE SHAPE WHERE THE SEED COPY IS LOAD-BEARING, found by diagnosing a surviving mutant
    * (M6: pass `seed` itself instead of `new Map(seed)`). `insertVertexWithId` is the single clause
    * path that writes into the binding it is handed — `binding.set(node.variable, vertex)` at
    * `clauses.ts:144`, in place — so a WRITING body plus a set-op part is the only way the body's
    * own binding could leak into a later part. Both halves are legal here, measured rather than
    * assumed.
    *
-   * ⚠️ The copy PREDATES item 1661: this change replaced `new Map(seed)` with
+   * The copy PREDATES item 1661: this change replaced `new Map(seed)` with
    * `start && new Map(start)` and kept the copy. The property is pinned because 4,243 gql tests
    * did not cover it, not because this change put it at risk.
    */
-  test('⚠️ a WRITING body with a UNION part: the seed copy keeps the write from leaking', () => {
+  test('a WRITING body with a UNION part: the seed copy keeps the write from leaking', () => {
     const g = build();
 
     expect(

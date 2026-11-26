@@ -53,13 +53,13 @@ flatMap((outer) => {
 
 The two red tests need, beyond today's shape:
 
-| feature                                                  | "RETURN \* / element columns" | "set operators"      |
-| -------------------------------------------------------- | ----------------------------- | -------------------- |
-| `RETURN *` (yield every body binding)                    | ✅                            | —                    |
-| `OPTIONAL CALL` (left-outer null-fill)                   | ✅                            | ✅                   |
-| body from a FRESH `MATCH (s:Software)` (not a scope var) | —                             | ✅ (the EXCEPT case) |
-| `UNION [ALL]` / `EXCEPT` / `INTERSECT` in the body       | —                             | ✅                   |
-| uncorrelated `CALL () { … UNION … }`                     | —                             | ✅                   |
+| feature                                                  | "RETURN \* / element columns" | "set operators"   |
+| -------------------------------------------------------- | ----------------------------- | ----------------- |
+| `RETURN *` (yield every body binding)                    |                               | —                 |
+| `OPTIONAL CALL` (left-outer null-fill)                   |                               |                   |
+| body from a FRESH `MATCH (s:Software)` (not a scope var) | —                             | (the EXCEPT case) |
+| `UNION [ALL]` / `EXCEPT` / `INTERSECT` in the body       | —                             |                   |
+| uncorrelated `CALL () { … UNION … }`                     | —                             |                   |
 
 ## The architectural problem
 

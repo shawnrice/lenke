@@ -10,7 +10,7 @@
 //! which is the test item 1224 hoisted out of the COUNT twin (5.28x) and item 1227 extended to a
 //! range there (5.31x) — and which this arm still pays per edge.
 //!
-//! ⚠️ THE COUNT RESULT DOES NOT TRANSFER, and that is the whole question. Item 1224's gain was
+//! THE COUNT RESULT DOES NOT TRANSFER, and that is the whole question. Item 1224's gain was
 //! two things: removing the dispatch, and making the accumulation BRANCHLESS. Only the first is
 //! available here — a `Vec::push` is data-dependent work that cannot be masked, so the branch
 //! stays whatever happens to the compare. Item 1224's own ranking rule says to price the removal

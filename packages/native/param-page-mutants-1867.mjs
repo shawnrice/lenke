@@ -1,13 +1,13 @@
 /**
  * MUTATION RUN for item 1867's parameterized-page admission.
  *
- * ⚠️ THIS CHANGE IS NOT ANSWER-EQUIVALENT, UNLIKE MOST ROUTE WORK HERE — a rung that takes a window
+ * THIS CHANGE IS NOT ANSWER-EQUIVALENT, UNLIKE MOST ROUTE WORK HERE — a rung that takes a window
  * and applies it wrongly returns the WRONG ROWS, which is why the first cut returned 600 rows where
  * 5 were expected and a zero bound CRASHED. So the answer tests have teeth. What they cannot catch
  * is the admission being REVERTED, which is answer-equivalent; the route assertions in
  * `param-page-rung.test.ts` cover that, and the null control below is the mutant that proves it.
  *
- * ⚠️ EVIDENCE OF EXECUTION FROM BOTH STREAMS — `bun test` reports to STDERR.
+ * EVIDENCE OF EXECUTION FROM BOTH STREAMS — `bun test` reports to STDERR.
  */
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, readFileSync, writeFileSync } from 'node:fs';
@@ -64,7 +64,7 @@ const TESTS = [
 
 const verdictOf = (r) => {
   if (!r.ran) {
-    return '⚠️ DID-NOT-RUN';
+    return 'DID-NOT-RUN';
   }
 
   if (r.status === 124 || r.status === 137) {
@@ -106,7 +106,7 @@ for (const m of MUTANTS) {
   const occurrences = base.split(m.from).length - 1;
 
   if (occurrences !== 1) {
-    console.log(`${m.name.padEnd(44)} ⚠️ ANCHOR MATCHED ${occurrences} TIMES — not applied`);
+    console.log(`${m.name.padEnd(44)} ANCHOR MATCHED ${occurrences} TIMES — not applied`);
     continue;
   }
 

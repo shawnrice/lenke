@@ -13,7 +13,7 @@ import { query } from './index.js';
  * generic `projectRow` (item 1636) — **1.19-1.23x**, non-overlapping across three order-alternated
  * rounds, with the unfiltered twin flat and digests identical.
  *
- * ⚠️ ITEM 1447 BUILT THIS AND REVERTED IT AT −4.8%/+0.7%. Its wiring chose between two closures per
+ * ITEM 1447 BUILT THIS AND REVERTED IT AT −4.8%/+0.7%. Its wiring chose between two closures per
  * CALL through a hoisted local, so `buildRow(binding, far)` was ONE bytecode site that every compile
  * flowed through — polymorphic, which is the exact inline-cache cost the specialization deletes. The
  * route is a SIBLING `return` now. That history is why these tests exist at the boundaries rather
@@ -37,7 +37,7 @@ const g = ((): Graph => {
     graph.addVertex({ id: `v${i}`, labels: ['P'], properties: { n: i, s: `s${i}` } });
   }
 
-  // ⚠️ `w` carries NO `n`, which is not the same as `n: null`: a direct read must coerce an ABSENT
+  // `w` carries NO `n`, which is not the same as `n: null`: a direct read must coerce an ABSENT
   // key to NULL exactly as `propOf` does, or the fast and general spellings disagree.
   graph.addVertex({ id: 'w', labels: ['P'], properties: { s: 'sw' } });
 
@@ -103,7 +103,7 @@ describe('the direct row read answers what the generic projection answers', () =
     ]);
   });
 
-  test('⚠️ the ROW KEY comes from the ALIAS, not the property name', () => {
+  test('the ROW KEY comes from the ALIAS, not the property name', () => {
     /**
      * The key is taken from the COMPILED item's `name`, which is where the alias rule already
      * lives. A specialization that re-derived "alias ?? source text" would drift from the general
@@ -116,9 +116,9 @@ describe('the direct row read answers what the generic projection answers', () =
     ]);
   });
 
-  test('⚠️ an ABSENT key reads NULL ON THE SPECIALIZED PATH — the predicate reads another key', () => {
+  test('an ABSENT key reads NULL ON THE SPECIALIZED PATH — the predicate reads another key', () => {
     /**
-     * ⚠️ THIS IS THE TEST THE `?? null` MUTANT NEEDED, and the first version of this file did not
+     * THIS IS THE TEST THE `?? null` MUTANT NEEDED, and the first version of this file did not
      * have it. The unfiltered case below also asserts `{ n: null }` — but an unfiltered projection
      * routes to the FAR-DRIVEN walk, so it never reaches this specialization and the mutant that
      * dropped `?? null` SURVIVED it. Passing for the wrong reason, which is the recurring trap in
@@ -137,7 +137,7 @@ describe('the direct row read answers what the generic projection answers', () =
      * `w` has no `n`, so its row is `{ n: null }` and NOT omitted: a projection drops nothing,
      * unlike Gremlin's `values(k)`.
      *
-     * ⚠️ `w` COMES LAST, and I derived it second. An UNFILTERED projection routes to the FAR-DRIVEN
+     * `w` COMES LAST, and I derived it second. An UNFILTERED projection routes to the FAR-DRIVEN
      * walk, which iterates far ENDPOINTS, so the order follows vertex insertion (`w` was added
      * last) and not edge insertion. Verified route-independent: the PRE and POST arms return this
      * identical order, so the specialization does not reorder rows — which matters because GQL row
@@ -186,7 +186,7 @@ describe('the route declines what it must, and the answer is unchanged', () => {
     ]);
   });
 
-  test('⚠️ `ORDER BY` declines — the deferred arm rewrites the projection', () => {
+  test('`ORDER BY` declines — the deferred arm rewrites the projection', () => {
     /**
      * `walkProj === proj` is the guard. With ORDER BY, `order.walkProj` is a REDUCED copy whose
      * items are not the AST's, so the detector would read one projection while the walk built rows
@@ -197,7 +197,7 @@ describe('the route declines what it must, and the answer is unchanged', () => {
     );
   });
 
-  test('⚠️ DISTINCT declines, and it REMOVES a row so the assertion discriminates', () => {
+  test('DISTINCT declines, and it REMOVES a row so the assertion discriminates', () => {
     /**
      * `dup` carries n=4 like `v4`, so there are SEVEN far ends and SIX distinct values. A route that
      * admitted DISTINCT into the specialization would emit all seven. The first version of this test
@@ -212,9 +212,9 @@ describe('the route declines what it must, and the answer is unchanged', () => {
     expect(query(g, 'MATCH (a:P)-[:E]->(b) WHERE b.n > 2 RETURN b.n AS n LIMIT 2')).toHaveLength(2);
   });
 
-  test('⚠️ `ORDER BY` on a DIFFERENT expression — where `walkProj` really diverges', () => {
+  test('`ORDER BY` on a DIFFERENT expression — where `walkProj` really diverges', () => {
     /**
-     * ⚠️ THE `walkProj === proj` MUTANT NEEDED THIS. Sorting by the projected expression leaves the
+     * THE `walkProj === proj` MUTANT NEEDED THIS. Sorting by the projected expression leaves the
      * walk projection equal to the real one, so dropping the guard changed nothing and the mutant
      * survived. Sorting by `b.s` while projecting `b.n` forces the deferred arm to build a REDUCED
      * projection carrying the sort key — and that copy's items are not the AST's, so a detector
@@ -249,7 +249,7 @@ describe('the route declines what it must, and the answer is unchanged', () => {
 });
 
 /**
- * ⚠️ THE DETECTOR AS A PURE FUNCTION, because a route choice is ANSWER-EQUIVALENT and four of ten
+ * THE DETECTOR AS A PURE FUNCTION, because a route choice is ANSWER-EQUIVALENT and four of ten
  * mutants survived the differential tests above by construction — `route/never-taken`,
  * `gate/plain-dropped`, `kind/agg-admitted` and `call/walkproj-guard-dropped`. Nothing that compares
  * ANSWERS can fail on a gate that merely declines, so the gate gets tested directly. Items 1630 and

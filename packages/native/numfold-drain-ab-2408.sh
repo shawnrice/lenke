@@ -1,12 +1,12 @@
 #!/bin/zsh
 # Item 2408 — does `foldProjectedNumeric` want item 1919's EAGER DRAIN, as its `min`/`max` twin does?
 #
-# ⚠️⚠️ THE QUESTION IS NOT RHETORICAL AND THE FIRST GUESS WAS "NO". Item 1919 took the drain for
+# THE QUESTION IS NOT RHETORICAL AND THE FIRST GUESS WAS "NO". Item 1919 took the drain for
 # `foldProjectedMinMax` and priced it at 2.09x on a STRING column but only 1.15x on a numeric one —
 # and a `sum` column is numeric BY CONSTRUCTION (`asNumber` throws otherwise), so the drain looked
 # like an 800,000-slot allocation bought for ~15% on a reduce that needs one accumulator.
 #
-# 🔑 WHAT NOMINATED IT ANYWAY IS THE TWIN'S OWN NUMBER IN THE SAME RUN. After the fusion landed:
+# WHAT NOMINATED IT ANYWAY IS THE TWIN'S OWN NUMBER IN THE SAME RUN. After the fusion landed:
 #
 #       values(k)         62.18 ms   <- the floor
 #       values(k).min()   65.51      <- DRAINS (item 1919): 1.05x over the floor
@@ -15,7 +15,7 @@
 # Two folds over the same walk, one at the floor and one not, differing in exactly the drain. That
 # is item 1919's finding restated, so it gets measured here rather than reasoned about.
 #
-# ⚠️ ARMS NAMED FOR WHAT THEY ARE, interleaved and order-alternated, each asserted before it is
+# ARMS NAMED FOR WHAT THEY ARE, interleaved and order-alternated, each asserted before it is
 # measured, with a restore trap to ITER — same discipline as `numfold-ab-2408.sh`, and for the same
 # reason: a sequential pair of readings on this box moved three unreachable controls 1.44-1.73x.
 #
@@ -28,7 +28,7 @@ AGG="$ROOT/packages/gremlin/src/executor/aggregation.ts"
 ROUNDS="${ROUNDS:-3}"
 ARMS="${ARMS:-sum mean values min}"
 
-# ⚠️ `values` IS THE UNIQUE PART: `foldProjectedMinMax` iterates `src`, not `values`, so this anchor
+# `values` IS THE UNIQUE PART: `foldProjectedMinMax` iterates `src`, not `values`, so this anchor
 # cannot reach the twin. Counted, not assumed — the first A/B here anchored on a line that occurred
 # TWICE ([[ambiguous-anchor-strings]]).
 ITER_LINE="  for (const v of values) {"
@@ -63,7 +63,7 @@ assert_arm() {
   iter=$(count "$ITER_LINE")
   drain=$(count "$DRAIN_LINE")
 
-  # ⚠️ THE DRAIN LINE CONTAINS NO COPY OF THE ITER LINE, so the two counts are independent.
+  # THE DRAIN LINE CONTAINS NO COPY OF THE ITER LINE, so the two counts are independent.
   if [[ "$want" == ITER && ( "$iter" -ne 1 || "$drain" -ne 0 ) ]]; then
     echo "ARM ASSERTION FAILED: want ITER, iter=$iter drain=$drain"
     exit 3

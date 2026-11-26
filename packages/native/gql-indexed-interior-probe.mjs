@@ -4,7 +4,7 @@
  * `bun run spelling` flags ONE group at 29.18x / 31.18x / 29.33x across three isolated runs, same
  * answer: `WHERE c.k = 2` at 334-371 ms against `(c WHERE c.k = 2)` and `(c {k: 2})` at 11.5-12.6.
  *
- * ⚠️ ITEM 1701 SHOULD ALREADY HANDLE A SINGLE `c` CONJUNCT — it widened the clause reader to bucket
+ * ITEM 1701 SHOULD ALREADY HANDLE A SINGLE `c` CONJUNCT — it widened the clause reader to bucket
  * per interior position, and measured `WHERE c.k > 9` at 2.0 ms. So the flagged group differs in
  * something else, and the candidate is the FIXTURE: `spelling-probe.ts` calls
  * `createIndex({ on: 'vertex', kind: 'hash', keys: ['k'] })`, and the flagged query is an EQUALITY
@@ -15,7 +15,7 @@
  *   ARM=noIndex   node gql-indexed-interior-probe.mjs
  *   ARM=indexed   node gql-indexed-interior-probe.mjs
  *
- * ⚠️ Both arms assert the three spellings AGREE, or the comparison is of different questions.
+ * Both arms assert the three spellings AGREE, or the comparison is of different questions.
  */
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
@@ -36,7 +36,7 @@ for (let i = 0; i < N; i += 1) {
 for (let m = 0; m < N * 5; m += 1) {
   const to = ((m % N) * 104_729 + Math.floor(m / N) * 977) % N;
 
-  // ⚠️ MULTI=1 gives one edge in eleven a SECOND label, as `spelling-probe.ts`'s fixture does
+  // MULTI=1 gives one edge in eleven a SECOND label, as `spelling-probe.ts`'s fixture does
   // (`e % 11 === 0 ? ["E","F"] : ["E"]`). The count rungs carry a multi-type guard, because one
   // edge can sit in two buckets and a degree read would double-count it — so this is the candidate
   // for why the probe's clause form declines where mine does not.
@@ -60,7 +60,7 @@ if (distinct.size < N / 2) {
 }
 
 /**
- * ⚠️ FOUR EDGELESS VERTICES UNDER ANOTHER LABEL, which item 1703's bisection identified as the whole
+ * FOUR EDGELESS VERTICES UNDER ANOTHER LABEL, which item 1703's bisection identified as the whole
  * cause of a 29x clause-vs-inline gap: `EXTRA=0` took the replica's clause form from 515.07 ms to
  * 17.71 while fanout, selectivity, scatter, edge properties and the loader all left it at 374-568.
  *
@@ -74,7 +74,7 @@ if (process.env.OTHERLABEL === '1') {
   }
 }
 
-// ⚠️ THE ONE VARIABLE. `spelling-probe.ts` builds this index; item 1701's probe did not.
+// THE ONE VARIABLE. `spelling-probe.ts` builds this index; item 1701's probe did not.
 if (ARM === 'indexed') {
   g.createIndex({ on: 'vertex', kind: 'hash', keys: ['k'] });
 }

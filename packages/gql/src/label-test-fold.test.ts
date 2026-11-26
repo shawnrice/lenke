@@ -66,7 +66,7 @@ const routes = (src: string): string[] => {
 
   return (
     Object.entries(cl)
-      // ⚠️ A RUNG IS A FUNCTION. Filtering on that rather than on "not null, and not `clauses`"
+      // A RUNG IS A FUNCTION. Filtering on that rather than on "not null, and not `clauses`"
       // keeps this honest as `CLinear` grows: item 1510 added a `writes: boolean`, which is not a
       // rung, and the old predicate reported it as one. See `deferred-hop-order.test.ts`.
       .filter(([, v]) => typeof v === 'function')
@@ -172,7 +172,7 @@ describe('the rewrite puts the label on the node and removes the clause', () => 
     ['an OPTIONAL MATCH', 'OPTIONAL MATCH (n) WHERE n IS LABELED E RETURN count(*) AS c'],
     ['a quantified segment', 'MATCH (a)-[:T]->{1,2}(b) WHERE b IS LABELED E RETURN count(*) AS c'],
     ['an edge variable', 'MATCH (a)-[r]->(b) WHERE r IS LABELED T RETURN count(*) AS c'],
-    // ⚠️ THE COLLISION IS THE CASE THAT NEEDS THE REL POISONING, and the plain edge-variable row
+    // THE COLLISION IS THE CASE THAT NEEDS THE REL POISONING, and the plain edge-variable row
     // above is NOT it: `r` never appears at a node position, so it is absent from the site map and
     // declined by absence whether the poisoning runs or not. Measured — removing the poisoning
     // block survived the whole 3,287-test suite until this row existed.

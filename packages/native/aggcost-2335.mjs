@@ -1,15 +1,15 @@
 /**
- * ✅✅ **AGGREGATES AT SCALE, GQL AGAINST GREMLIN (item 2335).**
+ * **AGGREGATES AT SCALE, GQL AGAINST GREMLIN (item 2335).**
  *
- * Items 2317-2334 covered point lookups, whole scans, hops and writes. ✅ Aggregation is the remaining
+ * Items 2317-2334 covered point lookups, whole scans, hops and writes. Aggregation is the remaining
  * read shape with no per-row comparison: the serving bench has a `grouped` workload but nothing has put
  * GQL's `GROUP BY` beside Gremlin's `groupCount()` on identical work.
  *
- * ⚠️ **GQL's `GROUP BY` TAKES A BOUND NAME, NOT AN EXPRESSION**, so the grouped arms bind the key with
+ * **GQL's `GROUP BY` TAKES A BOUND NAME, NOT AN EXPRESSION**, so the grouped arms bind the key with
  * `LET` first — that is this engine's documented shape, and writing `GROUP BY n.k` instead silently
  * produces ONE group, which the row count below would expose.
  *
- * ⚠️ The row count is printed for every arm, because an aggregate that answers a DIFFERENT number of
+ * The row count is printed for every arm, because an aggregate that answers a DIFFERENT number of
  * groups is not a comparison — item 2317's `rows=0` trap, and the one-group failure above.
  */
 import { Graph } from '@lenke/core';
@@ -32,32 +32,32 @@ for (let i = 0; i < NODES; i += 1) {
   });
 }
 
-/* ✅ Hoisted, per item 2325's 3.96x. */
+/* Hoisted, per item 2325's 3.96x. */
 const pGroup = traversal(V(), hasLabel('N'), groupCount({ by: 'k' }));
 const pCount = traversal(V(), hasLabel('N'), count());
 const pValues = traversal(V(), hasLabel('N'), values('w'));
 
 const ARMS = {
-  /* ⚠️ THE GROUPED COUNT, both languages. `LET` binds the key because GROUP BY needs a name. */
+  /* THE GROUPED COUNT, both languages. `LET` binds the key because GROUP BY needs a name. */
   gqlGroup: () => query(graph, 'MATCH (n:N) LET g = n.k RETURN g, count(*) AS c GROUP BY g').length,
   gremGroup: () => toArray(pGroup, graph).length,
   /*
-   * ⚠️⚠️ **THE FAIR CONTROL FOR `sum`, AND MY FIRST COMPARISON LACKED IT (item 2335).** I measured
+   * **THE FAIR CONTROL FOR `sum`, AND MY FIRST COMPARISON LACKED IT (item 2335).** I measured
    * `sum(n.w)` against `GROUP BY count(*)` and read 2.2x — but `count(*)` reads NO PROPERTY, so most of
-   * that gap was the per-row property read, not the aggregate. 🔑 `count(n.w)` reads the same property and
+   * that gap was the per-row property read, not the aggregate. `count(n.w)` reads the same property and
    * HAS a streaming fold, which is item 530's own control (`count(n.age)` 10.9 against `sum` 13.6, 1.25x).
    */
   gqlCountProp: () => query(graph, 'MATCH (n:N) RETURN count(n.w) AS c').length,
-  /* ✅ `avg`, the other VALUES_AGGREGATES member item 530 priced beside `sum`. */
+  /* `avg`, the other VALUES_AGGREGATES member item 530 priced beside `sum`. */
   gqlAvg: () => query(graph, 'MATCH (n:N) RETURN avg(n.w) AS a').length,
-  /* ✅ `max`, which HAS a fold — the folded twin of the same property read. */
+  /* `max`, which HAS a fold — the folded twin of the same property read. */
   gqlMax: () => query(graph, 'MATCH (n:N) RETURN max(n.w) AS m').length,
-  /* ✅ A SUM over a property — no grouping, so it isolates the per-row accumulate. */
+  /* A SUM over a property — no grouping, so it isolates the per-row accumulate. */
   gqlSum: () => query(graph, 'MATCH (n:N) RETURN sum(n.w) AS s').length,
-  /* ✅ The closed-form count, as the floor both languages should reach. */
+  /* The closed-form count, as the floor both languages should reach. */
   gqlCount: () => query(graph, 'MATCH (n:N) RETURN count(*) AS c').length,
   gremCount: () => toArray(pCount, graph).length,
-  /* ✅ The projection, for what visiting every row costs before any aggregation. */
+  /* The projection, for what visiting every row costs before any aggregation. */
   gremValues: () => toArray(pValues, graph).length,
 };
 

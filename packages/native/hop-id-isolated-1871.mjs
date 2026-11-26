@@ -5,7 +5,7 @@
  * runs 24 shapes in one process, which is sound for comparing a shape against ITSELF across two
  * builds and nothing more — so its own output says each flag needs an isolated A/B. This is that.
  *
- * ⚠️ ONE SHAPE PER PROCESS (item 762), and the control is a SIBLING ARM OF THE SAME RUNG:
+ * ONE SHAPE PER PROCESS (item 762), and the control is a SIBLING ARM OF THE SAME RUNG:
  * `V().out(T).values(k)` goes through `hopValuesShortcut` too, by a different `pick`. If the id arm
  * is genuinely losing, the values arm should be unmoved — and if BOTH move, the difference is the
  * build or the machine rather than the arm.

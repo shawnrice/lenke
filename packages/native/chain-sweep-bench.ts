@@ -67,7 +67,7 @@ console.log(`${NODES} vertices / ${NODES * DEG} edges, min of ${REPS}`);
  * did not actually honour. `CHAIN_CASE` is a substring selector, the same shape the engine's example
  * binaries use.
  *
- * ⚠️ WITHOUT IT THIS BENCH REPORTED AN IMPOSSIBLE ORDERING, reproducibly across three processes: the
+ * WITHOUT IT THIS BENCH REPORTED AN IMPOSSIBLE ORDERING, reproducibly across three processes: the
  * 4-hop case read 7.8-8.2 ms against the 5-hop's 5.6-5.7 and the 6-hop's 5.5-5.6, on a THIRD of the ways.
  * The 4-hop is simply the FIRST case that reaches the sweep — the 3-hop is a closed-form degree product at
  * 0.0 ms — so it absorbed the whole warm-up and the later, larger cases ran on warm code. Item 2367.
@@ -97,7 +97,7 @@ for (const [name, q] of SELECTED) {
   /*
    * THE PER-REP SERIES IS PRINTED, AND CROSS-PROCESS REPETITION IS REQUIRED (item 2368).
    *
-   * ⚠️ These rows are 5-10 ms, and at that size the 5-hop case is BIMODAL ACROSS PROCESSES: five separate
+   * These rows are 5-10 ms, and at that size the 5-hop case is BIMODAL ACROSS PROCESSES: five separate
    * runs of the identical build and fixture read 5.3 / 8.5 / 4.6 / 9.2 / 4.6 ms — two modes 2.0x apart —
    * while the 4-hop case is unimodal at 7.0-8.3. A min-of-5 inside ONE process cannot see that, and item
    * 2367 read a "4-leg chain costs 1.37x a 5-leg one" off exactly that blind spot: true of the medians,

@@ -143,7 +143,7 @@ Each of these is here because a wrong conclusion was drawn and committed first.
   collapses from 2^31 to ~11k draws, and nothing about it looks wrong. One line counting
   the distinct endpoints would have caught it.
 
-  ~~(The repo's own generators are fine, and 702 says why.)~~ ⚠️ **THEY WERE NOT.** Items
+  ~~(The repo's own generators are fine, and 702 says why.)~~ **THEY WERE NOT.** Items
   1516 and 1518 found the same class of defect in the GQL bench's main fixture and in six
   probe generators, and that parenthetical is why nobody re-checked for 800 items. The
   mechanical form, which no choice of multiplier fixes:
@@ -403,7 +403,7 @@ most productive wrong-answer finder (the `hash_join` `u32::MAX` OPTIONAL sentine
 **Float aggregates carry a PRECISION contract (item 2401), not a bit-identity one.** `sum`, `avg`,
 `stddev_pop` and `stddev_samp` are accurate to within `n·ε·Σ|xᵢ|` — ~15-16 significant digits for a
 well-conditioned sum — and are NOT bit-identical across engines, because a left fold over a different
-walk order re-associates and each partial sum rounds. ⚠️ Digits OF THE RESULT are explicitly not
+walk order re-associates and each partial sum rounds. Digits OF THE RESULT are explicitly not
 guaranteed under catastrophic cancellation, because no implementation can give that: use an exact
 type for money. `count` stays exact and `min`/`max` stay order-insensitive, so both keep bit-exact
 comparison. When a test compares a float aggregate across engines, compare to the contract (see
@@ -414,13 +414,13 @@ dropped row.
 **An aggregate-built LIST's element order is unspecified too (item 2404, owner ruling).** `collect`
 /`collect_list` fold over the walk, so their element order is the walk's — which the rule above makes
 implementation-dependent. A consumer who needs an order adds an explicit `ORDER BY` earlier in the
-query, exactly as with SQL's `array_agg`. ⚠️ This is a CONTRACT statement, not a description of the
+query, exactly as with SQL's `array_agg`. This is a CONTRACT statement, not a description of the
 code: the engine still happens to emit walk order, because item 2404 measured freeing it as worth
 NOTHING (no gain directed or undirected, arms alternated at two output sizes) and so left the names in
 `ORDER_SENSITIVE_WALK`. Do not read the tests that pin that order as a contract — `collect keeps the
 scan ORDER` and friends now pin IMPLEMENTATION behaviour, and a future change may move them.
 
-⚠️ A list STORED as a property is a different object and its order IS its value: you write `[1,2,3]`
+A list STORED as a property is a different object and its order IS its value: you write `[1,2,3]`
 and must read `[1,2,3]` back. `canonValue` compares every array positionally and cannot tell the two
 apart, which is the harness change a future `collect` reordering would need.
 

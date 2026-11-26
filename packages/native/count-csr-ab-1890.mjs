@@ -115,7 +115,7 @@ for (const shape of SHAPES) {
   const postCold = rows
     .filter(([, w, s]) => w === 'POST' && s === shape)
     .map(([, , , r]) => r.cold);
-  // ⚠️ THE HEADLINE IS THE MEDIAN OF ROUNDS, NOT THE MIN. On one run the min made the CONTROL read
+  // THE HEADLINE IS THE MEDIAN OF ROUNDS, NOT THE MIN. On one run the min made the CONTROL read
   // 0.85x off a single low PRE reading (1.92 against 2.33/2.34) while its medians were 2.33 and
   // 2.29 — flat. CLAUDE.md says this in terms for the TS per-row path; it applies to the
   // round-level summary too.

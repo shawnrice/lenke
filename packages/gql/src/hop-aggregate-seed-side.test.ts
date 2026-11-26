@@ -1,13 +1,13 @@
 /*
  * Item 2107 — `hopAggregate` folds over the walk seeded from the BETTER end.
  *
- * ⚠️⚠️ **THIS IS A REVERSAL, NOT A DECLINE, AND AN ORACLE DECIDED THAT BEFORE IT WAS BUILT.** Items
+ * **THIS IS A REVERSAL, NOT A DECLINE, AND AN ORACLE DECIDED THAT BEFORE IT WAS BUILT.** Items
  * 2104/2105 fixed their rungs by handing the query to the orienting matcher. Forcing THIS rung to decline
  * measured 0.285 ms written and 0.281 reversed — the general path does not seed a one-hop aggregate
  * either — so handing back would have cost the reversed spelling 6.4x to gain nothing. The fast arm is
  * this rung's own walk from a seeking start.
  *
- * 🔑 THE RISK A REVERSAL CARRIES AND A DECLINE DOES NOT: an aggregate's argument NAMES A VARIABLE
+ * THE RISK A REVERSAL CARRIES AND A DECLINE DOES NOT: an aggregate's argument NAMES A VARIABLE
  * (`min(a.n)`), so if reversing renamed or re-bound anything the answer would change. `reversePath`'s
  * contract is that the bindings are identical and only the seed side differs — and that contract is what
  * every test here checks, on both sides of the gate.
@@ -30,7 +30,7 @@ const build = (withIndex: boolean, nodes = 600): Graph => {
     g.addVertex({
       id: `v${i}`,
       labels: ['P'],
-      // ⚠️ `n` is deliberately NOT uniform and NOT monotonic in id, so min/max/sum/avg each pick a
+      // `n` is deliberately NOT uniform and NOT monotonic in id, so min/max/sum/avg each pick a
       // different vertex — a reversal that lost a binding would have to be lucky to agree on all four.
       properties: { n: (i * 37) % 101, tag: `t${i % 50}`, grp: i % 3 },
     });
@@ -66,7 +66,7 @@ const AGGREGATES = [
   'count(*)',
   'count(a.n)',
   'size(collect(a.n))',
-  // ⚠️ An aggregate over the FAR node too — the reversal makes `b` the start, so if a binding were lost
+  // An aggregate over the FAR node too — the reversal makes `b` the start, so if a binding were lost
   // this is where it would show.
   'min(b.n)',
   'max(b.n)',
@@ -74,9 +74,9 @@ const AGGREGATES = [
 
 describe('hopAggregate seed side (item 2107)', () => {
   for (const agg of AGGREGATES) {
-    test(`🔑 ${agg} — the answer is identical indexed and not`, () => {
+    test(`${agg} — the answer is identical indexed and not`, () => {
       /*
-       * ⚠️ THE INDEX IS THE GATE'S ONLY INPUT, so the same graph with and without it takes the two
+       * THE INDEX IS THE GATE'S ONLY INPUT, so the same graph with and without it takes the two
        * different routes. An answer that depends on which route ran is the bug this item could have
        * introduced, and nothing else in the suite would catch it.
        */
@@ -85,14 +85,14 @@ describe('hopAggregate seed side (item 2107)', () => {
       const indexed = query(build(true), q, { t: 't7' });
 
       expect(indexed).toStrictEqual(bare);
-      // ⚠️ A shape answering null/0 would agree trivially.
+      // A shape answering null/0 would agree trivially.
       expect(Object.values(bare[0] as Record<string, unknown>)[0]).not.toBeNull();
     });
   }
 
-  test('⚠️ the hand-REVERSED spelling agrees with the written one, every aggregate', () => {
+  test('the hand-REVERSED spelling agrees with the written one, every aggregate', () => {
     /*
-     * 🔑 THE EQUIVALENT-SPELLING CHECK, which is the point of the item: both spellings of one question
+     * THE EQUIVALENT-SPELLING CHECK, which is the point of the item: both spellings of one question
      * now take a seeded walk, so they must still agree on the answer. Measured after this change,
      * written against reversed: `min` 0.033 against 0.041 ms, `count(DISTINCT)` 0.050 against 0.055 —
      * the written form is now the FASTER of the two, where it was 5.73x slower.
@@ -111,14 +111,14 @@ describe('hopAggregate seed side (item 2107)', () => {
     }
   });
 
-  test('⚠️ an UNDIRECTED hop agrees too — it runs TWO turned walks, not one', () => {
+  test('an UNDIRECTED hop agrees too — it runs TWO turned walks, not one', () => {
     /*
-     * 🔑 THE SHAPE MOST LIKELY TO BREAK. `hopAggregateWalks` returns TWO walks for an undirected hop
+     * THE SHAPE MOST LIKELY TO BREAK. `hopAggregateWalks` returns TWO walks for an undirected hop
      * (item 478) plus a `looped` single walk for graphs with self-loops (item 481), and the reversal
      * builds a SECOND such set. If the pick mixed one set's walks with the other's, a self-loop would be
      * counted twice or not at all.
      *
-     * ⚠️ SO IT IS RUN ON BOTH A LOOPLESS AND A SELF-LOOPED GRAPH, each compared indexed against
+     * SO IT IS RUN ON BOTH A LOOPLESS AND A SELF-LOOPED GRAPH, each compared indexed against
      * unindexed — the two routes — rather than against a hand-computed number.
      */
     const addLoop = (g: Graph): Graph => {
@@ -143,7 +143,7 @@ describe('hopAggregate seed side (item 2107)', () => {
         expect(query(indexed, q, { t: 't7' })).toStrictEqual(query(plain, q, { t: 't7' }));
       }
 
-      // ⚠️ The self-loop must actually be REACHED, or this asserts nothing about it.
+      // The self-loop must actually be REACHED, or this asserts nothing about it.
       const touched = query(
         indexed,
         'MATCH (a:P)-[:E]-(b:P) WHERE b.tag = $t AND a.n = b.n RETURN count(*) AS c',
@@ -154,9 +154,9 @@ describe('hopAggregate seed side (item 2107)', () => {
     }
   });
 
-  test('⚠️ a predicate on the START keeps the written orientation — no needless flip', () => {
+  test('a predicate on the START keeps the written orientation — no needless flip', () => {
     /*
-     * 🔑 The gate asks whether the FAR end seeks NARROWER. With the predicate on the start there is
+     * The gate asks whether the FAR end seeks NARROWER. With the predicate on the start there is
      * nothing to gain, and flipping would make the already-good walk scan instead. Asserted by answer;
      * the route itself is covered by the mutation round, since a flip here is answer-equivalent.
      */
@@ -165,7 +165,7 @@ describe('hopAggregate seed side (item 2107)', () => {
     expect(query(build(true), q, { t: 't7' })).toStrictEqual(query(build(false), q, { t: 't7' }));
   });
 
-  test('⚠️ GROUPED and multi-aggregate projections are unaffected', () => {
+  test('GROUPED and multi-aggregate projections are unaffected', () => {
     const g = build(true);
     const plain = build(false);
 
@@ -182,12 +182,12 @@ describe('hopAggregate seed side (item 2107)', () => {
 });
 
 /*
- * ⚠️⚠️ **THE PAIR'S CONSISTENCY, WHICH NO ANSWER TEST CAN SEE.** Reversing only one half of the raw +
+ * **THE PAIR'S CONSISTENCY, WHICH NO ANSWER TEST CAN SEE.** Reversing only one half of the raw +
  * compiled pair returns the CORRECT answer and costs **1765x** (56.5 ms against 0.032) — measured, with
  * the compiled-only variant at 180x. Both are slower than the unfixed code. Two mutants did exactly
  * that and survived all 14 tests above.
  *
- * 🔑 SO THE TWO HALVES ARE COMPARED STRUCTURALLY. A raw path and a compiled path describing the same
+ * SO THE TWO HALVES ARE COMPARED STRUCTURALLY. A raw path and a compiled path describing the same
  * walk must agree on the segment directions and the node variables in order; if one was reversed and the
  * other was not, they cannot.
  */
@@ -211,7 +211,7 @@ describe('reversedHopClauses — the pair must describe ONE path (item 2107)', (
   /**
    * The first pattern of a clause, as the only shape this test reads.
    *
-   * ⚠️ ONE `unknown` HOP, in one place. `Clause` and `CClause` are unions whose other arms carry
+   * ONE `unknown` HOP, in one place. `Clause` and `CClause` are unions whose other arms carry
    * different pattern types, so a direct assertion is refused — and four separate casts at the call
    * sites read as if each were a different claim. This is the single claim: both unions' match arms
    * carry a `patterns` array whose elements have `start` and `segments`.
@@ -236,7 +236,7 @@ describe('reversedHopClauses — the pair must describe ONE path (item 2107)', (
     undirected: 'MATCH (a:P)-[:E]-(b:P) WHERE b.tag = $t RETURN min(a.n) AS c',
     anonymous: 'MATCH (a:P)-[:E]->(:P) RETURN min(a.n) AS c',
   })) {
-    test(`🔑 ${name} — the raw and compiled reversals agree`, () => {
+    test(`${name} — the raw and compiled reversals agree`, () => {
       const { m, cMatch, cPath } = clausesOf(src);
       const pair = reversedHopClauses(m as never, cMatch as never, cPath);
       const rawShape = shapeOf(firstPattern(pair.raw));
@@ -245,10 +245,10 @@ describe('reversedHopClauses — the pair must describe ONE path (item 2107)', (
       expect(rawShape).toBe(compiledShape);
     });
 
-    test(`⚠️ ${name} — and BOTH differ from the written pattern, so a reversal happened`, () => {
+    test(`${name} — and BOTH differ from the written pattern, so a reversal happened`, () => {
       /*
-       * 🔑 Without this half, a builder that reversed NEITHER would pass the agreement test above.
-       * ⚠️ An UNDIRECTED hop is the exception by construction: flipping `both` is `both`, and with the
+       * Without this half, a builder that reversed NEITHER would pass the agreement test above.
+       * An UNDIRECTED hop is the exception by construction: flipping `both` is `both`, and with the
        * endpoints swapped the shape can coincide — so it is asserted only to agree, not to differ.
        */
       const { m, cMatch, cPath } = clausesOf(src);
@@ -264,9 +264,9 @@ describe('reversedHopClauses — the pair must describe ONE path (item 2107)', (
     });
   }
 
-  test("⚠️ the DIRECTION is the reversed pattern's own, not a separately flipped copy", () => {
+  test("the DIRECTION is the reversed pattern's own, not a separately flipped copy", () => {
     /*
-     * 🔑 A mutant that passed the UNflipped `hopDir` measured IDENTICALLY (0.032), proving the argument
+     * A mutant that passed the UNflipped `hopDir` measured IDENTICALLY (0.032), proving the argument
      * was a second source of truth for one fact. Reading it off the reversed pattern makes it
      * unfalsifiable by construction, and this asserts that it is read from there.
      */

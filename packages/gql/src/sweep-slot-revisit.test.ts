@@ -16,7 +16,7 @@ import { query } from './index.js';
  *   2. **The start-slot array growth.** `ways` starts at 256 slots and doubles. No query here ever
  *      seeded more than 256 start vertices into `sweepChain`, so that `cap *= 2` never ran.
  *
- * ⚠️ TWO THINGS HAVE TO BE TRUE AT ONCE, and missing either is why no existing fixture reaches
+ * TWO THINGS HAVE TO BE TRUE AT ONCE, and missing either is why no existing fixture reaches
  * these. Both were established by sentinel before this file was written:
  *
  *   **(a) THE QUERY MUST BE SEEDED, or `sweepChain` is never entered at all.**
@@ -32,7 +32,7 @@ import { query } from './index.js';
  *   slot is visited at exactly one depth, so pass 2's frontier is disjoint from pass 1's and every
  *   lookup is a first visit. Revisits need a cycle.
  *
- * ⚠️ AND A PLAIN CYCLE IS THE WRONG SHAPE, for the reason item 1418 recorded when a mutant survived
+ * AND A PLAIN CYCLE IS THE WRONG SHAPE, for the reason item 1418 recorded when a mutant survived
  * its first fixture: on a uniform cycle every slot contributes the same number of continuations, so
  * weight misrouted between slots leaves the TOTAL unchanged and the count is invariant to the
  * corruption it is supposed to catch. So the fixture is a path (sinks, asymmetric out-degree) with
@@ -74,7 +74,7 @@ const hubbedPath = (n: number, seeded: number): Graph => {
     g.addEdge({ id: `e${(e += 1)}`, from: vs[i], to: vs[0], labels: ['E'] });
   }
 
-  // ⚠️ THE IRREGULAR EDGES ARE LOAD-BEARING, and they are here because a mutant proved it.
+  // THE IRREGULAR EDGES ARE LOAD-BEARING, and they are here because a mutant proved it.
   // With only the path and the hub, every slot had out-degree 1 or 2 and the memo's flat runs were
   // laid out in path order — so reading each run SHIFTED BY ONE (`flat[base + i + 1]`) just moved
   // every target one step along a homogeneous path and the total did not change. 470 either way,
@@ -167,7 +167,7 @@ describe('the seeded sweep over a graph whose slots are revisited', () => {
     expect(countOf(hubbedPath(SIZE, SEEDED), CHAIN_3)).toBe(bruteForce(SIZE, SEEDED, 3));
   });
 
-  test('⚠️ the answer MOVES with the fixture, which is what makes it an oracle', () => {
+  test('the answer MOVES with the fixture, which is what makes it an oracle', () => {
     // The guard against item 1418's trap: a count invariant to the corruption cannot catch it.
     // Three seed sizes, three different answers, and each still matched by the walk.
     const a4 = bruteForce(SIZE, SEEDED, 4);

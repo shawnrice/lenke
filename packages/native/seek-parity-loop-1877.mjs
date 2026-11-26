@@ -7,7 +7,7 @@
  * control. A loop-amortized measurement of the GQL side on an equivalent fixture read 4.97 us, not
  * 18.6 — so the ratio may be the harness.
  *
- * ⚠️ THIS LOOPS BOTH SURFACES IDENTICALLY, on ONE graph built the parity probe's way (addVertex +
+ * THIS LOOPS BOTH SURFACES IDENTICALLY, on ONE graph built the parity probe's way (addVertex +
  * addEdge + createIndex), one surface per process. If the 2.5x survives it is the engines; if it
  * collapses it was the harness, and the parity probe's fast arms need a loop.
  *
@@ -34,7 +34,7 @@ for (let i = 0; i + 1 < N; i += 1) {
 graph.createIndex({ on: 'vertex', kind: 'hash', keys: ['age'] });
 
 /**
- * ⚠️ THE `floor` ARMS SEPARATE THE TWO EXPLANATIONS. GQL takes TEXT so it parses and compiles per
+ * THE `floor` ARMS SEPARATE THE TWO EXPLANATIONS. GQL takes TEXT so it parses and compiles per
  * call (cached, but not free); Gremlin takes an OBJECT and item 1841 priced its builder at 0.188 us,
  * ~5% of a call. So a gap on a near-empty query is FIXED COST, and only the excess above that is
  * the seek. `RETURN 1` does no graph work at all on either surface.

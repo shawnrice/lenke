@@ -1,15 +1,15 @@
 /*
  * Item 2107 — re-price item 2106's one-hop scalar-fold gap ISOLATED, one shape per process.
  *
- * ⚠️⚠️ **A SCREEN RANKS, IT DOES NOT PRICE — IN BOTH DIRECTIONS.** Item 2106's sweep flagged five
+ * **A SCREEN RANKS, IT DOES NOT PRICE — IN BOTH DIRECTIONS.** Item 2106's sweep flagged five
  * one-hop aggregates at 2.8-5.95x, but every row ran in ONE process, and the absolute times are small
  * (0.13-0.48 ms against 0.02-0.08). Item 2086's sweep UNDERSTATED a row by 4x and item 2099's INVENTED
  * three candidates out of five. So nothing here is believed until it is re-measured alone.
  *
- * 🔑 ONE SHAPE PER PROCESS (`SHAPE=` picks it), because a two-distribution in-process A/B flatters any
+ * ONE SHAPE PER PROCESS (`SHAPE=` picks it), because a two-distribution in-process A/B flatters any
  * change that redistributes call sites, and because these rungs share one dispatch.
  *
- * ⚠️ THE ESTIMATOR IS THE MEDIAN OF THE POST-WARM-UP REPS, not the min: the TS per-row path emits a rare
+ * THE ESTIMATOR IS THE MEDIAN OF THE POST-WARM-UP REPS, not the min: the TS per-row path emits a rare
  * fast rep, and `min` reported a 0.72x control at item 2080 where medians read 1.00x. The per-rep SERIES
  * is printed so a step or a bimodal split is visible rather than averaged away.
  */
@@ -48,7 +48,7 @@ const RETURNS = {
   sum: 'sum(a.n)',
   avg: 'avg(a.n)',
   cdist: 'count(DISTINCT a.n)',
-  /* ⚠️ THE CONTROLS: item 2106 measured these CLEAN at one hop (1.10-1.44x). */
+  /* THE CONTROLS: item 2106 measured these CLEAN at one hop (1.10-1.44x). */
   star: 'count(*)',
   collect: 'size(collect(a.n))',
 };
@@ -73,7 +73,7 @@ const run = (q) => {
     series.push(performance.now() - t0);
   }
 
-  // ⚠️ Four warm-up reps dropped — the first are visibly the JIT tiering up (item 2100 saw the FIRST
+  // Four warm-up reps dropped — the first are visibly the JIT tiering up (item 2100 saw the FIRST
   // shape read 1.138 ms while a strictly harder one below it read 0.584).
   const kept = series.slice(4);
   const sorted = [...kept].sort((a, b) => a - b);
@@ -88,7 +88,7 @@ const run = (q) => {
 };
 
 /*
- * ⚠️ ALTERNATED, not one block each: whichever runs second benefits from a warm allocator and warm
+ * ALTERNATED, not one block each: whichever runs second benefits from a warm allocator and warm
  * caches, so two rounds in opposite order and the better reading of each is what gets compared.
  */
 const a1 = run(FWD);

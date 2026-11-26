@@ -29,13 +29,13 @@ import { soleTypeBucket } from './movement.js';
  * `iterByLabel` 4.21% + `outEdgesOf` 3.25%). This takes that chain for the one hop shape where there
  * is a single `Set` and nothing to dedupe.
  *
- * ⚠️ THE ORACLE IS A TWO-STEP SUB-PLAN. `optionalSingleHop` admits exactly one step, so appending
+ * THE ORACLE IS A TWO-STEP SUB-PLAN. `optionalSingleHop` admits exactly one step, so appending
  * `identity()` sends the identical question to the general `optionalStep` — and `identity()` is the
  * right disqualifier because it changes the sub-plan's LENGTH and nothing else. Gremlin stream order
  * is a TinkerPop contract compared ORDERED by the differential fuzzer, so every comparison here is
  * element for element.
  *
- * ⚠️ AND THE `optional` FALLBACK IS THE RISK THE FAST ARM CARRIES. The step yields the incoming
+ * AND THE `optional` FALLBACK IS THE RISK THE FAST ARM CARRIES. The step yields the incoming
  * traverser when the hop produces NOTHING, so a fast arm that reported an empty bucket as "no
  * iteration happened" versus "iterated zero edges" would drop or duplicate that row. Every case
  * below includes a vertex with no matching edge.
@@ -123,7 +123,7 @@ describe('the fast arm agrees with the general optional, ORDERED', () => {
     bothWays(out('F'));
   });
 
-  test('⚠️ a type NO vertex carries — every row is the fallback', () => {
+  test('a type NO vertex carries — every row is the fallback', () => {
     /**
      * The whole stream must come back unchanged. This is the case a fast arm gets wrong if an empty
      * bucket is reported as "declined" rather than "zero edges": the rows would be dropped, or
@@ -153,7 +153,7 @@ describe('the fast arm declines what it must', () => {
     bothWays(out());
   });
 
-  test('⚠️ an EMPTY bucket returns a SHAPE, not `undefined`', () => {
+  test('an EMPTY bucket returns a SHAPE, not `undefined`', () => {
     /**
      * `undefined` means "this hop needs `adjacentEdges`"; an empty bucket means "this vertex has no
      * such edge". Conflating them sends every zero-degree vertex down the general path for nothing —

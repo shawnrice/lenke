@@ -14,7 +14,7 @@ import { query } from './index.js';
  * for a TRIVIAL endpoint mask (items 687-689), and a label every vertex carries IS trivial; only the
  * graph can say which it is, so the rung is now admitted at compile time and declines at run time.
  *
- * ⚠️ THE FAILURE MODE IS A WRONG ANSWER, NOT A SLOW ONE, and it has happened here before: item 692
+ * THE FAILURE MODE IS A WRONG ANSWER, NOT A SLOW ONE, and it has happened here before: item 692
  * relaxed the dispatch bound without relaxing the arithmetic and the depth-4 trail answered the WALK
  * count — 450,000 against the trail's 449,998 — caught by a brute-force oracle, not by any timing.
  * So these tests pin the ANSWER in both regimes, and the filtering regime is the one that matters:
@@ -156,7 +156,7 @@ describe('a TRIANGLE, where the trail and the walk genuinely differ (item 1399)'
     expect(c(triangle(), 'MATCH ()-[:E]->{1,3}(b:P) RETURN count(*) AS c')).toBe(9);
   });
 
-  // ⚠️ `WALK` IS A PREFIX, not a suffix: `MATCH WALK (…)`. I wrote it after the pattern first and
+  // `WALK` IS A PREFIX, not a suffix: `MATCH WALK (…)`. I wrote it after the pattern first and
   // the parser rejected the query outright — which the test caught as a syntax error rather than a
   // wrong count, but a mode keyword silently ignored would have been the dangerous version.
   test('the WALK does not stop, which is the count the trail must NOT return', () => {

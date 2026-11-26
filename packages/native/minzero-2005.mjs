@@ -1,7 +1,7 @@
 /**
  * THE `{0,k}` ACYCLIC COUNT DIVERGENCE (item 2005, a bug from item 2002).
  *
- * ⚠️⚠️ The differential fuzzer caught `MATCH ACYCLIC (a:T)<-[:F]-{0,2}(b) RETURN count(*)` as a VALUE
+ * The differential fuzzer caught `MATCH ACYCLIC (a:T)<-[:F]-{0,2}(b) RETURN count(*)` as a VALUE
  * divergence — "the engines disagree about the ANSWER, which no registry entry may excuse". A
  * quantifier with `min = 0` admits the ZERO-LENGTH path, one row per source, and item 2002's acyclic
  * count route only ever counts `len >= 1`.
@@ -55,7 +55,7 @@ for (const bound of ['{0,1}', '{0,2}', '{1,2}', '{0,0}']) {
 }
 
 console.log(
-  '\n# ⚠️ For `{0,k}` every mode must include the ZERO-LENGTH path: one row per source, where the',
+  '\n# For `{0,k}` every mode must include the ZERO-LENGTH path: one row per source, where the',
   '\n#    endpoint IS the start. ACYCLIC answering fewer rows than WALK at `{0,k}` by exactly the',
   '\n#    source count is the signature of the omission.',
 );

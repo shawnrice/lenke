@@ -1,7 +1,7 @@
 /**
  * DOES THE OPTIONAL VALUES RUNG EARN ITS PLACE? (item 1884)
  *
- * ⚠️ IT NEEDS A REAL A/B BECAUSE THE FIRST READING SAID NO. At 9 reps the `optional` arm measured
+ * IT NEEDS A REAL A/B BECAUSE THE FIRST READING SAID NO. At 9 reps the `optional` arm measured
  * 10.24/8.99 ms before the rung and 9.30 after — a null — while `optional(out(E)).id()` went
  * 7.2 → 4.70. Then a 150-rep profile of the SAME shape read **70.3 ns a row** where the 9-rep floor
  * read **116**, and a printed series explained both: this arm does not plateau for ~12 reps
@@ -11,12 +11,12 @@
  * trusting any summary of it", and the recipe it gives: more reps, drop the warm-up, take the
  * MEDIAN, and the min of that across order-alternated rounds.
  *
- * ⚠️ TWO BUILDS, ONE SHAPE PER PROCESS. PRE replaces the rung's call site in the BUILT dist with
+ * TWO BUILDS, ONE SHAPE PER PROCESS. PRE replaces the rung's call site in the BUILT dist with
  * `void 0` — a kill switch, so the shape runs the pipeline it ran before this item — and POST is
  * the shipped build. Both arms are ASSERTED by a marker before any measurement
  * (`edge-filtered-oracle-1883.mjs` caught a `??`-through-`void 0` bug with exactly this assertion).
  *
- * ⚠️ AND THE CONTROL IS A SHAPE THE RUNG CANNOT REACH (`V().out(E).values(n)`), measured in the same
+ * AND THE CONTROL IS A SHAPE THE RUNG CANNOT REACH (`V().out(E).values(n)`), measured in the same
  * rounds. Item 762's lesson: a control moving MORE than the target means the instrument is
  * measuring the build, not the change.
  *
@@ -102,7 +102,7 @@ console.log('-------------------------------------------------------------------
 for (const shape of SHAPES) {
   const pre = rows.filter(([, w, s]) => w === 'PRE' && s === shape).map(([, , , ms]) => ms);
   const post = rows.filter(([, w, s]) => w === 'POST' && s === shape).map(([, , , ms]) => ms);
-  // ⚠️ THE HEADLINE IS THE MEDIAN OF ROUNDS, NOT THE MIN. On one run the min made the CONTROL read
+  // THE HEADLINE IS THE MEDIAN OF ROUNDS, NOT THE MIN. On one run the min made the CONTROL read
   // 0.85x off a single low PRE reading (1.92 against 2.33/2.34) while its medians were 2.33 and
   // 2.29 — flat. CLAUDE.md says this in terms for the TS per-row path; it applies to the
   // round-level summary too.

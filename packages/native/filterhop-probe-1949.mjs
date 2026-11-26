@@ -1,12 +1,12 @@
 // Item 1949 — WHAT IS LEFT ON `FILTER` AFTER A HOP, on a realistic graph?
 //
 // Item 1943's `MIXED=1` diff: `MATCH (a:T)-[:E]->(b:T) FILTER b.n > $p0 RETURN b.n AS x` goes
-// **61.44 ms to 297.04, 4.83x** when one isolated off-label vertex makes `T` non-vacuous. ⚠️ Item
+// **61.44 ms to 297.04, 4.83x** when one isolated off-label vertex makes `T` non-vacuous. Item
 // 1947 bounded that sweep's inflation at 1.2x-1.3x, so 4.83x survives it comfortably — but the
 // number itself comes from a 48-shape sweep, so this re-measures it ISOLATED, one shape per
 // process, with a hand ceiling.
 //
-// 🔑 THE CEILING IS ONE EDGE PASS: both endpoint labels, then the predicate, then collect. There is
+// THE CEILING IS ONE EDGE PASS: both endpoint labels, then the predicate, then collect. There is
 // nothing a filtered hop can skip — every surviving row is emitted — so unlike the DISTINCT at item
 // 1945 there is no short-circuit to look for, and unlike item 1948 there is no first-seen-order
 // contract, because a FILTER emits rows rather than groups.

@@ -1,15 +1,15 @@
 /**
- * ⚠️⚠️⚠️ **THE PRECONDITION TEST ITEM 2250 SKIPPED (item 2252).** Item 2251 established from
+ * **THE PRECONDITION TEST ITEM 2250 SKIPPED (item 2252).** Item 2251 established from
  * `second-ask.ts`'s own documentation that under write-every-read the CSR is **never built**, so the churn
  * penalty is a LOST FAST PATH rather than a rebuild. That mechanism makes a sharp, falsifiable prediction:
  *
- * 🔑 **the penalty should track `graph.topologyVersion`, not "writes" in general.**
+ * **the penalty should track `graph.topologyVersion`, not "writes" in general.**
  *
  * `seenBefore` keys on `(graph, topologyVersion, shape)`, so a write that does NOT bump the version leaves
  * the CSR generation reachable and the second ask armed — and must therefore cost nothing. A write that
  * DOES bump it re-arms the first-ask path on every round and must cost the full penalty.
  *
- * ⚠️ Item 2250 accepted a mechanism on its predictions alone and was half wrong; this measures the
+ * Item 2250 accepted a mechanism on its predictions alone and was half wrong; this measures the
  * version delta DIRECTLY alongside the timing, so correlation (or its absence) is visible rather than
  * assumed. Each arm reports `tv/write` — exactly how much `topologyVersion` moved per write it performed.
  */
@@ -68,7 +68,7 @@ const write = (): void => {
   }
 
   if (ARM === 'setprop') {
-    /* 🔑 A PROPERTY write touches no adjacency, so it should not move `topologyVersion`. */
+    /* A PROPERTY write touches no adjacency, so it should not move `topologyVersion`. */
     a.properties = { ...a.properties, team: (n % 97) + 1000 };
 
     return;

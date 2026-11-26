@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 /**
  * `reachShortcut` must REFUSE a multi-element repetition unit — item 1873, a WRONG ANSWER fix.
  *
- * ⚠️⚠️ **THE SHAPE OF THE BUG.** `((x)-[:KNOWS]->(m)-[:LIKES]->(y)){1,2}(t)` parses as a SINGLE
+ * **THE SHAPE OF THE BUG.** `((x)-[:KNOWS]->(m)-[:LIKES]->(y)){1,2}(t)` parses as a SINGLE
  * segment whose hops beyond the first live in `unitRest`, so `detectReachableShortcut`'s
  * `segments.length !== 1` check passed it through — and the walk reads only `rel`/`node`, i.e. the
  * unit's FIRST hop. It then ran a one-hop BFS over `:KNOWS` where each repetition is really
@@ -13,20 +13,20 @@ import { describe, expect, test } from 'bun:test';
  *       before   1 row   [{"n":4}]
  *       native   3 rows  [{"n":1},{"n":2},{"n":4}]
  *
- * ⚠️ **IT WAS FOUND BY A TEST THAT WAS NOT IN MY GATE LOOP.** `packages/native`'s own suite holds
+ * **IT WAS FOUND BY A TEST THAT WAS NOT IN MY GATE LOOP.** `packages/native`'s own suite holds
  * the cross-engine matrix that catches this (`pattern-family-matrix.test.ts`), and the per-tick
  * gate was `gql` + `gremlin` + the seven fuzzers — so two red tests sat there while every gate I
  * ran stayed green. The fuzzers did not catch it either: they compare GQL as multisets and this
  * shape's generated forms did not reach the multi-element unit with a DISTINCT endpoint.
  *
- * ⚠️ **AND HALF OF IT PREDATES THE CHANGE THAT EXPOSED IT.** Item 1848 widened
+ * **AND HALF OF IT PREDATES THE CHANGE THAT EXPOSED IT.** Item 1848 widened
  * `reachQuantifierIsExact` from unbounded-only to bounded, which brought `{1,2}` into the rung and
  * into the matrix test's reach. But the UNBOUNDED spelling was already wrong at `main`: measured
  * there, `…(y))+(t) RETURN DISTINCT t.n` gave `[2,3]` against native's `[4,1]` — different SETS,
  * not merely a different order. So the refusal below fixes a pre-existing wrong answer as well as
  * the new instance of it.
  *
- * ⚠️ **THE SINGLE-ELEMENT GROUP IS STILL ADMITTED**, deliberately: `((x)-[:KNOWS]->(m)){1,2}(t)`
+ * **THE SINGLE-ELEMENT GROUP IS STILL ADMITTED**, deliberately: `((x)-[:KNOWS]->(m)){1,2}(t)`
  * has an empty `unitRest` and IS one hop per repetition, which is exactly what the walk
  * implements. Its row below is what keeps the refusal scoped to the units that differ rather than
  * giving back the rung item 1848 measured at 36.56x.
@@ -47,7 +47,7 @@ const takesReach = (src: string): boolean => {
 /**
  * `n1 -KNOWS-> n2 -KNOWS-> n3`, `n2 -LIKES-> n4`, `n3 -LIKES-> n1`.
  *
- * ⚠️ THE TWO EDGE TYPES ALTERNATE SO A FIRST-HOP-ONLY WALK GIVES A DIFFERENT ANSWER. On a fixture
+ * THE TWO EDGE TYPES ALTERNATE SO A FIRST-HOP-ONLY WALK GIVES A DIFFERENT ANSWER. On a fixture
  * where every edge carried one type, a one-hop BFS over `:KNOWS` and the true `:KNOWS`-then-
  * `:LIKES` unit could coincide, and the bug would be invisible.
  */
@@ -103,7 +103,7 @@ describe('a multi-element repetition unit does not take the reach rung', () => {
   });
 
   /**
-   * ⚠️ THE ANSWERS, which is what the route assertion above cannot tell you. A one-hop BFS over
+   * THE ANSWERS, which is what the route assertion above cannot tell you. A one-hop BFS over
    * `:KNOWS` reaches n2 and n3 from n1; the real unit `:KNOWS` then `:LIKES` reaches n4 (via n2)
    * and n1 (via n3). The two are disjoint here, so a wrong route cannot coincide.
    */
@@ -121,7 +121,7 @@ describe('a multi-element repetition unit does not take the reach rung', () => {
       JSON.stringify(['1', '4']),
     );
 
-    // ⚠️ AND IT IS NOT THE FIRST HOP'S ANSWER, stated explicitly: a `:KNOWS`-only walk of one or
+    // AND IT IS NOT THE FIRST HOP'S ANSWER, stated explicitly: a `:KNOWS`-only walk of one or
     // two steps from every start reaches n2, n3 and n4 — which is what the bug returned a subset
     // of, and what this must never equal.
     expect(setOf(g, `MATCH ${SINGLE}{1,2}(t) RETURN DISTINCT t.n AS n`)).toBe(

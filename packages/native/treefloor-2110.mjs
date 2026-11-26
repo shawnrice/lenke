@@ -1,24 +1,24 @@
 /*
  * Item 2110 — is `tree()`'s cost the NULL-PROTOTYPE DICTIONARY, or the keying?
  *
- * 🔑 WHERE THE 754 ms GOES, from the profile (3 rounds, fixture subtracted by inspection):
+ * WHERE THE 754 ms GOES, from the profile (3 rounds, fixture subtracted by inspection):
  *   - `memoizedTreeKey` ~26% — and the memo is PERFECT: 90% hit rate, misses exactly 1.00x the
  *     distinct-vertex count, so identity keying is doing its job.
  *   - the insert `forEach` ~37% — whose per-row closure lever item 1925 measured at 2% and REFUTED.
  *
- * ⚠️ SO THE UNEXPLORED PIECE IS `cursor[key]` ITSELF. The tree is nested `Object.create(null)` records
+ * SO THE UNEXPLORED PIECE IS `cursor[key]` ITSELF. The tree is nested `Object.create(null)` records
  * and the root gets **200,000 distinct string keys**. V8 moves such an object to DICTIONARY MODE, where
  * a property access is far dearer than a `Map.get` — and `ts-set-is-o-width` already records a
  * dictionary-mode cliff in this repo at 128→256 keys.
  *
- * ⚠️⚠️ THIS IS A FLOOR, NOT A PROPOSAL. It prices four containers on the SAME synthetic work so the
+ * THIS IS A FLOOR, NOT A PROPOSAL. It prices four containers on the SAME synthetic work so the
  * answer is attributable before any engine code changes. If the null-proto object is not the cost, the
  * lever does not exist and this records that; if it is, the engine's own constraint still applies —
  * `tree()` RETURNS the nested object to the caller and its reserved-key handling is settled
  * (`prototype-key-class-not-a-bug`), so a `Map` build would need a conversion pass whose cost is
  * measured here too.
  *
- * ⚠️ KEYS ARE THE REAL SHAPE: `treeKey` is `JSON.stringify(node.toJSON())`, so they are LONG strings,
+ * KEYS ARE THE REAL SHAPE: `treeKey` is `JSON.stringify(node.toJSON())`, so they are LONG strings,
  * not short ids. Short keys would hash differently and flatter every container equally.
  */
 const N = Number(process.env.N ?? 200000);
@@ -42,7 +42,7 @@ for (let d = 0; d < FANOUT; d += 1) {
 }
 
 /*
- * ⚠️ HOISTED to module scope, not written inside the arm: a closure recreated per call would be a cost
+ * HOISTED to module scope, not written inside the arm: a closure recreated per call would be a cost
  * the OTHER arms do not pay, and this file's whole job is to make the four comparable.
  */
 const toObj = (m) => {
@@ -122,7 +122,7 @@ const arms = {
 
     return root.size;
   },
-  /* ⚠️ MAPS PLUS THE CONVERSION the engine would owe its caller — the honest total. */
+  /* MAPS PLUS THE CONVERSION the engine would owe its caller — the honest total. */
   mapsconv: () => {
     const root = new Map();
 
@@ -161,7 +161,7 @@ for (const [name, fn] of Object.entries(arms)) {
 
   const kept = series.slice(2).sort((a, b) => a - b);
 
-  // ⚠️ Every arm must build the SAME tree, or the comparison is of different trees.
+  // Every arm must build the SAME tree, or the comparison is of different trees.
   if (got !== N) {
     throw new Error(`${name}: root has ${got} entries, expected ${N}`);
   }

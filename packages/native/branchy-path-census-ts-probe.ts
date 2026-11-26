@@ -12,7 +12,7 @@
  * dispatch and boxing, so the same branch may be invisible. Items 1183, 1192, 1193, 1196 and 1199
  * are all cases where a Rust finding did or did not transfer, and only the measurement said which.
  *
- * ⚠️ READ THE RATIO, NOT THE TIMES. The two fixtures hold the same number of rows at the same ~50%
+ * READ THE RATIO, NOT THE TIMES. The two fixtures hold the same number of rows at the same ~50%
  * selectivity (the matched count prints, as the check). A row whose PERIODIC and RANDOM timings
  * differ is data-dependent; one where they agree is not, whatever its absolute cost.
  *
@@ -32,7 +32,7 @@ const DROP = 3;
 /**
  * ONE graph carrying BOTH orders as separate columns.
  *
- * ⚠️ TWO EARLIER DESIGNS FAILED THEIR OWN CONTROL, which is the whole lesson of this probe. Timing
+ * TWO EARLIER DESIGNS FAILED THEIR OWN CONTROL, which is the whole lesson of this probe. Timing
  * two `Graph` objects in one process made `[CTL] unfiltered projection` — a query with no filter and
  * so no data-dependent branch at all — read **1.46x**; one fixture per process (item 762's rule)
  * only brought it to **1.34x**. Two graphs differ in more than a column's value order: they have
@@ -66,7 +66,7 @@ for (let i = 0; i < N; i++) {
       dr: `g${r % 8}`,
       flagp: i % 100 >= 50,
       flagr: r >= 50,
-      // ⚠️ THE KEY-POSITION CONTROL. `kpLast` holds the IDENTICAL periodic values as `kp` but sits
+      // THE KEY-POSITION CONTROL. `kpLast` holds the IDENTICAL periodic values as `kp` but sits
       // at the END of the property object. If a pair of queries differing only in which of these
       // they read is not 1.0x, then position in the property map — not the data's order — is what
       // the earlier rows were measuring.

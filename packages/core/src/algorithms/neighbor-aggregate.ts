@@ -141,13 +141,13 @@ type Adj = { off: Int32Array; nbr: Int32Array; eidx: Int32Array };
  * Per-vertex out/in adjacency in edge-insertion (= native eidx) order, as two flat CSRs over dense
  * vertex indices.
  *
- * ⚠️ IT REPLACES A `Map<string, {eidx, nbr}[]>` THAT BOXED ONE OBJECT PER EDGE PER DIRECTION — 2·E
+ * IT REPLACES A `Map<string, {eidx, nbr}[]>` THAT BOXED ONE OBJECT PER EDGE PER DIRECTION — 2·E
  * short-lived objects plus an array per vertex per direction. Item 1469 profiled
  * `neighborAggregate` with `(garbage collector)` at **11.81%**, the highest share in the twelve, and
  * that allocation is where it came from. Counting first costs a second pass over the edges and buys
  * all of it back.
  *
- * ⚠️ THIS IS NOT THE ROUTE ITEM 416 REFUTED. That one returned the STORED adjacency list to the
+ * THIS IS NOT THE ROUTE ITEM 416 REFUTED. That one returned the STORED adjacency list to the
  * consumer instead of copying into a reusable buffer, and regressed `direction: in` by 1.20x; the
  * reusable buffer it kept is still here in spirit — nothing per-vertex is allocated at all now.
  * What changes is the REPRESENTATION, which 416 never varied.
@@ -261,7 +261,7 @@ type Ctx = {
  * Self first when included, with GCN factor 1/deg_i (= 1/sqrt(deg_i·deg_i)); then neighbours in
  * edge-index order, each scaled by edge weight × GCN factor.
  *
- * ⚠️ A MERGE, NOT A SORT. Both CSR slices are already ascending in `eidx` (the fill pass walks
+ * A MERGE, NOT A SORT. Both CSR slices are already ascending in `eidx` (the fill pass walks
  * `graph.edges` in order), so interleaving them by `eidx` reproduces exactly what sorting the
  * concatenation produced. That order is the canonical, engine-independent accumulation order, and
  * under `sum`/`mean` it is also the FLOAT SUMMATION ORDER — so permuting it changes the result

@@ -33,7 +33,7 @@ These instructions guide you through migrating an Nx workspace containing multip
 **Changes Required**:
 
 ```typescript
-// ❌ BEFORE (Vitest 3.x)
+// BEFORE (Vitest 3.x)
 export default defineConfig({
   test: {
     coverage: {
@@ -45,7 +45,7 @@ export default defineConfig({
   },
 });
 
-// ✅ AFTER (Vitest 4.0)
+// AFTER (Vitest 4.0)
 export default defineConfig({
   test: {
     coverage: {
@@ -73,7 +73,7 @@ export default defineConfig({
 **Changes Required**:
 
 ```typescript
-// ❌ BEFORE (Vitest 3.x)
+// BEFORE (Vitest 3.x)
 export default defineConfig({
   test: {
     maxThreads: 4,
@@ -90,7 +90,7 @@ export default defineConfig({
   },
 });
 
-// ✅ AFTER (Vitest 4.0)
+// AFTER (Vitest 4.0)
 export default defineConfig({
   test: {
     maxWorkers: 4, // Consolidates maxThreads and maxForks
@@ -116,14 +116,14 @@ export default defineConfig({
 **Changes Required**:
 
 ```typescript
-// ❌ BEFORE (Vitest 3.x)
+// BEFORE (Vitest 3.x)
 export default defineConfig({
   test: {
     workspace: ['apps/*', 'libs/*'],
   },
 });
 
-// ✅ AFTER (Vitest 4.0)
+// AFTER (Vitest 4.0)
 export default defineConfig({
   test: {
     projects: ['apps/*', 'libs/*'],
@@ -145,7 +145,7 @@ export default defineConfig({
 **Changes Required**:
 
 ```typescript
-// ❌ BEFORE (Vitest 3.x)
+// BEFORE (Vitest 3.x)
 export default defineConfig({
   test: {
     browser: {
@@ -159,7 +159,7 @@ export default defineConfig({
 // Import changes
 import { page } from '@vitest/browser';
 
-// ✅ AFTER (Vitest 4.0)
+// AFTER (Vitest 4.0)
 export default defineConfig({
   test: {
     browser: {
@@ -188,7 +188,7 @@ import { page } from 'vitest/browser';
 **Changes Required**:
 
 ```typescript
-// ❌ BEFORE (Vitest 3.x)
+// BEFORE (Vitest 3.x)
 export default defineConfig({
   test: {
     deps: {
@@ -199,7 +199,7 @@ export default defineConfig({
   },
 });
 
-// ✅ AFTER (Vitest 4.0)
+// AFTER (Vitest 4.0)
 export default defineConfig({
   test: {
     server: {
@@ -228,11 +228,11 @@ export default defineConfig({
 **Changes Required**:
 
 ```typescript
-// ❌ BEFORE (Vitest 3.x)
+// BEFORE (Vitest 3.x)
 const mockFn = vi.fn();
 expect(mockFn.getMockName()).toBe('spy'); // Old default
 
-// ✅ AFTER (Vitest 4.0)
+// AFTER (Vitest 4.0)
 const mockFn = vi.fn();
 expect(mockFn.getMockName()).toBe('vi.fn()'); // New default
 
@@ -253,12 +253,12 @@ expect(namedMock.getMockName()).toBe('myCustomName');
 **Changes Required**:
 
 ```typescript
-// ❌ BEFORE (Vitest 3.x)
+// BEFORE (Vitest 3.x)
 const mockFn = vi.fn();
 mockFn();
 expect(mockFn.mock.invocationCallOrder[0]).toBe(0); // Started at 0
 
-// ✅ AFTER (Vitest 4.0)
+// AFTER (Vitest 4.0)
 const mockFn = vi.fn();
 mockFn();
 expect(mockFn.mock.invocationCallOrder[0]).toBe(1); // Now starts at 1 (Jest-compatible)
@@ -276,11 +276,11 @@ expect(mockFn.mock.invocationCallOrder[0]).toBe(1); // Now starts at 1 (Jest-com
 **Changes Required**:
 
 ```typescript
-// ❌ BEFORE (Vitest 3.x) - Arrow function constructors might have worked
+// BEFORE (Vitest 3.x) - Arrow function constructors might have worked
 const MockConstructor = vi.fn(() => ({ value: 42 }));
 new MockConstructor(); // May have worked in v3
 
-// ✅ AFTER (Vitest 4.0) - Must use function or class
+// AFTER (Vitest 4.0) - Must use function or class
 const MockConstructor = vi.fn(function () {
   return { value: 42 };
 });
@@ -306,11 +306,11 @@ const MockConstructor = vi.fn(MockClass);
 **Changes Required**:
 
 ```typescript
-// ❌ BEFORE (Vitest 3.x)
+// BEFORE (Vitest 3.x)
 vi.mock('./module', () => ({ fn: vi.fn() }));
 vi.restoreAllMocks(); // Would restore automocks
 
-// ✅ AFTER (Vitest 4.0)
+// AFTER (Vitest 4.0)
 vi.mock('./module', () => ({ fn: vi.fn() }));
 vi.restoreAllMocks(); // Only restores manual spies, NOT automocks
 
@@ -333,12 +333,12 @@ vi.resetModules();
 **Changes Required**:
 
 ```typescript
-// ❌ BEFORE (Vitest 3.x)
+// BEFORE (Vitest 3.x)
 const mock = vi.fn();
 const spy = vi.spyOn({ method: mock }, 'method');
 // spy !== mock (created new spy)
 
-// ✅ AFTER (Vitest 4.0)
+// AFTER (Vitest 4.0)
 const mock = vi.fn();
 const spy = vi.spyOn({ method: mock }, 'method');
 // spy === mock (returns same instance)
@@ -357,7 +357,7 @@ const spy = vi.spyOn({ method: mock }, 'method');
 **Changes Required**:
 
 ```typescript
-// ❌ BEFORE (Vitest 3.x)
+// BEFORE (Vitest 3.x)
 vi.mock('./utils', () => ({
   get value() {
     return 42;
@@ -371,7 +371,7 @@ console.log(value); // Would execute getter logic
 const spy = vi.spyOn(obj, 'method');
 spy.mockRestore(); // Might work on automocks
 
-// ✅ AFTER (Vitest 4.0)
+// AFTER (Vitest 4.0)
 vi.mock('./utils', () => ({
   get value() {
     return 42;
@@ -408,7 +408,7 @@ vi.unmock('./module');
 **Changes Required**:
 
 ```typescript
-// ✅ AFTER (Vitest 4.0)
+// AFTER (Vitest 4.0)
 const asyncMock = vi.fn(async () => 'result');
 const promise = asyncMock();
 
@@ -441,7 +441,7 @@ expect(asyncMock.mock.settledResults[0]).toEqual({
 **Changes Required**:
 
 ```typescript
-// ❌ BEFORE (Vitest 3.x)
+// BEFORE (Vitest 3.x)
 export default {
   onCollected(files) {
     // Handle collected files
@@ -454,7 +454,7 @@ export default {
   },
 };
 
-// ✅ AFTER (Vitest 4.0)
+// AFTER (Vitest 4.0)
 // Use new reporter API - consult Vitest 4 docs for replacement methods
 ```
 
@@ -471,14 +471,14 @@ export default {
 **Changes Required**:
 
 ```typescript
-// ❌ BEFORE (Vitest 3.x)
+// BEFORE (Vitest 3.x)
 export default defineConfig({
   test: {
     reporters: ['basic'],
   },
 });
 
-// ✅ AFTER (Vitest 4.0)
+// AFTER (Vitest 4.0)
 export default defineConfig({
   test: {
     reporters: [['default', { summary: false }]], // Equivalent to 'basic'
@@ -504,7 +504,7 @@ reporters: ['tree']; // Use 'tree' for hierarchical output
 **Changes Required**:
 
 ```typescript
-// ✅ AFTER (Vitest 4.0)
+// AFTER (Vitest 4.0)
 // Shadow root contents now printed by default in snapshots
 
 // If you want old behavior (don't print shadow root):
@@ -528,12 +528,12 @@ export default defineConfig({
 **Changes Required**:
 
 ```bash
-# ❌ BEFORE (Vitest 3.x)
+# BEFORE (Vitest 3.x)
 VITEST_MAX_THREADS=4
 VITEST_MAX_FORKS=2
 VITE_NODE_DEPS_MODULE_DIRECTORIES=/custom/path
 
-# ✅ AFTER (Vitest 4.0)
+# AFTER (Vitest 4.0)
 VITEST_MAX_WORKERS=4
 VITEST_MODULE_DIRECTORIES=/custom/path
 ```
@@ -552,11 +552,11 @@ VITEST_MODULE_DIRECTORIES=/custom/path
 **Changes Required**:
 
 ```typescript
-// ❌ BEFORE (Vitest 3.x)
+// BEFORE (Vitest 3.x)
 import { execute } from 'vitest/execute';
 // Access to __vitest_executor
 
-// ✅ AFTER (Vitest 4.0)
+// AFTER (Vitest 4.0)
 // Use Vite's Module Runner API instead
 // Consult Vite Module Runner documentation
 ```

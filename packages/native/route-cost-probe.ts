@@ -30,7 +30,7 @@ const DEG = 5;
 /**
  * The target for edge `k`, SPLIT ON THE REPEAT INDEX (item 1633).
  *
- * ⚠️ `(a * k + b) % N` is invariant under `k -> k + N`, and both generators in this file loop
+ * `(a * k + b) % N` is invariant under `k -> k + N`, and both generators in this file loop
  * `k < N * DEG`, so every one of a vertex's DEG edges landed on the SAME target: the graph was
  * FUNCTIONAL with perfect-looking degrees. Shared by both builders so the TS and native fixtures
  * cannot drift apart — item 471 is this file's own record of patching one builder and not the other.
@@ -268,7 +268,7 @@ const queries: Record<string, string> = {
   subwhere: 'MATCH (n:Person) RETURN COUNT { MATCH (n)-[:KNOWS]->(x) WHERE x.age > 50 } AS c',
   subvalue: 'MATCH (n:Person) RETURN VALUE { MATCH (n)-[:KNOWS]->(x) RETURN count(*) } AS c',
   submax: 'MATCH (n:Person) RETURN VALUE { MATCH (n)-[:KNOWS]->(x) RETURN max(x.age) } AS c',
-  // ⚠️ ENGINE=ts WILL NOT FINISH these at PN=200000 (item 502): the TS engine re-runs an
+  // ENGINE=ts WILL NOT FINISH these at PN=200000 (item 502): the TS engine re-runs an
   // uncorrelated subquery body ONCE PER OUTER ROW, so the cost is quadratic in the fixture —
   // 4.1 SECONDS at PN=2000 and 18.6 at PN=4000, against native's 21ms at PN=200000. Price the
   // TS side at PN<=4000 until that is fixed.
@@ -462,7 +462,7 @@ if (engine === 'native') {
         type: 'edge',
         id: `e${k}`,
         from: `v${(k * 7919) % N}`,
-        // ⚠️ The repeat-index split (item 1633); the plain `(k * 104_729) % N` sent all DEG edges
+        // The repeat-index split (item 1633); the plain `(k * 104_729) % N` sent all DEG edges
         // of a vertex to one target. `toBase` is computed once so the self-loop test and the
         // emitted value cannot drift apart.
         to: `v${

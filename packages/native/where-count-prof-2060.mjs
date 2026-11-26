@@ -6,16 +6,16 @@
  *     where: sub-traversal         16.37 ms   emits 200,000 rows
  *     where: sub-traversal count   18.99 ms   emits 1 row          <- 1.16x, and it should be LESS
  *
- * 🔑 **THE SIGN IS THE FINDING, NOT THE RATIO.** Counting cannot legitimately cost more than
+ * **THE SIGN IS THE FINDING, NOT THE RATIO.** Counting cannot legitimately cost more than
  * counting AND materializing every value, so something on the count path is doing work the plain
  * path does not — and `index.ts` rewrites `values(k) … count()` into `hasKey(k) … count()` precisely
  * to AVOID materializing, which should make it strictly cheaper.
  *
- * ⚠️ THE SCREEN ROW FOR THIS DID NOT EXIST until this item added it. Item 2026 priced a trailing
+ * THE SCREEN ROW FOR THIS DID NOT EXIST until this item added it. Item 2026 priced a trailing
  * `count()` on this prefix at "~1.6x available" from a census plus arithmetic, with no row to measure
  * it — and the census still shows the shape GENERIC, which reads like an unclaimed 1.6x.
  *
- * ⚠️ ONE SHAPE, ONE PROCESS (item 1874 retracted a 1.73x that was a within-process cross-row ratio),
+ * ONE SHAPE, ONE PROCESS (item 1874 retracted a 1.73x that was a within-process cross-row ratio),
  * and `ARM=count|plain` picks which. The fixture share is printed because item 1875 took two profiles
  * that were 76% and 40% FIXTURE — a profile whose top frames are the closed write frames in
  * `PROBES.md` has measured the fixture, not the query.
@@ -49,7 +49,7 @@ for (let e = 0; e < N * FANOUT; e += 1) {
 
   g.addEdge({
     id: `e${e}`,
-    // ⚠️ THE REPEAT INDEX IS IN THE EXPRESSION — CLAUDE.md's fix for the `(a*k+b) % N` degeneracy,
+    // THE REPEAT INDEX IS IN THE EXPRESSION — CLAUDE.md's fix for the `(a*k+b) % N` degeneracy,
     // which is invariant under `k -> k + N` and silently makes the graph FUNCTIONAL.
     from: g.getVertexById(String(i + 1)),
     to: g.getVertexById(String(((i * 7 + 3 + hop * 2_654_435_761) % N) + 1)),

@@ -2,7 +2,7 @@
  * PROJECTION: turning a binding table into the rows a RETURN asks for — grouping, aggregating,
  * ordering and paging included.
  *
- * ⚠️ THIS MODULE CLOSES THE LAST IMPORT CYCLE IN THE PACKAGE (item 1666). `clauses.ts` needed
+ * THIS MODULE CLOSES THE LAST IMPORT CYCLE IN THE PACKAGE (item 1666). `clauses.ts` needed
  * exactly `applyProjection` and `projectedRows` from `core.ts`, while `core.ts` needed two back —
  * a 2-against-2 mutual pair, the only one left after the other three were closed by a single symbol
  * each. It took 699 lines to move rather than two, because the pair drags the whole grouping and
@@ -12,14 +12,14 @@
  * That size is the honest shape of the thing. The other three cycles were one symbol in the wrong
  * place; this one is a genuine subsystem that was never given a file.
  *
- * ⚠️ `boundedTopK` AND `pagedFaultFreeRows` ARE BOTH HERE BECAUSE PAGING IS NOT A POST-FILTER.
+ * `boundedTopK` AND `pagedFaultFreeRows` ARE BOTH HERE BECAUSE PAGING IS NOT A POST-FILTER.
  * A `LIMIT` has to reach the producer or the engine materialises a whole cross product first —
  * measured at 473x for a 4096-row tail cache and 3680x for a cross product under a LIMIT, in BOTH
  * engines. A top-k that is bounded and a paged scan that stops early are the two shapes that
  * carry that, and splitting them from the projection they serve is how a later change reintroduces
  * the eager fill.
  *
- * ⚠️ `rowKey` IS A GROUPING KEY AND MUST NOT BE CONFUSED WITH THE ORDERING ONE. `valueKey` in
+ * `rowKey` IS A GROUPING KEY AND MUST NOT BE CONFUSED WITH THE ORDERING ONE. `valueKey` in
  * `rows.ts` is its per-value counterpart and `compareSort` in `values.ts` is the total order; a key
  * only has to be injective, while the order has to agree with the Rust engine byte for byte.
  */
@@ -180,7 +180,7 @@ export const projectedRows = (
     resolveCount(proj.skip, params) !== undefined || resolveCount(proj.limit, params) !== undefined;
 
   /*
-   * ⚠️ THE SORTED FAST PATH (item 2018) — see `sortedDirectRoute` for every refusal and why, and
+   * THE SORTED FAST PATH (item 2018) — see `sortedDirectRoute` for every refusal and why, and
    * `sortedRowsDirect` for what it skips: ~193 ns a row, 3.1x of the sort itself.
    */
   if (sortedDirectRoute(proj, windowed)) {
@@ -592,7 +592,7 @@ export const buildGroups = (
  * Does this projection take `sortedRowsDirect`? A pure function of the compiled projection (item
  * 2018).
  *
- * ⚠️⚠️ **A ROUTE CHOICE, SO ANSWER-EQUIVALENT — every mutant of it survives the behavioural tests**
+ * **A ROUTE CHOICE, SO ANSWER-EQUIVALENT — every mutant of it survives the behavioural tests**
  * ([[perf-gate-needs-its-own-test]]). Extracted and exported for the same reason item 1776 extracted
  * `unsortedPageRoute`: the arithmetic is the only thing a test can hold. It also gives the mutation
  * round a UNIQUE anchor, which the inline form did not — `!proj.aggregating` appears four times in
@@ -625,7 +625,7 @@ export const sortedDirectRoute = (proj: CProjection, windowed: boolean): boolean
  * `ORDER BY` WITH NO `Map` ROUND-TRIP — the sorted twin of `projectedRows`' unsorted fast path
  * (item 2018).
  *
- * 🔑 **THE SORTED PATH ALLOCATED TWICE PER ROW AND ITERATED TWICE.** `applyProjection` builds the
+ * **THE SORTED PATH ALLOCATED TWICE PER ROW AND ITERATED TWICE.** `applyProjection` builds the
  * projected columns as a `Map` (`projectBinding`), sorts, and then has `mapToRow` copy each `Map`
  * into a plain object — which is verbatim the "two allocations and two iterations per row where one
  * of each will do" that `projectRow`'s header describes having fixed for the UNSORTED path. It was
@@ -645,20 +645,20 @@ export const sortedDirectRoute = (proj: CProjection, windowed: boolean): boolean
  * which is why this was priced with an A/B arm rather than read off the profile (item 2017's lesson
  * about frame attribution, one item on).
  *
- * ⚠️ WHY THE SORT KEYS MAY READ THE INPUT BINDING: `!proj.orderNeedsOutput` is exactly item 2017's
+ * WHY THE SORT KEYS MAY READ THE INPUT BINDING: `!proj.orderNeedsOutput` is exactly item 2017's
  * condition — the keys were rewritten through `aliasDefinition` and read input variables, so the
  * projected columns are not needed to evaluate them. The same flag the top-k path has relied on.
  *
- * ⚠️ NO WINDOW. With `SKIP`/`LIMIT` the general path keeps top-k INPUT bindings and projects only
+ * NO WINDOW. With `SKIP`/`LIMIT` the general path keeps top-k INPUT bindings and projects only
  * survivors (item 145), so an item that faults on a discarded row never raises there — projecting
  * everything and slicing after would raise where the query does not. `ordered-rows.ts` states this
  * rule and item 604 measured it on both engines. The top-k path above is also simply better for
  * that shape, so this declines it twice over.
  *
- * ⚠️ THE COMPARATOR IS `keyedComparator`, NOT A COPY — see its header. And tie order is input order
+ * THE COMPARATOR IS `keyedComparator`, NOT A COPY — see its header. And tie order is input order
  * in both paths, because rows are projected in input order and `Array.prototype.sort` is stable.
  *
- * ⚠️ COLUMN ORDER IS UNCHANGED, which is the observable shape of the output
+ * COLUMN ORDER IS UNCHANGED, which is the observable shape of the output
  * ([[column-order-is-observable]]): `projectRow` writes `proj.items` in order, and `mapToRow` walked
  * the `Map` in insertion order, which was that same `proj.items` order. `projectRow`'s own header
  * makes this argument for the unsorted path and it is the same argument here.
@@ -674,7 +674,7 @@ const sortedRowsDirect = (
 
   for (const b of bindings) {
     /*
-     * ⚠️ PROJECT FIRST, THEN THE KEYS, in this order — because the projection is what can FAULT and
+     * PROJECT FIRST, THEN THE KEYS, in this order — because the projection is what can FAULT and
      * the general path projects a row before it is ever compared. Evaluating keys first would raise
      * a key's error where the query raises the projection's.
      */
@@ -703,13 +703,13 @@ const sortedRowsDirect = (
 /**
  * "Which of these two keyed rows sorts first" — ONE derivation, shared (item 2018).
  *
- * ⚠️⚠️ **A SECOND COPY OF THIS IS THE ONE THING BYTE-IDENTITY CANNOT SURVIVE**, which is
+ * **A SECOND COPY OF THIS IS THE ONE THING BYTE-IDENTITY CANNOT SURVIVE**, which is
  * `sortRowsByColumns`' own warning in `values.ts` and `sort-column-specialize.ts`' reason for being
  * branch ELIMINATION rather than a rewrite. `applyProjection` and `sortedRowsDirect` both need it —
  * the second is a fast path that skips the `Map` round-trip and must sort IDENTICALLY, ties
  * included — so it lives here and neither writes its own.
  *
- * ⚠️ TIE ORDER IS THE CALLER'S, NOT THIS FUNCTION'S: returning 0 leaves the rows in the order the
+ * TIE ORDER IS THE CALLER'S, NOT THIS FUNCTION'S: returning 0 leaves the rows in the order the
  * sort received them, and `Array.prototype.sort` is required to be STABLE, so both callers keep
  * input order on a tie. A caller that pre-sorted or re-ordered its input would change the answer
  * without changing this comparator.
@@ -970,7 +970,7 @@ export const applyProjection = (
     keyed = map((b: Binding) => {
       const projected = projectBinding(proj, b, params, graph);
       /*
-       * ⚠️⚠️ **THE OVERLAY IS BUILT ONLY WHEN A SORT KEY READS AN OUTPUT COLUMN, AND `ORDER BY x`
+       * **THE OVERLAY IS BUILT ONLY WHEN A SORT KEY READS AN OUTPUT COLUMN, AND `ORDER BY x`
        * OVER A PLAIN ALIAS DOES NOT** (item 2017). `compileProjection` rewrites a sort key through
        * `aliasDefinition` BEFORE compiling it, so `RETURN b.n AS x … ORDER BY x` compiles to a key
        * reading `b.n` — from the INPUT binding. `orderNeedsOutput` records exactly that and is
@@ -995,17 +995,17 @@ export const applyProjection = (
        *     a hand 2-key sort of the same rows    218 ms     97 ns/row
        * ```
        *
-       * ⚠️ AND IT IS NOT ONE SHAPE. Every query with an `ORDER BY` over plain aliases was paying
+       * AND IT IS NOT ONE SHAPE. Every query with an `ORDER BY` over plain aliases was paying
        * this, so the whole-screen A/B (`overlay-gate-ab-2017.sh`, four alternated rounds, one child
        * process per family) moves **sixteen families flat or better**: `in-list` 1.60x, `optional`
        * 1.23x, `neighbors` 1.20x, `point-lookup` 1.19x, `edge-filter` 1.13x, `union` and
        * `var-length` 1.11x, nothing worse than 0.97x (noise).
        *
-       * ⚠️ A COLUMNAR SORT WAS PRICED AND REFUTED BEFORE BEING PROPOSED: sorting an index
+       * A COLUMNAR SORT WAS PRICED AND REFUTED BEFORE BEING PROPOSED: sorting an index
        * permutation over a `Float64Array` of pairs read 245 ms against the boxed-object sort's 218,
        * i.e. SLOWER. Do not reach for it from this profile.
        *
-       * ⚠️ WHEN THE FLAG IS TRUE THE MERGE STAYS, and those shapes are real: an aggregate alias
+       * WHEN THE FLAG IS TRUE THE MERGE STAYS, and those shapes are real: an aggregate alias
        * (`RETURN count(*) AS c … ORDER BY c`) has no input variable to read, and `RETURN *` carries
        * every in-scope variable to the output so any reference counts. Both were measured as
        * `orderNeedsOutput=true` and keep the overlay.

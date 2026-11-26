@@ -75,7 +75,7 @@ const NO_PATH: readonly unknown[] = Object.freeze([]);
  * so the optimization only ever removes provably-unobservable work.
  */
 /**
- * ⚠️ NOW AN O(1) FIELD READ (item 1504). The walk moved to plan CONSTRUCTION — see
+ * NOW AN O(1) FIELD READ (item 1504). The walk moved to plan CONSTRUCTION — see
  * {@link Plan.readsPath} in `ast.ts` for why that, and not a cache on this path.
  *
  * Kept as a function rather than inlining `plan.readsPath` at its call sites: it is the name the
@@ -117,7 +117,7 @@ export const startTraverser = <T>(value: T, tracksPath = true): Traverser<T> => 
   path: tracksPath ? [value] : NO_PATH,
   loopCount: 0,
   tags: emptyTags,
-  // ⚠️ SET EXPLICITLY SO ALL THREE CONSTRUCTORS AGREE ON THE SHAPE (item 1746). Item 1745 gave
+  // SET EXPLICITLY SO ALL THREE CONSTRUCTORS AGREE ON THE SHAPE (item 1746). Item 1745 gave
   // `extend` a plain `sack` field (5 fields) and left this one at 4, so source traversers and
   // extended ones had DIFFERENT hidden classes — a polymorphism that item introduced without
   // noticing, because its own numbers improved anyway. Unifying is 1.20x on `coalesce` with
@@ -134,7 +134,7 @@ export const extend = <T>(prev: Traverser<unknown>, value: T): Traverser<T> => (
   tags: prev.tags,
   // Propagate the sack (split-on-branch = clone).
   //
-  // ⚠️ WRITTEN AS A PLAIN FIELD, NOT A CONDITIONAL SPREAD, and the previous form's comment claimed
+  // WRITTEN AS A PLAIN FIELD, NOT A CONDITIONAL SPREAD, and the previous form's comment claimed
   // the no-sack path cost nothing (item 1745 measured that claim and it was false). The spread
   //     ...(prev.sack === undefined ? {} : { sack: prev.sack })
   // allocated an empty object on EVERY no-sack extend and, worse, a spread inside an object literal
@@ -152,7 +152,7 @@ export const extend = <T>(prev: Traverser<unknown>, value: T): Traverser<T> => (
 });
 
 /**
- * ⚠️ AN EXPLICIT LITERAL, NOT `{ ...t, loopCount: … }`, for the same reason as `extend` and
+ * AN EXPLICIT LITERAL, NOT `{ ...t, loopCount: … }`, for the same reason as `extend` and
  * `startTraverser` above: a spread denies V8 a fixed hidden class for the literal, and all three
  * constructors must agree or the steps downstream see polymorphic traversers. `repeat()` is the
  * only caller (item 1746 checked), and it measured flat there — the win is in the SHAPE agreement,
@@ -185,12 +185,12 @@ export const firstLabel = (s: ReadonlySet<string>): string | undefined => {
 /**
  * An element's label, preferring the core's cached `soleLabel` over iterating the set (item 2085).
  *
- * 🔑 ITEM 2080 FUSED `V().label()` AND LEFT THIS TERM: a `Set` has no indexed access, so taking "the
+ * ITEM 2080 FUSED `V().label()` AND LEFT THIS TERM: a `Set` has no indexed access, so taking "the
  * first label" allocated an iterator per element — measured there at ~14 ns a row, the whole residue
  * of that fusion. `soleLabel` is a field read on the label box, maintained at the three sites that
  * write it.
  *
- * ⚠️ `soleLabel === undefined` MEANS ZERO **OR MANY**, so the fallback to `firstLabel` is required
+ * `soleLabel === undefined` MEANS ZERO **OR MANY**, so the fallback to `firstLabel` is required
  * and must keep INSERTION order — `dispatch.ts`'s `case 'label'` yields `firstLabel(...) ?? null`,
  * and a multi-label vertex created as `['T', 'U']` must still yield `T`.
  */
@@ -232,11 +232,11 @@ export type RunContext = {
    * the plan contains no mutation step anywhere, so nothing can change an element while it is being
    * keyed (item 1922).
    *
-   * ⚠️ DEFAULTS TO `false`, the conservative value, for {@link RunContext.tracksPath}'s reason: a
+   * DEFAULTS TO `false`, the conservative value, for {@link RunContext.tracksPath}'s reason: a
    * context built without it (sub-plan evaluation, a hand-made call) is then always correct, just
    * unoptimized. The dangerous default is the other one.
    *
-   * ⚠️ WHY IT IS NEEDED AT ALL, measured rather than assumed. `treeStep` keys every path position by
+   * WHY IT IS NEEDED AT ALL, measured rather than assumed. `treeStep` keys every path position by
    * `JSON.stringify(node.toJSON())` — the byte-identity contract with the Rust engine — which is
    * **744 ms of a 1013 ms shape** at 200,000 vertices (`tree().by(k)`, which skips that key, is
    * 269.67). A per-element memo collapses 1,200,000 serializations into ~200,000 distinct ones. But
@@ -288,7 +288,7 @@ export const unwrap = function* (stream: Iterable<Traverser<unknown>>): Iterable
 };
 
 /**
- * ⚠️ `Iterable<unknown>`, NOT `Iterable<Traverser>` — the body only asks whether the iterable yields
+ * `Iterable<unknown>`, NOT `Iterable<Traverser>` — the body only asks whether the iterable yields
  * anything, and item 1627 needed it for an iterable of VALUES. Widening the parameter to what the
  * body actually requires costs nothing and every existing caller still fits; narrowing it to
  * traversers was an accident of where it was first used.
@@ -390,7 +390,7 @@ const partKey = (p: unknown): string => {
 };
 
 /**
- * ⚠️ FAST PATH FOR ONE PART, which is FOUR of the five call sites (`dedupe`, two in `iteration.ts`,
+ * FAST PATH FOR ONE PART, which is FOUR of the five call sites (`dedupe`, two in `iteration.ts`,
  * and `match`'s candidate dedupe). The general form pays `.map()` — a real array per call, since
  * escape analysis does not see through array builtins the way it does an object literal — and then
  * a `.join()` that, for a single part, copies the string it was already handed.
@@ -520,12 +520,12 @@ export const evalBy = (by: By, value: unknown, graph: Graph, ctx: RunContext): u
 /**
  * THE VALUE-KEYED HALF OF `dedupe`'s FILTER — ONE DEFINITION, TWO CALLERS (item 1869).
  *
- * ⚠️ IT LIVES IN `runtime.ts` AND NOT IN A MODULE OF ITS OWN, because `tupleKey` and `NO_VALUE` are
+ * IT LIVES IN `runtime.ts` AND NOT IN A MODULE OF ITS OWN, because `tupleKey` and `NO_VALUE` are
  * defined HERE and `runtime.ts` imports `dispatch.js` for `applyPlanToStream` — so a separate file
  * importing both closed a dependency cycle that `oxlint` rejected. An added export is not a new
  * node in the import graph; a new file was.
  *
- * ⚠️ IT IS ONE DEFINITION RATHER THAN A SECOND COPY, AND THAT IS THE WHOLE POINT. `dispatch.ts` built this
+ * IT IS ONE DEFINITION RATHER THAN A SECOND COPY, AND THAT IS THE WHOLE POINT. `dispatch.ts` built this
  * predicate inline, and item 1869 needed the same classes for a FUSED `V().values(k).dedupe()` walk
  * that skips the traverser stream. Re-deriving them there would have meant duplicating FIVE key
  * spaces — a plain `Set`, a structural-string `Set` with a `WeakSet` short-circuit, a `LocalDate`
@@ -534,12 +534,12 @@ export const evalBy = (by: By, value: unknown, graph: Graph, ctx: RunContext): u
  * worst form: two copies of "which values are the same value", with byte-identity against the Rust
  * engine riding on them agreeing forever.
  *
- * ⚠️ THE MULTI-LABEL FORM IS **NOT** HERE, deliberately. `dedupe('a', 'b')` keys on the tuple of
+ * THE MULTI-LABEL FORM IS **NOT** HERE, deliberately. `dedupe('a', 'b')` keys on the tuple of
  * TAGGED values, so it reads `t.tags` and needs the traverser rather than a value. It stays in
  * `dispatch.ts`, and the fused rung refuses a labelled `dedupe` outright — the same refusal
  * `distinctHopCount` and `dedupedHopChainCount` make, for the same reason.
  *
- * ⚠️ EVERY COMMENT BELOW CAME WITH THE CODE AND IS NOT NEW REASONING. The measurements, the
+ * EVERY COMMENT BELOW CAME WITH THE CODE AND IS NOT NEW REASONING. The measurements, the
  * `LocalDate`-out-of-the-composite-path decision and the `NaN`/`Infinity` collapse item 850 pinned
  * are all load-bearing; a reader deciding whether to touch a key space needs them here, next to the
  * space, rather than in the file this moved out of.
@@ -599,7 +599,7 @@ export const valueDedupeFilter = (): ((v: unknown) => boolean) => {
      *   values('name').dedup()     18.59       vs  RETURN DISTINCT p.name    5.48    3.4x
      * ```
      *
-     * ⚠️ THE NUM AND STR ROWS TAKE THE CHEAP `seen` PATH ALREADY, so their 3.4-3.6x is the
+     * THE NUM AND STR ROWS TAKE THE CHEAP `seen` PATH ALREADY, so their 3.4-3.6x is the
      * TRAVERSAL STREAM'S own cost and not a keying defect — that reading is what nominated item
      * 1869's fused walk, which removes the stream and leaves this predicate untouched.
      *
@@ -613,7 +613,7 @@ export const valueDedupeFilter = (): ((v: unknown) => boolean) => {
      * 850 pinned that collapse rather than "improving" it inside a speedup, and this keeps the same
      * decision.
      */
-    // ⚠️ THIS BRANCH IS A PERFORMANCE DECISION AND ITS MUTANT MUST SURVIVE (item 1869's run
+    // THIS BRANCH IS A PERFORMANCE DECISION AND ITS MUTANT MUST SURVIVE (item 1869's run
     // confirms it does). Deleting it sends dates down the composite path, which keys them
     // STRUCTURALLY and therefore dedupes them into the same classes — the same answer, item 857's
     // measured 2.0x slower. An answer test cannot see it, so the guard is the benchmark's, not the

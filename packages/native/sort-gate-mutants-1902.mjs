@@ -1,13 +1,13 @@
 /**
  * DOES THE UNWINDOWED EXPRESSION-SORT GATE HAVE TEETH? (item 1902)
  *
- * ⚠️ THE CHANGE IS ONE GATE, so the mutants are about which shapes it admits — and the one that
+ * THE CHANGE IS ONE GATE, so the mutants are about which shapes it admits — and the one that
  * matters most is the mutant that admits a `SKIP` WITH NO `LIMIT`, because that is the case item
  * 1062's rules refuse for a stated correctness reason: with no cap the general path projects every
  * row and drops the skipped ones afterwards, so a faulting item raises, while ranking-then-
  * projecting would emit fewer rows than it projects and silently not raise.
  *
- * ⚠️ THE TEST SET CARRIES THREE PRE-EXISTING FILES BESIDE THE NEW ONE. `page-fold-fault.test.ts` is
+ * THE TEST SET CARRIES THREE PRE-EXISTING FILES BESIDE THE NEW ONE. `page-fold-fault.test.ts` is
  * the suite that caught item 1062's first cut admitting exactly that, and the two ordered-projection
  * files guard the arms this item did not touch — running the new file alone would credit this change
  * with coverage that predates it and would miss a mutant that breaks a neighbour.
@@ -97,7 +97,7 @@ const MUTANTS = [
 /** Names that MUST survive, each with its reason stated at the entry. */
 const EXPECTED_SURVIVORS = new Set([
   /*
-   * ⚠️ PRE-EXISTING, AND REDUNDANT FOR EVERY SHAPE THIS ARM CAN SEE — not a gap this item opened.
+   * PRE-EXISTING, AND REDUNDANT FOR EVERY SHAPE THIS ARM CAN SEE — not a gap this item opened.
    * `deferredSortKeys` is item 1062's, and `detectNodeProjection` admits a SINGLE node pattern, so
    * the only free variable a key can read IS `nodeVar`; the `outNames` half of the same condition
    * is what actually rejects anything. It is the identical situation `node-scan.ts` already
@@ -110,7 +110,7 @@ const EXPECTED_SURVIVORS = new Set([
 ]);
 
 /*
- * ⚠️⚠️ AND ONE ENTRY WAS REMOVED FROM THIS SET BECAUSE THE HARNESS CONTRADICTED IT. Reverting the
+ * AND ONE ENTRY WAS REMOVED FROM THIS SET BECAUSE THE HARNESS CONTRADICTED IT. Reverting the
  * change is ANSWER-EQUIVALENT — the old route returns the same rows, slower — so it was declared an
  * expected survivor on [[perf-gate-needs-its-own-test]] grounds. It is CAUGHT, by the ROUTE
  * assertions in `unwindowed-expr-sort.test.ts`, and the harness said so ("was expected to SURVIVE
@@ -120,14 +120,14 @@ const EXPECTED_SURVIVORS = new Set([
 /** The three outcomes as a label; a nested ternary is what the linter objects to. */
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
 /**
- * ⚠️ BOTH STREAMS, ALWAYS: `bun test` writes `N pass` to **stderr**, and item 767 read an empty
+ * BOTH STREAMS, ALWAYS: `bun test` writes `N pass` to **stderr**, and item 767 read an empty
  * stdout and concluded the runner never ran a test.
  */
 const run = () => {
@@ -185,7 +185,7 @@ try {
     const ran = /\d+ pass/.test(r.text);
 
     if (!ran && r.code !== 124) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -212,6 +212,6 @@ try {
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

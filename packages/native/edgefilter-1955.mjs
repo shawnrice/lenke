@@ -8,10 +8,10 @@
 // this shape keeps the edge in the stream — and the question is what that costs against a hand
 // loop that never materializes an edge traverser.
 //
-// 🔑 THE HAND CEILING IS ONE EDGE-BUCKET PASS: test the property, take the target, read `n`. The
+// THE HAND CEILING IS ONE EDGE-BUCKET PASS: test the property, take the target, read `n`. The
 // engine cannot beat that, and the gap is what a fused arm could claim.
 //
-// ⚠️ THE ANSWER IS GUARDED, not just the row count: a multiset checksum, because an arm that
+// THE ANSWER IS GUARDED, not just the row count: a multiset checksum, because an arm that
 // visits the right edges in the wrong nesting still has to produce the same values.
 //
 //     bun edgefilter-1955.mjs
@@ -141,7 +141,7 @@ console.log(
 );
 
 /*
- * ⚠️ AND NOW THE QUESTION THAT DECIDES WHETHER THE EDGE-BUCKET ARM IS EVEN LEGAL. The Gremlin
+ * AND NOW THE QUESTION THAT DECIDES WHETHER THE EDGE-BUCKET ARM IS EVEN LEGAL. The Gremlin
  * differential fuzzer compares this shape STRICTLY ORDERED — a single-type `outE('E')` is not in
  * its unordered set (that needs two or more labels, or a bare `both`/`bothE`) — so the TS engine's
  * stream order for it is a cross-engine contract, not a free choice. A checksum cannot see an order

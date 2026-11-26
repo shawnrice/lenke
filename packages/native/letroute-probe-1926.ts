@@ -1,6 +1,6 @@
 // Item 1926 — WHICH RUNG DOES A `LET` SHAPE REACH, if any?
 //
-// ⚠️ TIMING CANNOT TELL "DECLINED" FROM "MORE WORK" ([[rung-precedence-decides-speed]]): the fix is
+// TIMING CANNOT TELL "DECLINED" FROM "MORE WORK" ([[rung-precedence-decides-speed]]): the fix is
 // to read `compileLinear`'s non-null fields. `MATCH (n:T) LET a = n.n + 1 RETURN a AS x` measures
 // **54.99 ms against the hand-folded `RETURN (n.n + 1) AS x`'s 9.26** — 5.9x — and
 // `inlineTrailingLet` is supposed to turn the first into the second. So either the rewrite is not
@@ -66,7 +66,7 @@ for (const [name, text] of Object.entries(SHAPES)) {
     const kinds = c.clauses.map((cl) => cl.kind).join(',');
     const set = RUNGS.filter((r) => c[r] !== undefined && c[r] !== null);
 
-    // ⚠️ THE PROJECTION'S EXPRESSION KIND, because `inlineTrailingLet`'s first substitution branch
+    // THE PROJECTION'S EXPRESSION KIND, because `inlineTrailingLet`'s first substitution branch
     // keys on `e.kind === 'var'` — if an aliased `RETURN a AS x` does not present as a bare var,
     // that branch never fires and the whole diagnosis changes.
     const { clauses } = linear as unknown as {
@@ -90,6 +90,6 @@ for (const [name, text] of Object.entries(SHAPES)) {
 }
 
 console.log(
-  '\n⚠️ A surviving `let` in the clause list means `inlineTrailingLet` did not fold it. `rungs=NONE`\n' +
+  '\nA surviving `let` in the clause list means `inlineTrailingLet` did not fold it. `rungs=NONE`\n' +
     '   means the shape reaches the general per-clause path whatever its timing looks like.',
 );

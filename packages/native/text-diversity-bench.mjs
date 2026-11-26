@@ -2,13 +2,13 @@
  * DOES A WORKLOAD OF MORE DISTINCT QUERY TEXTS THAN THE PARSE CACHE HOLDS COST MORE PER QUERY?
  * (item 1840)
  *
- * ⚠️ ONE CONFIGURATION PER PROCESS, AND ITEM 1839 IS WHY. That item tried the same question with
+ * ONE CONFIGURATION PER PROCESS, AND ITEM 1839 IS WHY. That item tried the same question with
  * every configuration in one process and got a **12x spread on the SAME configuration** across
  * three rounds (22.4 / 2.4 / 1.8 us a query), each round faster than the last because the JIT was
  * still tiering up. Configurations sharing a moving JIT state cannot be compared — item 762's
  * one-shape-per-process rule, arriving from the compile side instead of the dispatch side.
  *
- * ⚠️ AND SUBTRACTION CANNOT ANSWER IT EITHER (item 1839's other failure): a cold/warm delta of
+ * AND SUBTRACTION CANNOT ANSWER IT EITHER (item 1839's other failure): a cold/warm delta of
  * 244 ms sat inside a warm/warm noise band of ±180 ms. This measures ONE number — microseconds per
  * query at a given diversity — and the comparison is between PROCESSES.
  *
@@ -49,11 +49,11 @@ for (let i = 0; i < NODES; i += 1) {
 const texts = Array.from({ length: TEXTS }, (_, i) => `MATCH (n:T) RETURN n.n AS a${i}`);
 
 /**
- * ⚠️ WARM-UP ON TEXTS THIS RUN NEVER MEASURES, so the JIT is tiered up before the first timed rep
+ * WARM-UP ON TEXTS THIS RUN NEVER MEASURES, so the JIT is tiered up before the first timed rep
  * WITHOUT seeding the cache with the texts under test. Warming on the measured texts would hand
  * the large-N configurations a cache state they would never have in the workload being modelled.
  */
-// ⚠️ Built OUTSIDE the call rather than suppressed. `lenke/no-raw-interpolation` fires on an
+// Built OUTSIDE the call rather than suppressed. `lenke/no-raw-interpolation` fires on an
 // interpolation spliced into `query()` directly, and it is right to: the fix here is to name the
 // texts first, exactly as the measured list below does. (A `$param` is NOT the fix for this bench —
 // auto-parameterization would lift it and collapse the texts into one, which is the case the bench
@@ -85,7 +85,7 @@ const median =
     ? kept[kept.length >> 1]
     : (kept[(kept.length >> 1) - 1] + kept[kept.length >> 1]) / 2;
 
-// ⚠️ The row count is the answer guard: every text returns NODES rows, so a configuration that
+// The row count is the answer guard: every text returns NODES rows, so a configuration that
 // silently answered differently is not comparable however fast it was.
 if (rows !== NODES * TEXTS * REPS) {
   throw new Error(`returned ${rows} rows, expected ${NODES * TEXTS * REPS} — not comparable`);

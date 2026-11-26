@@ -12,7 +12,7 @@
 //! candidate holes, and per items 1191/1192 a text census finds candidates and not facts — this
 //! measures them.
 //!
-//! ⚠️ TWO FLOORS, both chosen before measuring (items 1187, 1189 and 1195 each paid for a control
+//! TWO FLOORS, both chosen before measuring (items 1187, 1189 and 1195 each paid for a control
 //! that was subject to the hole it measured):
 //!
 //!   count(*) with NO predicate   the scan floor: what the walk costs with no comparison at all.
@@ -22,7 +22,7 @@
 //! And the reference for what a SERVED comparison costs is the `num`/`str` row of the same table,
 //! at matched selectivity — not a different query.
 //!
-//! ⚠️ SELECTIVITY IS HELD AT ~50% ACROSS EVERY ROW. A predicate matching 1% and one matching 50%
+//! SELECTIVITY IS HELD AT ~50% ACROSS EVERY ROW. A predicate matching 1% and one matching 50%
 //! count different numbers of rows, and the comparison would then be of two different questions.
 //! The printed `rows` column is the check on that, not decoration.
 //!
@@ -99,7 +99,7 @@ fn main() {
     let (bare, bare_rows) = ask("MATCH (a:Person) RETURN count(*) AS c");
     let (wtrue, _) = ask("MATCH (a:Person) WHERE true RETURN count(*) AS c");
 
-    // ⚠️ `count(*)` WITH NO PREDICATE IS NOT A FLOOR. It has its own O(1) shortcut and reads at
+    // `count(*)` WITH NO PREDICATE IS NOT A FLOOR. It has its own O(1) shortcut and reads at
     // the timer's resolution, so dividing by it manufactures any ratio you like — item 1196's own
     // rule, which the first version of this probe broke anyway (it printed ratios like 2063x).
     // The floor is `WHERE true`: the same walk, with a clause that cannot be false.
@@ -108,7 +108,7 @@ fn main() {
     println!("\n  predicate                               us   vs WHERE true   served?   rows");
 
     for (label, pred, served) in [
-        // SERVED, and the reference for what a typed mask costs. ⚠️ EVERY predicate here must
+        // SERVED, and the reference for what a typed mask costs. EVERY predicate here must
         // actually MATCH about half the rows: the first version used `a.num = 500000`, which
         // matched ZERO of 200,000 random values, so its row timed a different question.
         ("a.num >= 500000", "a.num >= 500000", "YES num"),
@@ -165,7 +165,7 @@ fn main() {
         );
     }
 
-    // ⚠️ THE DISCRIMINATING EXPERIMENT (item 1204). The `count(*)` table above cannot separate
+    // THE DISCRIMINATING EXPERIMENT (item 1204). The `count(*)` table above cannot separate
     // "the FILTER is faster for this type" from "the COUNT takes a different route for this type",
     // and `num_conj_on_slot` admits only `Value::Num` literals — so the streaming filtered-count
     // serves NUMERIC predicates, which is the OPPOSITE of what the table shows (num 636.8us
@@ -244,7 +244,7 @@ fn main() {
          what a served row of the same shape costs."
     );
     println!(
-        "  ⚠️ Check the `rows` column before reading any ratio: a predicate that selects a\n  \
+        "  Check the `rows` column before reading any ratio: a predicate that selects a\n  \
          different number of rows is a different question."
     );
 }

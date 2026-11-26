@@ -3,7 +3,7 @@
  * measured five shapes in sequence and the first paid JIT warm-up the rest inherited, manufacturing a
  * 2.6x that did not exist.
  *
- * ⚠️ THE FLOOR MUST BUILD THE SAME ROWS — two string properties per row. A floor that only counts would
+ * THE FLOOR MUST BUILD THE SAME ROWS — two string properties per row. A floor that only counts would
  * charge the engine for materialization it is supposed to be doing (item 698's error, mirrored).
  */
 import { Graph } from '@lenke/core';
@@ -60,12 +60,12 @@ const floor = (): { p: unknown; c: unknown }[] => {
 /*
  * --- THE REACHABILITY LADDER (item 2216) ------------------------------------------------------
  *
- * ⚠️⚠️ **A MEASURED GAP IS NOT A REACHABLE ONE.** Item 2215 measured 2.6x and named
+ * **A MEASURED GAP IS NOT A REACHABLE ONE.** Item 2215 measured 2.6x and named
  * `relBoundFilteredHopWalk`, but TWO refutations sit in that neighbourhood: the per-row binding `Map`
  * was built and REFUSED TWICE (items 2023/2024), and `propOf`'s residual is a hidden-class problem
  * needing codegen, which `no-runtime-codegen` forbids (item 2201).
  *
- * 🔑 So each rung ADDS ONE PIECE of the engine's machinery to the bare floor. A rung that closes most of
+ * So each rung ADDS ONE PIECE of the engine's machinery to the bare floor. A rung that closes most of
  * the gap names the cause — and if that cause is already closed, the gap is NOT a target.
  */
 
@@ -89,7 +89,7 @@ const floorWithBinding = (): { p: unknown; c: unknown }[] => {
   return out;
 };
 
-/* ⚠️ HOISTED: `consistent-function-scoping` — these capture nothing, so recreating them per call would
+/* HOISTED: `consistent-function-scoping` — these capture nothing, so recreating them per call would
  * be measuring the wrong thing anyway. */
 const readP = (b: Map<string, unknown>): unknown =>
   (b.get('p') as { properties: Record<string, unknown> }).properties.name;
@@ -138,9 +138,9 @@ const countOnly = (): number => {
 };
 
 /*
- * ⚠️⚠️ **CONSUME CHEAPLY: `JSON.stringify` INSIDE THE TIMED LOOP DILUTES THE RATIO TOWARD 1.0** (item 2227).
+ * **CONSUME CHEAPLY: `JSON.stringify` INSIDE THE TIMED LOOP DILUTES THE RATIO TOWARD 1.0** (item 2227).
  * A large cost identical in both arms is added to numerator and denominator alike — stringifying 80,000
- * rows per iteration halved a measured gap (1.35x against the true 2.35x). 🔑 It is the mirror of item
+ * rows per iteration halved a measured gap (1.35x against the true 2.35x). It is the mirror of item
  * 2200's dead-code trap: consuming NOTHING lets the JIT delete the work, consuming EXPENSIVELY swamps it.
  */
 const consume = (v: unknown): number => (Array.isArray(v) ? v.length : Number(v) || 1);

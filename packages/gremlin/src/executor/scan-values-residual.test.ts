@@ -1,6 +1,6 @@
 // `V().values(k)` + a fused residual (item 2021).
 //
-// ⚠️⚠️ **THE SCAN RUNG REQUIRED THE PLAN TO BE EXACTLY `V() + values(k)`** — "and nothing after it" —
+// **THE SCAN RUNG REQUIRED THE PLAN TO BE EXACTLY `V() + values(k)`** — "and nothing after it" —
 // so every trailing step dropped the whole query onto the traverser pipeline. That is why `dedupe`
 // needed a rung of its own (item 1869) and why `order()` never got one:
 //
@@ -11,12 +11,12 @@
 // `order`/`count`/`fold`/`min`/`max`/`cap` for the HOP walks since items 1630-2020. So this is one
 // gate, five residuals.
 //
-// 🔑 THE ORACLE IS A SPELLING THAT CANNOT TAKE THE SCAN. `V().hasLabel(L).values(k)…` is refused by
+// THE ORACLE IS A SPELLING THAT CANNOT TAKE THE SCAN. `V().hasLabel(L).values(k)…` is refused by
 // `nodeValuesShortcut` outright (item 1870 — the pipeline's `seedFromIndex` beats a full scan for
 // every selective label, up to 678x), so with a label that covers EVERY vertex it is the same
 // question answered by the general route. Compared element for element.
 //
-// ⚠️ ~~AND `sum`/`mean` MUST STAY ON THE PIPELINE. `fusableProjectedAggregate` admits only
+// ~~AND `sum`/`mean` MUST STAY ON THE PIPELINE. `fusableProjectedAggregate` admits only
 // `min`/`max` because f64 addition is order-sensitive in its last ulp and the fused walk's visit
 // order is not the pipeline's — byte-identity with the Rust engine is a hard invariant.~~ **ITEM
 // 2408 ADMITTED THEM**, after item 2401 replaced that bit-identity invariant with a PRECISION
@@ -50,11 +50,11 @@ const build = (): Graph => {
   const g = new Graph();
 
   /*
-   * ⚠️ `n` IS SPARSE AND UNSORTED AND REPEATS. `v3` has no `n` at all, so `values('n')` DROPS it —
+   * `n` IS SPARSE AND UNSORTED AND REPEATS. `v3` has no `n` at all, so `values('n')` DROPS it —
    * which `count` must follow. The values arrive as [0, 2, 4, 3, 0]: not sorted, with a repeat, so
    * `order()` and `dedupe()` both produce sequences that arrival order alone cannot.
    *
-   * ⚠️ EVERY VERTEX CARRIES THE SAME LABEL, which is what makes the `hasLabel` oracle below the same
+   * EVERY VERTEX CARRIES THE SAME LABEL, which is what makes the `hasLabel` oracle below the same
    * question rather than a smaller one.
    */
   for (let i = 0; i < 6; i += 1) {
@@ -74,7 +74,7 @@ describe('the fused residuals, each against a hand-computed answer', () => {
   const g = build();
 
   test('the unsorted scan is [0, 2, 4, 3, 0] — five values from six vertices', () => {
-    // ⚠️ THE PREMISE OF EVERY ASSERTION BELOW. `v3` has no `n`, so `values('n')` emits five.
+    // THE PREMISE OF EVERY ASSERTION BELOW. `v3` has no `n`, so `values('n')` emits five.
     expect(rows(traversal(V(), values('n')), g)).toEqual([0, 2, 4, 3, 0]);
   });
 
@@ -117,7 +117,7 @@ describe('the general route is the ORACLE', () => {
 
   test('every residual matches its label-spelled twin, element for element', () => {
     /*
-     * 🔑 `hasLabel` IS REFUSED BY THE SCAN RUNG OUTRIGHT (item 1870), so `V().hasLabel('P')…` is the
+     * `hasLabel` IS REFUSED BY THE SCAN RUNG OUTRIGHT (item 1870), so `V().hasLabel('P')…` is the
      * same question on the general route — and every vertex here carries `P`, so it is the same
      * ROWS too. That makes it an oracle rather than the fast path blessing itself.
      */
@@ -146,7 +146,7 @@ describe('the general route is the ORACLE', () => {
       const fast = rows(make(false), g);
       const general = rows(make(true), g);
 
-      // ⚠️ A NON-EMPTY RESULT FIRST: two empty arrays agree trivially.
+      // A NON-EMPTY RESULT FIRST: two empty arrays agree trivially.
       expect(fast.length).toBeGreaterThan(0);
       expect(fast).toEqual(general);
     }
@@ -164,7 +164,7 @@ describe('the general route is the ORACLE', () => {
 
 describe('scanValuesResidual: the gate itself', () => {
   /*
-   * ⚠️⚠️ **THE ROUTE CHOICE IS ANSWER-EQUIVALENT — the pipeline returns the same rows — so nothing
+   * **THE ROUTE CHOICE IS ANSWER-EQUIVALENT — the pipeline returns the same rows — so nothing
    * above can see the residual path being declined.** [[perf-gate-needs-its-own-test]]. The gate is
    * exported for exactly this.
    */
@@ -180,7 +180,7 @@ describe('scanValuesResidual: the gate itself', () => {
 
   test('the RESIDUAL it reports is exactly the steps after `values(k)`', () => {
     /*
-     * ⚠️⚠️ **ASSERTING "IT RETURNED SOMETHING" IS NOT ENOUGH, AND THREE MUTANTS PROVED IT.** A wrong
+     * **ASSERTING "IT RETURNED SOMETHING" IS NOT ENOUGH, AND THREE MUTANTS PROVED IT.** A wrong
      * `rest` — empty, off by one, or the whole plan — still returns a non-`undefined` object, so a
      * `routed(...) === true` check passes; `fusedProjectedResidual` then finds no case it recognises,
      * declines, and the plan quietly falls through to the pipeline with the SAME ANSWER. Two of
@@ -193,7 +193,7 @@ describe('scanValuesResidual: the gate itself', () => {
 
     const two = scanValuesResidual(traversal(V(), values('n'), order(), limit(2)), g);
 
-    // ⚠️ `limit(n)` COMPILES TO A `take` STEP, which is what the residual actually carries.
+    // `limit(n)` COMPILES TO A `take` STEP, which is what the residual actually carries.
     expect(two?.rest.map((st) => st.kind)).toEqual(['order', 'take']);
 
     const three = scanValuesResidual(traversal(V(), values('n'), count()), g);
@@ -203,7 +203,7 @@ describe('scanValuesResidual: the gate itself', () => {
 
   test('DECLINES a plan with NO residual — the rung above owns that shape', () => {
     /*
-     * ⚠️ IF THIS RETURNED A WALK, IT WOULD SHADOW `nodeValuesShortcut` for its own headline shape.
+     * IF THIS RETURNED A WALK, IT WOULD SHADOW `nodeValuesShortcut` for its own headline shape.
      * The guard is a length check, which is the kind of thing a mutant flips silently.
      */
     expect(routed(traversal(V(), values('n')))).toBe(false);

@@ -1,12 +1,12 @@
 /*
  * Item 2072 — the endpoint-fold route threshold, as a pure function.
  *
- * ⚠️⚠️ **THIS IS A ROUTE CHOICE, SO NO ANSWER TEST CAN REACH IT.** Both arms answer identically — that
+ * **THIS IS A ROUTE CHOICE, SO NO ANSWER TEST CAN REACH IT.** Both arms answer identically — that
  * is what makes the fold legal — so every differential and engine-level test passes whichever side of
  * the boundary it lands on. [[perf-gate-needs-its-own-test]] prescribes exactly this: extract the
  * arithmetic as a pure function and unit-test it. It WAS extracted (item 1344) and never tested.
  *
- * 🔑 **THE BOUNDARY IS NOT ARBITRARY — IT IS A MEASURED TABLE**, quoted from the source:
+ * **THE BOUNDARY IS NOT ARBITRARY — IT IS A MEASURED TABLE**, quoted from the source:
  *
  * ```text
  *     degree   fold     walk     winner
@@ -21,7 +21,7 @@
  * putting it here keeps every measured WIN (degree 3 and up) on the fold." These tests pin that
  * sentence, so a future edit that moves the threshold has to argue with the table rather than with a
  * silent inequality. *
- * ⚠️⚠️ **RE-MEASURED AT ITEM 2402, AND THE BOUNDARY MOVED 2 -> 5. The table above was HONEST and is
+ * **RE-MEASURED AT ITEM 2402, AND THE BOUNDARY MOVED 2 -> 5. The table above was HONEST and is
  * now STALE, because the thing it compares against got faster.** The fold column reproduces almost
  * exactly (it is O(candidate endpoints) and reads no edge); the WALK column has roughly halved since,
  * which moves the crossover up:
@@ -37,24 +37,24 @@
  *          7     ~83   110.40    fold, 1.33x
  * ```
  *
- * 🔑 **The boundary is 6, which is ABOVE the tie, and that is a DELIBERATE departure from item
+ * **The boundary is 6, which is ABOVE the tie, and that is a DELIBERATE departure from item
  * 1345's rule.** It admitted at its tie row because "a tie costs nothing either way". That holds on
  * this probe's fixture, where degree 5 is 83.76 against 84.45 — but the bench's own `graphDoc`
  * (NDJSON-loaded, ONE property, degree 5) reads the fold at **97.8 ms against the walk's 30.0, a
  * 3.26x LOSS**. A tie on one fixture and a 3.26x loss on another is not a tie, so degree 5 goes to
- * the walk. ⚠️ **Nothing was wrong with the original measurement**:
+ * the walk. **Nothing was wrong with the original measurement**:
  * items 2297/2298 shipped 24-27x on far-driven hop walks and item 2401 freed the folds, so the gate's
  * comparand improved underneath it. This is the stale-constant class item 1301 catalogued, in a
  * threshold rather than in a heading.
  *
- * ⚠️⚠️ **FIXTURE-DEPENDENCE IS NOT A CAVEAT HERE, IT IS THE RESIDUAL FINDING.** The fold's cost is
+ * **FIXTURE-DEPENDENCE IS NOT A CAVEAT HERE, IT IS THE RESIDUAL FINDING.** The fold's cost is
  * per CANDIDATE VERTEX and flat in both degree and width (81-88 ms across degrees 2-16 and 1 or 4
  * properties); the walk's is per EDGE and scales with both. So the crossover is a function of two
  * costs and this gate reads only their RATIO's degree term. Measured crossovers: degree ~5 on this
  * probe at four properties AND at one, but well above 5 on `graphDoc`. **A width- or cost-aware gate
  * is OPEN** — 6 is the value that loses nothing on every fixture measured, not a derived optimum.
  *
- * ⚠️ IT IS ALSO ADMITTEDLY A PROXY: the source says the quantity it wants is "edges OF THE WANTED
+ * IT IS ALSO ADMITTEDLY A PROXY: the source says the quantity it wants is "edges OF THE WANTED
  * TYPES per CANDIDATE endpoint", and `Graph` carries no per-type edge count, so whole-graph
  * `edgeCount`/`vertexCount` stand in because both are O(1). The tests below are about the arithmetic
  * it actually performs, not about the quantity it would prefer.
@@ -69,9 +69,9 @@ describe('endpointFoldBeatsRowWalk — the measured threshold (item 2072)', () =
     expect(endpointFoldBeatsRowWalk(1, 1)).toBe(false);
   });
 
-  test('⚠️ degree 6 is ADMITTED, and DECLINING the degree-5 tie is the deliberate part', () => {
+  test('degree 6 is ADMITTED, and DECLINING the degree-5 tie is the deliberate part', () => {
     /*
-     * ⚠️⚠️ **`>=`, NOT `>`.** The degree-2 row is a 1.007x tie, so the boundary costs nothing either
+     * **`>=`, NOT `>`.** The degree-2 row is a 1.007x tie, so the boundary costs nothing either
      * way — and placing it here keeps every measured win (degree 3+) on the fold. A mutant changing
      * this to `>` would move the tie to the walk and no answer would differ, which is why the
      * assertion is on the exact boundary value and not merely on something above it.
@@ -96,9 +96,9 @@ describe('endpointFoldBeatsRowWalk — the measured threshold (item 2072)', () =
     expect(endpointFoldBeatsRowWalk(800, 100)).toBe(true);
   });
 
-  test('⚠️ an EMPTY graph does not divide by zero or admit on a vacuous truth', () => {
+  test('an EMPTY graph does not divide by zero or admit on a vacuous truth', () => {
     /*
-     * ⚠️ `0 >= 0 * 6` is TRUE, so an empty graph takes the fold. That is harmless — there is nothing
+     * `0 >= 0 * 6` is TRUE, so an empty graph takes the fold. That is harmless — there is nothing
      * to fold — but it is asserted so the behaviour is recorded rather than discovered later, and so
      * a future rewrite into a division has to confront the zero.
      */

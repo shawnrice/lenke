@@ -11,12 +11,12 @@
  *
  *   if (agg !== undefined && item.expr !== agg.expr) { return null; }   // shortcuts.ts
  *
- * ⚠️ THE FLOOR IS THE BARE SPELLING, chosen for the reason items 1187/1189/1195 each learned the
+ * THE FLOOR IS THE BARE SPELLING, chosen for the reason items 1187/1189/1195 each learned the
  * hard way: it is the same question through the route the fast path already serves, so whatever the
  * wrapped form spends ABOVE it is the routing cost and nothing else. It must NOT be `count(*)`,
  * which has its own O(1) shortcut and would flatter any comparison.
  *
- * ⚠️ AND `size(collect(x))` IS NOT A FLOOR EITHER — item 1195's lesson, where that exact choice
+ * AND `size(collect(x))` IS NOT A FLOOR EITHER — item 1195's lesson, where that exact choice
  * overstated a gap 3.5x because `size` had a borrow path of its own. Here the bare `min(a.num)` is
  * served by `detectNodeAggregate`, which is the route under test, so it cannot be secretly faster
  * for a different reason.

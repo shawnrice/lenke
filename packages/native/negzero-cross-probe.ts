@@ -9,7 +9,7 @@
  * So the suspicion is a divergence that predates item 1162 entirely: a column holding `-0.0`,
  * asked for its minimum or its 0th percentile, should answer `-0.0` in native and `0.0` in TS.
  *
- * ⚠️ `JSON.stringify` CANNOT SEE THIS — it renders both as `0`. `Object.is` is the only
+ * `JSON.stringify` CANNOT SEE THIS — it renders both as `0`. `Object.is` is the only
  * instrument that distinguishes them, which is why this probe walks the values rather than
  * comparing serialized rows, and it is very likely why no fuzzer has caught it: the differential
  * fuzzer compares rendered JSON.

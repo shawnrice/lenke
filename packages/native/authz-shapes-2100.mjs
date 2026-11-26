@@ -1,21 +1,21 @@
 /*
  * Item 2100 — ReBAC AUTHZ shapes, which neither screen contains.
  *
- * ⚠️ WHY THESE AND NOT MORE CORPUS ROWS. Items 2096/2097 exhausted the GQL corpus's largest shape and
+ * WHY THESE AND NOT MORE CORPUS ROWS. Items 2096/2097 exhausted the GQL corpus's largest shape and
  * 2099 showed the Gremlin screen is a smooth per-edge gradient with no outlier: a new target needs a
  * new SHAPE. Authz is the one shape family the record names as a real ask and neither screen has —
  * Zanzibar-style checks are expressible in ISO-GQL as `EXISTS <grant> AND NOT EXISTS <deny>`, and that
  * DOUBLE-QUANTIFIER form appears nowhere in the corpus.
  *
- * 🔑 THE FIXTURE IS THE SHAPE'S OWN, not a generic graph. An authz check is selective (one subject,
+ * THE FIXTURE IS THE SHAPE'S OWN, not a generic graph. An authz check is selective (one subject,
  * one object) over a graph whose structure is groups, memberships and grants — so a fixture of
  * uniform fanout would not exercise the question. Group sizes are SKEWED, because a real tenant has a
  * few large groups and many small ones, and the selective path's cost depends on which it hits.
  *
- * ⚠️ EVERY SHAPE'S ANSWER IS ASSERTED against a hand-computed expectation. A selective authz query
+ * EVERY SHAPE'S ANSWER IS ASSERTED against a hand-computed expectation. A selective authz query
  * that silently returns nothing would otherwise be the fastest row in the table.
  *
- * ⚠️⚠️ **THE LABEL IS `Team`, NOT `Group`, AND THAT IS A FINDING RATHER THAN A PREFERENCE.** `Group` is
+ * **THE LABEL IS `Team`, NOT `Group`, AND THAT IS A FINDING RATHER THAN A PREFERENCE.** `Group` is
  * a RESERVED WORD in ISO-GQL (`GROUP BY`), so `(:Group)` is a syntax error — which a ReBAC schema
  * naturally wants to write. The engine handles it correctly and says exactly what to do ("quote it as a
  * delimited identifier with backticks"), and the backtick form is verified below; but the first
@@ -44,7 +44,7 @@ for (let d = 0; d < DOCS; d += 1) {
 }
 
 /*
- * ⚠️ SKEWED MEMBERSHIP: group 0 holds a tenth of all users, the rest share the remainder. A uniform
+ * SKEWED MEMBERSHIP: group 0 holds a tenth of all users, the rest share the remainder. A uniform
  * assignment would make every check cost the same and hide the shape's actual sensitivity.
  */
 let edge = 0;
@@ -92,7 +92,7 @@ for (let u = 0; u < USERS; u += 100) {
 }
 
 /*
- * ⚠️⚠️ **THE INDEX IS THE WHOLE QUESTION, SO IT IS A KNOB.** Without it every one of these shapes
+ * **THE INDEX IS THE WHOLE QUESTION, SO IT IS A KNOB.** Without it every one of these shapes
  * scans all USERS to find the one subject: a single authz CHECK measured **0.802 ms at 20,000 users
  * and 4.894 at 200,000 — 6.1x for 10x the users**, when the work it must do is O(the subject's teams x
  * their grants) and independent of tenant size. An authz check that scales with the TENANT is the
@@ -111,7 +111,7 @@ const shapes = {
     params: { u: 'u7', d: docOf(7) },
     want: 1,
   },
-  /* 2. 🔑 THE ZANZIBAR FORM: a grant AND the absence of a deny — the double quantifier. */
+  /* 2. THE ZANZIBAR FORM: a grant AND the absence of a deny — the double quantifier. */
   'check: grant AND NOT deny': {
     q: `MATCH (u:User) WHERE u.name = $u AND EXISTS { MATCH (u)-[:MEMBER_OF]->(:Team)-[:CAN_VIEW]->(d:Doc) WHERE d.name = $d } AND NOT EXISTS { MATCH (u)-[:DENIED]->(d2:Doc) WHERE d2.name = $d } RETURN count(*) AS c`,
     params: { u: 'u7', d: docOf(7) },
@@ -153,7 +153,7 @@ for (const [name, spec] of Object.entries(shapes)) {
 
   const first = rows.length > 0 ? Object.values(rows[0])[0] : undefined;
 
-  // ⚠️ THE ASSERTION: a selective check that silently matched nothing would be the fastest row here.
+  // THE ASSERTION: a selective check that silently matched nothing would be the fastest row here.
   if (spec.want !== null && first !== spec.want && rows.length !== spec.want) {
     throw new Error(
       `${name}: answered ${JSON.stringify(first)} / ${rows.length} rows, expected ${spec.want}`,
@@ -161,7 +161,7 @@ for (const [name, spec] of Object.entries(shapes)) {
   }
 
   /*
-   * ⚠️ FOUR WARM-UP REPS DROPPED, NOT TWO. With two, the FIRST shape in the table read 1.138 ms while
+   * FOUR WARM-UP REPS DROPPED, NOT TWO. With two, the FIRST shape in the table read 1.138 ms while
    * the shape below it — which does strictly MORE work (a second quantifier) — read 0.584. That is the
    * first-shape-pays-the-JIT artefact, not a finding about conjunct order.
    */

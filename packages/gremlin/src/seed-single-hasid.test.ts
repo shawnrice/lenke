@@ -12,7 +12,7 @@ import { E, V, count, hasId, hasLabel, id, out, toArray, traversal, values } fro
  * `hasId(x).values(k)` and **1.91x** on `hasId(x).count()`, with the already-seeded spellings flat as
  * controls.
  *
- * ⚠️⚠️ EXACTLY ONE ID, AND THE BOUNDARY IS THE WHOLE CORRECTNESS QUESTION. Above one id the two
+ * EXACTLY ONE ID, AND THE BOUNDARY IS THE WHOLE CORRECTNESS QUESTION. Above one id the two
  * spellings genuinely disagree, measured before the rewrite was written:
  *
  * ```text
@@ -75,7 +75,7 @@ describe('the seeded rewrite answers what the filter answers', () => {
   });
 });
 
-describe('⚠️ the rewrite DECLINES above one id, because the spellings disagree', () => {
+describe('the rewrite DECLINES above one id, because the spellings disagree', () => {
   test('TWO ids keep GRAPH order under `hasId`, and id order under a seed', () => {
     /**
      * This is the literal that forbids widening the gate. `hasId` filters `graph.vertices`, so it
@@ -98,9 +98,9 @@ describe('⚠️ the rewrite DECLINES above one id, because the spellings disagr
     expect(toArray(traversal(V('v1'), hasId('v1'), values('k')), g)).toEqual([1]);
   });
 
-  test('⚠️ a NON-STRING id declines — seeding it would turn EMPTY into a THROW', () => {
+  test('a NON-STRING id declines — seeding it would turn EMPTY into a THROW', () => {
     /**
-     * ⚠️ A PRE-EXISTING TEST CAUGHT THIS, not this file. `id-seed.test.ts` (item 1306) pins "a
+     * A PRE-EXISTING TEST CAUGHT THIS, not this file. `id-seed.test.ts` (item 1306) pins "a
      * non-string id must not raise", and the first version of this rewrite broke it: `V().hasId(5)`
      * answers EMPTY because a number cannot match a string id, while `V(5)` RAISES "a vertex/edge id
      * must be a string". Converting the first spelling into the second turned an empty answer into a
@@ -117,7 +117,7 @@ describe('⚠️ the rewrite DECLINES above one id, because the spellings disagr
 });
 
 /**
- * ⚠️ THE PASS AS A PURE FUNCTION. A rewrite that declines everything is ANSWER-EQUIVALENT, so a
+ * THE PASS AS A PURE FUNCTION. A rewrite that declines everything is ANSWER-EQUIVALENT, so a
  * mutant disabling it passes every test above by construction — the class items 1619/1630/1631/1636
  * all recorded. These are the assertions that can fail on one.
  */
@@ -149,7 +149,7 @@ describe('seedSingleHasId', () => {
     expect(out1.steps).toEqual([{ kind: 'E', ids: ['e0'] }]);
   });
 
-  test('⚠️ RECOMPUTES the gate mask, or a later pass reads a stale one', () => {
+  test('RECOMPUTES the gate mask, or a later pass reads a stale one', () => {
     const before = planOf([
       { kind: 'V' },
       { kind: 'hasId', ids: ['v2'] },

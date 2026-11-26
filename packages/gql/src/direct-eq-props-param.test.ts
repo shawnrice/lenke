@@ -96,7 +96,7 @@ describe('the lift fires, and only where it is element-local', () => {
   });
 
   test('the unreadable conjunct FIRST no longer forfeits the lift (item 1544)', () => {
-    // ⚠️ THIS ASSERTION IS INVERTED FROM WHAT IT WAS, and deliberately. It used to read
+    // THIS ASSERTION IS INVERTED FROM WHAT IT WAS, and deliberately. It used to read
     // `eqProps` undefined, pinning the PREFIX rule: a chain opening with an unreadable conjunct
     // lifted nothing, which kept executed order equal to written order. Item 1544 dropped that
     // rule — the owner settled at item 1543 that evaluation order is chosen for SPEED per engine —
@@ -112,7 +112,7 @@ describe('the lift fires, and only where it is element-local', () => {
     expect(pred.where).not.toBeUndefined();
   });
 
-  // ⚠️ THE THREE **NESTED** DECLINE SITES, each of which a surviving mutant proved untested.
+  // THE THREE **NESTED** DECLINE SITES, each of which a surviving mutant proved untested.
   // Item 1284's mutation run replaced `stop = i; break;` with `continue;` at the three sites that
   // sit inside an inner `if` — a negated compare on another variable, a per-row membership
   // haystack, and a dotted compare on another variable. `continue` makes the conjunct VANISH: it
@@ -121,7 +121,7 @@ describe('the lift fires, and only where it is element-local', () => {
   //
   // Each one checks the ROUTE (nothing lifted, the tail still compiled) and then the ANSWER, since
   // the route alone would not show what dropping the conjunct costs.
-  test('⚠️ a NEGATED compare on another variable declines the WHOLE chain', () => {
+  test('a NEGATED compare on another variable declines the WHOLE chain', () => {
     // This one still declines everything, and for a different reason from the prefix rule item
     // 1544 removed: `residualOf` rejects a residual with a free variable other than `ownVar`, so
     // the predicate cannot be element-local at all. That guard is untouched.
@@ -131,7 +131,7 @@ describe('the lift fires, and only where it is element-local', () => {
     expect(pred.where).not.toBeUndefined();
   });
 
-  test('⚠️ a PER-ROW membership haystack is not LIFTED and not DROPPED', () => {
+  test('a PER-ROW membership haystack is not LIFTED and not DROPPED', () => {
     // A list whose members are not closed cannot be lifted — the haystack differs per row. Since
     // item 1544 the SIBLING equality lifts anyway; the membership must still reach the residual.
     const pred = compilePredicate(undefined, parsePredicate('n.k IN [n.j] AND n.k = 1'), 'n');
@@ -141,7 +141,7 @@ describe('the lift fires, and only where it is element-local', () => {
     expect(pred.where).not.toBeUndefined();
   });
 
-  test('⚠️ a DOTTED compare on another variable declines, and is not dropped', () => {
+  test('a DOTTED compare on another variable declines, and is not dropped', () => {
     const pred = compilePredicate(
       undefined,
       parsePredicate("m.meta.city = 'nyc' AND n.k = 1"),
@@ -153,7 +153,7 @@ describe('the lift fires, and only where it is element-local', () => {
     expect(pred.where).not.toBeUndefined();
   });
 
-  test('⚠️ ANSWERS: a dropped conjunct would be visible as a superset of rows', () => {
+  test('ANSWERS: a dropped conjunct would be visible as a superset of rows', () => {
     // The route assertions above are on `compilePredicate`; these run the engine, so a conjunct
     // that vanished anywhere between the two shows up as an extra row. `one` has k=1; `nulled`
     // stores null and `absent` has no `k`, so both are UNKNOWN under every spelling here and drop.

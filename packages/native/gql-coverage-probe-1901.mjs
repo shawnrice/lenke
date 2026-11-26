@@ -1,14 +1,14 @@
 /**
  * WHICH SHAPES CAN THE GQL SCREEN EVEN ASK? (item 1901)
  *
- * ⚠️ THIS IS THE STEP BEFORE A SCREEN ROW, not a timing instrument. Item 1898 added nine families
+ * THIS IS THE STEP BEFORE A SCREEN ROW, not a timing instrument. Item 1898 added nine families
  * the Gremlin screen had never carried and found all five of the surface's biggest shapes among
  * them; the GQL side has never had that sweep (item 1890 applied the SIZE lesson to the GQL grid,
  * not the coverage one). But a candidate row is worthless two ways — it may not PARSE, and it may
  * parse and match NOTHING, which the screen itself warns about ("a family returning ZERO rows at
  * scale is a BROKEN SCREEN, not a fast family").
  *
- * ⚠️ AND THE SYNTAX MUST COME FROM THE ENGINE, NOT FROM MEMORY. ISO-GQL is NOT Cypher, and the
+ * AND THE SYNTAX MUST COME FROM THE ENGINE, NOT FROM MEMORY. ISO-GQL is NOT Cypher, and the
  * candidates below are the shapes an application writes that the 17-family corpus never asks:
  * `CALL` in both ISO forms, `ORDER BY` on an EXPRESSION rather than a bound name, top-k
  * (GROUP BY + ORDER BY + LIMIT), two sequential MATCH clauses, string functions, `ANY SHORTEST` and
@@ -120,7 +120,7 @@ for (const [label, text, params] of CANDIDATES) {
     verdict = `${String(rows.length).padStart(7)} rows`;
 
     if (rows.length === 0) {
-      verdict += '   ⚠️ PARSES BUT MATCHES NOTHING — unusable as a screen row';
+      verdict += '   PARSES BUT MATCHES NOTHING — unusable as a screen row';
     }
   } catch (err) {
     verdict = `   ✗ ${String(err).split('\n')[0].slice(0, 96)}`;

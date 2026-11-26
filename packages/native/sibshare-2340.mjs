@@ -1,21 +1,21 @@
 /**
- * ✅✅ **DOES ITEM 2339's SHARING PENALTY REACH THE RUNGS I SHIPPED? (item 2340)**
+ * **DOES ITEM 2339's SHARING PENALTY REACH THE RUNGS I SHIPPED? (item 2340)**
  *
  * Item 2339 found a second GQL scan-family query costs `hopGql` 1.06-1.14x, by shared-rung polymorphism —
  * and that Gremlin's hop is largely immune because item 2333's `pick` closure is built PER PLAN.
  *
- * 🔑 Items 2320/2321/2322 shipped five Gremlin `drain` conversions, all measured ONE SHAPE PER PROCESS.
+ * Items 2320/2321/2322 shipped five Gremlin `drain` conversions, all measured ONE SHAPE PER PROCESS.
  * **If those drains degrade when two shapes share them, the shipped wins are partly offset in a real
  * workload** — which the isolated measurements cannot see.
  *
- * ⚠️ **AND ITEM 2320's DESIGN MAKES A PREDICTION WORTH TESTING AGAINST ITSELF.** It deliberately wrote
+ * **AND ITEM 2320's DESIGN MAKES A PREDICTION WORTH TESTING AGAINST ITSELF.** It deliberately wrote
  * THREE SIBLING drains — `walkIds`, `walkLabels`, `walkValues` — rather than one with a branch, because
- * item 159 measured an inner-loop branch at 1.6x. ✅ So:
+ * item 159 measured an inner-loop branch at 1.6x. So:
  *
  *   - `values(k)` paired with `id()` or `label()` uses a DIFFERENT sibling drain -> should be mild
  *   - `values(k)` paired with `values(j)` uses the SAME drain with a different key -> the exposed case
  *
- * ✅ If the same-drain pairing is the only one that hurts, the sibling design is doing exactly its job and
+ * If the same-drain pairing is the only one that hurts, the sibling design is doing exactly its job and
  * the only exposure is two value-projections of different keys — which is worth knowing precisely.
  */
 import { Graph } from '@lenke/core';
@@ -36,21 +36,21 @@ for (let i = 0; i < NODES; i += 1) {
   });
 }
 
-/* ✅ All hoisted, per item 2325's 3.96x. */
+/* All hoisted, per item 2325's 3.96x. */
 const SHAPES = {
-  /* 🔑 THE TARGET: the rung item 2320 shipped at 3.86x. */
+  /* THE TARGET: the rung item 2320 shipped at 3.86x. */
   valuesK: () => toArray(traversal(V(), hasLabel('N'), values('k')), graph).length,
-  /* ⚠️ THE EXPOSED PAIRING: the SAME `walkValues` drain, a different key. */
+  /* THE EXPOSED PAIRING: the SAME `walkValues` drain, a different key. */
   valuesJ: () => toArray(traversal(V(), hasLabel('N'), values('j')), graph).length,
-  /* ✅ A DIFFERENT sibling drain — item 2320's `walkIds`. */
+  /* A DIFFERENT sibling drain — item 2320's `walkIds`. */
   ids: () => toArray(traversal(V(), hasLabel('N'), id()), graph).length,
-  /* ✅ The third sibling — `walkLabels`. */
+  /* The third sibling — `walkLabels`. */
   labels: () => toArray(traversal(V(), hasLabel('N'), label()), graph).length,
 };
 
 /*
- * ⚠️ HOISTING THE PLANS, NOT THE CLOSURES: each entry rebuilds its `traversal(...)` per call above, which
- * would measure plan construction (item 2325's 3.96x). ✅ Fixed by building each plan ONCE here and
+ * HOISTING THE PLANS, NOT THE CLOSURES: each entry rebuilds its `traversal(...)` per call above, which
+ * would measure plan construction (item 2325's 3.96x). Fixed by building each plan ONCE here and
  * re-binding the arms to it.
  */
 const plans = {

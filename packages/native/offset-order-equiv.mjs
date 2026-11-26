@@ -7,7 +7,7 @@ import { query } from '@lenke/gql';
  * skip itself at 3.7% of the general path's work. So the fix is to let the rung fire and slice its
  * output — and whether that is LEGAL is a different question from whether it is faster.
  *
- * ⚠️ THE HAZARD IS THAT `OFFSET` WITHOUT `ORDER BY` SKIPS AN UNSPECIFIED SET OF ROWS. This repo's
+ * THE HAZARD IS THAT `OFFSET` WITHOUT `ORDER BY` SKIPS AN UNSPECIFIED SET OF ROWS. This repo's
  * standing position is that unordered result order is unspecified and WON'T-FIX, the way SQL
  * without an `ORDER BY` is, and that cross-engine comparisons are MULTISET comparisons for exactly
  * that reason. But a skip is not order-invariant the way a projection is: skipping the first ten
@@ -16,14 +16,14 @@ import { query } from '@lenke/gql';
  * rows come back, which is a weaker claim than the engines being free to disagree with each other,
  * given that byte-identity between the TS and Rust engines is a hard invariant.
  *
- * ⚠️ REWRITTEN AT ITEM 1776, BECAUSE THE CHANGE IT INFORMED MADE ITS OWN COMPARISON TAUTOLOGICAL.
+ * REWRITTEN AT ITEM 1776, BECAUSE THE CHANGE IT INFORMED MADE ITS OWN COMPARISON TAUTOLOGICAL.
  * The first version compared the UNPAGED query's rows, sliced, against the PAGED query's — two
  * different ROUTES while the rungs declined every page. Item 1776 gave the page to those same
  * rungs, so that comparison became the rung against itself, and it cannot fail for the shapes it
  * was built to watch. This is the dead oracle of item 1775 in its quieter form: not a probe that
  * will not RUN, but one that will not FAIL. So it now asks both questions and labels them:
  *
- *   - **SPELLING** — the literal `OFFSET k` against the PARAMETERIZED `OFFSET $s`. ⚠️ This was the
+ *   - **SPELLING** — the literal `OFFSET k` against the PARAMETERIZED `OFFSET $s`. This was the
  *     cross-ROUTE comparison when it was written at item 1777, because the parameterized spelling
  *     declined the rung; item 1778 gave it the rung as well, closing a 7.3x gap between two
  *     spellings of one query — so it is now a SPELLING check, which is weaker but not empty: the

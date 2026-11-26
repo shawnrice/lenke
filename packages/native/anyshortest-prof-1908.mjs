@@ -2,14 +2,14 @@
 // cleared the sort and seeded-var-length rows: 2318 ms for 2,099,864 rows at 200,000 vertices,
 // against the one-hop projection's 33 ns a row.
 //
-// ⚠️ ITS FLOOR IS NOT A PLAIN HOP, which is the first thing to establish rather than assume: the
+// ITS FLOOR IS NOT A PLAIN HOP, which is the first thing to establish rather than assume: the
 // shape runs a shortest-path search per seed, so the honest comparison is against the SAME walk
 // without the selector (`{1,3}` reachability, which `reachShortcut` serves) and against the
 // unseeded form. Both are carried here.
 //
 //     SHAPE=anyshortest|reach|allshortest|hop REPS=40 bun --cpu-prof anyshortest-prof-1908.mjs
 //
-// ⚠️ PROFILE AT A HIGH `REPS` OR THE PROFILE IS THE FIXTURE — item 1900's lesson: at REPS=3 the top
+// PROFILE AT A HIGH `REPS` OR THE PROFILE IS THE FIXTURE — item 1900's lesson: at REPS=3 the top
 // frames were all `addEdge`/`indexEdgeLabel`, i.e. building a 1,000,000-edge graph.
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
@@ -44,7 +44,7 @@ for (let e = 0; e < N * FANOUT; e += 1) {
 const QUERIES = {
   anyshortest: 'MATCH ANY SHORTEST (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p0 RETURN b.n AS x',
   allshortest: 'MATCH ALL SHORTEST (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p0 RETURN b.n AS x',
-  // ⚠️ THE FLOOR: the same seeded walk with NO selector, which `reachShortcut` serves. It answers a
+  // THE FLOOR: the same seeded walk with NO selector, which `reachShortcut` serves. It answers a
   // DIFFERENT question (distinct reachable values, not one row per pair) so it is a floor rather
   // than a control — the row counts differ by three orders of magnitude and that is the point.
   reach: 'MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p0 RETURN DISTINCT b.n AS x',

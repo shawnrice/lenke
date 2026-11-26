@@ -1,14 +1,14 @@
 /*
  * Item 2113 — the A/B for admitting `store` to item 2078's fused scan-bag walk.
  *
- * 🔑 THE TARGET is `V().store(k).values(key)` — the bag step BEFORE the projection. `aggregate` in that
+ * THE TARGET is `V().store(k).values(key)` — the bag step BEFORE the projection. `aggregate` in that
  * position has been fused since item 2078; `store` was refused there for item 2070's reason, which is
  * about a DRAINED result and does not describe this walk (a generator, already as lazy as `store` needs).
  *
- * ⚠️ THREE CONTROLS, each chosen because the gate CANNOT move it:
+ * THREE CONTROLS, each chosen because the gate CANNOT move it:
  *   - `agg_ctl`   — already fused before this item, so it must not move.
  *   - `floor_ctl` — the same scan with no bag at all: the floor the target should approach.
- *   - `hop_ctl`   — the HOP form (`out('E')` before the bag), which this fusion does not claim. ⚠️ It is
+ *   - `hop_ctl`   — the HOP form (`out('E')` before the bag), which this fusion does not claim. It is
  *     the screen's heaviest store row, so a change here moving it would mean the gate is wider than it
  *     reads.
  */
@@ -24,10 +24,10 @@ for (let i = 0; i < N; i += 1) {
 }
 
 /*
- * ⚠️ The target shape never walks an edge, but `hop_ctl` does — so the edges are built for the control
+ * The target shape never walks an edge, but `hop_ctl` does — so the edges are built for the control
  * and the target is unaffected by them.
  *
- * ⚠️ SPLIT ON THE REPEAT INDEX, not on `k % N`: CLAUDE.md's generator rule, since `(a*k+b) % N` is
+ * SPLIT ON THE REPEAT INDEX, not on `k % N`: CLAUDE.md's generator rule, since `(a*k+b) % N` is
  * invariant under `k -> k + N` and would send one vertex's whole fanout to a single target.
  */
 let e = 0;

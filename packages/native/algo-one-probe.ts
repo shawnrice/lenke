@@ -12,7 +12,7 @@
  *    buildAdjacency         4.7%   ZERO mentions
  * ```
  *
- * ⚠️ AND THE ALGORITHM IS ABOUT HALF THAT PROFILE. The rest is the FIXTURE BUILD — `indexEdgeLabel`
+ * AND THE ALGORITHM IS ABOUT HALF THAT PROFILE. The rest is the FIXTURE BUILD — `indexEdgeLabel`
  * 6.1%, `#commitNormalized` 3.7%, `insertEdge` 1.6%, `commitElementLabels` 3.1% — which the bench's
  * own timing excludes but a whole-process profile does not. So a share read off that profile
  * overstates the algorithm's own terms by ~2x, which is why this probe exists.
@@ -21,7 +21,7 @@
  *     ALGO=shortestPath WEIGHTED=1 bun algo-one-probe.ts
  *     ALGO=betweenness NODES=1000 REPS=3 bun algo-one-probe.ts
  *
- * ⚠️ THE CENTRALITIES NEED A SMALL `NODES`, and the default will hang. `betweenness` and `closeness`
+ * THE CENTRALITIES NEED A SMALL `NODES`, and the default will hang. `betweenness` and `closeness`
  * are O(V·E): `algo-scaling-bench` runs them at V=1000/4000 while everything else runs at 40,000+,
  * which is what its `div` column is for. At this probe's default 80,000 a single rep does not finish
  * — I ran it, it blew past a 600-second timeout and had to be killed. Pass `NODES=1000`.
@@ -38,14 +38,14 @@ const REPS = Number(process.env.REPS ?? 7);
  * for it; every other name goes through the same `runAlgorithmSync` entry point, so the comparison
  * across algorithms is apples to apples.
  *
- * ⚠️ `ANSWER_COL` IS NOT COSMETIC. The probe prints a fingerprint of the result so an ABLATION that
+ * `ANSWER_COL` IS NOT COSMETIC. The probe prints a fingerprint of the result so an ABLATION that
  * changes the answer cannot read as a win — item 1625's tie-break ablation moved it from 2118 to
  * 79860, which is the only reason that arm was obviously not shippable. Each algorithm names its
  * result column (`AlgorithmRow` is `{ node } & Record<K, V>`), so the column has to come with the
  * algorithm.
  */
 /**
- * ⚠️ THE COLUMN MAP IS DERIVED FROM THE ENGINE, NOT GUESSED. My first version had `score` for the
+ * THE COLUMN MAP IS DERIVED FROM THE ENGINE, NOT GUESSED. My first version had `score` for the
  * two centralities and a name (`shortestPathWeighted`) that does not exist — `runAlgorithmSync`
  * returned `undefined` for it and the probe crashed, and `closeness` read ONE distinct answer
  * because `r.score` was `undefined` on every row. Both were caught by the fingerprint and the crash
@@ -60,7 +60,7 @@ const REPS = Number(process.env.REPS ?? 7);
  *    closeness -> centrality       neighborAggregate -> needs a `feature`, not covered
  * ```
  *
- * ⚠️ AND THERE IS NO `shortestPathWeighted` ALGORITHM. `algo-scaling-bench` runs `shortestPath` with
+ * AND THERE IS NO `shortestPathWeighted` ALGORITHM. `algo-scaling-bench` runs `shortestPath` with
  * a `weightProperty` and LABELS the row `shortestPathWeighted`, which is why reaching for the name
  * found nothing. `WEIGHTED=1` is this probe's equivalent.
  */
@@ -88,7 +88,7 @@ for (let i = 0; i < NODES; i += 1) {
   vs.push(g.addVertex({ id: `v${i}`, labels: ['P'], properties: { n: i } }));
 }
 
-/** ⚠️ Split on the REPEAT INDEX — items 1516/1518; a linear `(a*k+b)%N` makes the graph functional. */
+/** Split on the REPEAT INDEX — items 1516/1518; a linear `(a*k+b)%N` makes the graph functional. */
 let edges = 0;
 
 for (let k = 0; k < NODES * FANOUT; k += 1) {
@@ -100,7 +100,7 @@ for (let k = 0; k < NODES * FANOUT; k += 1) {
   }
 
   /**
-   * ⚠️ A REAL `w`, AND THE THIRD THING THE ANSWER FINGERPRINT CAUGHT THIS TICK. The edges carried
+   * A REAL `w`, AND THE THIRD THING THE ANSWER FINGERPRINT CAUGHT THIS TICK. The edges carried
    * `properties: {}`, so `WEIGHTED=1` asked for a `weightProperty` nothing had — and the weighted
    * run reported **ONE distinct distance over 80,000 rows** while measuring a tidy 1.98x. Without
    * the fingerprint that 1.98x was publishable and wrong: it priced the missing-weight path, not
@@ -140,11 +140,11 @@ let rowCount = 0;
 
 for (let i = 0; i < REPS; i += 1) {
   const t0 = performance.now();
-  // ⚠️ `runAlgorithmSync` IS THE ENTRY POINT BOTH ENGINES DISPATCH THROUGH — `algo-scaling-bench`'s
+  // `runAlgorithmSync` IS THE ENTRY POINT BOTH ENGINES DISPATCH THROUGH — `algo-scaling-bench`'s
   // own note, and the reason the probe asks it rather than a method on `Graph`.
   const rows = runAlgorithmSync(
     ALGO,
-    // ⚠️ `source` is REQUIRED by the shortest-path family and ignored by the rest, so it is always
+    // `source` is REQUIRED by the shortest-path family and ignored by the rest, so it is always
     // passed: an algorithm that needs it and does not get it throws, which in a timing loop would
     // read as "this algorithm is infinitely fast".
     {
@@ -157,7 +157,7 @@ for (let i = 0; i < REPS; i += 1) {
   );
 
   series.push(performance.now() - t0);
-  // ⚠️ `AlgorithmRow` is `{ node } & Record<K, V>` with the column name varying by algorithm, so the
+  // `AlgorithmRow` is `{ node } & Record<K, V>` with the column name varying by algorithm, so the
   // read goes through an index rather than a cast to a made-up shape.
   const bag = rows as unknown as Record<string, unknown>[];
 
@@ -175,11 +175,11 @@ console.log(
     nodes: NODES,
     edges,
     distinctTargets: targets.size,
-    // ⚠️ THE ROW COUNT, because `distinctAnswers: 1` is ambiguous without it: one distinct value
+    // THE ROW COUNT, because `distinctAnswers: 1` is ambiguous without it: one distinct value
     // over 80,000 rows is a suspicious answer, over ONE row it is the only possible one.
     rows: rowCount,
     branching,
-    // ⚠️ THE ANSWER, so an ablation that changes it is visible rather than silently "faster".
+    // THE ANSWER, so an ablation that changes it is visible rather than silently "faster".
     // The answer's fingerprint — distinct values in the result column. See `ANSWER_COL`.
     distinctAnswers: communities,
     median_ms: Number(median.toFixed(2)),

@@ -294,13 +294,13 @@ describe('a both-ends-constrained count seeds its tally (item 179)', () => {
 
   test('the UNCONSTRAINED count takes the both-labelled complement arm (item 2194)', () => {
     /*
-     * ⚠️⚠️ **THIS ASSERTED `'neither'` UNTIL ITEM 2194, AND THE PREMISE IS SUPERSEDED RATHER THAN WRONG.**
+     * **THIS ASSERTED `'neither'` UNTIL ITEM 2194, AND THE PREMISE IS SUPERSEDED RATHER THAN WRONG.**
      * Both ends carry the SAME label here, which used to mean "no seekable constraint, so take the
-     * per-edge label walk" — this test's `'neither'` recorded exactly that. 🔑 Item 2194 added a third
+     * per-edge label walk" — this test's `'neither'` recorded exactly that. Item 2194 added a third
      * arm to `labelOnlyHopCount` that counts such a shape from the label's COMPLEMENT (**30.87 → 2.14 ms,
      * ~12x**), so the shape now consults both label buckets and `sides` reports `'both'`.
      *
-     * 🔑 **THE ANSWER IS UNCHANGED AND STILL CHECKED FIRST** — that is what makes this an instrument
+     * **THE ANSWER IS UNCHANGED AND STILL CHECKED FIRST** — that is what makes this an instrument
      * update rather than a regression: `both(...)` below asserted 201 before the change and asserts it
      * after.
      */

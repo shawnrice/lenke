@@ -1,12 +1,12 @@
 /**
  * DOES `projected-fold.test.ts` HAVE TEETH? (item 1909)
  *
- * ⚠️ THE SUBJECT IS AN ORDER-PRESERVING FUSION, which is what makes it different from the
+ * THE SUBJECT IS AN ORDER-PRESERVING FUSION, which is what makes it different from the
  * `min`/`max` residual it sits beside: a fold's element ORDER is its answer, so a mutant that keeps
  * the right elements in the wrong order is a wrong answer with the right length. The suite asserts
  * the list against the unfused projection AND spelled out, so both have to be wrong together.
  *
- * ⚠️⚠️ **WRITTEN DIRECTLY RATHER THAN TEMPLATED FROM AN EARLIER BATTERY, which is item 1907's
+ * **WRITTEN DIRECTLY RATHER THAN TEMPLATED FROM AN EARLIER BATTERY, which is item 1907's
  * lesson applied.** Three times in one session a slice-based `replace` left a config field pointing
  * at the previous item's subject — the `cwd`, the `SRCS` path, `NATIVE_TESTS` — and two real mutants
  * reported SURVIVED against a suite that could not see them. Every field here is literal.
@@ -28,7 +28,7 @@ const SRCS = {
 };
 const PRISTINE = `${ROOT}/crates/lenke-engine/target/pristine-1909m`;
 const CWD = `${ROOT}/packages/gremlin`;
-/** ⚠️ The neighbours are in the set so a mutant that breaks the UNFUSED fold still fails. */
+/** The neighbours are in the set so a mutant that breaks the UNFUSED fold still fails. */
 const TESTS = [
   'src/executor/tagged-hop-values.test.ts',
   'src/executor/projected-fold.test.ts',
@@ -306,7 +306,7 @@ const MUTANTS = [
 /** Names that MUST survive, each with its reason. */
 const EXPECTED_SURVIVORS = new Set([
   /*
-   * ⚠️ TAKING THE FUSION IS ANSWER-EQUIVALENT: the unfused route yields the SAME list in the SAME
+   * TAKING THE FUSION IS ANSWER-EQUIVALENT: the unfused route yields the SAME list in the SAME
    * order, 3.14x slower, and nothing in the public surface reports which route ran. Its gates are
    * the two permanent instruments rather than a test —
    * `gremlin-route-screen.mjs`'s `list: hop values fold` row (SHORTCUT, 0 `applyStep` calls, where
@@ -315,7 +315,7 @@ const EXPECTED_SURVIVORS = new Set([
    */
   'the fold residual is never fused (the pre-1909 route)',
   /*
-   * ⚠️ ITEM 1910'S TWO GATE MUTANTS ARE ROUTE-ONLY FOR THE SAME REASON: declining the fold sends
+   * ITEM 1910'S TWO GATE MUTANTS ARE ROUTE-ONLY FOR THE SAME REASON: declining the fold sends
    * the shape to a slower walk that yields the SAME list in the SAME order. Their gates are
    * `sideeffect-prof-1909.mjs` (99.53 -> 29.71 for the `hop-values.ts` gate, then -> 4.13 for the
    * CSR one) and `gremlin-route-screen.mjs`'s `list: hop fold` row.
@@ -323,20 +323,20 @@ const EXPECTED_SURVIVORS = new Set([
   'the ELEMENT fold is not admitted on the bare hop (pre-1910)',
   'the CSR rung does not admit the fold (so the slower bucket walk serves it)',
   /*
-   * ⚠️ ITEM 1911'S ROUTE MUTANT, for the same reason: declining the bag+cap pair yields the SAME
+   * ITEM 1911'S ROUTE MUTANT, for the same reason: declining the bag+cap pair yields the SAME
    * list from the generic pipeline. Its gate is `sideeffect-prof-1909.mjs` — 107.61 -> 4.14 ms for
    * `aggregate`, 101.83 -> 4.16 for `store` — and the route screen's `list: hop aggregate cap` row.
    */
   'the bag+cap pair is not fused (the pre-1911 route)',
   /*
-   * ⚠️ ITEM 1912'S FIFTH-STEP ADMISSION IS ROUTE-ONLY TOO: without it the five-step spellings fall
+   * ITEM 1912'S FIFTH-STEP ADMISSION IS ROUTE-ONLY TOO: without it the five-step spellings fall
    * to the generic path and answer identically, 4.25x and 13.8x slower. Its gate is
    * `neq-prof-1900.mjs`'s `neqv`/`selv` arms (325.22 -> 76.50 and 186.50 -> 13.48) and the workload
    * screen's own rows (406.18 -> 94.66 for `where: neq filter`).
    */
   'the FIFTH step is not admitted (the screen\u2019s own spelling)',
   /*
-   * ⚠️ ITEM 1914'S PAIR FUSION IS ROUTE-ONLY TOO: without it the shape falls to the generic
+   * ITEM 1914'S PAIR FUSION IS ROUTE-ONLY TOO: without it the shape falls to the generic
    * pipeline and answers identically, 17.9x slower. Its gate is `neq-prof-1900.mjs`'s `seltwo` arm
    * (261.63 -> 14.60 ms) and the workload screen's `select: as + select two` row.
    */
@@ -344,7 +344,7 @@ const EXPECTED_SURVIVORS = new Set([
 ]);
 
 /*
- * ⚠️ AND ONE ENTRY WAS REMOVED FROM THIS SET BECAUSE THE HARNESS CONTRADICTED IT. "The drain is
+ * AND ONE ENTRY WAS REMOVED FROM THIS SET BECAUSE THE HARNESS CONTRADICTED IT. "The drain is
  * never used" was declared an expected survivor on the same grounds — and it is CAUGHT, because
  * `projected-fold.test.ts` asserts `foldProjectedList` calls `drain` on a walk that offers one.
  * A unit test on the helper turns an unobservable route into a checked one; that is the difference
@@ -353,13 +353,13 @@ const EXPECTED_SURVIVORS = new Set([
 
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
-/** ⚠️ BOTH STREAMS: `bun test` writes `N pass` to stderr (item 767). */
+/** BOTH STREAMS: `bun test` writes `N pass` to stderr (item 767). */
 const run = () => {
   const r = spawnSync('timeout', ['300', 'bun', 'test', ...TESTS], {
     cwd: CWD,
@@ -400,7 +400,7 @@ try {
     const seen = pristine.split(from).length - 1;
 
     /*
-     * ⚠️⚠️ **EVERY ANCHOR MISMATCH IS COLLECTED, NOT THROWN ON THE FIRST.** A battery that dies on
+     * **EVERY ANCHOR MISMATCH IS COLLECTED, NOT THROWN ON THE FIRST.** A battery that dies on
      * anchor #1 hides anchors #2..n, so a refactor that moved five of them costs five runs to
      * discover — and this session spent several doing exactly that. The run still FAILS (the count
      * is reported and the exit code is non-zero); it just reports everything it found first.
@@ -417,7 +417,7 @@ try {
     const ran = /\d+ pass/.test(r.text);
 
     if (!ran && r.code !== 124) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -445,12 +445,12 @@ try {
 
 if (anchorProblems.length > 0) {
   console.log(
-    `\n⚠️ ${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
+    `\n${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
   );
   process.exitCode = 1;
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

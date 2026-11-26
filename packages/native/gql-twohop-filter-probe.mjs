@@ -12,7 +12,7 @@
  *     the end "has no once-per-element place to go, because the product reaches it only as a
  *     degree". A level recurrence gives it one.
  *
- * ⚠️ ONE LEVER HERE IS ALREADY REFUTED AND THIS IS NOT IT. Item 1517 built the "end formula" — the
+ * ONE LEVER HERE IS ALREADY REFUTED AND THIS IS NOT IT. Item 1517 built the "end formula" — the
  * reversed walk — and measured it 2.0x WORSE (265.5 ms against 132.4), because it is selectivity-
  * blind and structurally so. This prices a different operation: not a cheaper route to the same
  * degree lookup, but an INDEX in place of the lookup.
@@ -20,7 +20,7 @@
  *   node gql-twohop-filter-probe.mjs
  *   N=200000 FANOUT=5 node gql-twohop-filter-probe.mjs
  *
- * ⚠️ Target NONLINEAR in `i`, so in-degree varies: a linear `(a*i+b) % N` is a bijection per layer
+ * Target NONLINEAR in `i`, so in-degree varies: a linear `(a*i+b) % N` is a bijection per layer
  * and makes a k-walk count `N * F^k` by arithmetic however the traversal behaves (item 1684).
  */
 import { Graph } from '@lenke/core';
@@ -87,7 +87,7 @@ const buildCsr = () => {
 
 const CSR = buildCsr();
 
-/** ⚠️ Per-query: the predicate reads PROPERTIES, which deliberately do not bump topologyVersion. */
+/** Per-query: the predicate reads PROPERTIES, which deliberately do not bump topologyVersion. */
 const acceptMask = () => {
   const ok = new Uint8Array(order.length);
 
@@ -172,7 +172,7 @@ const ARMS = {
   csrEndPlusBuild: () => csrEnd(buildCsr(), acceptMask()),
 };
 
-// ⚠️ START and END are DIFFERENT questions, each checked against its OWN engine arm.
+// START and END are DIFFERENT questions, each checked against its OWN engine arm.
 const wantStart = ARMS.engineStart();
 const wantEnd = ARMS.engineEnd();
 
@@ -185,7 +185,7 @@ for (const [name, fn] of Object.entries(ARMS)) {
   }
 }
 
-/** ⚠️ MEDIAN of the warm reps, not min: the TS per-row path plateaus and emits a rare fast rep. */
+/** MEDIAN of the warm reps, not min: the TS per-row path plateaus and emits a rare fast rep. */
 const timed = (fn) => {
   const series = [];
 

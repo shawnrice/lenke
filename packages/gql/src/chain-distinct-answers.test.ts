@@ -3,19 +3,19 @@ import { describe, expect, test } from 'bun:test';
 /**
  * The ANSWERS the chain rung's new `DISTINCT` admission produces — item 1820.
  *
- * ⚠️ WHY A SECOND FILE WHEN `chain-projection.test.ts` ALREADY ASSERTS THE ROUTE. That file asks
+ * WHY A SECOND FILE WHEN `chain-projection.test.ts` ALREADY ASSERTS THE ROUTE. That file asks
  * "does the rung fire", which is a boolean about admission. It cannot catch a rung that fires and
  * then dedupes WRONGLY — and dedupe is where this engine has already shipped two silent answer
  * changes (items 1561 and 1562, both in the one-column fast path, both found by mutation rather
  * than by a passing suite). A route test plus a timing number would have looked like complete
  * coverage for a change whose whole risk is in the values.
  *
- * ⚠️ EVERY CASE BELOW IS A VALUE THE KEYING COULD GET WRONG, not a value that merely exercises the
+ * EVERY CASE BELOW IS A VALUE THE KEYING COULD GET WRONG, not a value that merely exercises the
  * path. `0`/`-0`, `NaN`, `null`, a column that is an ELEMENT rather than a scalar, and two columns
  * where only the second differs — these are the shapes `rowKeyOf`'s own comment calls out, and the
  * reason this rung calls `distinctRows` rather than keying rows itself.
  *
- * ⚠️ AND EACH EXPECTS A SET, COMPARED ORDER-INSENSITIVELY. `order-is-unspecified` is owner policy:
+ * AND EACH EXPECTS A SET, COMPARED ORDER-INSENSITIVELY. `order-is-unspecified` is owner policy:
  * the rung's walk order is its own and is not part of the answer, so asserting a row ORDER here
  * would pin something the engine does not promise and would break on any future walk change.
  */
@@ -31,7 +31,7 @@ const chainGraph = (farValues: readonly unknown[]): Graph => {
   // Four levels of `n` vertices each, so every level-0 vertex reaches every level-3 vertex and the
   // undeduped row count is n^4 — which is what makes the dedupe observable rather than incidental.
   //
-  // ⚠️ EVERY LEVEL CARRIES THE SAME VALUES, and the first cut of this fixture put them on level 3
+  // EVERY LEVEL CARRIES THE SAME VALUES, and the first cut of this fixture put them on level 3
   // ALONE. That was invisible while only the three-hop rung was tested — it reads the far end, which
   // was level 3 — and it silently broke every two-hop test added at item 1822, because a two-hop
   // chain ends at level 2 and read the placeholder there instead. It also made the cross-width
@@ -86,7 +86,7 @@ describe('the chain rung dedupes the way the rest of the engine does', () => {
   });
 
   /**
-   * ⚠️ `0` AND `-0` ARE ONE ROW, and this is the case a hand-rolled `Set` of raw values gets right
+   * `0` AND `-0` ARE ONE ROW, and this is the case a hand-rolled `Set` of raw values gets right
    * by accident and a hand-rolled string key gets WRONG (`String(-0)` is `'0'`, but `-0` stringified
    * through other routes is not). `valueKey` maps both to `n0` deliberately.
    */
@@ -97,7 +97,7 @@ describe('the chain rung dedupes the way the rest of the engine does', () => {
   });
 
   /**
-   * ⚠️ NaN IS EQUAL TO ITSELF HERE, which is NOT JavaScript's `===` and not the predicate rule.
+   * NaN IS EQUAL TO ITSELF HERE, which is NOT JavaScript's `===` and not the predicate rule.
    * `nan-comparison-policy`: predicates keep NaN JS-unordered, while sort/min/max and KEYING use a
    * total order where NaN equals NaN — otherwise byte-identity with the Rust engine fails. Item
    * 1561 nearly missed this because `JSON.stringify(NaN)` is the string `null`.
@@ -121,7 +121,7 @@ describe('the chain rung dedupes the way the rest of the engine does', () => {
   });
 
   /**
-   * ⚠️ TWO COLUMNS WHERE ONLY THE SECOND DIFFERS — the case a one-column fast path applied to a
+   * TWO COLUMNS WHERE ONLY THE SECOND DIFFERS — the case a one-column fast path applied to a
    * multi-column row would collapse, which is precisely the silent answer change item 1561
    * introduced and item 1562 guarded. `s` is `s0`/`s1` by index parity, so `k` alone would read
    * two rows where the pair reads four.
@@ -140,7 +140,7 @@ describe('the chain rung dedupes the way the rest of the engine does', () => {
   });
 
   /**
-   * ⚠️ THE DEDUPED ANSWER MUST EQUAL THE GENERAL PATH'S, and the way to get the general path for
+   * THE DEDUPED ANSWER MUST EQUAL THE GENERAL PATH'S, and the way to get the general path for
    * the SAME question is a spelling this rung declines. `ORDER BY` is one (it is still refused), so
    * the two routes answer the same query and their SETS are compared — the strongest available
    * check that admitting the rung did not change the answer, rather than that the rung is
@@ -157,7 +157,7 @@ describe('the chain rung dedupes the way the rest of the engine does', () => {
   });
 
   /**
-   * ⚠️ AN ELEMENT COLUMN keys by ID and not by object identity — `rowKeyOf`'s comment is explicit
+   * AN ELEMENT COLUMN keys by ID and not by object identity — `rowKeyOf`'s comment is explicit
    * that two row objects can hold different instances for one id. Each far vertex is distinct here,
    * so the count is the level width and a mutant keying on identity would still pass; what this
    * pins is that an element column does not THROW or collapse to one row in the new tail.
@@ -171,7 +171,7 @@ describe('the chain rung dedupes the way the rest of the engine does', () => {
 });
 
 /**
- * ⚠️ THE TWO-HOP RUNG GOT THE SAME ADMISSION AT ITEM 1822, and it needs its OWN answer tests rather
+ * THE TWO-HOP RUNG GOT THE SAME ADMISSION AT ITEM 1822, and it needs its OWN answer tests rather
  * than inheriting these: it is a different module (`hop2-projection.ts`), a different walk, and a
  * different row-building point. The shared argument is in `rows.ts`; the shared keying is
  * `distinctRows`; nothing else is shared, so nothing else may be assumed.
@@ -216,7 +216,7 @@ describe('the two-hop rung dedupes identically', () => {
     );
   });
 
-  /** ⚠️ The cross-route check: `ORDER BY` declines the rung, so this is rung against general path. */
+  /** The cross-route check: `ORDER BY` declines the rung, so this is rung against general path. */
   test('agrees with the route that declines the rung, on the same query', () => {
     const g = chainGraph([3, 1, 2, 2, null, 1]);
 
@@ -226,7 +226,7 @@ describe('the two-hop rung dedupes identically', () => {
   });
 
   /**
-   * ⚠️ AND THE TWO RUNGS AGAINST EACH OTHER, which neither rung's own tests can ask. Both widths
+   * AND THE TWO RUNGS AGAINST EACH OTHER, which neither rung's own tests can ask. Both widths
    * read the same far-end property over the same levels of the same fixture, so their deduped
    * answers must be the same SET — the level-3 values are reachable at both depths here. This is
    * the assertion that catches one rung's dedupe drifting from the other's.
@@ -242,7 +242,7 @@ describe('the two-hop rung dedupes identically', () => {
 });
 
 /**
- * ⚠️ THE ONE-HOP MULTI-COLUMN RUNG — item 1825, and it needs its own answers for the third time in
+ * THE ONE-HOP MULTI-COLUMN RUNG — item 1825, and it needs its own answers for the third time in
  * this file's history: a different module again (`hop-projection.ts`), a different walk, and — the
  * part that makes it unlike the other two — a rung that can DECLINE AT RUNTIME. Its inner rung
  * returns `null` when it finds at execution time that an index seek on the end it does not drive
@@ -288,7 +288,7 @@ describe('the one-hop multi-column DISTINCT rung', () => {
   });
 
   /**
-   * ⚠️ AN `ORDER BY` MUST COME BACK SORTED, AND THIS ASSERTION EXISTS BECAUSE A MUTANT SURVIVED
+   * AN `ORDER BY` MUST COME BACK SORTED, AND THIS ASSERTION EXISTS BECAUSE A MUTANT SURVIVED
    * WITHOUT IT. Dropping the no-window narrowing lets `DISTINCT … ORDER BY` take this rung, which
    * does not sort — so the rows come back in walk order. Every other test here compares SETS
    * (`order-is-unspecified` is owner policy for unordered rows), so all of them passed with the
@@ -304,7 +304,7 @@ describe('the one-hop multi-column DISTINCT rung', () => {
     const two = query(g, `${HOP1} RETURN DISTINCT b.k AS k, b.s AS s ORDER BY k, s`);
 
     /**
-     * ⚠️ FIVE PAIRS, NOT FOUR — I hand-wrote four and the test caught me. `chainGraph`'s `s` is
+     * FIVE PAIRS, NOT FOUR — I hand-wrote four and the test caught me. `chainGraph`'s `s` is
      * `s${i % 2}`, so `[3, 1, 2, 2, 1]` gives `(3,s0) (1,s1) (2,s0) (2,s1) (1,s0)`: the two `2`s
      * sit at indices 2 and 3 and therefore carry DIFFERENT `s`, so they do not collapse. An
      * order-sensitive oracle has to be written out, which means it can be written out wrong — so
@@ -320,18 +320,18 @@ describe('the one-hop multi-column DISTINCT rung', () => {
   });
 
   /**
-   * ⚠️⚠️ A PAGE MUST NOT REACH THIS RUNG, AND THE ROW COUNT IS THE ONLY SOUND ORACLE FOR IT.
+   * A PAGE MUST NOT REACH THIS RUNG, AND THE ROW COUNT IS THE ONLY SOUND ORACLE FOR IT.
    * Dedupe-then-skip and skip-then-dedupe are different answers: the inner rung pages its own RAW
    * rows, so letting `SKIP` through would skip duplicates and then dedupe, leaving MORE rows than
    * the query asks for. Here 16 raw rows reduce to 4 distinct pairs, so `SKIP 2` must be 2 rows —
    * the mutant that drops the no-window narrowing leaves 4.
    *
-   * ⚠️ AND IT ASSERTS THE COUNT, NOT THE ROWS, deliberately: `SKIP` with no `ORDER BY` has an
+   * AND IT ASSERTS THE COUNT, NOT THE ROWS, deliberately: `SKIP` with no `ORDER BY` has an
    * unspecified answer as to WHICH rows survive (`order-is-unspecified`), so pinning the values
    * would pin something the engine does not promise. The COUNT is determined either way, which is
    * what makes it the right assertion rather than the weaker one.
    *
-   * ⚠️ `ORDER BY` is NOT the hazard here, which I had backwards first: the inner rung sorts on the
+   * `ORDER BY` is NOT the hazard here, which I had backwards first: the inner rung sorts on the
    * way out and `distinctRows` keeps first occurrences in order, so sorted-then-deduped is still
    * sorted. The order-sensitive test above is still worth having, but it is the PAGE that this
    * narrowing exists for.
@@ -344,7 +344,7 @@ describe('the one-hop multi-column DISTINCT rung', () => {
     expect(query(g, `${HOP1} RETURN DISTINCT b.k AS k, b.s AS s SKIP 1`).length).toBe(3);
   });
 
-  /** ⚠️ SINGLE column must answer identically — it goes to the OTHER rung (see routes-fired). */
+  /** SINGLE column must answer identically — it goes to the OTHER rung (see routes-fired). */
   test('the single-column spelling still answers correctly', () => {
     const g = chainGraph([1, 1, 2, 3, 3]);
 

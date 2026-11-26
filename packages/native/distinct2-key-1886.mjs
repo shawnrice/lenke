@@ -1,7 +1,7 @@
 /**
  * WHAT DOES THE TWO-COLUMN `DISTINCT` KEY COST, AND WHAT IS ITS FLOOR? (item 1886)
  *
- * ⚠️ ITEM 1825 NAMED THIS ITEM AND LEFT THE FLOOR: it took multi-column `DISTINCT` at one hop from
+ * ITEM 1825 NAMED THIS ITEM AND LEFT THE FLOOR: it took multi-column `DISTINCT` at one hop from
  * 32.5 to 7.5 ms (4.4x) by handing the shape to the hop rung with a synthetic non-distinct
  * projection and deduping the result — and recorded what was left as "the multi-column keying
  * itself (`rowKeyOf` costs two array allocations, a string build and a hash per row, where the
@@ -12,7 +12,7 @@
  * twin's 1.7** — 4.3x, and the only flag on that grid that is neither a documented byte-identity
  * refusal (`sum`, `collect`) nor noise-sized.
  *
- * ⚠️ THE ARMS ARE CHOSEN SO THE KEYING IS THE ONLY DIFFERENCE between neighbours:
+ * THE ARMS ARE CHOSEN SO THE KEYING IS THE ONLY DIFFERENCE between neighbours:
  *
  *     rows        the undeduped twin — the walk alone, and the floor the key is added to
  *     distinct1   ONE column: takes `distinctRows`' value-keyed fast route
@@ -20,7 +20,7 @@
  *     twocol      TWO columns, NOT deduped — isolates "a second column costs something" from
  *                 "keying two columns costs something", which a `distinct2`/`rows` ratio conflates
  *
- * ⚠️ ONE SHAPE PER PROCESS (items 1870/1874), and `SERIES=1` prints the per-rep series, which is
+ * ONE SHAPE PER PROCESS (items 1870/1874), and `SERIES=1` prints the per-rep series, which is
  * what item 1884 needed to see that a 9-rep window was measuring warm-up as the steady state.
  *
  *     for s in rows distinct1 distinct2 twocol; do SHAPE=$s bun distinct2-key-1886.mjs; done

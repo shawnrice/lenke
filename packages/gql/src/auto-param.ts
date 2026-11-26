@@ -13,7 +13,7 @@ import type { Token, TokenType } from './lexer.js';
  * unindexed column where no seek applies). Item 1500 then showed the planner has no hot spot, so
  * skipping parse+plan is the only large win left.
  *
- * ⚠️ THE TEXT IS REWRITTEN, NOT THE AST. `MATCH (n:P) WHERE n.k = 7` becomes
+ * THE TEXT IS REWRITTEN, NOT THE AST. `MATCH (n:P) WHERE n.k = 7` becomes
  * `MATCH (n:P) WHERE n.k = $__ap0` with `{ __ap0: 7 }`, and that rewritten text goes through the
  * ordinary `parse` and plan caches unchanged. No AST surgery, no plan surgery, nothing to keep in
  * sync with either — the whole mechanism is a string and an object.
@@ -43,12 +43,12 @@ import type { Token, TokenType } from './lexer.js';
  * literal. Item 1501 measured `IN list` at 1.06x and `projection` at 0.77x, so these are candidates
  * for a later widening — each needs its own gate row first.
  *
- * ⚠️ IT RETURNS `undefined` WHEN NOTHING IS ELIGIBLE, and the caller must then use the original
+ * IT RETURNS `undefined` WHEN NOTHING IS ELIGIBLE, and the caller must then use the original
  * text. Rewriting a query that gained no shareable key would be pure cost.
  */
 
 /**
- * ⚠️ ARITHMETIC NEIGHBOURS DISQUALIFY A LITERAL, and a test found this rather than foresight.
+ * ARITHMETIC NEIGHBOURS DISQUALIFY A LITERAL, and a test found this rather than foresight.
  *
  * The reversed-comparison rule below lifts a literal whose NEXT token is a comparison — which also
  * catches the last operand of an arithmetic expression: `WHERE n.k + 1 = 8` became
@@ -90,7 +90,7 @@ const LIFTABLE_AFTER: ReadonlySet<TokenType> = new Set<TokenType>([...COMPARISON
 export type Normalized = { text: string; params: Record<string, unknown> };
 
 /**
- * ⚠️ THE SYNTHETIC NAMESPACE IS `__ap<n>`, NOT `p<n>`. The tagged-template form of `gql()` owns
+ * THE SYNTHETIC NAMESPACE IS `__ap<n>`, NOT `p<n>`. The tagged-template form of `gql()` owns
  * `$p0…$pn` and documents that callers must not hand-write those inside a template; colliding with
  * it here would make a template whose substitutions silently take the wrong values. A leading
  * double underscore also keeps these out of the way of the `_`-sigil extension convention.
@@ -100,7 +100,7 @@ const NAME_PREFIX = '__ap';
 /**
  * Was this parameter name minted by {@link normalizeLiterals}, rather than supplied by the caller?
  *
- * ⚠️ WHY ANYONE OUTSIDE THIS FILE NEEDS TO ASK (item 1556). A synthetic param carries a value this
+ * WHY ANYONE OUTSIDE THIS FILE NEEDS TO ASK (item 1556). A synthetic param carries a value this
  * file has already proved non-null: the lifting loop admits only numbers and strings, and refuses
  * `null`, `true` and `false` outright. A caller's `$p`, by contrast, could BE null, and item 260
  * records what that costs — `{k: null}` means IS NULL while `WHERE a.k = null` answers `[]`, so a
@@ -116,7 +116,7 @@ export const isSyntheticParam = (name: string): boolean => name.startsWith(NAME_
 /**
  * The source span of `tokens[i]`, bounded by where the NEXT token starts.
  *
- * ⚠️ A `Token` carries `pos` but no LENGTH, and the two cannot be derived from `value`: a string
+ * A `Token` carries `pos` but no LENGTH, and the two cannot be derived from `value`: a string
  * token's `value` is the DECODED content, so it is shorter than its source by the quotes and by
  * every escape. Using the next token's `pos` as the end is exact for the purpose, and the only
  * thing it can swallow is whitespace or a comment sitting between the two — both of which the lexer
@@ -126,7 +126,7 @@ const spanEnd = (tokens: readonly Token[], i: number, srcLength: number): number
   i + 1 < tokens.length ? tokens[i + 1].pos : srcLength;
 
 /**
- * ⚠️ A CHEAP PRE-FILTER, AND IT IS WHAT KEEPS THE COST OFF CALLERS THIS CANNOT HELP (item 1502).
+ * A CHEAP PRE-FILTER, AND IT IS WHAT KEEPS THE COST OFF CALLERS THIS CANNOT HELP (item 1502).
  *
  * Normalization needs a tokenize (~865 ns), and it runs on every parse-cache MISS. Measured, a text
  * that misses for some reason OTHER than a liftable literal paid **1.11-1.27x** for the attempt —
@@ -164,7 +164,7 @@ export const normalizeLiterals = (text: string): Normalized | undefined => {
 
   for (let i = 1; i < tokens.length; i += 1) {
     const tok = tokens[i];
-    // ⚠️ EITHER SIDE OF A COMPARISON, and the reversed side is not an afterthought: `5 <= u.n` and
+    // EITHER SIDE OF A COMPARISON, and the reversed side is not an afterthought: `5 <= u.n` and
     // `u.n >= 5` are the SAME question, and CLAUDE.md names that exact pair as one of the
     // equivalent-spelling defects this engine has shipped before. Lifting only the right-hand side
     // would have left the reversed spelling paying full parse+plan forever — an asymmetry created

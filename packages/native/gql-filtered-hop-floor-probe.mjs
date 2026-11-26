@@ -16,7 +16,7 @@
  * been compared against what the work costs. Items 1441 and 1443 both resolved Gremlin questions this
  * way after in-file A/Bs failed — and 1443 found an apparent 3.35x that was entirely the fixture.
  *
- * ⚠️ AND THIS SHAPE HAS A COST THE GREMLIN ROWS DO NOT: it builds a ROW OBJECT per result, `{n:
+ * AND THIS SHAPE HAS A COST THE GREMLIN ROWS DO NOT: it builds a ROW OBJECT per result, `{n:
  * value}`, where `values('k')` pushes a bare value. That is unpriced. The arms separate it:
  *
  *   engine         the query
@@ -26,7 +26,7 @@
  *   floor-nopred   hand walk, no predicate, pushes `{ n: value }`      -> prices the PREDICATE
  *   floor-bare     hand walk, no predicate, pushes the bare value      -> the walk alone
  *
- * ⚠️ DIGESTS ARE CHECKED PER GROUP. The filtered arms answer a different multiset from the unfiltered
+ * DIGESTS ARE CHECKED PER GROUP. The filtered arms answer a different multiset from the unfiltered
  * ones, so a pooled check would report a false disagreement — the mistake item 1443 had to design
  * around. `group` is emitted; compare within it.
  *
@@ -34,7 +34,7 @@
  *
  * ONE ARM PER PROCESS (item 762).
  *
- * ⚠️⚠️ `FANOUT` DEFAULTS TO 1, AND EVERY NUMBER IN ITEMS 1444-1447 WAS TAKEN THERE. One edge per node
+ * `FANOUT` DEFAULTS TO 1, AND EVERY NUMBER IN ITEMS 1444-1447 WAS TAKEN THERE. One edge per node
  * is the sparse fixture CLAUDE.md warns per-edge costs do not scale on — and this shape's cost IS per
  * edge: one predicate evaluation and one row per edge traversed. Item 1635 re-ran all five arms at
  * `FANOUT=5`, three rounds, and the ordering CHANGES:
@@ -55,11 +55,11 @@
  * 178.4), and the megamorphic arm now accounts for the engine COMPLETELY rather than leaving 24.6
  * ns/row over.
  *
- * ⚠️ THE DEFAULT IS LEFT AT 1 ON PURPOSE. Changing it would silently invalidate every figure in items
+ * THE DEFAULT IS LEFT AT 1 ON PURPOSE. Changing it would silently invalidate every figure in items
  * 1444-1447 without re-measuring them, and those arms are each other's controls. Pass `FANOUT=5` for
  * a realistic degree, and when quoting any number from this probe, say which fixture produced it.
  *
- * ⚠️ AND DO NOT MIX `systemd-run --scope` READINGS WITH PLAIN `node` ONES. Item 1635 measured the
+ * AND DO NOT MIX `systemd-run --scope` READINGS WITH PLAIN `node` ONES. Item 1635 measured the
  * `engine` arm at 397.83 under a scope and 509-528 under plain node; the cause was not chased, but
  * mixing them would have put the engine BELOW the megamorphic arm and inverted the conclusion. Keep
  * every arm of a comparison in the same harness.
@@ -168,7 +168,7 @@ const floor = () => {
 };
 
 /**
- * ⚠️ THE SAME FLOOR BUT READING `b.n` TWICE, as the engine does — which is what makes a
+ * THE SAME FLOOR BUT READING `b.n` TWICE, as the engine does — which is what makes a
  * common-subexpression pass PRICEABLE (item 1444).
  *
  * Item 1437 concluded "nothing shares the read, and a CSE has nothing to win" from two ENGINE arms:
@@ -408,7 +408,7 @@ if (ARM === 'floor-engine-shaped-poly' || ARM === 'floor-pred-poly-row-direct') 
 }
 
 /**
- * ⚠️ THE SHAPE OF ITEM 1447'S REVERTED ENGINE CHANGE: a MEGAMORPHIC predicate path with a DIRECT row
+ * THE SHAPE OF ITEM 1447'S REVERTED ENGINE CHANGE: a MEGAMORPHIC predicate path with a DIRECT row
  * build. This is the arm that explains why that change bought nothing.
  *
  * Item 1446 measured machinery + megamorphism at 90.9% of the engine-to-floor gap and I read that as

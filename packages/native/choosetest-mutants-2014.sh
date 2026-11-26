@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2014 — mutation round on the `choose(<hop test>, <value arm>, <value arm>)` rung.
 #
-# ⚠️ ANSWER-EQUIVALENT ROUTE, so the 2,464-test gremlin suite passes with every mutant below. The
+# ANSWER-EQUIVALENT ROUTE, so the 2,464-test gremlin suite passes with every mutant below. The
 # filter is the route's OWN test file ([[perf-gate-needs-its-own-test]]).
 #
 # Harness rules, all earned at items 1998-2005 and kept verbatim:

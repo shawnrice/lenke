@@ -1,15 +1,15 @@
 // A residual `count()` counted on the walk's drain (item 2020).
 //
-// ⚠️⚠️ **THIS IS GENERIC — EVERY FUSED WALK WITH A `count()` RESIDUAL NOW TAKES IT**, not one rung.
+// **THIS IS GENERIC — EVERY FUSED WALK WITH A `count()` RESIDUAL NOW TAKES IT**, not one rung.
 // So the question is not "does the edge-filter shape count correctly" but "does `count` still mean
 // what it meant for every shape that reaches a fused walk".
 //
-// 🔑 THE ORACLE IS THE SAME WALK WITHOUT `count()`. `toArray(V().out('E'))` returns the rows and
+// THE ORACLE IS THE SAME WALK WITHOUT `count()`. `toArray(V().out('E'))` returns the rows and
 // takes the drain directly (its `rest` is empty), so its `.length` is what `count()` must equal —
 // an oracle that does not depend on the code under test. Where a shape's row list is awkward, the
 // hand-computed number is written out instead.
 //
-// ⚠️ `count` CARRIES A SCOPE and a LOCAL one is a different question — it counts each traverser's
+// `count` CARRIES A SCOPE and a LOCAL one is a different question — it counts each traverser's
 // own iterable value, not the stream. It must be refused and still answer correctly.
 import { describe, expect, test } from 'bun:test';
 
@@ -40,7 +40,7 @@ const build = (): Graph => {
   const g = new Graph();
 
   /*
-   * ⚠️ `k` IS SPARSE: `d` has no `k`, so a `values('k')` projection DROPS it — and a `count()` after
+   * `k` IS SPARSE: `d` has no `k`, so a `values('k')` projection DROPS it — and a `count()` after
    * that projection must count the DROPPED-OUT total, not the element total. That is the one place
    * `count` over a fused walk can disagree with "number of elements visited".
    */
@@ -90,7 +90,7 @@ describe('a residual count() equals the walk it counts', () => {
   const g = build();
 
   /*
-   * ⚠️ EACH SHAPE IS WRITTEN TWICE — plain and with `count()` — rather than splicing `count()` onto
+   * EACH SHAPE IS WRITTEN TWICE — plain and with `count()` — rather than splicing `count()` onto
    * a built plan. `traversal(...)` takes step FUNCTIONS, not the AST nodes a built `Plan` holds, so
    * `traversal(...plan.steps, count())` throws. Writing the pair out is also what makes the oracle
    * honest: the plain shape's `rest` is EMPTY, so it takes the drain directly and does not share the
@@ -132,7 +132,7 @@ describe('a residual count() equals the walk it counts', () => {
     for (const [name, plain, withCount] of PAIRS) {
       const rows = toArray(plain(), g);
 
-      // ⚠️ A NON-EMPTY ROW LIST IS ASSERTED FIRST: `0 === 0` agrees trivially, and an always-zero
+      // A NON-EMPTY ROW LIST IS ASSERTED FIRST: `0 === 0` agrees trivially, and an always-zero
       // count would pass every comparison below. The empty case is checked on its own further down.
       expect(rows.length).toBeGreaterThan(0);
       expect(counted(withCount(), g)).toBe(rows.length);
@@ -142,7 +142,7 @@ describe('a residual count() equals the walk it counts', () => {
 
   test('a `values(k)` projection DROPS, and the count follows the drop', () => {
     /*
-     * ⚠️⚠️ **THE ONE CASE WHERE "COUNT" AND "ELEMENTS VISITED" DIVERGE.** Six `E` edges are walked,
+     * **THE ONE CASE WHERE "COUNT" AND "ELEMENTS VISITED" DIVERGE.** Six `E` edges are walked,
      * but two of them land on `d`, which has no `k` — so `values('k')` emits FOUR values. A count
      * taken from the walk's element total rather than its EMITTED total would say six.
      */
@@ -151,7 +151,7 @@ describe('a residual count() equals the walk it counts', () => {
   });
 
   test('an EMPTY result counts 0, not nothing', () => {
-    // ⚠️ A reducing terminal emits ONE row even over an empty stream — Gremlin's contract, and where
+    // A reducing terminal emits ONE row even over an empty stream — Gremlin's contract, and where
     // an implementation that passed the stream through unchanged would show.
     expect(toArray(traversal(V(), out('NOPE'), count()), g)).toEqual([0]);
     expect(toArray(traversal(V(), outE('E'), has('w', gt(999)), inV(), count()), g)).toEqual([0]);
@@ -171,7 +171,7 @@ describe('what the count residual must REFUSE', () => {
 
   test('count(Scope.local) is refused and still answers correctly', () => {
     /*
-     * ⚠️⚠️ **A LOCAL COUNT IS A DIFFERENT QUESTION** — it counts each traverser's own iterable value
+     * **A LOCAL COUNT IS A DIFFERENT QUESTION** — it counts each traverser's own iterable value
      * rather than the stream. After `fold()` the stream holds ONE list of six elements, so
      * `count(Scope.local)` is 6 while a GLOBAL count is 1. An implementation that ignored the scope
      * would answer 1 for both. `count` carries that scope where `fold` does not, which is why
@@ -193,7 +193,7 @@ describe('the DRAIN-LESS branch, which every other shape here skips', () => {
 
   test('a walk with NO `drain` is counted in one pass', () => {
     /*
-     * ⚠️⚠️ **`countIterable` WAS UNREACHED BY EVERY TEST ABOVE AND A MUTANT PROVED IT**: changing
+     * **`countIterable` WAS UNREACHED BY EVERY TEST ABOVE AND A MUTANT PROVED IT**: changing
      * `n += 1` to `n += 2` survived this whole file AND the entire @lenke/gremlin suite, because
      * every shape above offers a `drain` and takes `drain().length` instead. Not dead code —
      * several rungs return a walk with no drain (item 2014's `choose-test-values.ts` among them,
@@ -220,7 +220,7 @@ describe('the DRAIN-LESS branch, which every other shape here skips', () => {
 
 describe('fusableProjectedCount: the gate itself', () => {
   /*
-   * ⚠️⚠️ **THE ROUTE CHOICE IS ANSWER-EQUIVALENT — the generic route returns the same numbers — so
+   * **THE ROUTE CHOICE IS ANSWER-EQUIVALENT — the generic route returns the same numbers — so
    * nothing in the answer tests can see the fused case being declined.** The mutation round proved
    * it: forcing the gate to refuse every count ("count-never-fused") survived this file and the
    * whole suite. These assertions are the only thing that holds it

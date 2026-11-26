@@ -47,7 +47,7 @@ const MULTILABEL = Number(process.env.MULTILABEL ?? 3);
 /**
  * `MULTILABEL=-1` makes `E` and `F` DISJOINT — alternating, no edge carrying both (item 1405).
  *
- * ⚠️ THIS IS THE COMMON CASE AND THE BENCH COULD NOT BUILD IT. Every multi-type row here has used
+ * THIS IS THE COMMON CASE AND THE BENCH COULD NOT BUILD IT. Every multi-type row here has used
  * overlapping types (every Nth edge carries both), which makes `graph.multiTypeEdgeCount` non-zero
  * and `typeEdgeCount` an OVER-count: at `MULTILABEL=3` the degree estimate reads 1.33x the truth.
  * Two distinct relationship types that never co-occur on one edge is what a real schema usually has,
@@ -76,7 +76,7 @@ const DISJOINT = MULTILABEL === -1;
  * lose.
  */
 /**
- * ⚠️ HOW FAR A VERTEX'S SUCCESSOR SITS, which is worth ~2x at the SAME DEGREE (item 1426).
+ * HOW FAR A VERTEX'S SUCCESSOR SITS, which is worth ~2x at the SAME DEGREE (item 1426).
  *
  * `small` (the default, and byte-for-byte what every reading before item 1426 used) is
  * `to = (i * 7 + 3) % NODES`: a vertex points ~7 slots along, so the successor is partly
@@ -94,7 +94,7 @@ const DISJOINT = MULTILABEL === -1;
  * have a strided successor.
  */
 /**
- * ⚠️ A SELECTIVE SECOND LABEL `S`, on every Nth vertex. **DEFAULT 0 = OFF** (item 1435).
+ * A SELECTIVE SECOND LABEL `S`, on every Nth vertex. **DEFAULT 0 = OFF** (item 1435).
  *
  * Every vertex in this fixture was `P` and nothing else, so NO row could reach a route gated on a
  * label that NARROWS — and `threeSegmentRoute` picks the way-count SWEEP over the degree product
@@ -118,7 +118,7 @@ const FANIN = Number(process.env.FANIN ?? 1);
 /**
  * Out-edges per vertex (item 1401). `FANOUT=1` is the original fixture, byte-for-byte.
  *
- * ⚠️ EVERY GQL NUMBER THIS SESSION CAME FROM A DEGREE-1 FIXTURE, and item 1400 is why that is now a
+ * EVERY GQL NUMBER THIS SESSION CAME FROM A DEGREE-1 FIXTURE, and item 1400 is why that is now a
  * knob. One out-edge per vertex, a single permutation cycle, no self-loops and no parallel edges —
  * and at item 1399 that degeneracy hid a CORRECTNESS difference, not just a cost one: removing the
  * depth-4 endpoint-mask gate measured "correct and 9.9x faster" here and answers **-3** on
@@ -128,7 +128,7 @@ const FANIN = Number(process.env.FANIN ?? 1);
  * only ever say what a degree-1 graph does. A per-vertex cost and a per-edge cost scale differently
  * (CLAUDE.md), and so do a walk that dedupes and one that never meets a duplicate.
  */
-// ⚠️⚠️ ONE EDGE PER NODE BY DEFAULT, AND THAT HIDES PER-EDGE EFFECTS. Item 1636 measured the
+// ONE EDGE PER NODE BY DEFAULT, AND THAT HIDES PER-EDGE EFFECTS. Item 1636 measured the
 // far-property row builder at NO separation here at FANOUT=1 (33 ms rows with a 42 ms outlier) and at
 // 1.23-1.43x at FANOUT=5 — and the same default produced a PHANTOM 7-18% regression on
 // `hoprelfiltyield` that three further rounds refuted. At one edge per node there is one far-end read
@@ -168,7 +168,7 @@ const SHAPES = {
   // exactly — no cycle is short enough for TRAIL semantics to separate them — so a cost difference
   // is a routing difference and not different work.
   //
-  // ⚠️ AT `FANOUT=4` THEY ARE DIFFERENT QUESTIONS, and item 1401 measured it rather than leaving the
+  // AT `FANOUT=4` THEY ARE DIFFERENT QUESTIONS, and item 1401 measured it rather than leaving the
   // caveat asserted: `{2,2}` answers **799,996** against the chain's **800,000**, and `{3,3}`
   // **3,199,944** against **3,200,000**. A quantified path is a TRAIL and may not repeat an edge
   // while the chain may, so at degree 4 those 4 and 56 paths revisit one — which is the trail
@@ -195,7 +195,7 @@ const SHAPES = {
   // over the same edge set, so they must cost the same.
   hopsingleyield: 'MATCH (a:P)-[:E]->(b:P) RETURN b.n AS n',
   /**
-   * ⚠️ THE ORDERED PAIRS — item 1837. Two independent axes say the deeper widths' `ORDER BY` carries
+   * THE ORDERED PAIRS — item 1837. Two independent axes say the deeper widths' `ORDER BY` carries
    * a marginal the one-hop route does not: the SIZE axis (item 1835, a marginal of 18-26 ms at
    * 200,000 against 3.5 at depth 1) and the FANOUT axis (item 1836, 1.56x its own `rows` cell at
    * fanout 5 against ~1.0x at fanout 1). Both readings come from `rung-gap-screen.mjs`, whose own
@@ -213,7 +213,7 @@ const SHAPES = {
   hopmultiyield: 'MATCH (a:P)-[:E|F]->(b:P) RETURN b.n AS n',
   hopmultiyieldrev: 'MATCH (a:P)-[:F|E]->(b:P) RETURN b.n AS n',
   /**
-   * ⚠️ THE START-DRIVEN TWINS OF THE TWO ROWS ABOVE, AND `OFFSET 1` IS WHAT FORCES THAT WALK.
+   * THE START-DRIVEN TWINS OF THE TWO ROWS ABOVE, AND `OFFSET 1` IS WHAT FORCES THAT WALK.
    *
    * The single-type far-read hop takes the far-driven walk UNCONDITIONALLY whenever the start label
    * is vacuous — `hop-projection.ts`'s single-type exit has no degree gate at all, unlike the
@@ -227,7 +227,7 @@ const SHAPES = {
    * fewer row out of `NODES` — which is the cheapest route A/B available, and it needs no source
    * edit, so both arms are ONE BUILD (item 737's trap, avoided the way items 1776-1778 avoided it).
    *
-   * ⚠️ SO THEIR `digest` AND `rowCount` LEGITIMATELY DIFFER from the unpaged rows by exactly one
+   * SO THEIR `digest` AND `rowCount` LEGITIMATELY DIFFER from the unpaged rows by exactly one
    * row. Compare a paged arm against a paged arm across fixture knobs, never against its unpaged
    * twin, for anything but the route question these exist to answer.
    */
@@ -245,7 +245,7 @@ const SHAPES = {
   // — which is what item 1407's change touched and what these would have caught had they existed.
   hopfiltyield: 'MATCH (a:P)-[:E]->(b:P) WHERE b.n > 5 RETURN b.n AS n',
   /**
-   * ⚠️ THE RAISE-FREE FAR PREDICATE, WHICH THIS BENCH COULD NOT SEE (item 1780). Every other
+   * THE RAISE-FREE FAR PREDICATE, WHICH THIS BENCH COULD NOT SEE (item 1780). Every other
    * filtered row here is an ORDERING comparison (`>`), and `cross-type-comparison-no-error` is the
    * policy that splits them: `=` on a cross-type pair is a NO-MATCH where `<=` THROWS. So `b.k = 5`
    * cannot raise while `b.n > 5` can, and that distinction is the whole of item 936's candidate
@@ -253,7 +253,7 @@ const SHAPES = {
    * the grounds that the shape it had measured could raise. The shape that cannot was never
    * measured, because no row here had one.
    *
-   * ⚠️ IT IS ALSO THE SELECTIVE ONE, which is a second reason the family needed it. Every `>` row
+   * IT IS ALSO THE SELECTIVE ONE, which is a second reason the family needed it. Every `>` row
    * here passes ~100% of rows (`b.n > -1`, `b.n > 5` over `n = i`), so they measure a filter that
    * rejects nothing. An equality over `k = i % 97` passes ~1/97, so the two differ in what a walk
    * could SKIP as well as in whether it may reorder faults.
@@ -264,14 +264,14 @@ const SHAPES = {
   hopfiltfareq: 'MATCH (a:P)-[:E]->(b:P) WHERE b.k = 5 RETURN b.n AS n',
   hopfiltneq: 'MATCH (a:P)-[:E]->(b:P) WHERE b.k <> 5 RETURN b.n AS n',
   /**
-   * ⚠️ THE START-DRIVEN TWINS OF THE FILTERED ROWS — i.e. THE ROUTE AS IT WAS BEFORE ITEM 1781.
+   * THE START-DRIVEN TWINS OF THE FILTERED ROWS — i.e. THE ROUTE AS IT WAS BEFORE ITEM 1781.
    *
    * Item 1781 gave a raise-free far predicate the far-driven walk. `OFFSET 1` forces the
    * start-driven arm (item 1777's `pageSkip !== 0` arm of `startDriven`, made an instrument at item
    * 1779), so each pair measures the OLD route against the NEW one in ONE BUILD — no source patch,
    * no rebuild between arms, and item 737's cross-build trap cannot apply.
    *
-   * ⚠️ THE PAGED ARM ALSO PAYS FOR THE PAGE, which is why that cost is bounded rather than assumed:
+   * THE PAGED ARM ALSO PAYS FOR THE PAGE, which is why that cost is bounded rather than assumed:
    * item 1775 profiled `internalSkip` at 3.7% of the general path, and on a rung the page is one
    * `rows.slice`. Item 1779's spelling pairs read 0.93-0.99x across six cells, so the page is worth
    * about a percent here — small against the gap these rows measure, and it biases AGAINST the new
@@ -281,7 +281,7 @@ const SHAPES = {
   hopfiltallpasspage: 'MATCH (a:P)-[:E]->(b:P) WHERE b.n > -1 RETURN b.n AS n OFFSET 1',
   hopfiltfareqpage: 'MATCH (a:P)-[:E]->(b:P) WHERE b.k = 5 RETURN b.n AS n OFFSET 1',
   hopfiltneqpage: 'MATCH (a:P)-[:E]->(b:P) WHERE b.k <> 5 RETURN b.n AS n OFFSET 1',
-  // ⚠️ THE DECOMPOSITION OF `hopfiltyield`, which is the heaviest OPEN row in this bench at **644
+  // THE DECOMPOSITION OF `hopfiltyield`, which is the heaviest OPEN row in this bench at **644
   // ns/row** (item 1437). Profiling it nominated nothing routable — `get adjFrom` is 1.1%, so the
   // edge-index trick item 1431 took for the undirected walk is worth ~nothing here — and the
   // remaining structural observation was that it reads `b.n` TWICE (once for the predicate, once for
@@ -324,7 +324,7 @@ const SHAPES = {
   hopsortnum: 'MATCH (a:P)-[:E]->(b:P) RETURN b.n AS n ORDER BY n',
   grouped: 'MATCH (n:P) RETURN n.k AS k, count(*) AS c',
   /**
-   * ⚠️ THE EIGHT GENERAL-PATH SHAPES `rung-precedence-census.mjs` HAS BEEN NAMING SINCE ITEM 1775,
+   * THE EIGHT GENERAL-PATH SHAPES `rung-precedence-census.mjs` HAS BEEN NAMING SINCE ITEM 1775,
    * AND NONE OF THEM HAD A ROW HERE (item 1785) — which is why no ranking ever nominated them.
    *
    * The census reports "10 shapes on the GENERAL PATH — that list is the open surface", and two of
@@ -334,7 +334,7 @@ const SHAPES = {
    * so they re-pay `withBinding` / `matchPattern` / `projectBinding` / `recordTail` /
    * `evalLabelExpr` per row — the 96% item 1775's profile attributed to losing the rung.
    *
-   * ⚠️ `hop2*` AND `varlen*` ARE SUPERLINEAR IN FANOUT, so they are kept at the bench's default
+   * `hop2*` AND `varlen*` ARE SUPERLINEAR IN FANOUT, so they are kept at the bench's default
    * `FANOUT=1` meaning: one out-edge per vertex, so a 2-hop is NODES rows and a `{1,3}` is 3*NODES.
    * At `FANOUT=4` the same shapes are 16x and 84x that, which is a different question (and the one
    * `scale_bench` exists for) rather than a harder version of this one.
@@ -348,7 +348,7 @@ const SHAPES = {
   optgroup: 'MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(b) RETURN a.k AS g, count(*) AS c',
   hopgroupsumcrossend: 'MATCH (a:P)-[:E]->(b) RETURN a.k AS g, sum(b.k) AS s',
   /**
-   * ⚠️ ONE OF THESE IS A RUNG-TAKING TWIN AND THE OTHER IS NOT — VERIFIED WITH `compileLinear`, after
+   * ONE OF THESE IS A RUNG-TAKING TWIN AND THE OTHER IS NOT — VERIFIED WITH `compileLinear`, after
    * I wrote the opposite here (item 1785).
    *
    *   hopgroupsumsameend   `b.k AS g, sum(b.n)` — takes `groupedHopAggregate`. A REAL twin of
@@ -448,7 +448,7 @@ obs.observe({ entryTypes: ['gc'] });
 const series = [];
 let sink = 0;
 let answer;
-// ⚠️ `answer` IS THE FIRST ROW, AND A ROUTE MAY LEGITIMATELY REORDER (item 1390). An unordered GQL
+// `answer` IS THE FIRST ROW, AND A ROUTE MAY LEGITIMATELY REORDER (item 1390). An unordered GQL
 // result's row order is unspecified and `farDrivenHopWalk` reorders deliberately, so comparing the
 // first row across A/B arms reports a difference that is licensed — it fired on item 1390's run,
 // which had verified the multiset separately and still lost its timing table to the check. The
@@ -457,7 +457,7 @@ let rowCount = 0;
 let digest = 0;
 
 /**
- * ⚠️ WINDOWED, so a profile of this bench is of the QUERY and not of the fixture build (item 1391).
+ * WINDOWED, so a profile of this bench is of the QUERY and not of the fixture build (item 1391).
  *
  * `node --cpu-prof` profiles start to exit, and at `NODES=100000` with `REPS=6` the load dominates:
  * a profile of the post-1390 yield path put `getVertexById` 10.4%, `indexEdgeLabel` 7.3%,
@@ -499,7 +499,7 @@ const measure = () => {
 
 await profileWindow(process.env.PROF_OUT, measure);
 
-// ⚠️ DRAIN before reading: `PerformanceObserver` delivers in a queued callback, so a synchronous
+// DRAIN before reading: `PerformanceObserver` delivers in a queued callback, so a synchronous
 // loop buffers every entry and reports 0 pauses (item 1361's fifth instrument defect).
 await new Promise((resolve) => setTimeout(resolve, 0));
 await new Promise((resolve) => setTimeout(resolve, 0));
@@ -514,7 +514,7 @@ const kept = series.slice(DROP).sort((a, b) => a - b);
 const at = (f) => kept[Math.min(kept.length - 1, Math.floor(f * kept.length))];
 
 /**
- * ⚠️ DID THIS FIXTURE ACTUALLY PRODUCE AN ANSWER? (item 1416)
+ * DID THIS FIXTURE ACTUALLY PRODUCE AN ANSWER? (item 1416)
  *
  * A count of 0, or zero rows, means the query found NOTHING — so the timing is of a path that
  * matched nothing, and optimizing against it is optimizing a dead branch. That is not hypothetical:

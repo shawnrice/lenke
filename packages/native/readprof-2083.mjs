@@ -1,7 +1,7 @@
 /*
  * Self-time aggregation over a V8 `.cpuprofile` — frames, not guesses (item 2083).
  *
- * ⚠️⚠️ TWO THINGS THAT MADE THE FIRST FOUR PROFILES WORTHLESS, both the caller's fault rather than
+ * TWO THINGS THAT MADE THE FIRST FOUR PROFILES WORTHLESS, both the caller's fault rather than
  * this reader's, and both worth stating here because this is the file you reach for next time:
  *
  *   1. `runtime-profile-probe.mjs` TAKES ITS SHAPE FROM `argv[2]`, NOT from a `SHAPE=` env var. Three
@@ -43,7 +43,7 @@ for (let i = 0; i < profile.samples.length; i++) {
 
   const frame = node.callFrame;
   const where = `${(frame.url ?? '').split('/').slice(-1)[0]}:${frame.lineNumber + 1}`;
-  // ⚠️ AN EMPTY STRING, NOT NULL, is how V8 names an anonymous frame — so `??` would keep it and
+  // AN EMPTY STRING, NOT NULL, is how V8 names an anonymous frame — so `??` would keep it and
   // every anonymous frame would collapse into one blank row. The explicit length test is the point.
   const name = frame.functionName.length > 0 ? frame.functionName : '(anon)';
   const key = `${name} @ ${where}`;

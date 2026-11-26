@@ -3,13 +3,13 @@ import { describe, expect, test } from 'bun:test';
 /**
  * The ANSWERS the grouped-count chain rungs produce — item 1832.
  *
- * ⚠️ GROUPING IS WHERE KEYING MISTAKES BECOME WRONG ANSWERS, and this engine has shipped two in that
+ * GROUPING IS WHERE KEYING MISTAKES BECOME WRONG ANSWERS, and this engine has shipped two in that
  * area already (items 1561, 1562, both in dedupe's one-column fast path, both found by mutation).
  * The rung tallies by `valueKey` because `buildGroups`' own comment settles the single-key case —
  * "for it the row key IS the value key" — so every case below is a value whose KEYING could go
  * wrong, not a value that merely exercises the path.
  *
- * ⚠️ THE ORACLE IS VERIFIED TO DECLINE, asked of `compileLinear` rather than assumed (item 1827):
+ * THE ORACLE IS VERIFIED TO DECLINE, asked of `compileLinear` rather than assumed (item 1827):
  *
  * ```text
  *   RETURN d.k AS k, count(*) AS c                   -> chainGroupedCount
@@ -99,7 +99,7 @@ describe('the grouped count over a chain', () => {
     );
   });
 
-  /** ⚠️ A null key is a GROUP, not a dropped row — `null-first-class-policy`. */
+  /** A null key is a GROUP, not a dropped row — `null-first-class-policy`. */
   test('null and absent keys form their own group', () => {
     const g = levels([1, null, undefined]);
     const rows = query(g, `${HOP2} RETURN c.k AS k, count(*) AS c`);
@@ -113,7 +113,7 @@ describe('the grouped count over a chain', () => {
     );
   });
 
-  /** ⚠️ `0` and `-0` key the same, and NaN keys equal to itself — `valueKey`'s rules, not `===`. */
+  /** `0` and `-0` key the same, and NaN keys equal to itself — `valueKey`'s rules, not `===`. */
   test('0/-0 are one group and NaN is one group, at BOTH widths', () => {
     expect(query(levels([0, -0]), `${HOP2} RETURN c.k AS k, count(*) AS c`)).toEqual([
       { k: 0, c: 8 },
@@ -137,7 +137,7 @@ describe('the grouped count over a chain', () => {
   });
 
   /**
-   * ⚠️ THE CROSS-ROUTE ORACLE, against a spelling verified to decline. It compares the ROWS AS
+   * THE CROSS-ROUTE ORACLE, against a spelling verified to decline. It compares the ROWS AS
    * EMITTED — order included — because group order is what keeps the two ENGINES byte-identical
    * even though `order-is-unspecified` means no caller may rely on it.
    */
@@ -156,7 +156,7 @@ describe('the grouped count over a chain', () => {
   });
 
   /**
-   * ⚠️⚠️ A NUMBER AND A STRING THAT RENDER THE SAME MUST NOT SHARE A GROUP, and this test exists
+   * A NUMBER AND A STRING THAT RENDER THE SAME MUST NOT SHARE A GROUP, and this test exists
    * because a mutant SURVIVED without it. Keying by `String(key)` instead of `valueKey` passes every
    * other case here — `0`/`-0`, `NaN`, `null` and even an element all render distinctly enough — and
    * silently merges `1` with `'1'`. `valueKey` is TYPE-PREFIXED for exactly this, and nothing else
@@ -165,7 +165,7 @@ describe('the grouped count over a chain', () => {
   test('a numeric key and a string key that render alike stay apart', () => {
     const g = levels([1, '1', 2]);
 
-    // ⚠️ BOTH WIDTHS, and a second mutation run is why. The two rungs are separate implementations
+    // BOTH WIDTHS, and a second mutation run is why. The two rungs are separate implementations
     // in separate files, so a keying test written only at `HOP2` leaves the chain copy unguarded —
     // the `String(key)` mutant survived exactly that way even after this case was added. The route
     // refusals above learned the same lesson one step earlier; the ANSWERS needed it too.

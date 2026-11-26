@@ -13,7 +13,7 @@
  *   MATCH (a:P&P)-[:E]->(x)     9.495 -> 0.001        9495x
  * ```
  *
- * ⚠️ AN ELISION IS ANSWER-EQUIVALENT WHEN IT IS CORRECT, so most of this file is about the cases
+ * AN ELISION IS ANSWER-EQUIVALENT WHEN IT IS CORRECT, so most of this file is about the cases
  * where eliding would be WRONG — and the fixture carries an UNLABELLED vertex specifically so that
  * those cases have a different answer to fail on.
  */
@@ -65,11 +65,11 @@ describe('item 1549 — vacuousLabel over compound label expressions', () => {
   });
 
   /**
-   * ⚠️ THE WILDCARD IS THE WRONG-ANSWER GUARD. `:%` reads as "any node" and the obvious
+   * THE WILDCARD IS THE WRONG-ANSWER GUARD. `:%` reads as "any node" and the obvious
    * implementation of `case 'wildcard'` is `return true` — which invents the unlabelled rows.
    * These two lines are the difference, and they are why `wildcard` is left un-elided.
    */
-  test('⚠️ `:%` does NOT match an unlabelled vertex, so it may not be elided', () => {
+  test('`:%` does NOT match an unlabelled vertex, so it may not be elided', () => {
     const g = build();
 
     expect(c(g, 'MATCH (a:%) RETURN count(*) AS c')).toBe(3);
@@ -80,7 +80,7 @@ describe('item 1549 — vacuousLabel over compound label expressions', () => {
   });
 
   /**
-   * ⚠️ `:!X` DOES match an unlabelled vertex, which is the other half of the same question — so
+   * `:!X` DOES match an unlabelled vertex, which is the other half of the same question — so
    * eliding it when `X` is absent is sound, and eliding it when `X` is present is not.
    */
   test('`:!X` matches the unlabelled vertex, and is only elidable when X is absent', () => {
@@ -89,7 +89,7 @@ describe('item 1549 — vacuousLabel over compound label expressions', () => {
     // `R` is on nobody, so `:!R` is every vertex — elided, and the answer agrees with no label.
     expect(c(g, 'MATCH (a:!R) RETURN count(*) AS c')).toBe(4);
     expect(c(g, 'MATCH (a:!R)-[:E]->(x) RETURN count(*) AS c')).toBe(4);
-    // ⚠️ `Q` IS present, so `:!Q` is selective and must be applied — AND THE SHAPE MATTERS. A bare
+    // `Q` IS present, so `:!Q` is selective and must be applied — AND THE SHAPE MATTERS. A bare
     // `MATCH (a:!Q) RETURN count(*)` does NOT consult `vacuousLabel` at all: mutation proved it,
     // because inverting the emptiness test left this line passing. The elision fires on the HOP
     // shapes, which is where the 6949x was measured, so that is what the guard has to use.
@@ -141,7 +141,7 @@ describe('item 1549 — vacuousLabel over compound label expressions', () => {
     g.addVertex({ id: 'x', labels: ['P', 'Q'], properties: {} });
     g.addVertex({ id: 'y', labels: ['P'], properties: {} });
 
-    // ⚠️ ON A HOP, for the reason above: the bare count does not reach the elision, so only this
+    // ON A HOP, for the reason above: the bare count does not reach the elision, so only this
     // spelling fails when `and` is weakened to `or`.
     g.addEdge({
       id: 'e1',
@@ -168,7 +168,7 @@ describe('item 1549 — vacuousLabel over compound label expressions', () => {
   });
 
   /**
-   * ⚠️ THE REL WILDCARD IS VACUOUS WHERE THE NODE WILDCARD IS NOT (item 1550), and the reason is a
+   * THE REL WILDCARD IS VACUOUS WHERE THE NODE WILDCARD IS NOT (item 1550), and the reason is a
    * `core` invariant rather than an analogy: an edge with no labels is REFUSED outright ("Cannot
    * add an edge with no labels: every edge must carry ≥1"), while a VERTEX may be unlabelled.
    *

@@ -1,16 +1,16 @@
 /**
  * DOES the far-label CSR route have teeth? (item 1941)
  *
- * ⚠⚠ THE DANGEROUS MUTANT IS THE FLAG. `csrHopRoute` now ADMITS a broad non-vacuous far label and
+ * THE DANGEROUS MUTANT IS THE FLAG. `csrHopRoute` now ADMITS a broad non-vacuous far label and
  * returns `testFarLabel` to say the label still has to be applied per slot. A caller that ignores
  * it, or a route that reports `false` when the label does exclude somebody, emits rows for
  * OFF-LABEL far vertices — a wrong answer, not a slow one.
  *
- * 🔑 And the mirror risk is a REGRESSION with no wrong answer: admitting a SELECTIVE label sends an
+ * And the mirror risk is a REGRESSION with no wrong answer: admitting a SELECTIVE label sends an
  * O(V) arm at a problem where bucket iteration is sub-linear (item 1688), which no test over rows
  * can see. That is why the threshold and `labelCoverage` are unit-tested as pure values.
  *
- * ⚠️ WRITTEN DIRECTLY, not templated (item 1907); test paths listed from the directory (item 1915).
+ * WRITTEN DIRECTLY, not templated (item 1907); test paths listed from the directory (item 1915).
  *
  *     bun farlabel-mutants-1941.mjs
  */
@@ -99,10 +99,10 @@ const EXPECTED_SURVIVORS = new Set([]);
 
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
 const HOW_DIED = new Map([
@@ -122,7 +122,7 @@ const verdictOf = (code) => {
   return code !== 0;
 };
 
-/** ⚠️ BOTH STREAMS CONCATENATED, THEN the exit code: `bun test` reports to STDERR (item 767). */
+/** BOTH STREAMS CONCATENATED, THEN the exit code: `bun test` reports to STDERR (item 767). */
 const runTests = () => {
   const r = spawnSync(
     'timeout',
@@ -186,7 +186,7 @@ try {
     const ran = /\d+ pass/.test(r.text) || /\d+ fail/.test(r.text);
 
     if (!ran && r.code !== 124 && r.code !== 137) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-500)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-500)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -214,12 +214,12 @@ try {
 
 if (anchorProblems.length > 0) {
   console.log(
-    `\n⚠️ ${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
+    `\n${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
   );
   process.exitCode = 1;
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

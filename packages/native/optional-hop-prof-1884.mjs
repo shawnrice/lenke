@@ -15,13 +15,13 @@
  * `optional: hop` at **10.11 ms for 80,000 rows** against `hop1: values`' 3.49 ms for the SAME
  * 80,000 rows.
  *
- * ⚠️ AND `optional` IS ALREADY FUSED AT THE STEP LEVEL, which is what makes this worth measuring
+ * AND `optional` IS ALREADY FUSED AT THE STEP LEVEL, which is what makes this worth measuring
  * rather than assuming. `optional-hop.ts` (items 1480/1483/1628) replaced `optionalStep`'s
  * per-traverser sub-plan — a one-element array, a 103-arm dispatch and a generator per step — with
  * one loop, and took the bucket directly for a directed single type. So whatever is left is NOT the
  * sub-plan wrapper that item 1480 removed.
  *
- * ⚠️ ON THIS FIXTURE EVERY VERTEX HAS AN OUT-EDGE, so `optional` NEVER takes its empty branch and
+ * ON THIS FIXTURE EVERY VERTEX HAS AN OUT-EDGE, so `optional` NEVER takes its empty branch and
  * the two shapes return the same row count over the same walk. That is deliberate: it isolates the
  * per-row cost from the left-join semantics. The `sparse` arm exists for the other half — there a
  * vertex with no `E` edge emits ITSELF, which is the thing `out(T)` cannot do and the reason the

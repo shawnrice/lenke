@@ -16,7 +16,7 @@ import { query } from './index.js';
 //     NOT (a <> 50)                -> 3.206            16.0            lands on `= 50`'s 3.193
 //     NOT (a >= 50)       6.467    -> 6.172                            EXCLUDED, and must not move
 //
-// ⚠️ THE EXCLUSION OF ORDERING OPERATORS IS THE SUBSTANCE OF THIS FILE, and it is a wrong answer
+// THE EXCLUSION OF ORDERING OPERATORS IS THE SUBSTANCE OF THIS FILE, and it is a wrong answer
 // rather than a missed optimisation. The NaN hole is demonstrated below rather than argued: a
 // stored NaN becomes null in this engine, but a NaN PARAM does not, so the divergence is reachable.
 const build = (): Graph => {
@@ -35,7 +35,7 @@ const countOf = (q: string, params?: Record<string, unknown>): number =>
   Number(query(g, q, params)[0].c);
 
 describe('NOT of an equality lifts by flipping the operator (item 1272)', () => {
-  test('⚠️ an ORDERING operator must NOT be flipped: a NaN param makes them DIVERGE', () => {
+  test('an ORDERING operator must NOT be flipped: a NaN param makes them DIVERGE', () => {
     // THE REASON THE LIFT IS EQUALITY-ONLY. Every ordering comparison against NaN is FALSE here
     // (this repo keeps NaN JS-unordered), so the NEGATION is TRUE for every row while the flipped
     // operator is FALSE for every row. If `asNegatedCompare` ever gained `>=`, this query would
@@ -90,7 +90,7 @@ describe('NOT of an equality lifts by flipping the operator (item 1272)', () => 
     }
   });
 
-  test('⚠️ ROUTE: the two equalities LIFT and the ordering operator does NOT', () => {
+  test('ROUTE: the two equalities LIFT and the ordering operator does NOT', () => {
     // Answer-equivalent, so only the compiler can see it.
     const cmp = (op: string): Expr => ({
       kind: 'compare',

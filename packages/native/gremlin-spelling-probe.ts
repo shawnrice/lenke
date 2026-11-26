@@ -33,7 +33,7 @@
 //   * 14 reps, DROP THE FIRST THREE as warm-up, MEDIAN of the rest — CLAUDE.md's estimator for the
 //     TS per-row path, where `min` reports a rare fast rep and estimates two arms differently.
 //
-// ⚠️ A FLAG IS NOT YET A FINDING. Re-run the group ALONE with `SPELL_ONLY`, three times, before
+// A FLAG IS NOT YET A FINDING. Re-run the group ALONE with `SPELL_ONLY`, three times, before
 // treating a spread as real (item 1073: one isolated run is still one reading). This probe is a
 // PROBE and not a test — time is the only signal available, so a threshold in CI would be flaky.
 import { Graph as TsGraph } from '@lenke/core';
@@ -80,13 +80,13 @@ import { deserialize as tsDeserialize } from '@lenke/serialization';
 const N = Number(process.env.SPELL_N ?? 200_000);
 const REPS = Number(process.env.SPELL_REPS ?? 14);
 const TOL = Number(process.env.SPELL_TOL ?? 2);
-// ⚠️ WAS 1ms AND IS NOW 0.0005ms (500 ns), because item 1644 gave every group calibrated inner
+// WAS 1ms AND IS NOW 0.0005ms (500 ns), because item 1644 gave every group calibrated inner
 // iterations: the floor no longer guards TIMING RESOLUTION, only the regime where allocation noise
 // and GC swamp a real difference. At 1ms it skipped 19 of this probe's groups, one of which hid a
 // 2.36x (item 1643).
 const FLOOR_MS = Number(process.env.SPELL_FLOOR ?? 0.0005);
 /**
- * ⚠️ **AND BELOW THE FLOOR THE PROBE MEASURES A DIFFERENT QUANTITY, WHICH ITEM 1812 FOUND BY
+ * **AND BELOW THE FLOOR THE PROBE MEASURES A DIFFERENT QUANTITY, WHICH ITEM 1812 FOUND BY
  * LOWERING IT.** `SPELL_FLOOR=0.000001` compares the 18 groups the default skips and flags three at
  * 4.07x-4.49x:
  *
@@ -107,7 +107,7 @@ const FLOOR_MS = Number(process.env.SPELL_FLOOR ?? 0.0005);
  * So a flag below the floor is an `effectivePlan` COST finding, not a spelling finding, and the two
  * want different fixes: items 1505-1507's kind-bit gates are the former's answer.
  *
- * ⚠️ CONFIRMING ALONE EARNED ITSELF AGAIN. In-sweep the vacuous label read 4.11x; alone, three
+ * CONFIRMING ALONE EARNED ITSELF AGAIN. In-sweep the vacuous label read 4.11x; alone, three
  * times, it reads 180.0/200.6/211.4 ns against 72.6/73.8/73.7 — **2.6-2.9x**. The in-sweep number
  * is inflated by ~1.5x, which is exactly why the report tells you to re-run the group by itself.
  */
@@ -143,7 +143,7 @@ for (let e = 0; e < N * 2; e++) {
 }
 
 /**
- * ⚠️ A SECOND EDGE LABEL, because without one this probe could not test ANY multi-type edge spelling
+ * A SECOND EDGE LABEL, because without one this probe could not test ANY multi-type edge spelling
  * — and that is the family the planner has changed most (item 1459).
  *
  * The fixture had exactly one edge label, `T`, so `out(A, B)` against `out(B, A)` had no group here.
@@ -222,7 +222,7 @@ const GROUPS: readonly Group[] = [
   // The size disparity is the point of the second pair: `Univ` is every vertex and `Mgr` every
   // third, so an unsorted walk pays 3x more one way round than the other.
   /**
-   * ⚠️ THE `groupCount` BY-SPELLINGS (item 1856), and this group is the one that would have caught
+   * THE `groupCount` BY-SPELLINGS (item 1856), and this group is the one that would have caught
    * the defect it was added for. `groupCount({ by: 'k' })` sets a legacy `by` field while
    * `.by('k')` builds a `{ kind: 'key' }` modulator, and `asGroupCountByKey` tested only for a
    * raw string — so the modulator spelling fell off the fused hop chain entirely: **2.9x at one
@@ -401,12 +401,12 @@ const GROUPS: readonly Group[] = [
   ],
   [
     /**
-     * ⚠️ TWO HOPS, YIELDING — the shape item 1614 fused, and the group that gives this surface a
+     * TWO HOPS, YIELDING — the shape item 1614 fused, and the group that gives this surface a
      * two-hop spelling at all. Every hop group here is ONE hop under a `count()`, which
      * `hopChainCount` answers from degrees without walking (item 590), so the two-hop WALK had no
      * spelling group any more than it had a bench row.
      *
-     * ⚠️ AND BOTH SPELLINGS RIDE THE FUSED WALK, which was worth checking rather than assuming: I
+     * AND BOTH SPELLINGS RIDE THE FUSED WALK, which was worth checking rather than assuming: I
      * added this group expecting it to FLAG, on the reasoning that the rung matches `out`/`in` steps
      * and `outE(T).inV()` is a different pair. It does not, because `effectivePlan` runs
      * `fuseEdgeHop` BEFORE any rung sees the plan and normalizes the pair into one hop — so the two
@@ -421,7 +421,7 @@ const GROUPS: readonly Group[] = [
     ],
   ],
   [
-    // ⚠️ The three-hop twin. It was added at item 1614 as the control that says the group above
+    // The three-hop twin. It was added at item 1614 as the control that says the group above
     // measures the fusion rather than some property of writing two hops — on the grounds that BOTH
     // its arms were on the pipeline. Item 1617 fused depth 3 as well, so both arms are now fused and
     // it is no longer that control; it stays as the standing guard that the two spellings still
@@ -441,7 +441,7 @@ const GROUPS: readonly Group[] = [
     [traversal(V(), both('T'), count()), traversal(V(), union(out('T'), in_('T')), count())],
   ],
   [
-    // ⚠️ THE MULTI-TYPE ORDER PAIR, which item 1442 built a route for and did not add here. Both
+    // THE MULTI-TYPE ORDER PAIR, which item 1442 built a route for and did not add here. Both
     // spellings select the identical edge set, so they must cost the same; item 1382 measured 3.53x
     // from bucket order alone on this surface, and `U` is deliberately a quarter of `T` so the two
     // orders put the large bucket first and second.
@@ -456,7 +456,7 @@ const GROUPS: readonly Group[] = [
     ],
   ],
   [
-    // ⚠️ THE SORT-DIRECTION SPELLINGS (item 1630). A bare `order()` arrives with no `bys` and
+    // THE SORT-DIRECTION SPELLINGS (item 1630). A bare `order()` arrives with no `bys` and
     // `order(Order.asc)` arrives as `bys: [{kind:'identity', direction:'asc'}]` — the same question
     // down two different gate branches, and exactly the pair item 1591's first gate got wrong by
     // refusing any `bys` at all. If one spelling takes the fused sort and the other does not, the
@@ -508,7 +508,7 @@ const GROUPS: readonly Group[] = [
     ],
   ],
 
-  // ── VALUES AND THE TERMINAL AGGREGATES. ⚠️ THIS WHOLE SECTION WAS MISSING, and item 1585 is what
+  // ── VALUES AND THE TERMINAL AGGREGATES. THIS WHOLE SECTION WAS MISSING, and item 1585 is what
   // the gap cost: `fuseValuesIsCount` rewrites `values(k).is(p).count()` to `has(k, p).count()`,
   // and its equivalence argument never needed the predicate — but the gate required the `is`, so
   // the PLAIN `values(k).count()` kept materialising one value per element. 1.89x apart at 50,000
@@ -529,15 +529,15 @@ const GROUPS: readonly Group[] = [
       traversal(V(), has('age', gte(45)), count()),
     ],
   ],
-  // ⚠️⚠️ THE DEDUPED FAR VALUES OF A HOP, BOTH SPELLINGS — AND THIS GROUP IS WHY THE PROBE EXISTS,
+  // THE DEDUPED FAR VALUES OF A HOP, BOTH SPELLINGS — AND THIS GROUP IS WHY THE PROBE EXISTS,
   // because item 1899 shipped the two spellings 4.2x apart for one afternoon. `values(k).dedupe()`
   // emits the distinct values of `k`; `dedupe().by(k).values(k)` keeps the first ELEMENT per `k` and
   // reads `k` off it — the same values in the same order, one question. The fused rung took the
   // first and declined the second, because its gate tested `typeof by === 'string'` where the AST
-  // holds `{kind: 'key'}`. ⚠️ No answer test could see it (both spellings answered correctly) and
+  // holds `{kind: 'key'}`. No answer test could see it (both spellings answered correctly) and
   // the route screen had no row for either; a group here is the instrument that would have.
   //
-  // ⚠️ AND THE FIRST CUT OF THIS GROUP WAS VACUOUS: it hopped `KNOWS`, which this fixture's edges
+  // AND THE FIRST CUT OF THIS GROUP WAS VACUOUS: it hopped `KNOWS`, which this fixture's edges
   // are not (`T` is), so both members answered `0:[]` and the group could never have flagged
   // anything. The probe's answer line is what showed it — read it, not just the ratio.
   [
@@ -556,13 +556,13 @@ const GROUPS: readonly Group[] = [
   ],
   // ---- THE FAR END OF A DIRECTED EDGE STEP, three ways (item 1921) ----
   //
-  // ⚠️ THIS GROUP IS THE ONE THAT WOULD HAVE CAUGHT ITEM 1921, and it did not exist. `otherV` after
+  // THIS GROUP IS THE ONE THAT WOULD HAVE CAUGHT ITEM 1921, and it did not exist. `otherV` after
   // a DIRECTED edge step is exactly `inV`, but it is path-dependent BY KIND, so it set `tracksPath`
   // — and `effectivePlan` is skipped WHOLESALE when that is set, which took item 1307's
   // `outE(T).inV()` -> `out(T)` with it. The result was **328.12 ms against the twin's 46.21, 7.1x**,
   // on three spellings of one question, with every answer correct.
   //
-  // ⚠️ `bothE(T).otherV()` IS DELIBERATELY NOT HERE: after `bothE` the arrival end is not fixed by
+  // `bothE(T).otherV()` IS DELIBERATELY NOT HERE: after `bothE` the arrival end is not fixed by
   // the step, so it is a DIFFERENT question and a group containing it would be comparing answers
   // rather than spellings — the mistake this probe's own header records three groups being rejected
   // for.
@@ -585,14 +585,14 @@ const GROUPS: readonly Group[] = [
 
   // ---- SUB-PLAN EXISTENCE: five spellings of "does this vertex have an out-T" (item 1915) ----
   //
-  // ⚠️ THESE ARE ONE QUESTION IN FIVE SURFACE FORMS, which is exactly what CLAUDE.md's
+  // THESE ARE ONE QUESTION IN FIVE SURFACE FORMS, which is exactly what CLAUDE.md's
   // equivalent-spellings section is about. `where(p)` and `filter(p)` are the SAME executor step
   // under two names; `and(p)` and `or(p)` over a single plan both mean exactly `p`; and `outE(T)`
   // walks the identical adjacency as `out(T)`, differing only in what it yields — which a filter
   // cannot see. Before item 1915 all five ran a sub-pipeline per vertex and cost the same (~87 ms);
   // the risk a group here guards is that the fusion reaches some and not others.
   //
-  // ⚠️ AND THE RISK WAS REAL WITHIN THIS ITEM: `and(out(T))` first shipped at 36.6 ms against
+  // AND THE RISK WAS REAL WITHIN THIS ITEM: `and(out(T))` first shipped at 36.6 ms against
   // `where(out(T))`'s 20.9 — a 1.75x gap between two spellings of one question — because arity 1
   // went through the combining loop instead of the single-hop step. Nothing about the ANSWER
   // differed. This group is the instrument that would have caught it.
@@ -629,7 +629,7 @@ const GROUPS: readonly Group[] = [
       traversal(V(), not(traversal(outE('U'))), values('k')),
     ],
   ],
-  // ⚠️ THREE MORE GROUPS WERE IN THE FIRST CUT OF THIS SECTION AND THE ANSWER CHECK REJECTED ALL
+  // THREE MORE GROUPS WERE IN THE FIRST CUT OF THIS SECTION AND THE ANSWER CHECK REJECTED ALL
   // THREE, correctly: `max` vs `min` (89 against 0), `sum` vs `mean` (8899300 against 44.4965) and
   // `fold` vs `count` (a list against 200000). They are not two spellings of ONE question — there
   // is no element-level equivalent of `max` — and I added them anyway, to compare the FAMILY's
@@ -684,7 +684,7 @@ const answerOf = (plan: Plan): string => {
 };
 
 /**
- * ⚠️ INNER ITERATIONS, CALIBRATED PER GROUP (item 1644) — and without them this probe could not see a
+ * INNER ITERATIONS, CALIBRATED PER GROUP (item 1644) — and without them this probe could not see a
  * 2.36x.
  *
  * The old form wrapped ONE `toArray` in a `performance.now()` pair. For a sub-microsecond query that
@@ -699,7 +699,7 @@ const answerOf = (plan: Plan): string => {
  * slow groups (which calibrate to `inner = 1` and behave exactly as before) while the fast ones
  * become measurable for the first time.
  *
- * ⚠️ THE FLOOR STAYS, AT A MUCH SMALLER VALUE. It no longer guards timing resolution — calibration
+ * THE FLOOR STAYS, AT A MUCH SMALLER VALUE. It no longer guards timing resolution — calibration
  * does that — but a group answering in a few nanoseconds is one where allocation noise and GC
  * dominate any real difference, and the null controls cannot gate what they cannot resolve either.
  */
@@ -790,7 +790,7 @@ for (const r of results) {
 
   for (let i = 0; i < r.times.length; i++) {
     console.log(
-      // ⚠️ ns BELOW A MILLISECOND (item 1644). Calibrated inner iterations made the fast groups
+      // ns BELOW A MILLISECOND (item 1644). Calibrated inner iterations made the fast groups
       // comparable, and `toFixed(3)` then printed every one of them as `0.000ms` or `0.001ms` — so a
       // CONFIRMED 2.79x was unreadable and no one could tell which arm was the slow one.
       `      ${

@@ -27,7 +27,7 @@ import { hopChainValuesShortcut, walkKindFor } from './hop-chain-values.js';
 /**
  * `V().out(T).out(T).values(k)` — the two-hop fused walk (item 1614), 5.26x.
  *
- * ⚠️ THE ORACLE IS THE PIPELINE ITSELF, compared ORDERED, which is available here by a trick worth
+ * THE ORACLE IS THE PIPELINE ITSELF, compared ORDERED, which is available here by a trick worth
  * stating: `hopChainValuesShortcut` declines a `V(id, …)` source, so spelling the SAME query with
  * every vertex id listed in `graph.vertices` order runs the identical question down the traverser
  * pipeline. `sourceFromIds` does not dedupe and preserves the id array's order (`index-seed.ts`),
@@ -110,7 +110,7 @@ const viaEngine = (tail: readonly Parameters<typeof traversal>[number][]): unkno
   toArray(traversal(V(), ...tail), g);
 
 /**
- * ⚠️ DID `run` ACTUALLY TAKE THE WALK? A route choice is answer-equivalent, so every assertion above
+ * DID `run` ACTUALLY TAKE THE WALK? A route choice is answer-equivalent, so every assertion above
  * passes whether the rung fires or the pipeline does — the `rung/never-fires` mutant SURVIVED the
  * first mutation pass for exactly that reason, which is `perf-gate-needs-its-own-test`'s rule.
  *
@@ -225,7 +225,7 @@ describe('the two-hop fused walk agrees with the pipeline, ORDERED', () => {
     expect(viaEngine([out('E'), out('E'), id(), count()])).toEqual([8]);
   });
 
-  test('⚠️ a LIMIT must not be answered by an eager fill', () => {
+  test('a LIMIT must not be answered by an eager fill', () => {
     /**
      * `eager-tail-cache` records a 473x and a 3680x from filling eagerly under a `LIMIT`. A trailing
      * `limit` lands in `rest`, so `drain` is never read — and the row it returns must be the FIRST
@@ -268,7 +268,7 @@ describe('a FILTER in any of the three positions (item 1615)', () => {
 
   test('a MID `has` — the shape at 2.68x, and it must test the MIDDLE vertex', () => {
     /**
-     * ⚠️ DERIVED SO IT DISCRIMINATES — and I still got the literal wrong first, which is the FIFTH
+     * DERIVED SO IT DISCRIMINATES — and I still got the literal wrong first, which is the FIFTH
      * eyeballed literal this session the engine was right about. The middles of the eight paths are
      * b(2), b(2), c(3), c(3), d(no `k`), c(3), a(1), a(1), so `has('k', gte(3))` keeps the three `c`
      * middles — far ends c, c, c, all `k = 3`. I wrote `[3, 3, 3, 1]`, having counted `d`'s path in;
@@ -327,9 +327,9 @@ describe('a FILTER in any of the three positions (item 1615)', () => {
     expect(tookTheWalk(tail)).toBe(false);
   });
 
-  test('⚠️ the LAZY loop is filtered too, not only the eager `drain`', () => {
+  test('the LAZY loop is filtered too, not only the eager `drain`', () => {
     /**
-     * ⚠️ THE `lead/ignored` AND `mid/ignored` MUTANTS SURVIVED IN THE LAZY LOOP while their EAGER
+     * THE `lead/ignored` AND `mid/ignored` MUTANTS SURVIVED IN THE LAZY LOOP while their EAGER
      * twins died — the loops are written twice, and every test above reached only the eager one,
      * because `toArray` with an empty `rest` reads `drain`. A trailing `limit` puts a step in `rest`,
      * which routes through the generator instead. That asymmetry is exactly what writing a loop
@@ -354,7 +354,7 @@ describe('a FILTER in any of the three positions (item 1615)', () => {
     ]);
   });
 
-  test('⚠️ a SEEKABLE lead `has` defers to the index; a seekable mid or far one does not', () => {
+  test('a SEEKABLE lead `has` defers to the index; a seekable mid or far one does not', () => {
     /**
      * `collectVertexFilters`' asymmetry, pinned with the index actually present — `refuseSeekable`
      * is true for the LEAD run only. A seek seeds the SOURCE and this rung runs before
@@ -414,7 +414,7 @@ describe('a FILTER in any of the three positions (item 1615)', () => {
     ).not.toBeUndefined();
   });
 
-  test('⚠️ a filter run whose steps are NOT all vertex filters declines', () => {
+  test('a filter run whose steps are NOT all vertex filters declines', () => {
     // `dedupe` between the hops is not a vertex filter, so the whole shortcut must decline.
     expect(
       hopChainValuesShortcut(traversal(V(), out('E'), dedupe(), out('E'), values('k')), g),
@@ -428,7 +428,7 @@ describe('THREE hops and up — the generic stacked walk (item 1617)', () => {
    * measured: the stack costs a flat ~28% over literal nesting at both depths and is still 4.80x the
    * pipeline at depth 3, so depth 2 keeps its literal loop and everything above shares one walk.
    *
-   * ⚠️ ORDER IS THE WHOLE RISK, so every assertion here is against the pipeline ORDERED rather than
+   * ORDER IS THE WHOLE RISK, so every assertion here is against the pipeline ORDERED rather than
    * a count or a set. The stack advances the deepest live iterator and descends on each non-leaf
    * edge, which is depth-first PREORDER — the claim is that this matches the nested loops, and the
    * `V(id, …)` oracle is what actually checks it.
@@ -456,7 +456,7 @@ describe('THREE hops and up — the generic stacked walk (item 1617)', () => {
 
   test('a filter in EACH of the four runs at depth 3, and all four at once', () => {
     /**
-     * ⚠️ The runs are indexed by DEPTH, so an off-by-one applies the wrong gate set to the wrong
+     * The runs are indexed by DEPTH, so an off-by-one applies the wrong gate set to the wrong
      * vertex — the failure the depth-2 `gates/*-swapped` mutants cover there and these cover here.
      * Each position is asserted alone so a cross-up cannot hide behind another position's filter.
      */
@@ -492,7 +492,7 @@ describe('THREE hops and up — the generic stacked walk (item 1617)', () => {
     }
   });
 
-  test('⚠️ the LAZY half of the stacked walk, under a residual', () => {
+  test('the LAZY half of the stacked walk, under a residual', () => {
     /**
      * The stack is written twice like every other walk here — a generator cannot `yield` from inside
      * a callback, so `drain`'s sink form cannot serve the lazy side. Item 1615 found exactly this
@@ -511,9 +511,9 @@ describe('THREE hops and up — the generic stacked walk (item 1617)', () => {
     }
   });
 
-  test('⚠️ the LAZY half with a DIFFERENT type and direction per hop', () => {
+  test('the LAZY half with a DIFFERENT type and direction per hop', () => {
     /**
-     * ⚠️ THE `hops[d + 1]` INDEX MUTANT SURVIVED IN THE LAZY COPY while the eager one died, and the
+     * THE `hops[d + 1]` INDEX MUTANT SURVIVED IN THE LAZY COPY while the eager one died, and the
      * reason is the fixture: every lazy test above used `out('E')` three times, where reading the
      * WRONG hop's type and direction is indistinguishable from reading the right one. Item 1615 found
      * the same class on the filter runs and item 1616 screened the whole executor for it; this is the
@@ -543,7 +543,7 @@ describe('THREE hops and up — the generic stacked walk (item 1617)', () => {
      * (`perf-gate-needs-its-own-test`), and this test is the only reason the regression below was
      * ever noticed rather than shipped.
      *
-     * ⚠️ WHAT IT DECIDES CHANGED AT ITEM 1681, and the numbers with it. It used to pick between a
+     * WHAT IT DECIDES CHANGED AT ITEM 1681, and the numbers with it. It used to pick between a
      * literal nesting of `Set` loops ('literal') and a stack of bucket iterators ('stacked'), where
      * the literal form was worth 1.29x at depth 2. Both are gone — every depth now walks flat slot
      * runs — so the choice is between TWO COPIES OF THE SAME WALK, and the reason is inline caches:
@@ -551,7 +551,7 @@ describe('THREE hops and up — the generic stacked walk (item 1617)', () => {
      *
      * Interleaved A/B, both rounds agreeing: sharing cost the DEPTH-3 row **1.26x** (468.7/484.1
      * against 615.8/591.8) while depth 2 gained 7.2x-9.5x. The duplicate keeps the depth-2 gains and
-     * recovers depth 3 to 445.1, better than before depth 2 moved at all. ⚠️ Not the shape cap:
+     * recovers depth 3 to 445.1, better than before depth 2 moved at all. Not the shape cap:
      * `MAX_CHAIN_SHAPES` at 8 and at 32 both left that row at ~618.
      */
     expect(walkKindFor(2)).toBe('pair');
@@ -582,7 +582,7 @@ describe('`run` actually takes the walk — the ROUTE, not just the answer', () 
   });
 
   test('and a declined tail does NOT — otherwise the check above proves nothing', () => {
-    // ⚠️ The three-hop row moved to the POSITIVE list at item 1617; `both` and a multi-key
+    // The three-hop row moved to the POSITIVE list at item 1617; `both` and a multi-key
     // `values` are the declines that remain, and the list must keep at least one or the positive
     // assertions above prove nothing.
     expect(tookTheWalk([out('E'), both('E'), values('k')])).toBe(false);
@@ -607,7 +607,7 @@ describe('the rung declines what it must', () => {
 
   test('THREE hops are ANSWERED since item 1617, by the generic stacked walk', () => {
     /**
-     * ⚠️ THIS TEST ASSERTED THE OPPOSITE until item 1617, which is its whole value: item 1614 left
+     * THIS TEST ASSERTED THE OPPOSITE until item 1617, which is its whole value: item 1614 left
      * three hops open with a price (6.45x against a hand floor) and this pinned the decline so the
      * two could not drift. Taking the target changes the ASSERTION, not the reasoning — and the
      * rung's answer is still checked against the pipeline ORDERED below.

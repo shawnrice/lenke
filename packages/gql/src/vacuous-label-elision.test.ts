@@ -10,7 +10,7 @@ import { query } from './index.js';
  * `shortcuts.ts` — `buildNodeCount`, the three `detectNodeProjection` walks, both
  * `detectNodeAggregate` walks and `detectMultiNodeAggregate`.
  *
- * ⚠️ UNIFORMITY IS THE WHOLE POINT, not thoroughness. Item 1608 built this at ONE site and reverted
+ * UNIFORMITY IS THE WHOLE POINT, not thoroughness. Item 1608 built this at ONE site and reverted
  * it, because `verticesByLabel` is not maintained by the raw `v.labels =` setter — so after such a
  * write the elided site and the non-elided one answer differently:
  *
@@ -61,7 +61,7 @@ const SHAPES: readonly [string, string][] = [
  * Spellings that DECLINE their shortcut and fall to the general matcher (`matchNode`), which does
  * not elide — so after a raw-setter write these honour the label where the shortcut shapes do not.
  *
- * ⚠️ THIS SPLIT IS PRE-EXISTING AND NOT INTRODUCED HERE, and item 1608 said the opposite because it
+ * THIS SPLIT IS PRE-EXISTING AND NOT INTRODUCED HERE, and item 1608 said the opposite because it
  * tested the wrong pair. It compared a hop COUNT against hop ROWS — both of which take shortcuts —
  * and concluded the engine was consistent. It is not: measured on the HOP family today, with one
  * vertex's label removed by the raw setter,
@@ -93,7 +93,7 @@ const card = (g: Graph, text: string): number => {
   }
 
   /**
-   * ⚠️ `collect`, NOT `sum`, and the first version used `sum` and tested the wrong thing. A sum is
+   * `collect`, NOT `sum`, and the first version used `sum` and tested the wrong thing. A sum is
    * not a cardinality, so that version normalized it by RE-ASKING with `count(*)` — which takes a
    * different route (`buildNodeCount`) and so reported that route's answer for a shape meant to
    * exercise the collecting-aggregate arm. `collect` is also a VALUES aggregate, so it reaches the
@@ -116,7 +116,7 @@ describe('every seeded label test elides, so the spellings cannot disagree', () 
     }
   });
 
-  test('⚠️ after a RAW setter write, all six still AGREE — item 1608 is why this exists', () => {
+  test('after a RAW setter write, all six still AGREE — item 1608 is why this exists', () => {
     /**
      * The raw `v.labels =` setter does not maintain `verticesByLabel` (memory's
      * `label-index-vs-setter`, an open owner decision), so a vacuity check cannot see the write.
@@ -159,7 +159,7 @@ describe('every seeded label test elides, so the spellings cannot disagree', () 
   test('and through the MAINTAINED api the answers follow the label', () => {
     // `removeLabel` updates `verticesByLabel`, so vacuity goes false and every site tests again.
     //
-    // ⚠️ `u2`, NOT `u1`. `k = i % 2` and these shapes query `k = 0`, so stripping the label from an
+    // `u2`, NOT `u1`. `k = i % 2` and these shapes query `k = 0`, so stripping the label from an
     // ODD vertex leaves the queried bucket untouched and the test passes whatever the elision does.
     // The first version of this test used `u1` and expected 5 where 6 is correct.
     const g = build(() => ['P']);

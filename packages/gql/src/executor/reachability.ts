@@ -3,7 +3,7 @@
  *
  * `detectReachableShortcut` plus the seven symbols only it reaches.
  *
- * ⚠️ REACHABILITY IS NOT COUNTING, AND `reachQuantifierIsExact` IS WHERE THAT MATTERS. A
+ * REACHABILITY IS NOT COUNTING, AND `reachQuantifierIsExact` IS WHERE THAT MATTERS. A
  * reachability question can stop at the FIRST witness, so it is bounded by the frontier rather than
  * by the number of paths — but only when the quantifier admits any length in range. An EXACT length
  * (`{3,3}`) cannot stop early at depth 2, because a shorter path is not an answer. Taking the
@@ -45,7 +45,7 @@ import { isNullish } from './values.js';
 /**
  * The window the `ReachSpec` may apply itself — NONE when a sort is active (item 1251).
  *
- * ⚠️ `runReach` slices its own output, so with an `ORDER BY` in play it would drop rows BEFORE the
+ * `runReach` slices its own output, so with an `ORDER BY` in play it would drop rows BEFORE the
  * order was established and return the wrong ones. `reachSortApplier` does both, in that order, so
  * the spec must be handed no window at all.
  *
@@ -60,7 +60,7 @@ export const specWindow = (
 /**
  * `ORDER BY` for the REACHABILITY rung, resolved to its own output columns (item 1250).
  *
- * ⚠️ THIS ONE IS NOT A SLOWDOWN, IT IS AN ERROR. `detectReachableShortcut` refused every
+ * THIS ONE IS NOT A SLOWDOWN, IT IS AN ERROR. `detectReachableShortcut` refused every
  * `ORDER BY`, so an ordered query fell to the general path — which ENUMERATES TRAILS over an
  * UNBOUNDED pattern and dies on the trail budget. 3,000 nodes / 15,000 edges:
  *
@@ -82,7 +82,7 @@ export const specWindow = (
  * `outputColumnSorts` matches names ONLY, and item 1062 measured the asymmetry that creates at
  * 3.8x — here it would be answer-versus-error, which is worse than 3.8x.
  *
- * ⚠️ A WINDOW IS ORDERED FIRST AND SLICED SECOND (item 1251), which is why the caller must keep
+ * A WINDOW IS ORDERED FIRST AND SLICED SECOND (item 1251), which is why the caller must keep
  * `skip`/`limit` OUT of the `ReachSpec` whenever a sort is active: `runReach` applies them itself,
  * and a sort layered on top of its output would slice BEFORE ordering and return the WRONG ROWS.
  * Item 1250 declined that case for exactly this reason and left `ORDER BY … LIMIT` — the top-N
@@ -127,7 +127,7 @@ export const reachSortApplier = (
   // the order is established before anything is dropped.
   const { skip, limit } = ret.projection;
 
-  // ⚠️ THIS ARM RESOLVES ITS OWN BOUNDS (below), so its plan is already numeric and carries no
+  // THIS ARM RESOLVES ITS OWN BOUNDS (below), so its plan is already numeric and carries no
   // `page`. `params` is passed because the signature requires it — item 1867 made it required so a
   // call site that DOES need the resolution cannot silently skip it — and it is a no-op here.
   return (rows, params) =>
@@ -161,7 +161,7 @@ export type ReachSpec = {
   /**
    * A clause `WHERE` reading ONLY the start variable, compiled — applied per SEED (item 1906).
    *
-   * ⚠️⚠️ **CARRYING IT IS WHAT MAKES TWO SPELLINGS OF ONE QUESTION COST THE SAME.** The detector
+   * **CARRYING IT IS WHAT MAKES TWO SPELLINGS OF ONE QUESTION COST THE SAME.** The detector
    * used to refuse any clause `WHERE` outright, so `MATCH (a:T {n: $p})-[:E]->{1,3}(b:T)` reached
    * this rung and the equivalent `MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p` reached NO rung:
    * **2996.17 ms against 342.45 over 200,000 vertices / 1,000,000 edges, 8.75x, for the same 8
@@ -170,7 +170,7 @@ export type ReachSpec = {
    * SEEDING AT ALL, which is audit item 159's "a filter that makes a query slower is a declined
    * fast path, not the cost of filtering".
    *
-   * ⚠️ START-ONLY, AND THAT IS A SEMANTIC BOUND RATHER THAN CAUTION. A predicate on the start
+   * START-ONLY, AND THAT IS A SEMANTIC BOUND RATHER THAN CAUTION. A predicate on the start
    * narrows the SEED SET, which is what this rung can express. One reading the far variable is a
    * filter on the ANSWER — and since the walk dedupes reached vertices rather than enumerating
    * paths, applying it per reached vertex would be a different computation that has to be reasoned
@@ -180,7 +180,7 @@ export type ReachSpec = {
   /**
    * The quantifier's upper bound, or `undefined` for an unbounded `->*` / `->+` — item 1848.
    *
-   * ⚠️ A BOUND MAKES THE WALK LEVEL-ORDERED, not merely shorter. The unbounded arm is a DFS
+   * A BOUND MAKES THE WALK LEVEL-ORDERED, not merely shorter. The unbounded arm is a DFS
    * closure: every vertex expands once and the order it is reached in does not matter, because
    * "reachable at all" has no depth. A BOUNDED quantifier needs "reachable within `max` hops", so
    * the search must expand by LEVEL and stop — a DFS that happened to reach a vertex down a long
@@ -195,7 +195,7 @@ export type ReachSpec = {
   /**
    * Produce the reached set by an ACYCLIC DFS instead of the BFS (item 2004).
    *
-   * ⚠️ Set only for a BOUNDED `MATCH ACYCLIC` — see `admissibleMode`. The BFS arm is untouched and
+   * Set only for a BOUNDED `MATCH ACYCLIC` — see `admissibleMode`. The BFS arm is untouched and
    * its documented refusal of this mode still stands; this selects a different producer for the
    * same `reached` list, which everything downstream reads identically.
    */
@@ -212,7 +212,7 @@ export type ReachSpec = {
 /**
  * A seed set this fraction of |V| or more counts as WIDE, and is worth a CSR build on a cold graph.
  *
- * ⚠️ DELIBERATELY GENEROUS (item 2005). Admitting the CSR wrongly costs a build the query partly
+ * DELIBERATELY GENEROUS (item 2005). Admitting the CSR wrongly costs a build the query partly
  * repays; declining it wrongly forfeits a measured 2.4-2.8x. The regression it exists to prevent was
  * a seed of ~1% of |V|, so the threshold has two orders of magnitude of room.
  */
@@ -221,13 +221,13 @@ const SEED_SHARE = 32;
 /**
  * The reached set, as `Vertex[]`, for the ACYCLIC mode (item 2004).
  *
- * ⚠️ TWO MARKERS, AND CONFLATING THEM IS A WRONG ANSWER. `answer` accumulates the result across all
+ * TWO MARKERS, AND CONFLATING THEM IS A WRONG ANSWER. `answer` accumulates the result across all
  * seeds and is never unwound; `onPath` is the CURRENT path's vertex set and is pushed and popped per
  * step. One set for both would prune a vertex from every later path merely because an earlier path
  * reached it — answering a spanning tree rather than the reachable set. A mutant that substitutes one
  * for the other is in `acyclic-reach-mutants-2004.sh` and is CAUGHT.
  *
- * ⚠️ `onPath[slot] = 0` AFTER the walk rather than `onPath.fill(0)` BEFORE it: the walk unwinds every
+ * `onPath[slot] = 0` AFTER the walk rather than `onPath.fill(0)` BEFORE it: the walk unwinds every
  * other mark itself, so only the seed's own slot can persist. The `fill` was O(|V|) per seed, i.e.
  * O(|V|^2) on an unseeded query, and removing it was worth 1.39x — found because the mutant deleting
  * it SURVIVED, which proved it answer-equivalent (item 2004).
@@ -282,13 +282,13 @@ const acyclicReached = (
  * The reached set over the CSR — the shared BFS for the default mode, `WALK`, `TRAIL` and `SIMPLE`
  * (item 2005).
  *
- * ⚠️⚠️ **IT WALKS SLOTS WITH A `Uint8Array` MARKER, and the arm it replaced keyed a `Set<string>` on
+ * **IT WALKS SLOTS WITH A `Uint8Array` MARKER, and the arm it replaced keyed a `Set<string>` on
  * `v.id` and called `outNeighbors` — which ALLOCATES a `Vertex[]` — per expanded vertex.** A windowed
  * profile of `DISTINCT TRAIL` at 20,000 vertices (23.88 ms/rep) priced that: `runReach` self 39.9%
  * (9.535 ms/rep) plus `push` 29.5% (7.050), i.e. **69.4% of the row was set production**, while
  * `outNeighbors` was only 0.610 — so the cost was the STRING HASHING, not the allocation.
  *
- * 🔑 THE TELL WAS A SIBLING, NOT A FRAME RANKING. Item 2004's acyclic DFS, which ENUMERATES acyclic
+ * THE TELL WAS A SIBLING, NOT A FRAME RANKING. Item 2004's acyclic DFS, which ENUMERATES acyclic
  * paths, outran this BFS that visits each vertex once (35.99 ms against 61.75 on the same shape). A
  * worse algorithm beating a better one is a representation fact.
  */
@@ -358,7 +358,7 @@ const csrReached = (
 /**
  * The reached set over the per-vertex adjacency — the arm a NARROW SEED on a COLD topology keeps.
  *
- * ⚠️⚠️ **THIS IS THE CODE THAT RAN BEFORE ITEM 2005, KEPT VERBATIM, and the measurement is why.** The
+ * **THIS IS THE CODE THAT RAN BEFORE ITEM 2005, KEPT VERBATIM, and the measurement is why.** The
  * CSR walk is faster even cold for a wide seed, because an O(|V| + |E|) build beats hashing a string
  * per reached vertex — but a narrow seed does so little work that the build is pure overhead: a
  * seeded `{1,2}` measured **7.35 ms before and 11.89 after**, a 1.62x REGRESSION, while its warm
@@ -366,7 +366,7 @@ const csrReached = (
  * only when neither holds — and then it runs exactly what it used to, inheriting none of the other
  * arm's machinery ([[ts-closure-size-is-load-bearing]], and item 583's split for the same reason).
  *
- * ⚠️ [[vary-only-the-projection]]'s closing lesson in a new shape: **benchmark the UNHELPED case,
+ * [[vary-only-the-projection]]'s closing lesson in a new shape: **benchmark the UNHELPED case,
  * which is usually the common one.** Item 1979 regressed every unindexed seed 1.37-1.72x by reusing a
  * helper that could not decline, and only a control caught it.
  */
@@ -437,19 +437,19 @@ const adjReached = (
 /**
  * The reached set for a `{min >= 2}` TRAIL quantifier — a trail DFS over the CSR (item 2008).
  *
- * ⚠️⚠️ **WHY A DFS AND NOT A PER-LEVEL BFS: item 2007 REFUTED that by measurement.** The answer for
+ * **WHY A DFS AND NOT A PER-LEVEL BFS: item 2007 REFUTED that by measurement.** The answer for
  * `{min,max}` is the union over `d` in `[min,max]` of "reachable in exactly `d` steps", which is one
  * O(|V| + |E|) pass per level — but "exactly `d` steps" is a WALK notion, and this rung serves TRAIL
  * and the default (which IS trail). Over nine hazard fixtures the modes diverged in **10 of 27
  * cells**: a walk of length 2 on one self-loop is `a->a->a`, reusing the edge, and no trail does
  * that. So the per-level set recurrence answers the wrong question here.
  *
- * 🔑 **A TRAIL DFS NEEDS NO THEOREM, because trail-ness is its LOOP CONDITION** — the same reason
+ * **A TRAIL DFS NEEDS NO THEOREM, because trail-ness is its LOOP CONDITION** — the same reason
  * item 2004's acyclic arm works, one axis over (that one keys the marker on the VERTEX, this on the
  * EDGE). `perSourceTrailCount` has done exactly this for COUNTS since item 1978, so the shape is
  * proven in this codebase rather than invented here.
  *
- * ⚠️ THE MARKER IS KEYED ON THE CSR **POSITION**, not on an edge id, and that is sound rather than
+ * THE MARKER IS KEYED ON THE CSR **POSITION**, not on an edge id, and that is sound rather than
  * convenient: a directed out-adjacency lists each edge at exactly one position, so position and edge
  * occurrence coincide. `perSourceTrailCount` keys its `used` set the same way. (It would NOT hold for
  * a `both` walk, where one edge appears twice — this rung's `out` is a single direction.)
@@ -478,7 +478,7 @@ const trailReached = (
   const answer = new Uint8Array(order.length);
   const reached: Vertex[] = [];
   const walk = (v: number, len: number): void => {
-    // ⚠️ `len >= minLen` IS THE WHOLE POINT OF THIS ARM — the BFS arms cannot express it, which is
+    // `len >= minLen` IS THE WHOLE POINT OF THIS ARM — the BFS arms cannot express it, which is
     // why `reachQuantifierIsExact` refuses `min > 1` for them.
     if (len >= minLen && answer[v] === 0) {
       answer[v] = 1;
@@ -536,7 +536,7 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
   /**
    * The carried clause `WHERE`, as a per-seed test — `() => true` when there is none.
    *
-   * ⚠️ ONE BINDING, REUSED, which is every walk in this engine's habit; and the gate runs AFTER
+   * ONE BINDING, REUSED, which is every walk in this engine's habit; and the gate runs AFTER
    * `matchNode` so an inline predicate still narrows first. Both are per SEED, not per reached
    * vertex, so neither is in the walk's inner loop.
    */
@@ -568,7 +568,7 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
     (v) => matchNode(new Map(), cstart, v, params, graph) !== null && seedGate(v),
   );
   /*
-   * ⚠️⚠️ **THE WHOLE WALK IS OVER CSR SLOTS WITH A `Uint8Array` MARKER, and item 2005 is the
+   * **THE WHOLE WALK IS OVER CSR SLOTS WITH A `Uint8Array` MARKER, and item 2005 is the
    * measurement that motivated it.** This arm used to key a `Set<string>` on `v.id` and call
    * `outNeighbors` — which ALLOCATES a `Vertex[]` — once per expanded vertex. A windowed profile of
    * `DISTINCT TRAIL` at 20,000 vertices (23.88 ms/rep) priced that exactly:
@@ -584,18 +584,18 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
    * **69.4% of the row was set production**, and `outNeighbors` was only 0.610 despite the
    * per-vertex allocation — so the cost was the STRING HASHING, not the array.
    *
-   * 🔑 THE TELL WAS A SIBLING, NOT A FRAME RANKING. Item 2004's acyclic DFS, which ENUMERATES acyclic
+   * THE TELL WAS A SIBLING, NOT A FRAME RANKING. Item 2004's acyclic DFS, which ENUMERATES acyclic
    * paths, outran this BFS that visits each vertex once — 35.99 ms against 61.75 on the same shape.
    * A worse algorithm beating a better one is a representation fact, and it is the same lesson item
    * 2004 learned on its own first arm one item earlier.
    *
-   * ⚠️ `csrFor` IS CACHED per (direction, type set) and per `topologyVersion`, which
+   * `csrFor` IS CACHED per (direction, type set) and per `topologyVersion`, which
    * `topology-version.test.ts` states advances SYNCHRONOUSLY so that caching an adjacency structure
    * IS sound. A first ask on a fresh topology pays the build; see the cold measurement in item 2005's
    * entry, which is the thing a many-reps screen would have flattered.
    */
   /*
-   * ⚠️⚠️ **THE GATE: TAKE THE CSR UNLESS THAT WOULD PAY FOR A BUILD A NARROW SEED CANNOT REPAY.**
+   * **THE GATE: TAKE THE CSR UNLESS THAT WOULD PAY FOR A BUILD A NARROW SEED CANNOT REPAY.**
    * Measured PRE/POST, cold and warm, 20,000 vertices, fresh graph per rep, median of 7 x 3 rounds:
    *
    * ```text
@@ -606,19 +606,19 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
    *     seeded {1,2}           7.35         5.4  1.36x      5.46         4.1  1.33x
    * ```
    *
-   * ⚠️ UNGATED, that last row read **11.89 cold — a 1.62x REGRESSION.** The CSR walk is faster even
+   * UNGATED, that last row read **11.89 cold — a 1.62x REGRESSION.** The CSR walk is faster even
    * cold for a wide seed (an O(|V| + |E|) build beats hashing a string per reached vertex), but a
    * narrow seed does so little work that the build is pure overhead. `csrIsBuilt` separates "use the
    * tables" from "pay to make them", so a cold narrow-seed query keeps `adjReached` while a warm one
    * still gets the tables for free — rather than trading one case for the other.
    *
-   * ⚠️ THE ACYCLIC ARM TAKES THEM UNCONDITIONALLY: it has no per-vertex form, and its only
+   * THE ACYCLIC ARM TAKES THEM UNCONDITIONALLY: it has no per-vertex form, and its only
    * alternative is the general matcher, which item 2003 measured at 1405.80 ms against this arm's
    * 28.39. A build is repaid many times over there, so the gate does not apply to it.
    */
   const wide = seeds.length * SEED_SHARE >= graph.verticesById.size;
   /*
-   * ⚠️⚠️ **`spec.minLen >= 2` BELONGS IN THIS GATE AND WAS MISSING, WHICH WAS A CRASH.** Both
+   * **`spec.minLen >= 2` BELONGS IN THIS GATE AND WAS MISSING, WHICH WAS A CRASH.** Both
    * comments below say the tables are REQUIRED for the acyclic arm and for the `min >= 2` trail arm,
    * and that "the seed-share gate does not apply" to either — but only `spec.acyclic` was written
    * here. So a `min >= 2` quantifier with a NARROW seed, on a graph whose CSR was not already built,
@@ -627,7 +627,7 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
    *     MATCH (a:T)-[:E]->{2,3}(b:T) WHERE a.n = $p0 RETURN DISTINCT b.n AS x
    *     TypeError: Cannot destructure property 'order' from null or undefined value
    *
-   * 🔑 THE SELECTIVITY OF THE PREDICATE DECIDED IT, which is why no test had found it: on the
+   * THE SELECTIVITY OF THE PREDICATE DECIDED IT, which is why no test had found it: on the
    * differential fuzzer's fixture the query crashes for `$p0` in {0, 1, 2} and answers for {3, 5, 7},
    * because the wider seeds trip `wide` and get the tables anyway. The native engine answered `[]`,
    * so the fuzzer reported it as an `err`-vs-`ok` divergence and auto-labelled it an evaluation-order
@@ -638,7 +638,7 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
     needsCsr || wide || csrIsBuilt(graph, !out, types) ? csrFor(graph, !out, types) : undefined;
   const produce = (): Vertex[] => {
     /*
-     * ⚠️ THE `min >= 2` ARM COMES FIRST AND REQUIRES THE TABLES, like the acyclic one: the BFS arms
+     * THE `min >= 2` ARM COMES FIRST AND REQUIRES THE TABLES, like the acyclic one: the BFS arms
      * cannot express a lower bound at all (`reachQuantifierIsExact` refuses `min > 1` for exactly
      * that reason), and its alternative is the general matcher — which item 2008 measured at 26-74x
      * this DFS. A build is repaid many times over, so the seed-share gate does not apply.
@@ -670,7 +670,7 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
     // `count(DISTINCT <expr>)` (e.g. `b.k`): evaluate per reached vertex, skip
     // nulls, dedup values — mirrors the native `varlen_distinct_endpoint_count`.
     const seenVals = new Set<string>();
-    // ⚠️ ONE BINDING, REUSED — `runReach`'s own `seedGate` note calls this "every walk in this
+    // ONE BINDING, REUSED — `runReach`'s own `seedGate` note calls this "every walk in this
     // engine's habit", and `var-length-count.ts` carries the same idiom. A fresh `Map` per reached
     // vertex was 14.6% of this row's profile (item 2006).
     const countBinding = new Map<string, unknown>();
@@ -700,14 +700,14 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
   /*
    * DISTINCT rows: project the endpoint per reached vertex, dedup the tuples.
    *
-   * ⚠️⚠️ **THE PROJECTION IS NOW THE DOMINANT TERM IN THIS ROW, which it was not before item 2005**
+   * **THE PROJECTION IS NOW THE DOMINANT TERM IN THIS ROW, which it was not before item 2005**
    * took 69.4% of it away. Re-profiled at 20,000 vertices (5.746 ms/rep, down from 23.88): `Map`
    * 14.6% + `withBinding` 13.6% + `valueKey` 5.2% + `get properties` 4.8% + `propOf` 3.1% +
    * anonymous 6.3% = **47.5% of the row**. Five allocations per kept vertex were doing it — a fresh
    * binding `Map`, the `items.map` cells array, the `cells.map` key array, its `join`, and
    * `Object.fromEntries` over another `map`.
    *
-   * ⚠️ ONE BINDING, REUSED across vertices. `it.fn` reads it synchronously, which is why this is
+   * ONE BINDING, REUSED across vertices. `it.fn` reads it synchronously, which is why this is
    * sound — and it is the idiom this very function already uses for `seedGate` ("every walk in this
    * engine's habit") and that `var-length-count.ts` uses for its endpoint tests.
    */
@@ -718,7 +718,7 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
 
   if (items.length === 1) {
     /*
-     * ⚠️ THE SINGLE-COLUMN CASE SKIPS THE SEPARATOR, and that is sound rather than a shortcut: the
+     * THE SINGLE-COLUMN CASE SKIPS THE SEPARATOR, and that is sound rather than a shortcut: the
      * `\x01` join exists because two string COLUMNS collide (`'as' + 'b'` === `'a' + 'sb'`) and a
      * genuinely distinct row would be dropped. With one column there is nothing to concatenate, so
      * `valueKey(cell)` IS the key. `RETURN DISTINCT b.n` is the overwhelmingly common spelling of
@@ -751,7 +751,7 @@ export const runReach = (spec: ReachSpec, graph: Graph, params: Params): Row[] =
 
         const row: Row = {};
 
-        // ⚠️ A PLAIN LOOP RATHER THAN `Object.fromEntries(items.map(...))`, which allocated an array
+        // A PLAIN LOOP RATHER THAN `Object.fromEntries(items.map(...))`, which allocated an array
         // of two-element arrays per kept row on top of the row itself.
         for (let i = 0; i < items.length; i += 1) {
           row[items[i].name] = cells[i];
@@ -809,7 +809,7 @@ export const reachCount = (proj: Projection, bVar: string): { countArg?: Compile
  * UNBOUNDED max only — a bounded one has a length constraint this set walk does not track — and a
  * lower bound of at most 1.
  *
- * ⚠️ A LOWER BOUND ABOVE 1 IS UNSOUND FOR THIS BFS, and admitting it was a WRONG ANSWER
+ * A LOWER BOUND ABOVE 1 IS UNSOUND FOR THIS BFS, and admitting it was a WRONG ANSWER
  * (item 1252). `ReachSpec` records only `minZero`, so `{2,}` was executed as if it had no
  * lower bound at all — and the BFS computes WALK reachability while the default mode here is
  * TRAIL, which forbids EDGE reuse. One node with one self-loop, `MATCH TRAIL (x)-[:R]->{2,}(y)
@@ -834,7 +834,7 @@ export const reachCount = (proj: Projection, bVar: string): { countArg?: Compile
  * found at depth 1 might still be reachable at length 2, and a shortest-distance search cannot see
  * that — a wrong ANSWER, not a slow one.
  *
- * ⚠️ A BOUNDED `max` IS ADMITTED SINCE ITEM 1848, where it used to require `max === null`. A
+ * A BOUNDED `max` IS ADMITTED SINCE ITEM 1848, where it used to require `max === null`. A
  * bounded quantifier was therefore sent to path ENUMERATION: `-[:E]->{1,3}` with a
  * `RETURN DISTINCT` measured **165.5 ms to return 8 rows**, against 108.0 ms for emitting all
  * 251,910 undeduped rows of the same walk — i.e. the dedupe cost more than the rows it removed.
@@ -844,7 +844,7 @@ export const reachCount = (proj: Projection, bVar: string): { countArg?: Compile
  * `max === 0` stays refused: it admits only the zero-length path, which is a different question
  * and one `dropVacuousQuantifier` already reshapes.
  *
- * ⚠️⚠️ WHAT `min >= 2` COSTS, MEASURED AT ITEM 1879 — so the next reader sees the price beside the
+ * WHAT `min >= 2` COSTS, MEASURED AT ITEM 1879 — so the next reader sees the price beside the
  * rule rather than discovering it from a profile. At 1,500 vertices / 6,000 edges, returning the
  * SAME 8 rows:
  *
@@ -860,7 +860,7 @@ export const reachCount = (proj: Projection, bVar: string): { countArg?: Compile
  * — and native declines the identical case (`set_reachability_is_exact`, `Trail => max <= 1`), so a
  * TS-only fix would open a cross-engine divergence this refusal currently closes.
  *
- * ⚠️ UNDER `WALK` THE SAME BOUND *IS* ANSWERABLE CHEAPLY and is nevertheless refused: with no
+ * UNDER `WALK` THE SAME BOUND *IS* ANSWERABLE CHEAPLY and is nevertheless refused: with no
  * edge-reuse constraint, the union of level frontiers for k in [min, max] (no global visited set) is
  * exact at the same O(max · E) this rung already pays. Item 1879 left it unbuilt because nothing in
  * this corpus writes an explicit `MATCH WALK … {2,3}` — the screen draws default mode and the fuzzer
@@ -873,7 +873,7 @@ export const reachQuantifierIsExact = (q: Quantifier | undefined): boolean =>
 /**
  * Is this a `{min >= 2}` quantifier the TRAIL DFS arm can serve? (item 2008)
  *
- * ⚠️⚠️ **MODE-SPECIFIC ON PURPOSE, and each exclusion is a measured divergence rather than caution**
+ * **MODE-SPECIFIC ON PURPOSE, and each exclusion is a measured divergence rather than caution**
  * (item 2007, nine hazard fixtures x three bounds):
  *
  *   - `WALK` reaches vertices a trail cannot, by reusing an edge — one self-loop at `{2,2}` gives
@@ -887,7 +887,7 @@ export const reachQuantifierIsExact = (q: Quantifier | undefined): boolean =>
  * So only TRAIL and the DEFAULT (which IS trail) are admitted — and those two agreed in all 27 cells
  * of that probe, as they must, being the same mode.
  *
- * ⚠️ BOUNDED ONLY. An unbounded trail DFS is exponential in the graph, and this rung cannot decline
+ * BOUNDED ONLY. An unbounded trail DFS is exponential in the graph, and this rung cannot decline
  * at runtime (`clauses.ts` returns its result directly), so `max === null` stays refused.
  */
 export const trailMinAdmissible = (
@@ -901,7 +901,7 @@ export const trailMinAdmissible = (
   q.max !== undefined &&
   q.max >= (q.min ?? 0);
 /**
- * ⚠️ `WALK` IS ADMITTED ALONGSIDE THE DEFAULT (item 1255), and `SIMPLE`/`ACYCLIC` are not.
+ * `WALK` IS ADMITTED ALONGSIDE THE DEFAULT (item 1255), and `SIMPLE`/`ACYCLIC` are not.
  *
  * This rung answers from a BFS over the reached SET, which is WALK reachability by definition — so
  * `WALK` is the mode it serves most exactly of all, and native says so outright
@@ -930,14 +930,14 @@ export const trailMinAdmissible = (
  * Can any arm of this rung serve the quantifier? The BFS region (`min <= 1`, any admitted mode) or
  * the trail DFS region (`min >= 2`, TRAIL or default, bounded).
  *
- * ⚠️ ONE NAMED PREDICATE because the detector is at the lint complexity cap — two calls joined by
+ * ONE NAMED PREDICATE because the detector is at the lint complexity cap — two calls joined by
  * `||` at the call site took it to 37 against a limit of 35. Third time this stretch a lint gate has
  * pushed a condition into a name, and third time the name is the better code.
  */
 /**
  * The quantifier's lower bound, defaulted.
  *
- * ⚠️ A NAMED HELPER FOR `q.min ?? 0` ONLY BECAUSE THE DETECTOR IS AT THE LINT COMPLEXITY CAP — adding
+ * A NAMED HELPER FOR `q.min ?? 0` ONLY BECAUSE THE DETECTOR IS AT THE LINT COMPLEXITY CAP — adding
  * that one `??` inline took `detectReachableShortcut` from 35 to 36. It is used for BOTH `minZero`
  * and `minLen`, so the default lives in one place rather than being spelled twice.
  */
@@ -952,7 +952,7 @@ export const needsGeneralMatcher = (p: PathPattern): boolean =>
   p.segments.some((s) => s.rel.quantifier !== undefined && relHasPredicate(s.rel));
 
 /**
- * ⚠️⚠️ **`acyclic` IS ADMITTED ONLY WHEN THE QUANTIFIER IS BOUNDED, and it does NOT use the BFS**
+ * **`acyclic` IS ADMITTED ONLY WHEN THE QUANTIFIER IS BOUNDED, and it does NOT use the BFS**
  * (item 2004). The refusal documented above stands for the BFS — ACYCLIC genuinely is not set
  * reachability — and item 2003 REFUTED the cheap alternative by measurement: a BFS plus a
  * closed-case correction is UNSOUND, because with the sources restricted a 2-cycle diverges too
@@ -961,7 +961,7 @@ export const needsGeneralMatcher = (p: PathPattern): boolean =>
  * produces the reached set directly, and only the SET production differs — the label filter,
  * projection, DISTINCT, `count(DISTINCT b)`, ordering and windowing below it are mode-agnostic.
  *
- * 🔑 **BOUNDED IS WHAT MAKES IT SAFE WITHOUT A DECLINE, and that is the same argument item 2002's
+ * **BOUNDED IS WHAT MAKES IT SAFE WITHOUT A DECLINE, and that is the same argument item 2002's
  * budget got wrong.** This rung CANNOT decline at runtime — `clauses.ts` returns
  * `linear.reachShortcut(graph, params)` directly — so an arm that could blow up would be a hang
  * with no way out. For a BOUNDED quantifier there is no such risk: the general matcher, which is
@@ -978,7 +978,7 @@ const admissibleMode = (p: PathPattern): boolean => {
     return true;
   }
 
-  // ⚠️ `max` IS `null` FOR THE UNBOUNDED SPELLING and `undefined` when there is no quantifier at
+  // `max` IS `null` FOR THE UNBOUNDED SPELLING and `undefined` when there is no quantifier at
   // all, so `!= null` is the one test that excludes both — the only place in this file where the
   // loose comparison is the clearer spelling rather than the sloppier one.
   return isAcyclicMode(p) && p.segments.length === 1 && p.segments[0].rel.quantifier?.max != null;
@@ -987,7 +987,7 @@ const admissibleMode = (p: PathPattern): boolean => {
 /**
  * Is this pattern's mode `acyclic`?
  *
- * ⚠️ A ONE-LINE HELPER BECAUSE A LINT GATE SAID SO, and the gate was right. Written inline in both
+ * A ONE-LINE HELPER BECAUSE A LINT GATE SAID SO, and the gate was right. Written inline in both
  * places — `admissibleMode` and the `ReachSpec` construction — the `?? 'trail'` plus the comparison
  * pushed `detectReachableShortcut` to a complexity of 36 against a cap of 35. Reading the mode in
  * one named place is better anyway: the default spelling (`undefined` meaning `trail`) is a fact
@@ -995,7 +995,7 @@ const admissibleMode = (p: PathPattern): boolean => {
  */
 export const isAcyclicMode = (p: PathPattern): boolean => (p.mode ?? 'trail') === 'acyclic';
 /**
- * ⚠️⚠️ A MULTI-ELEMENT REPETITION UNIT IS ONE SEGMENT, AND REFUSING IT IS A CORRECTNESS
+ * A MULTI-ELEMENT REPETITION UNIT IS ONE SEGMENT, AND REFUSING IT IS A CORRECTNESS
  * CONDITION — item 1873 found this returning WRONG ROWS.
  *
  * `((x)-[:KNOWS]->(m)-[:LIKES]->(y)){1,2}(t)` parses as a SINGLE segment whose hops beyond the
@@ -1010,7 +1010,7 @@ export const isAcyclicMode = (p: PathPattern): boolean => (p.mode ?? 'trail') ==
  * `innerQ` is refused with it: a quantifier on the unit's first inner hop is a NESTED repetition,
  * which this walk has no notion of either.
  *
- * ⚠️ AND THE SINGLE-ELEMENT GROUP IS STILL ADMITTED — `((x)-[:KNOWS]->(m)){1,2}(t)` has an empty
+ * AND THE SINGLE-ELEMENT GROUP IS STILL ADMITTED — `((x)-[:KNOWS]->(m)){1,2}(t)` has an empty
  * `unitRest` and IS one hop per repetition, which is exactly what the walk implements. It passes
  * the matrix test both before and after, so the refusal is scoped to the units that differ.
  */
@@ -1025,7 +1025,7 @@ const isSingleHopUnit = (seg: Segment | undefined): boolean =>
  * A clause `WHERE` the reachability rung can CARRY, as a per-seed gate — or `null` to decline, or
  * `undefined` for "there is no clause WHERE" (item 1906).
  *
- * ⚠️⚠️ **CARRYING IT IS WHAT MAKES TWO SPELLINGS OF ONE QUESTION COST THE SAME.** The detector
+ * **CARRYING IT IS WHAT MAKES TWO SPELLINGS OF ONE QUESTION COST THE SAME.** The detector
  * refused any clause `WHERE` outright, so `MATCH (a:T {n: $p})-[:E]->{1,3}(b:T)` reached this rung
  * and the equivalent `MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p` reached NO rung: **2996.17 ms
  * against 342.45 over 200,000 vertices / 1,000,000 edges, 8.75x, for the same 8 rows.** `CLAUDE.md`
@@ -1034,13 +1034,13 @@ const isSingleHopUnit = (seg: Segment | undefined): boolean =>
  * audit item 159's "a filter that makes a query slower is a declined fast path, not the cost of
  * filtering".
  *
- * ⚠️ START-ONLY, AND THAT IS A SEMANTIC BOUND RATHER THAN CAUTION. A predicate on the start narrows
+ * START-ONLY, AND THAT IS A SEMANTIC BOUND RATHER THAN CAUTION. A predicate on the start narrows
  * the SEED SET, which is what this rung can express. One reading the far variable is a filter on the
  * ANSWER, and since the walk DEDUPES reached vertices rather than enumerating paths, applying it per
  * reached vertex is a different computation that needs its own reasoning. One reading both is not
  * expressible here at all.
  *
- * ⚠️ A pure function because the mistakes are ANSWER-visible and `detectReachableShortcut` sits on
+ * A pure function because the mistakes are ANSWER-visible and `detectReachableShortcut` sits on
  * the complexity cap — the same extraction item 1903 made for `walkReadFlags`, for both reasons.
  */
 export const carriedStartGate = (
@@ -1054,7 +1054,7 @@ export const carriedStartGate = (
 
   const vars = freePredicateVars(where);
 
-  // ⚠️ A LOOP-INVARIANT PREDICATE (no free variables) IS NOT CARRIED and declines instead: it is a
+  // A LOOP-INVARIANT PREDICATE (no free variables) IS NOT CARRIED and declines instead: it is a
   // whole-query gate rather than a seed test, `loopInvariantWhere`'s own case, and the general path
   // answers it without walking at all.
   if (startVar === undefined || vars.size !== 1 || !vars.has(startVar)) {
@@ -1122,7 +1122,7 @@ export const detectReachableShortcut = (
   }
 
   /*
-   * ⚠️⚠️ A CLAUSE `WHERE` IS CARRIED WHEN IT READS ONLY THE START (item 1906), where it used to be
+   * A CLAUSE `WHERE` IS CARRIED WHEN IT READS ONLY THE START (item 1906), where it used to be
    * refused outright — see `ReachSpec.startGate` for the 8.75x that cost and why the bound is
    * start-only. The compiled form is `cm.where`, the same expression the general path would
    * evaluate, so there is nothing to keep in step by hand.

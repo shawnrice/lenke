@@ -2,26 +2,26 @@
 // needs the path nor has a priced refusal: 90.01 ms for 200,000 rows at 200,000 vertices /
 // 1,000,000 edges, where `V().values(k)` answers the SAME 200,000 rows in 5.81.
 //
-// ⚠️ THE OTHER TOP ROWS ARE ALREADY PRICED. `edge: outE.has(w).inV` (70.32) was measured at item
+// THE OTHER TOP ROWS ARE ALREADY PRICED. `edge: outE.has(w).inV` (70.32) was measured at item
 // 1893 — the engine's rung is 2.08x a hand walk over the identical `Set`s, the `drain` half was
 // taken, and the edge-indexed CSR that would add the rest is priced at a further 1.79x and NOT
 // built. `agg: hop values min` (62.87) was recorded at item 1892 as "~17 ms for an order-invariant
 // fold ... not a route gap". `path: hop path` (149) returns path objects. This one has no entry.
 //
-// 🔑 THE MECHANISM IS VISIBLE IN `dispatch.ts` BEFORE ANY PROFILE: `whereSubPlanStep` calls
+// THE MECHANISM IS VISIBLE IN `dispatch.ts` BEFORE ANY PROFILE: `whereSubPlanStep` calls
 // `applyPlanToStream(plan, [t], graph, ctx)` ONCE PER TRAVERSER — a one-element array and a fresh
 // generator chain per vertex, 200,000 of them. `case 'optional'` in the same file already fuses
 // exactly this shape (`optionalSingleHop`) for exactly this reason. `filter(sub)` shares the step,
 // and `not`/`and`/`or` share the per-traverser `applyPlanToStream`.
 //
-// ⚠️ `hasAny` ALREADY SHORT-CIRCUITS — the sub-plan is lazy, so this is NOT "walking the whole
+// `hasAny` ALREADY SHORT-CIRCUITS — the sub-plan is lazy, so this is NOT "walking the whole
 // adjacency to answer a yes/no". The cost under test is the per-traverser SETUP, which is why the
 // `deg1` arm matters: a fixture where every vertex's FIRST out-edge answers it isolates setup from
 // walking.
 //
 //     SHAPE=where|scan|filter|not|and|wherecnt|hop bun --cpu-prof wheresub-prof-1915.mjs
 //
-// ⚠️ ONE SHAPE PER PROCESS, and profile at a high `REPS` or the profile is the fixture build
+// ONE SHAPE PER PROCESS, and profile at a high `REPS` or the profile is the fixture build
 // (item 1900's lesson).
 import { Graph } from '@lenke/core';
 import {
@@ -76,7 +76,7 @@ const PLANS = {
   and: traversal(V(), and(traversal(out('E'))), values('n')),
   // Does the count twin behave the same? (It returns 1 row, so it prices the filter alone.)
   wherecnt: traversal(V(), where(traversal(out('E'))), count()),
-  // ⚠️ `and` MEASURED 36.4 WHERE `where` MEASURED 21.1 FOR IDENTICAL WORK, and an indexed loop in
+  // `and` MEASURED 36.4 WHERE `where` MEASURED 21.1 FOR IDENTICAL WORK, and an indexed loop in
   // place of `for…of` did not move it. These two localize that: if the gap survives with the
   // projection removed it is the STEP, and if it vanishes the two spellings differ in what they let
   // the DOWNSTREAM `values` do.

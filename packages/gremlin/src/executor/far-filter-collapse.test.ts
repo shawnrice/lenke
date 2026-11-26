@@ -24,7 +24,7 @@ import {
  * and applies `specializePredicate`'s test directly, instead of `pick` calling `survives`, which
  * iterates a one-element array to call a gate, which calls the same specialized test.
  *
- * ⚠️ THE PREDICATE SEMANTICS ARE UNTOUCHED BY CONSTRUCTION, and that is the whole equivalence
+ * THE PREDICATE SEMANTICS ARE UNTOUCHED BY CONSTRUCTION, and that is the whole equivalence
  * argument. The collapsed arm calls `specializePredicate(only.pred)` — the identical function
  * `compileGates` already calls to build the gate — so the comparison performed is the same
  * function on the same object. What changes is only how many invocations stand between the walk
@@ -32,7 +32,7 @@ import {
  * `valueEq`, and those are NOT the same for every value; that difference already existed inside
  * `compileGates` and this change neither widens nor narrows it.)
  *
- * ⚠️ TWO ORACLES ROUTE THE IDENTICAL QUESTION THROUGH THE GENERAL `survives` PATH:
+ * TWO ORACLES ROUTE THE IDENTICAL QUESTION THROUGH THE GENERAL `survives` PATH:
  *
  *   1. A VACUOUS trailing `hasLabel('P')` — every vertex carries `P`, so the answer is unchanged
  *      while `farFilters.length` becomes 2 and the collapse declines.
@@ -68,7 +68,7 @@ const g = ((): Graph => {
   for (const r of TABLE) {
     const properties: Record<string, unknown> = { id: r.id };
 
-    // ⚠️ `undefined` MEANS THE KEY IS ABSENT, not that it holds undefined — the numeric model
+    // `undefined` MEANS THE KEY IS ABSENT, not that it holds undefined — the numeric model
     // converts a written `undefined` to `null`, so writing it would make `d` indistinguishable
     // from `e` and collapse the two cases this fixture exists to separate.
     if (r.k !== undefined) {
@@ -123,7 +123,7 @@ describe('the collapsed single-`has` far filter answers what `survives` answers'
     ]);
   });
 
-  test('⚠️ `neq` ADMITS A MISSING KEY, and both branches must agree that it does', () => {
+  test('`neq` ADMITS A MISSING KEY, and both branches must agree that it does', () => {
     /**
      * This is the case where a specialized predicate and `matches` could plausibly disagree, so it
      * gets a literal AND the oracle. Specialized `neq` is `v !== 1`, and a far vertex with no `k`
@@ -139,7 +139,7 @@ describe('the collapsed single-`has` far filter answers what `survives` answers'
     ).toEqual([20, 40, 50]);
   });
 
-  test('⚠️ `gt` REJECTS a missing key where `neq` admits it — the contrast is the point', () => {
+  test('`gt` REJECTS a missing key where `neq` admits it — the contrast is the point', () => {
     /**
      * Specialized `gt` is `typeof v === 'number' && v > b`, so `d` (no `k`) and `e` (null) are both
      * rejected however low the bound. DERIVED with bound 0: `a`(1), `b`(2), `c`(1), `f`(1, no `n`)
@@ -202,7 +202,7 @@ describe('the collapse declines what it must', () => {
     expect(toArray(traversal(V(), out('E'), hasLabel('Q'), values('n')), g)).toEqual([30]);
   });
 
-  test('⚠️ TWO `has` filters must BOTH apply — not just the first', () => {
+  test('TWO `has` filters must BOTH apply — not just the first', () => {
     /**
      * The guard is `farFilters.length === 1`. A mutant reading `farFilters[0]` regardless would
      * apply only the first filter, so the second must CHANGE the answer: `k === 1` keeps `a`, `c`,
@@ -217,7 +217,7 @@ describe('the collapse declines what it must', () => {
     ).toEqual([30]);
   });
 
-  test('⚠️ the FILTER key and the PROJECTED key are not interchangeable', () => {
+  test('the FILTER key and the PROJECTED key are not interchangeable', () => {
     /**
      * A mutant reading the projection's key as the filter's (or vice versa) would answer this
      * identically if the two were ever the same key, so they are deliberately different throughout

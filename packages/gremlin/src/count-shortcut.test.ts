@@ -137,7 +137,7 @@ describe('count() answered from a counter or bucket', () => {
     // union is 6 — different from the SUM (7) and different from EITHER bucket (4, 3). All
     // three have to differ, or the case cannot tell a union from a sum from a first-label read.
     //
-    // ⚠️ SINCE ITEM 1382 THIS SHAPE NO LONGER DECLINES — `labelledCount` counts the union on the
+    // SINCE ITEM 1382 THIS SHAPE NO LONGER DECLINES — `labelledCount` counts the union on the
     // fast path — so it is no longer an example of this test's title. The ASSERTIONS are unchanged
     // and are exactly the right guard either way: they were written to catch a wrong decline and
     // they catch a wrong union for the same reason. Verified by mutation at 1382 (counting the sum

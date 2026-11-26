@@ -50,7 +50,7 @@ const collectNeighbours = (
  * `(garbage collector)`, which the per-vertex arrays are the obvious source of. None of that was
  * iteration; all of it was construction.
  *
- * ⚠️ BOTH ARMS MUST PRODUCE THE IDENTICAL ADJACENCY, not merely the same degrees: out-edge targets
+ * BOTH ARMS MUST PRODUCE THE IDENTICAL ADJACENCY, not merely the same degrees: out-edge targets
  * first then in-edge sources, buckets in index order, each bucket in insertion order, one entry per
  * edge so parallel edges and self-loops keep their multiplicity. A permuted neighbour list changes a
  * label tie-break, so a divergence here is a wrong answer — and one that agrees on row count.

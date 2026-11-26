@@ -1,12 +1,12 @@
 /*
  * Item 2040 — a leading `hasLabel` admitted into the CSR hop walk and tested PER SLOT.
  *
- * ⚠️⚠️ **THE SUITE PASSING SAYS NOTHING ABOUT THE ROUTE, AND ITEM 1870 IS THE PROOF.** There, a rung
+ * **THE SUITE PASSING SAYS NOTHING ABOUT THE ROUTE, AND ITEM 1870 IS THE PROOF.** There, a rung
  * stopped claiming its headline shape and "the whole gremlin suite passes with the refusal in place"
  * — a 678x regression sat in a shipped rung invisibly because no test asserted it CLAIMED anything.
  * So every route here is asserted directly against `hopValuesCsr`.
  *
- * ⚠️ `seenBefore` IS THE SECOND-ASK POLICY: this arm declines the FIRST time a (direction, type) pair
+ * `seenBefore` IS THE SECOND-ASK POLICY: this arm declines the FIRST time a (direction, type) pair
  * is asked for and serves it afterwards. Every route assertion below therefore calls twice and reads
  * the second — otherwise the arm looks broken when it is merely cold.
  */
@@ -72,7 +72,7 @@ describe('CSR start-label arm (item 2040)', () => {
 
   test('the label is actually APPLIED: off-label starts contribute nothing', () => {
     /*
-     * 🔑 THE ORACLE IS THE SAME QUESTION ASKED OF A GRAPH WHERE THE LABEL EXCLUDES HALF. A fusion that
+     * THE ORACLE IS THE SAME QUESTION ASKED OF A GRAPH WHERE THE LABEL EXCLUDES HALF. A fusion that
      * ignored `startTest` would answer the unlabelled hop's rows, which is strictly more.
      */
     const half = build(0.5);
@@ -93,7 +93,7 @@ describe('CSR start-label arm (item 2040)', () => {
 
   test('the ARM and the SEEDED walk agree exactly, element for element and IN ORDER', () => {
     /*
-     * ⚠️⚠️ **THE ORDER IS THE RISK THIS ARM CARRIES.** It emits in CSR SLOT order (which is
+     * **THE ORDER IS THE RISK THIS ARM CARRIES.** It emits in CSR SLOT order (which is
      * `verticesById` order) while the walk it replaces iterates `verticesByLabel`'s bucket. Gremlin
      * results are compared ORDERED by the differential fuzzer, so if those two orders could differ
      * the arm would be a cross-engine failure, not a speed-up. Here the same query is answered on a
@@ -116,7 +116,7 @@ describe('CSR start-label arm (item 2040)', () => {
 
   test('a TRAILING step lands in `rest` with the label step accounted for', () => {
     /*
-     * ⚠️ THE LABEL STEP SHIFTS EVERY INDEX BY ONE. An off-by-one in the `rest` slice would re-run the
+     * THE LABEL STEP SHIFTS EVERY INDEX BY ONE. An off-by-one in the `rest` slice would re-run the
      * hop or drop the count, and `count()` is the cheapest shape that would show it.
      */
     const half = build(0.5);

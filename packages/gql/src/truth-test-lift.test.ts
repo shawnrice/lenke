@@ -21,7 +21,7 @@ import { parsePredicate } from './parser.js';
 //     [CTL] n.k IS NULL         3.108    -> 3.417    flat, already lifted via nullProps
 //     [CTL] bare count          0.001    -> 0.001    flat
 //
-// ⚠️ THE `IS NULL` CONTROL IS WHY THIS IS THE RIGHT LAYER. `isNull` and `isTruth` are BOTH refused
+// THE `IS NULL` CONTROL IS WHY THIS IS THE RIGHT LAYER. `isNull` and `isTruth` are BOTH refused
 // by `rowLocal`'s allowlist, so the node-count gate declines both — and `isNull` is fast anyway,
 // because `pushWhereIntoNode` routes a clause `WHERE` through `compilePredicate` where item 1270
 // gave it an arm. Two kinds, one gate, opposite costs: the allowlist was a red herring and the
@@ -34,7 +34,7 @@ const build = (): Graph => {
   g.addVertex({ id: 'no', labels: ['P'], properties: { nm: 'no', flag: false } });
   g.addVertex({ id: 'nulled', labels: ['P'], properties: { nm: 'nulled', flag: null } });
   g.addVertex({ id: 'absent', labels: ['P'], properties: { nm: 'absent' } });
-  // ⚠️ NON-BOOLEAN CELLS. `case 'isTruth'` is explicit that these are simply "no" rather than a
+  // NON-BOOLEAN CELLS. `case 'isTruth'` is explicit that these are simply "no" rather than a
   // fault — "Unlike a boolean CONTEXT (WHERE / AND / CASE …), it does NOT fault on a non-boolean".
   // The lifted arm has to agree, or a query that answered starts throwing.
   g.addVertex({ id: 'str', labels: ['P'], properties: { nm: 'str', flag: 'x' } });
@@ -52,7 +52,7 @@ const countOf = (where: string): number =>
   Number(query(g, `MATCH (n:P) WHERE ${where} RETURN count(*) AS c`)[0].c);
 
 describe('IS TRUE / IS FALSE / IS UNKNOWN lift (item 1286)', () => {
-  test('⚠️ ROUTE: every spelling lands in truthTestProps and nothing is left behind', () => {
+  test('ROUTE: every spelling lands in truthTestProps and nothing is left behind', () => {
     // Answer-equivalent by design, so only the compiler can see the lift. Without this, a mutant
     // that never claims the shape passes every row assertion in the package.
     const lifted = (
@@ -63,7 +63,7 @@ describe('IS TRUE / IS FALSE / IS UNKNOWN lift (item 1286)', () => {
     expect(lifted('n.flag IS TRUE')).toEqual([{ key: 'flag', truth: true, negated: false }]);
     expect(lifted('n.flag IS NOT TRUE')).toEqual([{ key: 'flag', truth: true, negated: true }]);
     expect(lifted('n.flag IS FALSE')).toEqual([{ key: 'flag', truth: false, negated: false }]);
-    // ⚠️ `IS UNKNOWN` IS NOT HERE — it folds into `nullProps`, because it IS `IS NULL` (both go
+    // `IS UNKNOWN` IS NOT HERE — it folds into `nullProps`, because it IS `IS NULL` (both go
     // through `isNullish`) and because the native engine hoists it past a faulting sibling while
     // refusing to hoist `IS TRUE`/`IS FALSE`. Putting it in `truthTestProps` would be a
     // cross-engine divergence; `and-short-circuit-conformance.test.ts` holds the table.
@@ -111,7 +111,7 @@ describe('IS TRUE / IS FALSE / IS UNKNOWN lift (item 1286)', () => {
     ).toBeUndefined();
   });
 
-  test('⚠️ a NON-BOOLEAN cell is "no", NOT a fault', () => {
+  test('a NON-BOOLEAN cell is "no", NOT a fault', () => {
     // The semantic crux. `str` and `num` hold non-booleans; `IS TRUE` must answer false for them
     // and must not throw. A lifted arm that reached for a boolean coercion would fault here, which
     // is the wrong answer `truthProps` (the bare-prop family) legitimately produces in a boolean
@@ -131,7 +131,7 @@ describe('IS TRUE / IS FALSE / IS UNKNOWN lift (item 1286)', () => {
     expect(ids('n.flag IS NOT UNKNOWN')).toEqual(['no', 'num', 'str', 'yes']);
   });
 
-  test('⚠️ IS TRUE and = true are NOT the same question, and must stay different', () => {
+  test('IS TRUE and = true are NOT the same question, and must stay different', () => {
     // On THIS fixture `IS TRUE` and `= true` agree, because both drop a null. Their NEGATIONS do
     // not, and that is the assertion that fails if someone ever "unifies" the two families:
     //

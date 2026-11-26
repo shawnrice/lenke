@@ -23,7 +23,7 @@
  *   pair / single >> 1   -> the route declines for that type, which is item 1184's hole with a
  *                          TS twin and a real lever.
  *
- * ⚠️ The floor is `max(x.k)`, NOT `count(*)`. Item 1183: a bare `count(*)` over a hop is answered
+ * The floor is `max(x.k)`, NOT `count(*)`. Item 1183: a bare `count(*)` over a hop is answered
  * by `shortcuts.ts`'s DEGREE SUM, which never enumerates an edge — it reads 0.0 ms and makes any
  * ratio against it meaningless. A per-edge floor must read a property.
  *
@@ -112,7 +112,7 @@ for (let r = 0; r < REPS; r++) {
 const kept = series.slice(DROP).sort((a, b) => a - b);
 const median = kept[Math.floor(kept.length / 2)];
 
-const warn = median < 1 ? '  <-- ⚠️ SUB-MILLISECOND: a closed form, not a walk; not a floor' : '';
+const warn = median < 1 ? '  <-- SUB-MILLISECOND: a closed form, not a walk; not a floor' : '';
 const reps = series.map((x) => x.toFixed(1)).join(' ');
 
 console.log(

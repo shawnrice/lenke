@@ -1,21 +1,21 @@
 /**
  * Does a TWO-HOP LIST cost the same written from either end? (item 2290)
  *
- * ⚠️⚠️ **IT DOES NOT, AND THE GAP IS ASYMPTOTIC** (item 2289): the authz question "which subjects can see
+ * **IT DOES NOT, AND THE GAP IS ASYMPTOTIC** (item 2289): the authz question "which subjects can see
  * this object" is **O(results) written from the object and O(TENANT) written from the subject** — 0.69 ms
  * against 9.24 at 400,000 users, for the identical 2,000 rows, growing without bound in the population.
  *
- * 🔑 **WHY THE EXISTING PROBES MISS IT.** `direction-spelling-probe.ts` compares `-[:T]->` against
+ * **WHY THE EXISTING PROBES MISS IT.** `direction-spelling-probe.ts` compares `-[:T]->` against
  * `<-[:T]-` on a ONE-HOP COUNT over a UNIFORM fixture. This shape differs in all three respects, and each
  * one is load-bearing:
  *
  *   - **TWO hops**, so there is a middle vertex and therefore an orientation CHOICE to get wrong;
  *   - **a LIST**, not a count — a count has closed-form routes that hide the walk entirely;
- *   - **a SKEWED fixture**, one object against a whole tenant. ⚠️ On a uniform graph both ends are equally
+ *   - **a SKEWED fixture**, one object against a whole tenant. On a uniform graph both ends are equally
  *     selective and the cliff CANNOT appear, however many spellings are compared.
  *
- * ✅ So this is a probe, not a test: time is the only signal, a threshold in CI would be flaky, and the
- * `spelling_probe` family's rule is that equivalent spellings must cost the same. ⚠️ **Read the PER-ARM
+ * So this is a probe, not a test: time is the only signal, a threshold in CI would be flaky, and the
+ * `spelling_probe` family's rule is that equivalent spellings must cost the same. **Read the PER-ARM
  * numbers, not just the group ratio** — the whole point is which arm is which.
  *
  *   cd packages/native && bun orient-spelling-probe.ts
@@ -46,7 +46,7 @@ for (let i = 0; i < USERS; i += 1) {
 }
 
 /*
- * ⚠️ MEMBERS is PINNED and independent of USERS, so the ANSWER is the same at every population size. That
+ * MEMBERS is PINNED and independent of USERS, so the ANSWER is the same at every population size. That
  * is what makes a growing cost unambiguous: item 2289's first sweep tied members to users, and "flat per
  * result" then could not tell a per-user cost from a per-result one.
  */
@@ -80,10 +80,10 @@ const GROUP: readonly (readonly [string, string])[] = [
 ];
 
 /*
- * ⚠️⚠️ **TWO REFERENCES, AND THE FIRST IS NOT A CONTROL — I MISLABELLED IT AND IT TURNED OUT MORE USEFUL.**
+ * **TWO REFERENCES, AND THE FIRST IS NOT A CONTROL — I MISLABELLED IT AND IT TURNED OUT MORE USEFUL.**
  *
  * `SCAN_REF` looks for a user name that does not exist, so it is a FULL population scan returning nothing.
- * 🔑 At 400,000 users it reads 12.42 ms where the subject-first arm reads 14.75 — which DECOMPOSES the slow
+ * At 400,000 users it reads 12.42 ms where the subject-first arm reads 14.75 — which DECOMPOSES the slow
  * arm rather than controlling for it: most of that spelling IS this scan. A control must be insensitive to
  * the effect, and a scan is precisely what the effect IS.
  *
@@ -131,7 +131,7 @@ console.log(
   `    ${'(control: one selective lookup)'.padEnd(38)} ${ctrlMs.toFixed(2).padStart(9)} ms   rows=${ctrlRows}`,
 );
 
-/* ⚠️ An answer difference means the spellings are NOT equivalent and no timing comparison is valid. */
+/* An answer difference means the spellings are NOT equivalent and no timing comparison is valid. */
 const answers = new Set(results.map(([, , rows]) => rows));
 
 if (answers.size !== 1) {

@@ -1,12 +1,12 @@
 /**
  * DOES `alias-sort-key-normalize.test.ts` HAVE TEETH? (item 1929)
  *
- * ⚠️ THE SUBJECT IS AN ABSENCE OF A RUNG. `ORDER BY x + 1` reached NO fast path at all while
+ * THE SUBJECT IS AN ABSENCE OF A RUNG. `ORDER BY x + 1` reached NO fast path at all while
  * `ORDER BY n.n + 1` reached `nodeProjection` — the same question, 3.2-3.4x apart on node and hop.
  * The rewrite is ANSWER-EQUIVALENT, so the tests assert the ROUTE as well as the rows, and that is
  * what gives these mutants something to fail ([[perf-gate-needs-its-own-test]]).
  *
- * 🔑 THE DANGEROUS MUTANTS WIDEN WHAT IS SUBSTITUTED. Two guards carry the whole soundness
+ * THE DANGEROUS MUTANTS WIDEN WHAT IS SUBSTITUTED. Two guards carry the whole soundness
  * argument and each has its own negation below:
  *
  *   - `cheapPureExpr`, because substituting DUPLICATES the aliased expression's evaluation (once
@@ -15,7 +15,7 @@
  *   - the COLLIDING-OUTPUT-NAME refusal, because in the sort scope output columns are OVERLAID on
  *     the binding — with `n.k AS n`, a substituted `n.n` would read a property of the COLUMN.
  *
- * ⚠️ WRITTEN DIRECTLY, not templated (item 1907); test paths listed from the directory (item 1915).
+ * WRITTEN DIRECTLY, not templated (item 1907); test paths listed from the directory (item 1915).
  *
  *     bun aliassort-mutants-1929.mjs
  */
@@ -38,21 +38,21 @@ const TESTS = [
 /** `[name, which, from, to, expectedOccurrences]` */
 const MUTANTS = [
   [
-    '⚠️ THE PASS IS NEVER CALLED (the pre-1929 route), so the alias spelling reaches no rung',
+    'THE PASS IS NEVER CALLED (the pre-1929 route), so the alias spelling reaches no rung',
     'rw',
     '      normalizeAliasSortKeys(\n        inlineTrailingLet(',
     '        inlineTrailingLet(',
     1,
   ],
   [
-    '⚠️ A NON-CHEAP ALIAS IS SUBSTITUTED, duplicating a subquery evaluation per row',
+    'A NON-CHEAP ALIAS IS SUBSTITUTED, duplicating a subquery evaluation per row',
     'rw',
     '    if (it.alias !== undefined && cheapPureExpr(it.expr)) {',
     '    if (it.alias !== undefined) {',
     1,
   ],
   [
-    '⚠⚠ THE OVERLAY CHECK IS GONE, so a colliding output name is rewritten anyway',
+    'THE OVERLAY CHECK IS GONE, so a colliding output name is rewritten anyway',
     'rw',
     '  for (const [, e] of bound) {\n    for (const nameRead of freePredicateVars(e)) {\n      if (outNames.has(nameRead)) {\n        return clauses;\n      }\n    }\n  }',
     '',
@@ -66,7 +66,7 @@ const MUTANTS = [
     1,
   ],
   [
-    '⚠️ A BARE ALIAS KEY IS REWRITTEN TOO, taking the query OFF the faster column-sort arm',
+    'A BARE ALIAS KEY IS REWRITTEN TOO, taking the query OFF the faster column-sort arm',
     'rw',
     "    if (k.expr.kind === 'var') {\n      return k;\n    }",
     '',
@@ -105,14 +105,14 @@ const MUTANTS = [
 /** Names that MUST survive, each with its reason. */
 const EXPECTED_SURVIVORS = new Set([
   /*
-   * ⚠️ EQUIVALENT MUTANT, documented in the pass itself (item 1929). A STAR projection has no
+   * EQUIVALENT MUTANT, documented in the pass itself (item 1929). A STAR projection has no
    * `items`, so `bound` comes out empty and the `bound.size === 0` check returns before anything is
    * rewritten — the `proj.star` test cannot change an outcome today. It stays as the statement of
    * intent (a star's columns are not enumerable here), which is item 475's rule: a surviving mutant
    * on a guard means "redundant" as readily as "untested", and the two have opposite fixes. This
    * one is redundant, and both the code and this entry say so.
    *
-   * 🔑 Four other guards survived the FIRST run and are caught now: three were genuinely subsumed
+   * Four other guards survived the FIRST run and are caught now: three were genuinely subsumed
    * or unreachable and were REMOVED or simplified away, and one was my test being vacuous
    * (`expect(rows(t)).toEqual(rows(t))`). Only this one is kept-and-redundant.
    */
@@ -120,10 +120,10 @@ const EXPECTED_SURVIVORS = new Set([
 ]);
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
 const HOW_DIED = new Map([
@@ -143,7 +143,7 @@ const verdictOf = (code) => {
   return code !== 0;
 };
 
-/** ⚠️ BOTH STREAMS CONCATENATED, THEN the exit code: `bun test` reports to STDERR (item 767). */
+/** BOTH STREAMS CONCATENATED, THEN the exit code: `bun test` reports to STDERR (item 767). */
 const runTests = () => {
   const r = spawnSync(
     'timeout',
@@ -207,7 +207,7 @@ try {
     const ran = /\d+ pass/.test(r.text) || /\d+ fail/.test(r.text);
 
     if (!ran && r.code !== 124 && r.code !== 137) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-500)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-500)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -235,12 +235,12 @@ try {
 
 if (anchorProblems.length > 0) {
   console.log(
-    `\n⚠️ ${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
+    `\n${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
   );
   process.exitCode = 1;
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

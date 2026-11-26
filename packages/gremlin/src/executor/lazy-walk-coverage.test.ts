@@ -21,7 +21,7 @@ import {
 import type { Plan } from '../index.js';
 
 /**
- * ⚠️ THE LAZY HALF OF EVERY FUSED WALK (item 1616).
+ * THE LAZY HALF OF EVERY FUSED WALK (item 1616).
  *
  * Item 1615 found that two mutants SURVIVED in a fused walk's LAZY loop while their EAGER twins
  * died. The cause is structural rather than one file's oversight: every `HopWalk` in this executor
@@ -42,11 +42,11 @@ import type { Plan } from '../index.js';
  *   optional-hop.ts:83                 `optional`'s non-vertex PASSTHROUGH
  * ```
  *
- * ⚠️ REACHING THE LAZY LOOP TAKES A RESIDUAL. A trailing `limit` leaves a step in `rest`, so `run`
+ * REACHING THE LAZY LOOP TAKES A RESIDUAL. A trailing `limit` leaves a step in `rest`, so `run`
  * wraps the generator instead of reading `drain` — which is the only spelling that routes there.
  * (`eager-tail-cache` is why `drain` must never be read under a `limit` in the first place.)
  *
- * ⚠️ AND THE ORACLE IS THE PIPELINE, compared ORDERED. All three values shortcuts decline a
+ * AND THE ORACLE IS THE PIPELINE, compared ORDERED. All three values shortcuts decline a
  * `V(id, …)` source, so the same query with every vertex id listed in `graph.vertices` order runs
  * the identical question down the traverser pipeline — `sourceFromIds` neither dedupes nor
  * reorders. Gremlin stream order is a TinkerPop contract the differential fuzzer compares ordered,
@@ -180,7 +180,7 @@ describe('`start-filtered-hop-values.ts` — the `both(T)` walk, lazily', () => 
 
   test('a limit that stops INSIDE a vertex’s two buckets', () => {
     /**
-     * ⚠️ THE LIMIT THAT SEPARATES THE TWO YIELD SITES. `limit(1)` takes only `a`'s out-bucket row,
+     * THE LIMIT THAT SEPARATES THE TWO YIELD SITES. `limit(1)` takes only `a`'s out-bucket row,
      * so a mutant in the IN-bucket emission would survive it; `limit(3)` crosses from `b`'s out
      * bucket into `b`'s in bucket, which is the first row the second site produces. Both are
      * asserted, because one `limit` cannot reach both sites.
@@ -196,7 +196,7 @@ describe('`start-filtered-hop-values.ts` — the `both(T)` walk, lazily', () => 
 
 describe('`optional-hop.ts` — the non-vertex passthrough', () => {
   /**
-   * ⚠️ NOT A LAZY/EAGER PAIR but the same class of hole: a BRANCH no test reached. `optionalHopStep`
+   * NOT A LAZY/EAGER PAIR but the same class of hole: a BRANCH no test reached. `optionalHopStep`
    * emits the traverser unchanged when its value is not a vertex, mirroring what the general path
    * does (`traverseToVertex` yields nothing for a non-vertex, so `optionalStep`'s empty branch fires).
    *

@@ -7,7 +7,7 @@
  * is materialized for a query that returns one number.
  *
  * This prices the hand floor: visit each vertex, test the existence hop, test the key, increment.
- * ⚠️ IT MUST ANSWER THE SAME NUMBER, or it prices a different query.
+ * IT MUST ANSWER THE SAME NUMBER, or it prices a different query.
  */
 import { Graph } from '@lenke/core';
 import { count, out, toArray, traversal, V, values, where } from '@lenke/gremlin';

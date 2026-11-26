@@ -62,7 +62,7 @@ let bad = 0;
 
 for (const [cell, byShape] of cells) {
   const shapes = [...byShape.keys()];
-  // ⚠️ NAMED BY SUFFIX, NOT BY SORT ORDER. The `…page` arm is the START-DRIVEN one (its `OFFSET 1`
+  // NAMED BY SUFFIX, NOT BY SORT ORDER. The `…page` arm is the START-DRIVEN one (its `OFFSET 1`
   // is what forces that walk, item 1777); the bare arm is far-driven. Deriving this from a sort
   // would silently mislabel both arms — and so invert every verdict in the table — for any future
   // pair whose names do not happen to collate that way.
@@ -82,8 +82,8 @@ for (const [cell, byShape] of cells) {
   const ratio = sm / fm;
   const rowsOk = Math.abs(f.rowCount - s.rowCount) === 1;
   const flags = [
-    rowsOk ? '' : `⚠️ ROWS ${f.rowCount}/${s.rowCount}`,
-    f.vacuous || s.vacuous ? '⚠️ VACUOUS' : '',
+    rowsOk ? '' : `ROWS ${f.rowCount}/${s.rowCount}`,
+    f.vacuous || s.vacuous ? 'VACUOUS' : '',
   ]
     .filter(Boolean)
     .join(' ');

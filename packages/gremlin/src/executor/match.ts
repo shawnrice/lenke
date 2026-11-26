@@ -46,7 +46,7 @@ type Pattern = {
 /**
  * A plan from a step slice, with `readsPath` recomputed over those steps (item 1504).
  *
- * ⚠️ IT MUST BE RECOMPUTED, NOT INHERITED. A `match` pattern's inner plan is a SLICE of a larger
+ * IT MUST BE RECOMPUTED, NOT INHERITED. A `match` pattern's inner plan is a SLICE of a larger
  * step list, so the enclosing plan's flag describes a different set of steps — carrying it over
  * would be wrong in the unsafe direction for a slice that dropped the path-reading step, and
  * needlessly pessimistic for one that kept it. `stepReadsPath` reads each step's nested plans by
@@ -135,7 +135,7 @@ const fromBinding = (t: Traverser<unknown>, value: unknown): Traverser<unknown> 
 });
 
 /**
- * What one pattern does to the current branch. ⚠️ THIS IS A DESCRIPTOR, NOT A TRAVERSER LIST, and
+ * What one pattern does to the current branch. THIS IS A DESCRIPTOR, NOT A TRAVERSER LIST, and
  * that is the whole of item 1559's 5.3x.
  *
  * `applyPattern` used to return the bound traversers, built by a `bind` helper that did
@@ -153,7 +153,7 @@ const fromBinding = (t: Traverser<unknown>, value: unknown): Traverser<unknown> 
  *     14940 / 15162 against a 14781 baseline). The `done` set copy is not a cost; only the TAG map
  *     copy is, because `done` holds one small int per pattern while the tags hold boxed values.
  *   * `{ ...t, tags }` replaced by an explicit `{ value, path, loopCount, tags }` literal —
- *     **WORSE**, 15858 / 17275 / 15885. ⚠️ **RE-TESTED AT ITEM 1748 AND THE VERDICT CHANGED TO FLAT,
+ *     **WORSE**, 15858 / 17275 / 15885. **RE-TESTED AT ITEM 1748 AND THE VERDICT CHANGED TO FLAT,
  *     WHILE THE DECISION STANDS.** The stated reason — "hand-writing the literal loses whatever
  *     shape the spread was preserving" — was conditional on something that has since changed: item
  *     1746 unified all three traverser constructors on a 5-field shape including `sack`, so there is
@@ -163,7 +163,7 @@ const fromBinding = (t: Traverser<unknown>, value: unknown): Traverser<unknown> 
  *     (4379-4482 against 4257-4450), and the `matched` CONTROL — which never reaches this line,
  *     since `tagsObserved` is false for `match(…).count()` — nominally 3.8% worse. So the spread
  *     costs nothing MEASURABLE here: `new Map(tags)` dominates the site.
- *     ⚠️ **Do not read items 1745/1746 as "spreads are slow."** Those removed a conditional spread
+ *     **Do not read items 1745/1746 as "spreads are slow."** Those removed a conditional spread
  *     that allocated an empty object per call AND unified a constructor shape; neither applies to a
  *     one-field override of an already-uniform object. Tested, not assumed.
  */
@@ -186,7 +186,7 @@ const KEEP: PatternOutcome = { kind: 'keep' };
  * ONE SINGLE-TYPE DIRECTED HOP, as the `[type, forward]` pair, or `undefined` for every other inner
  * plan (item 1627).
  *
- * ⚠️ WHY `applyPattern` WANTS THIS. `match()` expands each pattern by running its inner plan through
+ * WHY `applyPattern` WANTS THIS. `match()` expands each pattern by running its inner plan through
  * `applyPlanToStream`, which for a hop means the generic `out` step and therefore the generator
  * chain `hop-values.ts` exists to avoid — its header prices that chain at **375.6 ms against a hand
  * walk's 251, 1.50x**, and items 1614/1617 removed it from the fused walks. A profile of the
@@ -202,7 +202,7 @@ const KEEP: PatternOutcome = { kind: 'keep' };
  * `matched2` is **351 ms a rep** — 702 ns a solution against the fused two-hop walk's ~50 — and it
  * is the largest shape in the Gremlin probe by an order of magnitude.
  *
- * ⚠️ IT REFUSES EVERYTHING ELSE, which is what keeps this safe. `both` reaches a vertex from either
+ * IT REFUSES EVERYTHING ELSE, which is what keeps this safe. `both` reaches a vertex from either
  * side, a multi-type hop needs `expand`'s cross-bucket dedupe, and any longer inner plan is an
  * arbitrary traversal — all of them keep `applyPlanToStream` exactly as they are today. The same
  * narrow admission `hopValuesShortcut` and `directedBucket` make, for the same reason.
@@ -224,7 +224,7 @@ const soleHop = (inner: Plan): readonly [string, boolean] | undefined => {
 /**
  * The far endpoints of one single-type hop from `from`, straight off the adjacency bucket.
  *
- * ⚠️ NOT A GENERATOR, AND ITEM 1622 IS WHY. That item replaced one generator layer with another and
+ * NOT A GENERATOR, AND ITEM 1622 IS WHY. That item replaced one generator layer with another and
  * measured 1.006x — the per-edge allocation went away and the per-edge RESUME did not. Returning a
  * plain object whose `[Symbol.iterator]` closes over the bucket's own iterator means the caller's
  * `for...of` advances a native Set iterator with one endpoint read per step.
@@ -235,7 +235,7 @@ const bucketEnds = (
   forward: boolean,
 ): Iterable<unknown> | undefined => {
   /**
-   * ⚠️ A FALLBACK, NOT A GUARD — and REDUNDANT, which the mutant proves rather than the reasoning
+   * A FALLBACK, NOT A GUARD — and REDUNDANT, which the mutant proves rather than the reasoning
    * doing so: removing it SURVIVED. A non-vertex has no `adjFrom`/`adjTo`, so `?.get` yields
    * `undefined` and the walk is empty either way; and the general path is lenient for exactly the
    * same values (`traverseToVertex` yields nothing for a non-vertex rather than throwing), so both
@@ -250,7 +250,7 @@ const bucketEnds = (
     return undefined;
   }
 
-  // ⚠️ `soleTypeBucket` IS THE SHARED PRIMITIVE (item 1628): `movement.ts` owns the "one bucket for a
+  // `soleTypeBucket` IS THE SHARED PRIMITIVE (item 1628): `movement.ts` owns the "one bucket for a
   // directed single type" rule, and `optionalHopStep` reads it too. Item 1627 had this inline; a
   // second copy of the box choice is how the two would drift on `both` or a multi-type hop.
   const direct = soleTypeBucket(from, forward ? 'out' : 'in', [type]);
@@ -292,7 +292,7 @@ const applyPattern = (
   }
 
   /**
-   * ⚠️ THE BRANCHES BELOW READ VALUES, NOT TRAVERSERS, and that is the whole shape of this change.
+   * THE BRANCHES BELOW READ VALUES, NOT TRAVERSERS, and that is the whole shape of this change.
    * Each of the four already used only `o.value`, so taking an `Iterable<unknown>` lets the fast arm
    * hand them the bucket's endpoints directly while the general arm maps the traverser stream —
    * one definition of each branch, no duplication, and nothing about the solver's logic moved.
@@ -300,7 +300,7 @@ const applyPattern = (
   const hop = soleHop(p.inner);
   const fast = hop === undefined ? undefined : bucketEnds(start.value, hop[0], hop[1]);
   const out: Iterable<unknown> =
-    // ⚠️ `unwrap` IS ALREADY THIS, in `runtime.ts` — a traverser stream as plain values. My first
+    // `unwrap` IS ALREADY THIS, in `runtime.ts` — a traverser stream as plain values. My first
     // version added a local `valuesOf` doing the identical thing, which is the duplication this
     // executor keeps paying for; asked rather than rewritten.
     fast ?? unwrap(applyPlanToStream(p.inner, [fromBinding(t, start.value)], graph, ctx));
@@ -328,7 +328,7 @@ const applyPattern = (
 
   if (boundEnd?.ok) {
     /**
-     * ⚠️ ONE SOLUTION PER MATCHING RESULT, NOT ONE PER CONSISTENT BINDING — this returned `KEEP`
+     * ONE SOLUTION PER MATCHING RESULT, NOT ONE PER CONSISTENT BINDING — this returned `KEEP`
      * on the FIRST match until item 1794, which is the same bug item 1793 fixed in the arm below,
      * in the arm nothing had asked about. A cycle closing onto an already-bound tag over two
      * parallel edges is TWO solutions, and TinkerPop 3.7.3 says so directly: on this suite's
@@ -418,14 +418,14 @@ export const matchStep = function* (
         bindings.set(label, values[values.length - 1]);
       }
 
-      // ⚠️ THE SNAPSHOT IS THE WHOLE COST, AND IT IS OFTEN DEAD. `extend` propagates `tags` BY
+      // THE SNAPSHOT IS THE WHOLE COST, AND IT IS OFTEN DEAD. `extend` propagates `tags` BY
       // REFERENCE, so an emitted traverser would otherwise share the map the search keeps
       // rewriting and a later `select(...)` would read whatever state the solver had reached. But
       // when nothing downstream can read tags — `match(…).count()` is the common case — the copy
       // is pure waste, and it is 82% of the shape (item 1559 measured the ceiling by simply
       // deleting it: 14781 -> 2604 ms). `tagsObserved` is the plan's answer, default `true`.
       //
-      // ⚠️ Deferring the copy here WITHOUT the skip is worth NOTHING, measured flat on three
+      // Deferring the copy here WITHOUT the skip is worth NOTHING, measured flat on three
       // shapes at item 1559: the old code copied once per BIND and this copies once per SOLUTION,
       // and in a branching search the leaves outnumber the internal nodes. The refactor is the
       // PREREQUISITE for the skip, not a win of its own — do not re-derive it as one.

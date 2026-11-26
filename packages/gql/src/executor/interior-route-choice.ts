@@ -1,13 +1,13 @@
 /**
  * WHICH OF THE TWO THREE-SEGMENT ROUTES ANSWERS THIS PATTERN (item 1708).
  *
- * ⚠️ ITS OWN MODULE BECAUSE A CAP SAID SO, AND THAT CAP IS DOING ITS JOB. Adding this test inline
+ * ITS OWN MODULE BECAUSE A CAP SAID SO, AND THAT CAP IS DOING ITS JOB. Adding this test inline
  * put `shortcuts.ts` at 3,008 lines against a maximum of 3,000 — the same limit that moved item
  * 1685's degree product out, and its note applies verbatim: "the limit that fired is the one that
  * says 'this belongs somewhere else', not a formality to raise". It also gives the choice a
  * testable home, which `perf-gate-needs-its-own-test` wants for any route decision.
  *
- * ⚠️ A LEAF MODULE: `InteriorGates` is declared here rather than imported from `shortcuts.ts`,
+ * A LEAF MODULE: `InteriorGates` is declared here rather than imported from `shortcuts.ts`,
  * which imports this — the same cycle `far-mask-drain.ts` and `csr-cache.ts` each had to avoid,
  * and `import/no-cycle` is an error in this repo.
  *
@@ -29,7 +29,7 @@
  * the shape where the sweep is 1.6x-1.7x better. Item 1706 observed that as "the interior row is
  * faster on a multi-label graph" without the attribution; this is the attribution.
  *
- * ⚠️ NOT ITEMS 301/310's REFUTED LEVER. Those routed EVERY three-segment chain to the sweep and
+ * NOT ITEMS 301/310's REFUTED LEVER. Those routed EVERY three-segment chain to the sweep and
  * measured it losing, which the unfiltered row above reproduces at 1.17x. The interior-gated shape
  * is the one they never isolated, and it is the only one this admits.
  */
@@ -42,7 +42,7 @@ import type { InlinePred } from './inline-gate.js';
 /**
  * Interior gates for a three-segment count, bucketed by the position each conjunct reads.
  *
- * ⚠️ DECLARED HERE AND IMPORTED BY `shortcuts.ts`, not the other way round — this is a LEAF module
+ * DECLARED HERE AND IMPORTED BY `shortcuts.ts`, not the other way round — this is a LEAF module
  * and the reverse would be a cycle. It also keeps one declaration instead of two: the first draft
  * duplicated it, which is the kind of drift a shared type exists to prevent.
  */
@@ -51,7 +51,7 @@ export type InteriorGates = { b: readonly InlinePred[]; c: readonly InlinePred[]
 /**
  * Does either INTERIOR position carry a constraint?
  *
- * ⚠️ THE INLINE SPELLING HAS TO BE READ FROM THE SEGMENTS, NOT FROM `interiorPred`.
+ * THE INLINE SPELLING HAS TO BE READ FROM THE SEGMENTS, NOT FROM `interiorPred`.
  * `inlineInteriorGate` sets that only for an inline `b`, so `(c {k: 2})` leaves it `undefined` while
  * being exactly the shape this prefers — the 1.72x row above. Testing the nodes covers all three
  * spellings (clause, inline `WHERE`, inline property) with one rule, which is the "one question, one
@@ -80,7 +80,7 @@ export const interiorConstrained = (
  * The three-segment clause `WHERE`, SPLIT INTO CONJUNCTS and bucketed by the interior position each
  * one reads. `null` declines.
  *
- * ⚠️ IT USED TO ADMIT ONLY ONE POSITION, AND THAT WAS A 1411x EQUIVALENT-SPELLING GAP (item 1700).
+ * IT USED TO ADMIT ONLY ONE POSITION, AND THAT WAS A 1411x EQUIVALENT-SPELLING GAP (item 1700).
  * The old test was `readsOnly(name)` — EVERY free variable of the whole clause had to be that one
  * name — so `WHERE b.k = 7 AND c.k > 60` had a free set of `{b, c}`, failed both tests, returned
  * `null`, and the query fell to the general row pipeline at **1411.1 ms against the inline
@@ -88,7 +88,7 @@ export const interiorConstrained = (
  * conjunct reaches the sweep (`a AND c` 2.2 ms, `b AND d` 1.3), and the three-segment path has no
  * second route of its own.
  *
- * ⚠️ AND THE MACHINERY WAS ALREADY THERE, which is what made this a reader bug rather than a
+ * AND THE MACHINERY WAS ALREADY THERE, which is what made this a reader bug rather than a
  * missing feature: `buildThreeHopCount` takes `{ b, c }` as two independent gate LISTS and the
  * INLINE spelling filled both. This makes the clause reader produce what the inline reader already
  * produced — item 219's "one question, one route" at the third position.
@@ -101,7 +101,7 @@ export const interiorConstrained = (
  * `bindVar` is load-bearing: the conjunct reads `b.k`, so `inlineHolds` has to bind the element
  * under that name before evaluating it. Dropping it evaluates against an empty binding.
  *
- * ⚠️ EXPORTED BECAUSE IT IS A ROUTE CHOICE, AND A MUTATION PASS PROVED THE DIFFERENCE. Three
+ * EXPORTED BECAUSE IT IS A ROUTE CHOICE, AND A MUTATION PASS PROVED THE DIFFERENCE. Three
  * mutants — bucketing a `b` conjunct under `c`, never filling the `c` bucket, and not splitting the
  * clause at all — all SURVIVED the whole suite: each makes the reader NARROWER, so the shape
  * declines and the general pipeline returns the same answer. `interior-and-gates.test.ts`'s decline

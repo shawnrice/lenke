@@ -2,11 +2,11 @@
  * `values(k)` fused with a CAPPED `order()` — the top-k over a property stream (item 1591).
  *
  * **1.12x**, 3.208 to 2.854 ms over 50,000 vertices, measured as an asserted A/B with tight
- * non-overlapping ranges and every control flat (including a broad `bench:gremlin` sweep). ⚠️ That
+ * non-overlapping ranges and every control flat (including a broad `bench:gremlin` sweep). That
  * is a MODEST win and the judgement is recorded rather than dressed up: item 1587 refused 1.09x,
  * and the difference here is that the ranges do not overlap and nothing unrelated moved.
  *
- * ⚠️ THE ORACLE IS THE UNCAPPED SPELLING. `V().values(k).order()` sorts the whole stream through
+ * THE ORACLE IS THE UNCAPPED SPELLING. `V().values(k).order()` sorts the whole stream through
  * `sortByBys` — a different function from the capped `streamTopByBys` — so slicing its result is an
  * independent answer to the same question, not the code under test. Every ordering case below is
  * checked that way as well as against a literal.
@@ -34,7 +34,7 @@ const graphOf = (ks: readonly unknown[]): Graph => {
   return g;
 };
 
-// ⚠️ `order().by(Order.desc)` — the COMPARATOR-ONLY form, with the token as the FIRST argument.
+// `order().by(Order.desc)` — the COMPARATOR-ONLY form, with the token as the FIRST argument.
 // My first draft wrote `order().by(undefined, 'desc')`, which silently sorts ASCENDING: `[5,1,3]`
 // came back `[1,3,5]` instead of `[5,3,1]`. Every descending assertion then passed VACUOUSLY,
 // because the oracle below used the same wrong spelling and both arms were ascending — an oracle
@@ -121,7 +121,7 @@ describe('the GATE — a route choice, so it needs its own test', () => {
     expect(fusableValuesTopK(vals1, { kind: 'order' })).toBeUndefined();
   });
 
-  test('⚠️ ONE IDENTITY by IS admitted — it carries the DESCENDING spelling', () => {
+  test('ONE IDENTITY by IS admitted — it carries the DESCENDING spelling', () => {
     // `order().by(Order.desc)` arrives as `bys: [{kind:'identity', direction:'desc'}]`, NOT as
     // `desc: true`. The first version of this gate refused any `bys`, which made the fused step's
     // `desc` parameter dead code and sent the descending form down the unfused path while these

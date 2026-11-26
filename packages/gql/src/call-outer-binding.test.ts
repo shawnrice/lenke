@@ -10,7 +10,7 @@ import { query } from './index.js';
  * obtain an iterator and step it even with nothing to copy) and hoisted the per-bind `column ===
  * 'node'` test out of the per-row loop.
  *
- * ⚠️ THE SUITE HAD NO MATCH-THEN-CALL TEST AT ALL, which is exactly the non-empty-outer-binding
+ * THE SUITE HAD NO MATCH-THEN-CALL TEST AT ALL, which is exactly the non-empty-outer-binding
  * branch the change introduces. A bug in that branch drops the outer variables **silently** — the
  * query still returns the right NUMBER of rows, with the outer columns gone or null. All thirteen
  * existing `CALL` tests begin with `CALL`, so every one of them exercises only the empty branch.

@@ -5,19 +5,19 @@
  * the machinery only they can reach: the scan gate and its predicates, the top-k and
  * deferred-sort routes, and the multi-accumulator fold.
  *
- * ⚠️ FIVE DETECTORS IN ONE MODULE BECAUSE OWNERSHIP SAYS SO, not because their names rhyme (item
+ * FIVE DETECTORS IN ONE MODULE BECAUSE OWNERSHIP SAYS SO, not because their names rhyme (item
  * 1669). Measured before moving: of the 30 symbols here, 25 are reachable from these five entry
  * points and from NO other detector in the file. Taken individually they look unrelated —
  * `detectNodeProjection` has no private machinery at all while `detectNodeAggregate` has 61 lines —
  * and it is only at the family level that the shared 2,242 lines appear.
  *
- * ⚠️ `topKPlan` / `heapBeatsSort` / `deferredSortedNodeWalk` ARE THREE ROUTES TO ONE ANSWER, and the
+ * `topKPlan` / `heapBeatsSort` / `deferredSortedNodeWalk` ARE THREE ROUTES TO ONE ANSWER, and the
  * choice between them is where a LIMIT has to reach the producer. A sort that materialises every
  * row before taking k is the eager fill that measured 473x on a 4096-row tail cache; a heap that
  * keeps k is bounded. `heapBeatsSort` is the gate, and it has to see the k and the row estimate
  * together — which is why these three cannot be separated.
  *
- * ⚠️ `itemLocal` / `itemLocalChild` ARE MUTUALLY RECURSIVE and one of only two such pairs in the
+ * `itemLocal` / `itemLocalChild` ARE MUTUALLY RECURSIVE and one of only two such pairs in the
  * whole of `shortcuts.ts`. They stay together here.
  */
 
@@ -323,7 +323,7 @@ export const nodeScanGate = (
  * `hopSeek` returns a candidate set only when it is strictly smaller than the label bucket, so
  * an unindexed graph still walks the bucket and pays nothing for the attempt.
  *
- * ⚠️ `seeded` is returned, not just the iterable, and every caller must use it: a seeded set is
+ * `seeded` is returned, not just the iterable, and every caller must use it: a seeded set is
  * a SUPERSET — an index hint is a NECESSARY condition, not a sufficient one, so it can hand back
  * a same-named vertex of the WRONG LABEL. Two tests caught that omission as a WRONG ANSWER, not
  * as a slow one. The bucket walk satisfies the label by construction, which is why the recheck is
@@ -555,11 +555,11 @@ export const deferredSortKeys = (
  * Item 1962: the NON-WINDOWED sibling, which carries its sort keys in PARALLEL ARRAYS and sorts an
  * INDEX PERMUTATION instead of allocating a wrapper object per row.
  *
- * ⚠️ WHY A SIBLING AND NOT A BRANCH: this module's own rule, stated at `deferredSortedNodeWalk` and
+ * WHY A SIBLING AND NOT A BRANCH: this module's own rule, stated at `deferredSortedNodeWalk` and
  * learned at items 1033/1034 — a branch added to a sibling hot loop cost three queries about 2x.
  * The choice is made ONCE PER COMPILE below, so the windowed arm is byte-for-byte what it was.
  *
- * 🔑 WHAT IT REMOVES, and item 1961 measured it on two shapes. The keyed arm builds
+ * WHAT IT REMOVES, and item 1961 measured it on two shapes. The keyed arm builds
  * `{ [HELD_VERTEX]: v }` per row — an object literal with a COMPUTED SYMBOL key — then stores each
  * sort key into it, sorts those objects, and projects the survivors. Item 1961 isolated that route
  * at **269 ns a row** (102.68 ms against 48.92 for the same query with the key projected, where a
@@ -567,7 +567,7 @@ export const deferredSortKeys = (
  * hop. The keys must be evaluated either way and the projection must happen either way; the
  * wrapper per row is the part that need not exist.
  *
- * ⚠️ THE ORDER IS BYTE-IDENTICAL, not merely equivalent, and that is the one thing this cannot get
+ * THE ORDER IS BYTE-IDENTICAL, not merely equivalent, and that is the one thing this cannot get
  * wrong (`sortRowsByColumns`' own note: "a second derivation of which row sorts first is the one
  * thing byte-identity cannot survive"). Three things make it exact: the comparator is the SAME
  * `compareSort` with the same `descending`/`nullsFirst`; the axes are mapped BY COLUMN NAME from
@@ -577,7 +577,7 @@ export const deferredSortKeys = (
  * established that tie order is observable between the engines, so this is a correctness
  * requirement rather than a nicety.
  *
- * ⚠️ NON-WINDOWED ONLY. With a window the keyed arm must rank BEFORE projecting so an item that
+ * NON-WINDOWED ONLY. With a window the keyed arm must rank BEFORE projecting so an item that
  * faults on a discarded row never runs (items 610/1062), and it also owns the bounded heap. Here
  * every row is emitted, so projecting all of them is what the engine already does.
  */
@@ -608,7 +608,7 @@ const permutedSortedNodeWalk = (spec: {
   const sole = axes.length === 1 ? axes[0] : undefined;
 
   return (graph, params) => {
-    // ⚠️ THE ROW IS BUILT DURING THE SCAN, not in a second pass over the sorted order (item 1962's
+    // THE ROW IS BUILT DURING THE SCAN, not in a second pass over the sorted order (item 1962's
     // own first cut did the latter and measured only 1.16x of a 2.10x gap, because it walked the
     // rows TWICE — once to collect vertices and keys, once to project). Legal here and only here:
     // the arm is non-windowed, so every row is emitted and projecting during the scan cannot raise
@@ -777,7 +777,7 @@ const keyRowSortedNodeWalk = (spec: {
 
       binding.set(nodeVar, v);
 
-      // ❌ REJECTED, item 1477: building this row by cloning a PRE-SHAPED template
+      // REJECTED, item 1477: building this row by cloning a PRE-SHAPED template
       // (`{ ...rowShape }`, so the per-column stores hit existing keys and the hidden class never
       // transitions) measured **1.52x in a 300,000-row micro at width 5** — and NOTHING in the
       // engine. Four widths, 3 rounds, order-alternated: proj1 2/3, proj2 1/3, wideproj 2/3,
@@ -788,7 +788,7 @@ const keyRowSortedNodeWalk = (spec: {
       // — `propOf`, the `properties` getter, `scanCandidates` and the gate are the rest — so a 1.52x
       // on construction alone is diluted past this instrument's ~30% spread. Third instance in this
       // repo of a clean micro not reaching the engine (see item 1364's 3.8x → 1.11x).
-      // ❌ REJECTED HERE, item 1744: the per-row bag hoist, in the `readDirect` form item 1743
+      // REJECTED HERE, item 1744: the per-row bag hoist, in the `readDirect` form item 1743
       // shipped two closures away. It is FLAT on this one — 1500 runs, three alternated rounds, ms:
       // THREE direct columns beside a computed one 637/633 -> 623/614/644, ~2% with the arm's range
       // ENCLOSING the base's; one direct column 622/635 -> 613/612/606. Both controls flat
@@ -799,7 +799,7 @@ const keyRowSortedNodeWalk = (spec: {
       // ~620 ms against `wideproj`'s ~490 for the same 1500 runs, so three getter calls collapsing
       // to one is diluted past the instrument.
       //
-      // ⚠️ REACHING THIS CLOSURE AT ALL took a counter, and the shape is narrow: `outputColumnSorts`
+      // REACHING THIS CLOSURE AT ALL took a counter, and the shape is narrow: `outputColumnSorts`
       // declines — sending the query here — when a WINDOWED sort has an item that can FAULT, so
       // `RETURN n.k + 1 AS x, n.n AS b … ORDER BY b LIMIT 5` arrives but a parameterized `LIMIT $n`
       // and a `LIMIT 0` do NOT (both measured as entering no counted closure). Probe shapes
@@ -826,7 +826,7 @@ const keyRowSortedNodeWalk = (spec: {
  * The route between {@link keyRowSortedNodeWalk} and item 1962's permuted sibling, decided ONCE PER
  * COMPILE.
  *
- * ⚠️ EXTRACTED AS A PURE FUNCTION because the choice is ANSWER-EQUIVALENT — both arms return the
+ * EXTRACTED AS A PURE FUNCTION because the choice is ANSWER-EQUIVALENT — both arms return the
  * same rows in the same order — so every mutation of a condition written inline here would survive
  * the differential tests. That is `perf-gate-needs-its-own-test`, the rule items 1038/1044 taught
  * this module and `heapBeatsSort`/`topKPlan` below already follow.
@@ -857,7 +857,7 @@ export const permutedSortAxes = (
     }[]
   | undefined => {
   /*
-   * ⚠️ `noWindow` RATHER THAN `plan.skip === 0`, and item 1962 found out the hard way why it has to
+   * `noWindow` RATHER THAN `plan.skip === 0`, and item 1962 found out the hard way why it has to
    * be. The plan NORMALIZES an absent skip to 0 (and the skip-only case forces it to 0 so the page
    * can be taken after the projection), so `plan.skip === 0` cannot tell `OFFSET 0` from no OFFSET
    * at all. Admitting `OFFSET 0` here would have made
@@ -1005,7 +1005,7 @@ export const topKPlan = (
 /**
  * One direct-column read, with the row's property bag already in hand when the caller hoisted it.
  *
- * ⚠️ AT MODULE SCOPE DELIBERATELY, and that is the whole point of this shape (item 1743). Item 1742
+ * AT MODULE SCOPE DELIBERATELY, and that is the whole point of this shape (item 1743). Item 1742
  * put the two modes in two LOOPS inside the per-row closure and the single-column path lost 7.6%
  * although its code was byte-identical — `ts-closure-size-is-load-bearing`: a bigger closure body
  * inlines worse. Here the closure grows by one local and keeps ONE loop, and the mode choice costs
@@ -1066,7 +1066,7 @@ export const topKNodeWalk = (spec: {
       kept.push(v);
     }
 
-    // ✅ SHIPPED AT ITEM 1743, after item 1742 rejected a DIFFERENT spelling of the same idea here.
+    // SHIPPED AT ITEM 1743, after item 1742 rejected a DIFFERENT spelling of the same idea here.
     // The two-loop form (one loop per mode, as the main closure above uses) measured 1.21x on three
     // columns but cost the SINGLE-column shape 7.6% with disjoint ranges — although that path's code
     // was byte-identical, because `project` grew a second loop and a bigger closure inlines worse.
@@ -1077,7 +1077,7 @@ export const topKNodeWalk = (spec: {
     // 380/361/358, FLAT. Both of the main closure's shapes are flat too (`wideproj` 499/482/479 ->
     // 483/484/495; `narrow1` 288/290/289 -> 289/287/286), so this change is confined to this arm.
     //
-    // ⚠️ The file therefore holds TWO spellings of one optimization: the main closure splits into two
+    // The file therefore holds TWO spellings of one optimization: the main closure splits into two
     // loops (item 1741) and this arm calls `readDirect`. Left that way deliberately — 1741's split
     // measured 1.30x with its narrow shape FLAT, so there is no defect there to fix, and rewriting a
     // shipped win to match a style would be a change with a measured risk and no measured gain. If
@@ -1092,7 +1092,7 @@ export const topKNodeWalk = (spec: {
     // 1500 runs, three alternated rounds, ms: THREE columns 494/501/496 -> 408/405/418, **1.21x with
     // disjoint ranges** — but ONE column 381/360/391 -> 401/410/416, **7.6% WORSE, also disjoint.**
     //
-    // ⚠️ The regressed path takes the guard's `else` branch, whose code is BYTE-IDENTICAL to this
+    // The regressed path takes the guard's `else` branch, whose code is BYTE-IDENTICAL to this
     // loop. Nothing it runs changed; `project` merely grew a second loop, and a bigger closure body
     // inlines worse — `ts-closure-size-is-load-bearing`. The guard stops the width-1 HOIST from
     // costing anything; it does nothing about the closure growing, and those are separate costs.
@@ -1173,7 +1173,7 @@ export const deferredRoute = (spec: {
   }
 
   /*
-   * ⚠️⚠️ **NO WINDOW AT ALL IS ADMITTED (item 1902), AND IT IS NOT THE CASE THE RULES ABOVE
+   * **NO WINDOW AT ALL IS ADMITTED (item 1902), AND IT IS NOT THE CASE THE RULES ABOVE
    * REFUSE.** The `limit === undefined` rule is about a `SKIP` with no `LIMIT`: there the general
    * path sorts and projects EVERY row and then drops the skipped ones, so a faulting item raises
    * on both engines even though the window discards its row — while ranking-then-projecting would
@@ -1181,7 +1181,7 @@ export const deferredRoute = (spec: {
    * first cut of this arm admitting exactly that.
    *
    * With NO window, nothing is discarded: this arm projects every ranked row, so both paths
-   * evaluate every key and every item and raise on the same inputs. ⚠️ And the ORDER matches too,
+   * evaluate every key and every item and raise on the same inputs. And the ORDER matches too,
    * which is the part worth checking rather than assuming — the general path sorts the INPUT
    * BINDINGS first (item 145, as `outputColumnSorts` records), so keys-before-items is its order,
    * and it is this arm's order as well.
@@ -1192,15 +1192,15 @@ export const deferredRoute = (spec: {
    * measured it at 200,000 vertices / 1,000,000 edges, one shape per process, median of 7:
    *
    *     RETURN n.n AS x ORDER BY x                 19.55 ms   the plain arm
-   *     RETURN n.n AS x ORDER BY n.n + 1          173.38      ⬅ the general path, 8.9x
-   *     RETURN n.n AS x ORDER BY n.n + 1 LIMIT 3   16.50      ⬅ this arm, already
+   *     RETURN n.n AS x ORDER BY n.n + 1          173.38      <- the general path, 8.9x
+   *     RETURN n.n AS x ORDER BY n.n + 1 LIMIT 3   16.50      <- this arm, already
    *
-   * ⚠️ The two spellings sort IDENTICALLY here because adding 1 is monotone, so this is an
+   * The two spellings sort IDENTICALLY here because adding 1 is monotone, so this is an
    * equivalent-spelling gap and `bun run spelling` is where it belongs as a standing check.
    */
   const noWindow = skip === undefined && limit === undefined;
   /*
-   * ⚠️ AND A `SKIP` WITH NO `LIMIT` TOO (item 1905), the node twin of the same change on
+   * AND A `SKIP` WITH NO `LIMIT` TOO (item 1905), the node twin of the same change on
    * `deferredHopOrder` — kept in step deliberately, because a route policy differing between the
    * node and hop spellings of one question is this repo's named defect class. It is admitted only
    * because the slice moves AFTER the projection: `plan.skip` is forced to 0, every ranked row is
@@ -1243,7 +1243,7 @@ export const deferredRoute = (spec: {
         descending: k.descending,
         nullsFirst: k.nullsFirst,
       })),
-      // ⚠️ ZERO FOR THE SKIP-ONLY CASE, because `postSkip` takes the page after the projection.
+      // ZERO FOR THE SKIP-ONLY CASE, because `postSkip` takes the page after the projection.
       skip: skipOnly || typeof skip !== 'number' ? 0 : skip,
       // `undefined` for the no-window case, which is what `sortRowsByColumns` already takes for an
       // unwindowed sort — the same value `outputColumnSorts` hands it on the plain arm.
@@ -1301,7 +1301,7 @@ export const detectNodeProjection = (
   // few rows where this path materializes everything — `sortOf` records that as a ~280x
   // regression for the DISTINCT walk, which is the same trade in the same place.
   /**
-   * ⚠️ WITH ONE EXCEPTION SINCE ITEM 1776: a SKIP with NO LIMIT is admitted and sliced, because the
+   * WITH ONE EXCEPTION SINCE ITEM 1776: a SKIP with NO LIMIT is admitted and sliced, because the
    * decline above is a statement about LAZINESS and a skip alone has no brake to collect — the
    * engine emits `N - skip` rows either way, so declining cost **7.9x** over 200,000 vertices for
    * TEN FEWER ROWS than the unpaged spelling (item 1775). `unsortedPageRoute` is that whole rule,
@@ -1479,7 +1479,7 @@ export const detectNodeProjection = (
    * the same element, and nothing in a projection expression can write, so the bag cannot change
    * between two columns of one row. Same values, same column order, byte-identical.
    *
-   * ⚠️ GUARDED ON `> 1`, AND THE GUARD IS LOAD-BEARING. At width 1 the hoist saves no repeated
+   * GUARDED ON `> 1`, AND THE GUARD IS LOAD-BEARING. At width 1 the hoist saves no repeated
    * getter and adds one local, and the unguarded version measured the single-column shape ~10%
    * WORSE (`RETURN n.k AS a`: base 284/288/327 against 285/318/320). `RETURN <one column>` is far
    * too common to pay that for a wider shape's win. Guarded, it is flat: 285/326/289 -> 287/284/319.
@@ -1527,7 +1527,7 @@ export const detectNodeProjection = (
     /**
      * Per CALL, because the verdict needs the candidate the seek actually chose.
      *
-     * ⚠️ `seeded !== undefined` IS DEFENCE IN DEPTH, and mutation is why it is here rather than a
+     * `seeded !== undefined` IS DEFENCE IN DEPTH, and mutation is why it is here rather than a
      * test. Making `hopSeekWithKey` report the chosen candidate's key even when it DECLINED the
      * seek survived the whole suite: on a declined seek the walk covers the whole label bucket, so
      * skipping the gate would emit every member — a wrong answer — but no fixture here reaches
@@ -1564,7 +1564,7 @@ export const detectNodeProjection = (
       // Only SURVIVORS reach here, so the row object and the item evaluations are paid per
       // result rather than per scanned vertex.
       //
-      // ⚠️ REJECTED, WITH ITS NUMBERS (item 1512): hoisting the `{ binding, params, graph }` below
+      // REJECTED, WITH ITS NUMBERS (item 1512): hoisting the `{ binding, params, graph }` below
       // out of the loop, so the env object is allocated once per call instead of once per
       // NON-DIRECT column per row. The profile nominated it — GC was 18.1% of a 200,000-row
       // projection — and the hoist is the established spelling at ~30 other sites in this file
@@ -1962,7 +1962,7 @@ export const detectNodeAggregate = (
    * Apply the wrapping expression to a streaming closure's single row — or hand the closure back
    * untouched when there is nothing to wrap.
    *
-   * ⚠️ A POST-PROCESSOR, not a change inside the loops, and that is MEASURED. The first build of
+   * A POST-PROCESSOR, not a change inside the loops, and that is MEASURED. The first build of
    * this item threaded the wrapping through each of the four streaming arms, which grew their
    * returned closures' captured environment and cost all three BARE controls in the same
    * direction — `max(a.num)` 0.84x, `count(a.num)` 0.89x and the `min(a.num)` floor 0.95x over
@@ -2023,7 +2023,7 @@ export const detectNodeAggregate = (
   // `rowsFn` above decided WHETHER to claim this shape; `vs` only changes HOW it runs — folding
   // the argument's values during the walk instead of materializing a `Row` per vertex.
   //
-  // ⚠️ `vs` CANNOT BE NULL HERE, which is a change of reading rather than of code (item 1792).
+  // `vs` CANNOT BE NULL HERE, which is a change of reading rather than of code (item 1792).
   // This comment used to say a null "falls through to the row-reading loops below", and those
   // loops existed — but `detectNodeProjection` applies every condition `nodeScanOf` applies, so
   // `rowsFn !== null` already implies `vs !== null` and the fallback never ran. It is gone; the
@@ -2087,7 +2087,7 @@ export const detectNodeAggregate = (
       });
     }
 
-    // ⚠️ UNREACHABLE, AND IT USED TO BE A ROW-READING FALLBACK. `rowsFn` is non-null above, and
+    // UNREACHABLE, AND IT USED TO BE A ROW-READING FALLBACK. `rowsFn` is non-null above, and
     // `detectNodeProjection` applies every condition `nodeScanOf` applies — one pattern, a bound
     // node variable, a plain `:label` rather than a label EXPRESSION, and a non-null
     // `nodeScanGate` — plus more of its own. So `rowsFn !== null` implies `nodeScanOf !== null`
@@ -2151,7 +2151,7 @@ export const detectNodeAggregate = (
     });
   }
 
-  // ⚠️ UNREACHABLE, AND IT USED TO BE A ROW-READING FALLBACK. `rowsFn` is non-null above, and
+  // UNREACHABLE, AND IT USED TO BE A ROW-READING FALLBACK. `rowsFn` is non-null above, and
   // `detectNodeProjection` applies every condition `nodeScanOf` applies — one pattern, a bound
   // node variable, a plain `:label` rather than a label EXPRESSION, and a non-null
   // `nodeScanGate` — plus more of its own. So `rowsFn !== null` implies `nodeScanOf !== null`
@@ -2402,7 +2402,7 @@ export const detectMultiNodeAggregate = (
         // allocates a `[i, a]` tuple per accumulator per row, which alone cost
         // `count(n.age), count(*)` 17.8 ms against 9.4 at 200,000 rows.
         //
-        // 🛑 DEDUPLICATING IDENTICAL ARGUMENTS IS REFUTED FOR THE COMMON CASE (item 653), and
+        // DEDUPLICATING IDENTICAL ARGUMENTS IS REFUTED FOR THE COMMON CASE (item 653), and
         // item 652 recorded it as open before it was priced. `max(n.w), min(n.w)` evaluates
         // `n.w` twice per vertex, so a compile-time grouping by argument expression looked free.
         // Priced with NO code written, using `max(n.w), count(*)` — structurally the CSE'd shape,
@@ -2449,7 +2449,7 @@ export const detectMultiNodeAggregate = (
     };
   }
 
-  // ⚠️ UNREACHABLE, AND IT USED TO BE A ROW-READING FALLBACK. `rowsFn` is non-null above, and
+  // UNREACHABLE, AND IT USED TO BE A ROW-READING FALLBACK. `rowsFn` is non-null above, and
   // `detectNodeProjection` applies every condition `nodeScanOf` applies — one pattern, a bound
   // node variable, a plain `:label` rather than a label EXPRESSION, and a non-null
   // `nodeScanGate` — plus more of its own. So `rowsFn !== null` implies `nodeScanOf !== null`
@@ -2691,7 +2691,7 @@ export const detectGroupedNodeAggregate = (
 /**
  * `MATCH (n:L) RETURN DISTINCT <two or more items>` — item 1853.
  *
- * ⚠️ THE WIDEST GAP LEFT IN THE DISTINCT FAMILY, and it was hiding at depth ZERO. Every hop and
+ * THE WIDEST GAP LEFT IN THE DISTINCT FAMILY, and it was hiding at depth ZERO. Every hop and
  * chain width already claims a multi-column `DISTINCT` (`hopDistinctProjection`, `hop2Projection`,
  * `chainProjection`); the plain node scan claimed only the ONE-column case, through
  * `detectDistinctProjection`'s tuned `valueSet`. So:
@@ -2703,17 +2703,17 @@ export const detectGroupedNodeAggregate = (
  * **27.7x the one-column spelling, and 12x the cost of emitting every row it dedupes** — the same
  * signature item 1843 found on the chain rungs, one width down.
  *
- * ⚠️ IT REUSES `detectNodeProjection`'S WHOLE GATE by handing it the clause with `DISTINCT`
+ * IT REUSES `detectNodeProjection`'S WHOLE GATE by handing it the clause with `DISTINCT`
  * stripped, which is item 1827's trick. That gate's own comment records `proj.distinct` as
  * refused because "nothing here dedupes" — true, and the fix is to dedupe AFTER it rather than to
  * restate its twenty-odd conditions here and let the two drift.
  *
- * ⚠️ AND THE DEDUPE IS `distinctRows`, NOT A SECOND KEYER. For two or more columns the key is a
+ * AND THE DEDUPE IS `distinctRows`, NOT A SECOND KEYER. For two or more columns the key is a
  * `\x01`-joined string over every column, and that definition is shared with `UNION`/`EXCEPT` and
  * matched byte-for-byte by the Rust engine. Items 1561 and 1562 each shipped a silent answer
  * change in exactly this area.
  *
- * ⚠️ ONE-COLUMN IS REFUSED so this cannot steal `detectDistinctProjection`'s shape: that rung keys
+ * ONE-COLUMN IS REFUSED so this cannot steal `detectDistinctProjection`'s shape: that rung keys
  * values directly in a `valueSet` (40 ns of a ~50 ns-a-vertex walk, audit items 192/193), which is
  * strictly better than building a row and a joined string per vertex.
  */

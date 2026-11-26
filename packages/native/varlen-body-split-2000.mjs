@@ -1,14 +1,14 @@
 /**
  * WHICH `var-length` BODY IS EXPENSIVE? (item 2000)
  *
- * ⚠️⚠️ **THE FAMILY-LEVEL NUMBER CANNOT ANSWER THIS, AND ITS PER-ROW FIGURE IS MEANINGLESS.**
+ * **THE FAMILY-LEVEL NUMBER CANNOT ANSWER THIS, AND ITS PER-ROW FIGURE IS MEANINGLESS.**
  * `workload-perf-screen.mjs` reports `var-length` at 39.4 ms/query and **6.8 us/row** — but the row
  * bodies all end `RETURN DISTINCT b.n`, and the fixture has only ~97 distinct `n` values, so the row
  * count is the DISTINCT CARDINALITY while the work is per PATH. Dividing one by the other measures
  * nothing. The screen's own footer says exactly this ("a NOMINATION needs its own floor before it is
  * a finding"); this probe is that floor.
  *
- * 🔑 **IT IS "VARY ONLY THE PROJECTION" APPLIED INSIDE ONE FAMILY** ([[vary-only-the-projection]]).
+ * **IT IS "VARY ONLY THE PROJECTION" APPLIED INSIDE ONE FAMILY** ([[vary-only-the-projection]]).
  * The seven bodies differ along three axes that each select a different rung, and the family average
  * blends them:
  *
@@ -17,11 +17,11 @@
  *                  |V|; whether the seeded DISTINCT is also flat is what this asks)
  *   - PATH MODE:   plain  vs  `MATCH TRAIL`  vs  `MATCH ACYCLIC`
  *
- * ⚠️ AND IT SWEEPS |V|, because the question is flat-vs-linear and not a ratio at one size
+ * AND IT SWEEPS |V|, because the question is flat-vs-linear and not a ratio at one size
  * (CLAUDE.md). Item 1979's 897x was found exactly this way: the fast rung was FLAT across 5k-160k
  * while its sibling was linear, and a ratio at one size understates an unbounded gap.
  *
- * ⚠️ ROWS ARE PRINTED BESIDE EVERY TIME. A body that returns 0 rows measures a MISS, and a seeded
+ * ROWS ARE PRINTED BESIDE EVERY TIME. A body that returns 0 rows measures a MISS, and a seeded
  * body whose seed matches nothing is the easiest way to get a flattering number here.
  *
  *     bun varlen-body-split-2000.mjs
@@ -36,7 +36,7 @@ const REPS = Number(process.env.REPS ?? 5);
 const BOUNDS = (process.env.BOUNDS ?? '{1,2}').split(';');
 
 /*
- * ⚠️ THE GENERATOR SPLITS ON THE REPEAT INDEX, which is CLAUDE.md's hard rule: `to = (a*k + b) % N`
+ * THE GENERATOR SPLITS ON THE REPEAT INDEX, which is CLAUDE.md's hard rule: `to = (a*k + b) % N`
  * is invariant under `k -> k + N`, so a loop over `k < N*FANOUT` gives one vertex's FANOUT edges all
  * the SAME target. Out-degree, in-degree and isolated-vertex counts all look perfect and the graph is
  * FUNCTIONAL, so a k-hop count is `F^k * N` by construction — which is exactly the defect that made
@@ -62,7 +62,7 @@ const build = (n) => {
     });
   }
 
-  // ⚠️ COUNT THE DISTINCT ENDPOINTS, the one line that catches a collapsed generator. A functional
+  // COUNT THE DISTINCT ENDPOINTS, the one line that catches a collapsed generator. A functional
   // graph has |E| distinct (from,to) pairs only if each source's FANOUT edges go to FANOUT targets.
   const seen = new Set();
 
@@ -84,13 +84,13 @@ const build = (n) => {
 };
 
 /*
- * ⚠️⚠️ **THE FULL GRID, BECAUSE THE FIRST VERSION OF THIS PROBE CHANGED TWO AXES AT ONCE.** It
+ * **THE FULL GRID, BECAUSE THE FIRST VERSION OF THIS PROBE CHANGED TWO AXES AT ONCE.** It
  * carried the screen's seven bodies verbatim, and the two rows that looked like findings —
  * `count(*) ACYCLIC seeded` at 9.8x `count(*) unseeded`, and a seeded DISTINCT linear in |V| — each
  * differed from its comparator in BOTH the seed and the path mode. Neither was attributable.
  * Projection x seed x path mode, every combination, is the only way to read one axis at a time.
  *
- * 🔑 **AND THE SEED AXIS HAS THREE VALUES, NOT TWO, BECAUSE OF [[closed-perf-targets]] ITEM 570:
+ * **AND THE SEED AXIS HAS THREE VALUES, NOT TWO, BECAUSE OF [[closed-perf-targets]] ITEM 570:
  * `WHERE <matches everything>` IS THE CONTROL for "why is the filtered version slower".** Without
  * it, a seeded arm being slower than an unseeded one cannot distinguish "the predicate's PRESENCE
  * changed the rung" from "the seed's SELECTIVITY is not being exploited" — and those have opposite
@@ -160,7 +160,7 @@ for (const bound of BOUNDS) {
     const shape = shapeOf(growth);
 
     console.log(
-      `${name.padEnd(26)} ${cells.map((c) => c.toFixed(2).padStart(11)).join('')}   ${String(rows).padStart(8)}  ${shape}${rows === 0 ? '  ⚠️ EMPTY — measures a MISS' : ''}`,
+      `${name.padEnd(26)} ${cells.map((c) => c.toFixed(2).padStart(11)).join('')}   ${String(rows).padStart(8)}  ${shape}${rows === 0 ? '  EMPTY — measures a MISS' : ''}`,
     );
   }
 

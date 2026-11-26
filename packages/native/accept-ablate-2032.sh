@@ -8,20 +8,20 @@
 # projections) on a byte-identical-by-construction argument: same function, same element. This rung
 # never got it, and `predReadsOnlyStart` is ALREADY computed at its gate.
 #
-# ⚠️⚠️ THE ABLATE ARM IS NOT SHIPPABLE: it HARDCODES the probe fixture's own predicate
+# THE ABLATE ARM IS NOT SHIPPABLE: it HARDCODES the probe fixture's own predicate
 # (`a.k === 5`), so it is an oracle for "what would a direct closure cost", nothing more. Shipping
 # needs a compiler path that DETECTS this predicate shape.
 #
-# 🔑 ANSWER-EQUIVALENCE IS WHAT MAKES IT A CEILING, and the probe enforces it: every shape asserts its
+# ANSWER-EQUIVALENCE IS WHAT MAKES IT A CEILING, and the probe enforces it: every shape asserts its
 # answer against item 2030's independent oracle, so a hardcode that does not match the real predicate
 # fails LOUDLY instead of quietly measuring a different query.
 #
-# ⚠️ BOTH MODES, because item 2031's nomination died on exactly this: a 13.6% ceiling on the
+# BOTH MODES, because item 2031's nomination died on exactly this: a 13.6% ceiling on the
 # homogeneous fixture was 0% once ONE off-label vertex existed. A ceiling measured in one mode is not
 # a ceiling. This lever is NOT vacuity-gated, so it SHOULD survive MIXED=1 — which is a prediction the
 # run can falsify.
 #
-# ⚠️ RESTORE ON ANY EXIT, and ⚠️ RESTORE REBUILDS — item 2031 read the ablated dist under the control's
+# RESTORE ON ANY EXIT, and RESTORE REBUILDS — item 2031 read the ablated dist under the control's
 # name because `ROUND=RESTORE` returned before `nx build` and `@lenke/*` resolve to DIST.
 set -u
 

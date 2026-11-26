@@ -1,16 +1,16 @@
 /*
  * Item 2096 — does `bothBuckets`'s PER-CALL 2-TUPLE cost anything?
  *
- * ⚠️ CONTEXT THAT NARROWS THIS. Item 1622 refuted an edge-only ADAPTER around `expand` (it wrapped one
+ * CONTEXT THAT NARROWS THIS. Item 1622 refuted an edge-only ADAPTER around `expand` (it wrapped one
  * generator in another). Item 1802 then took the directed path by the other route — the caller loops
  * `directedBucket`'s `Set` directly — for **1.109x on `hop3rows`, with the `both` family FLAT at
  * 1.011x**. So the undirected path is the one left behind, and it is the corpus's most expensive shape:
  * `hop3rowsboth` is **1944 ms/rep at 200,000 vertices**, 14x the next.
  *
- * 🔑 THE SPECIFIC DIFFERENCE: `directedBucket` returns the `Set` itself; `bothBuckets` returns
+ * THE SPECIFIC DIFFERENCE: `directedBucket` returns the `Set` itself; `bothBuckets` returns
  * `[outSet, inSet]` — a fresh array PER CALL, per element, per segment. The profile shows
  * `bothBuckets` at 11.5% with GC at 11.7% beside it, which is what an allocation in a hot loop looks
- * like. ⚠️ But a frame is ATTRIBUTION until a deletion test with a control says otherwise — items 2067,
+ * like. But a frame is ATTRIBUTION until a deletion test with a control says otherwise — items 2067,
  * 2077, 2084 and 2090 each refuted a nomination at exactly this point.
  */
 import { Graph } from '@lenke/core';
@@ -42,7 +42,7 @@ const EMPTY = new Set();
 const verts = [...g.vertices];
 
 /*
- * ⚠️ EVERY ARM WALKS BOTH BUCKETS AND SUMS THE SAME THING, so the answers are comparable and an arm
+ * EVERY ARM WALKS BOTH BUCKETS AND SUMS THE SAME THING, so the answers are comparable and an arm
  * that skipped a bucket would be caught by the equality check below rather than looking fast.
  */
 const arms = {
@@ -66,7 +66,7 @@ const arms = {
     return n;
   },
   /*
-   * ⚠️ NO TUPLE: two separate accessor calls. This is `directedBucket`'s shape applied twice — the
+   * NO TUPLE: two separate accessor calls. This is `directedBucket`'s shape applied twice — the
    * change the engine would actually make, not an ablation.
    */
   twocalls: () => {
@@ -86,7 +86,7 @@ const arms = {
 
     return n;
   },
-  // ⚠️ THE FLOOR: no helper at all, the adjacency read inline. Bounds what either arm could reach.
+  // THE FLOOR: no helper at all, the adjacency read inline. Bounds what either arm could reach.
   inline: () => {
     let n = 0;
 

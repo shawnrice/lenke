@@ -8,14 +8,14 @@ import { describe, expect, test } from 'bun:test';
  * against 108.0 ms for emitting all 251,910 undeduped rows of the same walk. The bounded arm is a
  * depth-capped BFS and measured 36.56x.
  *
- * ⚠️ `min <= 1` IS A CORRECTNESS CONDITION, NOT CONSERVATISM, and it is the thing these tests
+ * `min <= 1` IS A CORRECTNESS CONDITION, NOT CONSERVATISM, and it is the thing these tests
  * exist to pin. The arm keys on SHORTEST distance: a vertex at shortest distance `d` is reachable
  * by a walk of length `d`, so it belongs in the answer exactly when `1 <= d <= max`. That argument
  * collapses the moment `min > 1` — a vertex at `d = 1` may ALSO be reachable at length 2 or 3, and
  * a shortest-distance search cannot see it. `{2,3}` therefore stays refused, and a test asserts
  * the ANSWER for it rather than only the refusal.
  *
- * ⚠️ `ACYCLIC` STAYS REFUSED for the reason already in `reachability.ts`: on one node with a
+ * `ACYCLIC` STAYS REFUSED for the reason already in `reachability.ts`: on one node with a
  * self-loop, `MATCH ACYCLIC (x)-[:R]->+(y)` is 0 — a self-loop repeats a node — while a BFS over
  * the reached set answers 1. Bounding the quantifier does not change that, so the mode gate is
  * unchanged and a test holds it there.
@@ -73,7 +73,7 @@ const CHAIN: [string, string, string][] = [
 
 describe('a bounded var-length reachability query', () => {
   /**
-   * ⚠️ THE DEPTH BOUNDARY IS THE POINT. On a straight chain from a single seed, `{1,k}` must reach
+   * THE DEPTH BOUNDARY IS THE POINT. On a straight chain from a single seed, `{1,k}` must reach
    * exactly the first `k` successors — one short and one long of the bound both being wrong in a
    * way no cyclic fixture would reveal.
    */
@@ -81,7 +81,7 @@ describe('a bounded var-length reachability query', () => {
     const g = build(CHAIN);
 
     /**
-     * ⚠️ THE ROUTE IS ASSERTED HERE BECAUSE THE FIRST VERSION OF THIS FILE DID NOT TAKE THE RUNG
+     * THE ROUTE IS ASSERTED HERE BECAUSE THE FIRST VERSION OF THIS FILE DID NOT TAKE THE RUNG
      * AT ALL. It seeded with a clause `WHERE s.n = 'a'`, which `detectReachableShortcut` refuses
      * outright (`m.where !== undefined`), so every case below ran the GENERAL MATCHER and four
      * depth-correctness mutants — the cap off by one in each direction, the bound ignored, and the
@@ -124,7 +124,7 @@ describe('a bounded var-length reachability query', () => {
   });
 
   /**
-   * ⚠️ A SELF-LOOP AT THE SEED. The seed is reachable from itself at depth 1, so `{1,k}` includes
+   * A SELF-LOOP AT THE SEED. The seed is reachable from itself at depth 1, so `{1,k}` includes
    * it — which a search that marked seeds as already-seen would miss.
    */
   test('a self-loop puts the seed in its own reached set', () => {
@@ -179,7 +179,7 @@ describe('a bounded var-length reachability query', () => {
 
 describe('the bounded rung refuses what it must', () => {
   /*
-   * ⚠️⚠️ **`min > 1` NOW TAKES THE RUNG (item 2008) AND THE ANSWER HALF IS UNCHANGED — which is
+   * **`min > 1` NOW TAKES THE RUNG (item 2008) AND THE ANSWER HALF IS UNCHANGED — which is
    * exactly the guard this test's original note described.** It said: "a test that only asserted
    * 'does not take the rung' would pass if the rung were removed entirely", and that reasoning is
    * why the reversal is safe to make — the assertion that carries the correctness condition is the
@@ -187,7 +187,7 @@ describe('the bounded rung refuses what it must', () => {
    *
    * The refusal was a property of the BFS, not of the question: a shortest-distance search cannot
    * see that a vertex found at `d = 1` is ALSO reachable at length 2. `trailReached` is a DFS with a
-   * `len >= minLen` test, so it can. ⚠️ Item 2007 refuted the cheap alternative (a per-level BFS
+   * `len >= minLen` test, so it can. Item 2007 refuted the cheap alternative (a per-level BFS
    * answers WALK reachability, and the modes diverge in 10 of 27 cells at `min >= 2`), which is why
    * only TRAIL and the default are admitted.
    */
@@ -197,7 +197,7 @@ describe('the bounded rung refuses what it must', () => {
     expect(routes("MATCH (s:T {n: 'a'})-[:E]->{2,3}(b:T) RETURN DISTINCT b.n AS x")).toContain(
       'reachShortcut',
     );
-    // ⚠️ UNCHANGED: `b` is reachable from `a` only at depth 1, so `{2,3}` must EXCLUDE it. A DFS
+    // UNCHANGED: `b` is reachable from `a` only at depth 1, so `{2,3}` must EXCLUDE it. A DFS
     // that ignored `minLen` would answer `['b','c','d']` and every route assertion would still pass.
     expect(reached(g, "MATCH (s:T {n: 'a'})-[:E]->{2,3}(b:T) RETURN DISTINCT b.n AS x")).toEqual([
       'c',
@@ -207,7 +207,7 @@ describe('the bounded rung refuses what it must', () => {
 
   test('min > 1 stays REFUSED for WALK, SIMPLE and ACYCLIC — each for its own measured reason', () => {
     /*
-     * ⚠️ Item 2007's probe: `WALK` reaches vertices a trail cannot by reusing an edge (one self-loop
+     * Item 2007's probe: `WALK` reaches vertices a trail cannot by reusing an edge (one self-loop
      * at `{2,2}` is `[0]` for WALK and `[]` for the rest), `SIMPLE` is a third restriction again
      * (`two self-loops {2,2}` is `[0]` for WALK and TRAIL, `[]` for SIMPLE), and `ACYCLIC` is
      * excluded for a SECOND reason on top: `acyclicReached` has no `min` term at all, so admitting
@@ -228,18 +228,18 @@ describe('the bounded rung refuses what it must', () => {
   });
 
   /**
-   * ⚠️ ACYCLIC DIVERGES FROM SET REACHABILITY and must keep the enumeration path — the one-node
+   * ACYCLIC DIVERGES FROM SET REACHABILITY and must keep the enumeration path — the one-node
    * self-loop case `reachability.ts` records: ACYCLIC answers 0 where a BFS answers 1.
    */
   /*
-   * ⚠️⚠️ **THIS TEST USED TO ASSERT THAT BOUNDED `ACYCLIC` DOES NOT TAKE THE RUNG, AND ITEM 2004
+   * **THIS TEST USED TO ASSERT THAT BOUNDED `ACYCLIC` DOES NOT TAKE THE RUNG, AND ITEM 2004
    * DELIBERATELY REVERSED THAT — while the ANSWER half is unchanged and is the reason the reversal is
    * safe.** The rung grew a separate DFS arm for a BOUNDED acyclic quantifier (`runReach`'s
    * `spec.acyclic`); the BFS arm and its refusal are untouched, because ACYCLIC genuinely is not set
    * reachability. Item 2003 refuted the cheap alternative by measurement: a BFS plus a closed-case
    * correction is UNSOUND once the sources are restricted.
    *
-   * 🔑 THE ANSWER ASSERTIONS BELOW ARE THE POINT, and they are IDENTICAL to what this test asserted
+   * THE ANSWER ASSERTIONS BELOW ARE THE POINT, and they are IDENTICAL to what this test asserted
    * before. A lone self-loop is the fixture the whole refusal was built on — `CLOSED.md` records it
    * as the measured reason — so if the new arm answered like a BFS it would say `a` here.
    */
@@ -249,7 +249,7 @@ describe('the bounded rung refuses what it must', () => {
     expect(routes('MATCH ACYCLIC (a:T)-[:E]->{1,3}(b:T) RETURN DISTINCT b.n AS x')).toContain(
       'reachShortcut',
     );
-    // ⚠️ UNCHANGED FROM BEFORE ITEM 2004: the only acyclic path from `a` would repeat `a`.
+    // UNCHANGED FROM BEFORE ITEM 2004: the only acyclic path from `a` would repeat `a`.
     expect(reached(g, 'MATCH ACYCLIC (a:T)-[:E]->{1,3}(b:T) RETURN DISTINCT b.n AS x')).toEqual([]);
     // A BFS over the reached set would say `a`; TRAIL does, and that is the divergence.
     expect(reached(g, 'MATCH TRAIL (a:T)-[:E]->{1,3}(b:T) RETURN DISTINCT b.n AS x')).toEqual([
@@ -259,7 +259,7 @@ describe('the bounded rung refuses what it must', () => {
 
   test('UNBOUNDED ACYCLIC is still refused — the DFS has no depth bound there', () => {
     /*
-     * ⚠️ THE BOUND IS WHAT MAKES THE ARM SAFE WITHOUT A DECLINE. This rung cannot decline at
+     * THE BOUND IS WHAT MAKES THE ARM SAFE WITHOUT A DECLINE. This rung cannot decline at
      * runtime (`clauses.ts` returns its result directly), and for a bounded quantifier the DFS is
      * safe because the general matcher — what runs the shape today — enumerates the SAME acyclic
      * path set with a binding per path on top. An unbounded `->+` has no such bound: the longest
@@ -281,7 +281,7 @@ describe('the bounded rung refuses what it must', () => {
   });
 
   test('a bounded quantifier DOES take the rung, where an unbounded one already did', () => {
-    // ⚠️ `{1,1}` is NOT in this list, and that is the engine being right rather than an omission:
+    // `{1,1}` is NOT in this list, and that is the engine being right rather than an omission:
     // `dropVacuousQuantifier` collapses a one-to-one quantifier to a plain hop, which reaches
     // `distinctProjection` instead. Asserting `reachShortcut` there would pin a worse route.
     for (const q of ['{1,3}', '{0,3}', '{1,}']) {

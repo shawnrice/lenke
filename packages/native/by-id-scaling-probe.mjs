@@ -16,12 +16,12 @@
  *   node by-id-scaling-probe.mjs
  *   SIZES=10000,100000,1000000 REPS=7 node by-id-scaling-probe.mjs
  *
- * ⚠️ THE LOOKUP KEYS ARE SHUFFLED, deterministically. Looking ids up in insertion order walks the
+ * THE LOOKUP KEYS ARE SHUFFLED, deterministically. Looking ids up in insertion order walks the
  * Map's own iteration order, which is exactly the access pattern a scan would also be fast at — it
  * cannot distinguish O(1) from a cache-friendly O(N). The shuffle is what makes the measurement
  * mean something; `KEYS=seq` turns it off for comparison and should be FASTER, not slower.
  *
- * ⚠️ AND IT MEASURES THREE SURFACES, because they resolve ids by different paths: the core map
+ * AND IT MEASURES THREE SURFACES, because they resolve ids by different paths: the core map
  * directly, Gremlin's `V(id)` (whose `source.ids` is the shape every fused shortcut declines on, so
  * it goes down the traverser pipeline by design), and GQL's `MATCH (n) WHERE ...`. A regression in
  * one is not a regression in the others.
@@ -38,7 +38,7 @@ const DROP = Number(process.env.DROP ?? 2);
 const LOOKUPS = Number(process.env.LOOKUPS ?? 200_000);
 const SHUFFLE = (process.env.KEYS ?? 'shuffled') !== 'seq';
 /**
- * ⚠️ ONE source for the Gremlin arm's call count. It was computed in TWO places — inside the arm
+ * ONE source for the Gremlin arm's call count. It was computed in TWO places — inside the arm
  * and again in the reporting loop — and raising only the first inflated ns/lookup 50x (52,940
  * against a true ~1,059). A divisor used twice is a wrong number waiting to happen.
  */

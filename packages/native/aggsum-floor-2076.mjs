@@ -5,10 +5,10 @@
  * vertex for one running addition. Item 2067 priced a bare `v.properties.k` read at 6.7 ns, so the
  * aggregate path is ~55x a property read, which is implausible enough to need a floor.
  *
- * ⚠️ THE FLOOR MUST ANSWER THE SAME NUMBER, or it prices a different query. `sum(n.n)` over
+ * THE FLOOR MUST ANSWER THE SAME NUMBER, or it prices a different query. `sum(n.n)` over
  * `n = 0 … N-1` is the triangular number, which is also the probe's own guard.
  *
- * ⚠️ AND THE ARMS ARE SEPARATED SO ONE TERM MOVES AT A TIME:
+ * AND THE ARMS ARE SEPARATED SO ONE TERM MOVES AT A TIME:
  *     label + read + add   what the query asks for
  *     read + add           no label test
  *     add only             the loop's own floor, reading nothing
@@ -62,7 +62,7 @@ const handLoopOnly = () => {
 };
 
 /*
- * ⚠️ AN OBJECT ARRAY, NOT A TUPLE ARRAY. `[['engine', engine], …]` infers each element as
+ * AN OBJECT ARRAY, NOT A TUPLE ARRAY. `[['engine', engine], …]` infers each element as
  * `(string | (() => number))[]`, so `label` is a union and interpolating it fails the lint — which is
  * a real signal that the shape was wrong, not noise to silence with a cast.
  */

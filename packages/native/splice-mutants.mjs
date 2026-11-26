@@ -7,7 +7,7 @@
  * honest check here, and it has to include a mutant that simply DISABLES the rewrite: if that one
  * survives, the file is measuring nothing.
  *
- * ⚠️ Result lines: `bun test` writes them to STDERR. Both streams are concatenated before the
+ * Result lines: `bun test` writes them to STDERR. Both streams are concatenated before the
  * exit code is read.
  *
  *     bun splice-mutants.mjs
@@ -56,7 +56,7 @@ const apply = (edits) => {
     const hits = s.split(find).length - 1;
 
     if (hits !== 1) {
-      console.log(`     ⚠️ anchor matched ${hits} times — NOT applied`);
+      console.log(`     anchor matched ${hits} times — NOT applied`);
       continue;
     }
 
@@ -78,7 +78,7 @@ const build = () => {
 };
 
 /**
- * ⚠️ BOTH STREAMS, ON BOTH PATHS — and the first version of this function got it wrong in the way
+ * BOTH STREAMS, ON BOTH PATHS — and the first version of this function got it wrong in the way
  * CLAUDE.md names explicitly. `execFileSync` returns only STDOUT on success, and `bun test` writes
  * `N pass` / `N fail` to STDERR, so three surviving mutants were reported as `DID-NOT-RUN`: a
  * diagnostic that made a passing run look like an absent one. `spawnSync` hands back both streams
@@ -116,14 +116,14 @@ try {
     const { code, text } = runTests();
 
     if (!/\d+ pass|\d+ fail/.test(text)) {
-      console.log(`${label}\n     ⚠️ DID-NOT-RUN — no result line on either stream\n`);
+      console.log(`${label}\n     DID-NOT-RUN — no result line on either stream\n`);
       continue;
     }
 
     const fails = /([1-9]\d*) fail/.exec(text);
 
     console.log(
-      `${label}\n     ${code === 0 ? '⚠️ SURVIVED' : `CAUGHT (${fails ? fails[1] : '?'} failing)`}\n`,
+      `${label}\n     ${code === 0 ? 'SURVIVED' : `CAUGHT (${fails ? fails[1] : '?'} failing)`}\n`,
     );
   }
 } finally {

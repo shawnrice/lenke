@@ -1,7 +1,7 @@
 /**
  * `count(DISTINCT x)` OVER A CHAIN — ONE SHAPE PER PROCESS (item 1874).
  *
- * ⚠️⚠️ THIS EXISTS BECAUSE THE NOMINATION IT TESTS WAS MEASURED THE WRONG WAY. Item 1873 read, from
+ * THIS EXISTS BECAUSE THE NOMINATION IT TESTS WAS MEASURED THE WRONG WAY. Item 1873 read, from
  * a single process that timed six shapes in sequence:
  *
  *     count(DISTINCT c.k)   5.91 ms      RETURN DISTINCT c.k   3.42 ms

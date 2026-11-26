@@ -7,7 +7,7 @@ import { query } from './index.js';
 /**
  * `anyWalk` — GQL's bare-`ANY` TRAIL ENUMERATOR, which had no test in any suite (item 1616).
  *
- * ⚠️ FOUND MECHANICALLY, not by reading. Item 1616 duplicated every bare `yield` in the GQL
+ * FOUND MECHANICALLY, not by reading. Item 1616 duplicated every bare `yield` in the GQL
  * executor one at a time and ran the suite: ten of eleven sites died, and `matching.ts`'s `anyWalk`
  * emission survived. A duplicated emission makes every bare-`ANY` row come out twice, so nothing
  * drained that generator at all.
@@ -18,7 +18,7 @@ import { query } from './index.js';
  * enumerate-trails arm beneath it was reached by no spelling anyone had written. `{2,3}` is the
  * cheapest spelling that gets there, because `min = 2` makes the pattern non-reducible.
  *
- * ⚠️ AND THIS FILE HAS TO LIVE IN THE `gql` PACKAGE. The byte-identity twin
+ * AND THIS FILE HAS TO LIVE IN THE `gql` PACKAGE. The byte-identity twin
  * (`packages/native/src/bare-any-walk-parity.test.ts`) imports `@lenke/gql`, which resolves to the
  * BUILT DIST — so it cannot pin a `src` path at all until a rebuild, and a mutation pass against
  * `src` sails straight past it. That is `fuzzers-read-built-dists` applied to a unit test, and it is
@@ -66,7 +66,7 @@ const g = ((): Graph => {
 describe('bare `ANY` over a non-reducible quantifier', () => {
   test('ONE row per endpoint, not one per path — the selector’s whole claim', () => {
     /**
-     * ⚠️ DERIVED, and this is the assertion the duplicated-`yield` mutant dies on. From `a` with
+     * DERIVED, and this is the assertion the duplicated-`yield` mutant dies on. From `a` with
      * `{2,3}`: the 2-hop ends are `c` (a>b>c) and `d` (a>b>d, a>c>d); the 3-hop ends are `d`
      * (a>b>c>d) and `e` (a>b>d>e, a>c>d>e). Distinct endpoints c, d, e — THREE rows.
      */

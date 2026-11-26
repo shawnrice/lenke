@@ -27,7 +27,7 @@ import {
  * instead of running the inner plan through `applyPlanToStream` (item 1627) — **1.08-1.11x** across
  * the three `match` shapes, which are the largest in the Gremlin probe.
  *
- * ⚠️ THE ORACLE IS A LONGER INNER PLAN. `soleHop` admits exactly one `out`/`in` with one label, so
+ * THE ORACLE IS A LONGER INNER PLAN. `soleHop` admits exactly one `out`/`in` with one label, so
  * appending `identity()` to the inner traversal makes the identical question take the general path —
  * and the two must agree ELEMENT FOR ELEMENT, because Gremlin stream order is a TinkerPop contract
  * the differential fuzzer compares ordered. That is checked here rather than argued: the fast arm
@@ -90,7 +90,7 @@ const ids = (rows: readonly unknown[]): unknown[] =>
 describe('the fast arm agrees with the general path, ORDERED', () => {
   /**
    * Each case runs twice: the inner plan as a bare hop (the fast arm) and with `identity()`
-   * appended (the general path). ⚠️ `identity()` is the right disqualifier because it changes the
+   * appended (the general path). `identity()` is the right disqualifier because it changes the
    * inner plan's LENGTH and nothing else — a second label or a `both` would change the question.
    */
   const bothWays = (inner: Parameters<typeof pipe>[number][], tail: unknown[]): void => {
@@ -220,7 +220,7 @@ describe('the fast arm DECLINES what it must, and the answer is unchanged', () =
 
   test('a NON-VERTEX start falls back rather than faulting', () => {
     /**
-     * ⚠️ `isVertex(from)` IS A FALLBACK, NOT A GUARD. `bucketEnds` cannot read an adjacency off a
+     * `isVertex(from)` IS A FALLBACK, NOT A GUARD. `bucketEnds` cannot read an adjacency off a
      * scalar, and the general path is LENIENT there — `traverseToVertex` yields nothing for a
      * non-vertex rather than throwing — so returning `undefined` keeps that behaviour exactly.
      * A `select` of a tag holding a scalar is the spelling that gets a scalar past the frontier

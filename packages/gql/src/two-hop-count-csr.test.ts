@@ -12,12 +12,12 @@ import { query } from './index.ts';
 /**
  * THE TWO-HOP COUNT'S CSR DEGREE PRODUCT (item 1890), and its second-ask policy.
  *
- * ⚠️ THE TWO ROUTES RETURN THE SAME NUMBER, so no answer test can tell them apart — which is why
+ * THE TWO ROUTES RETURN THE SAME NUMBER, so no answer test can tell them apart — which is why
  * the gate and the policy are pure exported functions with their own tests here
  * ([[perf-gate-needs-its-own-test]]). What the answer tests pin is that the CSR arm, which only runs
  * from the SECOND ask on, agrees with the loop that answered the first.
  *
- * ⚠️ AND EVERY ANSWER IS ASSERTED ON BOTH CALLS, because a single `query` measures only the loop.
+ * AND EVERY ANSWER IS ASSERTED ON BOTH CALLS, because a single `query` measures only the loop.
  */
 const fixture = (): Graph => {
   const g = new Graph();
@@ -67,7 +67,7 @@ describe('the two-hop count agrees across both routes', () => {
   it('counts a REVERSED pair of directions', () => {
     const g = fixture();
 
-    // ⚠️ RE-DERIVED BY HAND after the first draft got this one wrong. Both legs leaving `y` makes it
+    // RE-DERIVED BY HAND after the first draft got this one wrong. Both legs leaving `y` makes it
     // the sum of SQUARED out-degrees: a 2^2 + b 2^2 + b2 1^2 + c 0 = 9.
     expect(twice(g, 'MATCH (x)<-[:E]-(y)-[:E]->(z) RETURN count(*) AS c')).toStrictEqual({ c: 9 });
     // Both legs ARRIVING at `y` — squared in-degrees: b 1 + b2 1 + c 3^2 = 11.
@@ -90,7 +90,7 @@ describe('the two-hop count agrees across both routes', () => {
   });
 
   /**
-   * ⚠️ THE SHAPES THE GATE REFUSES, asserted on their ANSWERS — a wrongly-widened gate would answer
+   * THE SHAPES THE GATE REFUSES, asserted on their ANSWERS — a wrongly-widened gate would answer
    * these differently, and they are the only behavioural evidence that the refusals matter.
    */
   it('answers the refused shapes correctly — labels, `both`, and a middle constraint', () => {
@@ -104,10 +104,10 @@ describe('the two-hop count agrees across both routes', () => {
     expect(twice(g, 'MATCH (x)-[:E]->(y:P)-[:E]->(z) RETURN count(*) AS c')).toStrictEqual({
       c: 3,
     });
-    // `both` on either leg — the undirected side is two boxes plus a loop correction. ⚠️ ALSO
+    // `both` on either leg — the undirected side is two boxes plus a loop correction. ALSO
     // re-derived: undirected degree times out-degree, a 2x2 + b 3x2 + b2 2x1 + c 3x0 = 12.
     expect(twice(g, 'MATCH (x)-[:E]-(y)-[:E]->(z) RETURN count(*) AS c')).toStrictEqual({ c: 12 });
-    // A middle CONSTRAINT, which the loop gates once per middle. ⚠️ `k` is the id's LENGTH, so only
+    // A middle CONSTRAINT, which the loop gates once per middle. `k` is the id's LENGTH, so only
     // `b2` has `k = 2` — in-degree 1 times out-degree 1. (The first draft said 2, reading `b` as
     // k=2.)
     expect(
@@ -165,7 +165,7 @@ describe('twoHopUnfilteredCsrApplies — the gate', () => {
 
 describe('twoHopCsrProduct — the policy AT THE CALL SITE, not just as a function', () => {
   /**
-   * ⚠️ THIS TEST EXISTS BECAUSE A MUTANT SURVIVED WITHOUT IT. Taking the CSR on the FIRST ask is
+   * THIS TEST EXISTS BECAUSE A MUTANT SURVIVED WITHOUT IT. Taking the CSR on the FIRST ask is
    * answer-equivalent — every behavioural test above passes either way — so the only evidence that
    * the policy is wired is the entry point returning `null` the first time and a number the second.
    * `csrAskedBefore`'s own tests below cover the function; this covers its USE.
@@ -190,7 +190,7 @@ describe('twoHopCsrProduct — the policy AT THE CALL SITE, not just as a functi
   });
 
   /**
-   * ⚠️ AND THE KEY MUST NAME BOTH LEGS, which only this test can see: a coarser key would let one
+   * AND THE KEY MUST NAME BOTH LEGS, which only this test can see: a coarser key would let one
    * shape's first ask pay for ANOTHER shape's build, so the second shape would be answered on its
    * own first ask. A mutant reducing the key to the first leg's direction survived everything else.
    */
@@ -254,11 +254,11 @@ describe('csrAskedBefore — the second-ask policy', () => {
   });
 
   /**
-   * ⚠️ THE LOAD-BEARING HALF: a topology write invalidates the CSR, so the generation must reset or a
+   * THE LOAD-BEARING HALF: a topology write invalidates the CSR, so the generation must reset or a
    * write/count/write/count workload would rebuild on every count — the case this policy exists to
    * avoid.
    *
-   * ⚠️⚠️ **AND IT DID NOT AVOID IT.** Item 2093 measured that exact workload: at EXACTLY two reads per
+   * **AND IT DID NOT AVOID IT.** Item 2093 measured that exact workload: at EXACTLY two reads per
    * write the old second-ask policy paid a full ~30 ms build on the version's LAST read and the next
    * write discarded it unused — **20.49 ms a read against 6.21 for reading once, and 12.07x worse than
    * batching.** So the reset below is still asserted, but arming is now predicted from the PREVIOUS
@@ -282,11 +282,11 @@ describe('csrAskedBefore — the second-ask policy', () => {
   });
 
   /**
-   * 🔑 THE FIX FOR THE CLIFF (item 2094). A version whose predecessor was read only twice will almost
+   * THE FIX FOR THE CLIFF (item 2094). A version whose predecessor was read only twice will almost
    * certainly be read twice too, and a build that serves one reuse is a ~30 ms loss. So it does NOT
    * arm on the second ask any more.
    */
-  it('⚠️ does NOT arm after a write when the PREVIOUS version was read too few times', () => {
+  it('does NOT arm after a write when the PREVIOUS version was read too few times', () => {
     const g = fixture();
 
     // Two asks on this version — far short of what a build needs to amortize.
@@ -325,14 +325,14 @@ describe('csrAskedBefore — the second-ask policy', () => {
   });
 
   /**
-   * ⚠️⚠️ THE SELF-CORRECTING CLAUSE, and without it the READ-HEAVIEST workload pays. A cold or
+   * THE SELF-CORRECTING CLAUSE, and without it the READ-HEAVIEST workload pays. A cold or
    * pessimistic prior is a PREDICTION; once this version has itself asked enough times the prediction
    * is being contradicted in front of us, and the build will amortize.
    *
-   * 🔑 Measured: without this clause a steady 24-reads-per-write workload read 2.25 ms a read against
+   * Measured: without this clause a steady 24-reads-per-write workload read 2.25 ms a read against
    * the old policy's 1.63 (0.72x). With it, parity — 1.56 against 1.56.
    */
-  it('⚠️ arms anyway once THIS version has asked enough, whatever the prior said', () => {
+  it('arms anyway once THIS version has asked enough, whatever the prior said', () => {
     const g = fixture();
 
     csrAskedBefore(g, '>E|>E');
@@ -354,7 +354,7 @@ describe('csrAskedBefore — the second-ask policy', () => {
     expect(csrAskedBefore(g, '>E|>E')).toBe(true);
   });
 
-  it('⚠️ an UNSEEN shape still arms on its second ask — nothing regresses on a cold graph', () => {
+  it('an UNSEEN shape still arms on its second ask — nothing regresses on a cold graph', () => {
     const g = fixture();
 
     expect(csrAskedBefore(g, '>NEW|>NEW')).toBe(false);

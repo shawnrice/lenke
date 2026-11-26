@@ -1,6 +1,6 @@
 // A cross-engine divergence found by the differential fuzzer at item 2022, PRE-EXISTING.
 //
-// ⚠️⚠️ **NATIVE RAISES WHERE THIS ENGINE RETURNS SIX ROWS**, and the divergence registry's one entry
+// **NATIVE RAISES WHERE THIS ENGINE RETURNS SIX ROWS**, and the divergence registry's one entry
 // explicitly does NOT cover that:
 //
 //     "An error against a NON-EMPTY result is a different thing entirely … and is NOT covered here."
@@ -8,7 +8,7 @@
 // Found by `fuzz-sweep.sh` on run 10 of 10 (the sweep exists to keep the failing run's output — item
 // 2012). Replay: `FUZZ_SEED=3826437490 bun test src/differential-fuzz.test.ts`.
 //
-// ⚠️⚠️ **A SECOND INSTANCE AT ITEM 2025 CONFIRMS THIS IS A CLASS, NOT A ONE-OFF** — same shape, a
+// **A SECOND INSTANCE AT ITEM 2025 CONFIRMS THIS IS A CLASS, NOT A ONE-OFF** — same shape, a
 // different non-boolean operand:
 //
 //     FUZZ_SEED=1493132919
@@ -20,10 +20,10 @@
 // second case is asserted below. Observed rate across both: **2 in ~28 runs of 20,000 queries**
 // (~1 per 280,000), the same order as the registry's documented sibling.
 //
-// ⚠️ IT IS NOT ITEM 2022's. Verified by replaying the same seed against `HEAD` with that item's
+// IT IS NOT ITEM 2022's. Verified by replaying the same seed against `HEAD` with that item's
 // change absent: it fails identically. The merge helper cannot affect predicate evaluation order.
 //
-// 🔑 **THE NUANCE THAT MAKES IT INTERESTING, and that the registry's matcher cannot see.** The inline
+// **THE NUANCE THAT MAKES IT INTERESTING, and that the registry's matcher cannot see.** The inline
 // predicate lives inside an `OPTIONAL MATCH`, and it matches NOTHING on either engine — so at the
 // PATTERN level this is the registry's covered shape, "a malformed predicate against no rows". But
 // `OPTIONAL MATCH` turns "no match" into a row with NULLs, so the OUTER result is six non-empty rows
@@ -64,7 +64,7 @@ const build = (): Graph => {
 };
 
 /*
- * ⚠️⚠️ **FOUR OPERAND KINDS HAVE NOW ARRIVED FOR THIS ONE CLASS, which is why it is a CLASS and not a
+ * **FOUR OPERAND KINDS HAVE NOW ARRIVED FOR THIS ONE CLASS, which is why it is a CLASS and not a
  * coincidence.** Each was found by the differential fuzzer on a different random seed:
  *
  *     FUZZ_SEED=1493132919   date('2020-01-01')        a temporal in boolean position
@@ -72,14 +72,14 @@ const build = (): Graph => {
  *     FUZZ_SEED=3908458595   acos(n.s)                 a string argument to a numeric fn (item 2037)
  *     FUZZ_SEED=1387327370   ('\t\n' AND (NOT true))   a STRING LITERAL as a conjunct (item 2070)
  *   FUZZ_SEED=3369177423  (null <> n.m.k)  — a MAP MEMBER ACCESS as the operand, and the FIFTH
- *     distinct operand kind on this divergence (item 2085, found in a routine sweep). ⚠️ Recorded
+ *     distinct operand kind on this divergence (item 2085, found in a routine sweep). Recorded
  *     because it rules out the narrowest reading of the bug: `n.m.k` is not a bad TYPE or a missing
  *     property but a lookup INSIDE a property's value, so whatever raises here is reached through a
- *     different accessor than the four before it. ⚠️ It was also the one failure in a 5-run sweep
+ *     different accessor than the four before it. It was also the one failure in a 5-run sweep
  *     during a core change, and was ruled out STRUCTURALLY — the same seed fails with that change's
  *     fast arm KILLED — rather than by resembling this family.
  *
- * 🔑 **THE FOURTH IS THE SIMPLEST ONE YET AND THAT MATTERS:** the first three put a non-boolean in
+ * **THE FOURTH IS THE SIMPLEST ONE YET AND THAT MATTERS:** the first three put a non-boolean in
  * boolean position through a FUNCTION CALL, so "the function returns the wrong type" was an available
  * reading. A bare string literal as the left conjunct of an `AND` removes it — the class is about a
  * statically non-boolean OPERAND, whatever produces it.
@@ -89,7 +89,7 @@ const build = (): Graph => {
  * bad operand and the Rust engine evaluates it and raises `E_INVALID_VALUE`. `OPTIONAL MATCH` then
  * turns "no match" into NULL-filled rows, so the outer results differ: six rows against an error.
  *
- * 🔑 THE RATE IS ROUGHLY 1 IN 280,000 GENERATED QUERIES, so a 20,000-query sweep hits it about every
+ * THE RATE IS ROUGHLY 1 IN 280,000 GENERATED QUERIES, so a 20,000-query sweep hits it about every
  * fourteenth run — which is exactly how it keeps surfacing in `fuzz-sweep.sh` and being
  * re-diagnosed. Anyone seeing a sweep fail on an `OPTIONAL MATCH` + inline-predicate query should
  * check this file FIRST.
@@ -100,7 +100,7 @@ const Q =
 
 test('this engine answers the query — recorded, not asserted as correct', () => {
   /*
-   * ⚠️ THIS ASSERTION IS A RECORD OF BEHAVIOUR, NOT A CLAIM THAT IT IS RIGHT. `atan2(n.m.k, '1e3')`
+   * THIS ASSERTION IS A RECORD OF BEHAVIOUR, NOT A CLAIM THAT IT IS RIGHT. `atan2(n.m.k, '1e3')`
    * has a STRING second argument; this engine never evaluates it because the AND chain settles the
    * row on `n.x < 0` first ([[conjunct-order-chosen-for-speed]] — cheapest conjunct first, per
    * engine, is owner policy). The Rust engine evaluates it and raises `E_INVALID_VALUE`.
@@ -114,7 +114,7 @@ test('this engine answers the query — recorded, not asserted as correct', () =
 
 test.failing('AND the Rust engine agrees — it does not: it raises E_INVALID_VALUE', () => {
   /*
-   * ⚠️⚠️ **PINNED `failing` SO IT CANNOT GO GREEN UNNOTICED.** If a later change makes the engines
+   * **PINNED `failing` SO IT CANNOT GO GREEN UNNOTICED.** If a later change makes the engines
    * agree — by either engine moving — this test starts passing and bun reports it, which is the
    * signal to delete this file and record the resolution.
    *
@@ -139,14 +139,14 @@ test.failing('AND the Rust engine agrees — it does not: it raises E_INVALID_VA
 
 test('the SECOND operand kind — a temporal literal in a truth position (item 2025)', () => {
   /*
-   * ⚠️ RECORDED, NOT ASSERTED AS CORRECT, exactly like the first case. `date('2020-01-01') AND …`
+   * RECORDED, NOT ASSERTED AS CORRECT, exactly like the first case. `date('2020-01-01') AND …`
    * puts a TEMPORAL in a truth position; this engine settles the row on the other conjunct and never
    * evaluates it, the Rust engine raises `E_INVALID_VALUE`. Two different operand kinds reaching the
    * same divergence is what makes this a class — and what makes `s` matter below: the fixture needs
    * the second conjunct to be decidable without the first.
    */
   /*
-   * ⚠️⚠️ **THE FIXTURE DECIDES WHETHER THE DIVERGENCE HAPPENS AT ALL, AND MY FIRST ATTEMPT BROKE IT.**
+   * **THE FIXTURE DECIDES WHETHER THE DIVERGENCE HAPPENS AT ALL, AND MY FIRST ATTEMPT BROKE IT.**
    * I set `s = false`, which makes `n.s IS FALSE` **TRUE** — so the AND cannot settle on it, this
    * engine reaches the temporal and RAISES, and the two engines agree. With `s` ABSENT, `n.s` is null
    * and `null IS FALSE` is FALSE, which settles the row and short-circuits the temporal away: that is

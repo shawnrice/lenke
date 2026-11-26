@@ -1,17 +1,17 @@
 // `V().where(<one hop>).values(k)` — the scan with its existence filter folded in (item 2025).
 //
-// ⚠️⚠️ **A ROUTE CHOICE, SO ANSWER-EQUIVALENT — the pipeline answers identically.** The route
+// **A ROUTE CHOICE, SO ANSWER-EQUIVALENT — the pipeline answers identically.** The route
 // assertions here are the only thing that can see a gate mutant ([[perf-gate-needs-its-own-test]]),
 // and the answer assertions the only thing that can see a walk mutant.
 //
-// 🔑 THE EXISTENCE TEST IS DELIBERATELY BROADER THAN A HOP WALK'S. `sub-plan-existence.ts` admits
+// THE EXISTENCE TEST IS DELIBERATELY BROADER THAN A HOP WALK'S. `sub-plan-existence.ts` admits
 // `both`, a multi-type hop and an untyped one — which `soleTypeBucket` refuses — because for a
 // yes/no, double-counting a two-label edge, a self-loop's duplicate under `both`, and which END the
 // edge is read from are all unobservable. Those three shapes are asserted below, because a gate that
 // narrowed to `soleTypeBucket`'s rules would silently decline them (slower, not wrong) and a walk
 // that widened WITHOUT the existence argument would be wrong.
 //
-// ⚠️ AND `where` IS AN OVERLOADED STEP KIND: `where(pred)` and `where(startKey, pred)` compare the
+// AND `where` IS AN OVERLOADED STEP KIND: `where(pred)` and `where(startKey, pred)` compare the
 // traverser's value to a TAGGED step's, which is not an existence test at all. Both must decline.
 import { describe, expect, test } from 'bun:test';
 
@@ -40,7 +40,7 @@ const build = (): Graph => {
   const g = new Graph();
 
   /*
-   * ⚠️ `n` IS SPARSE: `d` has no `n`, so `values('n')` must DROP it even though it passes the filter.
+   * `n` IS SPARSE: `d` has no `n`, so `values('n')` must DROP it even though it passes the filter.
    * That is the one thing the filter and the projection can disagree about.
    */
   for (const [id, n] of [
@@ -87,7 +87,7 @@ describe('nodeValuesWhereShortcut: the answers', () => {
 
   test('an outward test keeps the vertices with an out-edge, and `values` still DROPS', () => {
     /*
-     * ⚠️ `a`, `d` and `f` have an out `E`; `d` has no `n`, so TWO rows from three survivors. A walk
+     * `a`, `d` and `f` have an out `E`; `d` has no `n`, so TWO rows from three survivors. A walk
      * that emitted `undefined` for `d` would give three, and nothing else here would notice.
      */
     expect(rows(traversal(V(), where(traversal(out('E'))), values('n')), g)).toEqual([1, 6]);
@@ -127,7 +127,7 @@ describe('nodeValuesWhereShortcut: the answers', () => {
   });
 
   test('the row ORDER is `graph.vertices` order, which the pipeline also uses', () => {
-    // ⚠️ Gremlin results are compared ORDERED against the Rust engine for a single-type step, so this
+    // Gremlin results are compared ORDERED against the Rust engine for a single-type step, so this
     // is a contract rather than an incidental.
     expect(rows(traversal(V(), where(traversal(out())), values('n')), g)).toEqual([1, 3, 6]);
   });
@@ -148,7 +148,7 @@ describe('nodeValuesWhereShortcut: the route', () => {
 
   test('DECLINES a `where` that is NOT a sub-plan — the step kind is overloaded', () => {
     /*
-     * ⚠️⚠️ A WRONG ANSWER IF ADMITTED, NOT A SLOW ONE. `where(neq('x'))` compares the traverser's
+     * A WRONG ANSWER IF ADMITTED, NOT A SLOW ONE. `where(neq('x'))` compares the traverser's
      * value to the value tagged at step label `x`; it has `pred` and no `plan`. Treating it as an
      * existence test would filter on the wrong question entirely.
      */
@@ -169,7 +169,7 @@ describe('nodeValuesWhereShortcut: the route', () => {
 
   test('DECLINES anything but exactly three steps', () => {
     /*
-     * ⚠️ THE LENGTH CHECK IS LOAD-BEARING: with a trailing step the walk would silently answer the
+     * THE LENGTH CHECK IS LOAD-BEARING: with a trailing step the walk would silently answer the
      * plan WITHOUT it. (Item 2021's `scanValuesResidual` is how a residual gets served; this rung
      * has no residual of its own.)
      */
@@ -188,7 +188,7 @@ describe('the pipeline is the ORACLE', () => {
 
   test('every routed shape matches its narrowed-source twin', () => {
     /*
-     * 🔑 `V('a','b','c','d','e','f')` NAMES EVERY VERTEX, so it is the same question — and the rung
+     * `V('a','b','c','d','e','f')` NAMES EVERY VERTEX, so it is the same question — and the rung
      * DECLINES a narrowed source, so the twin runs the pipeline. An oracle, not self-blessing.
      */
     const ALL = ['a', 'b', 'c', 'd', 'e', 'f'] as const;
@@ -222,7 +222,7 @@ describe('scanWhereValuesResidual: the corner both earlier items left (item 2026
 
   test('the RESIDUAL it reports is exactly the steps after `values(k)`', () => {
     /*
-     * ⚠️ ASSERTING "IT RETURNED SOMETHING" IS NOT THE CONTRACT — item 2021's round found three
+     * ASSERTING "IT RETURNED SOMETHING" IS NOT THE CONTRACT — item 2021's round found three
      * mutants that returned a non-`undefined` object with a WRONG residual, which then declines
      * downstream and falls through to the pipeline with the same answer. The value is the contract.
      */
@@ -244,7 +244,7 @@ describe('scanWhereValuesResidual: the corner both earlier items left (item 2026
 
   test('a trailing `count()` DECLINES — and the reason is a NORMALIZATION, not this gate', () => {
     /*
-     * ⚠️⚠️ **`values(k).count()` IS REWRITTEN TO `hasKey(k).count()` BEFORE ANY RUNG SEES IT**, which
+     * **`values(k).count()` IS REWRITTEN TO `hasKey(k).count()` BEFORE ANY RUNG SEES IT**, which
      * is a settled and sensible normalization: counting a single key's values IS counting the
      * vertices that have it. So the plan reaching this rung is `V(), where, hasKey, count` — no
      * `values` step — and declining is correct rather than a miss.
@@ -257,7 +257,7 @@ describe('scanWhereValuesResidual: the corner both earlier items left (item 2026
     const plan = traversal(V(), where(traversal(out('E'))), values('n'), count());
 
     /*
-     * ⚠️ MY FIRST VERSION OF THIS ASSERTED THE GATE RETURNS `undefined` AND THAT WAS WRONG: the gate
+     * MY FIRST VERSION OF THIS ASSERTED THE GATE RETURNS `undefined` AND THAT WAS WRONG: the gate
      * accepts the RAW shape perfectly well, because the normalization runs inside `run` on the
      * EFFECTIVE plan, not on a plan handed to the gate directly. So the gate's acceptance here is
      * harmless but DEAD — the engine never presents it this shape.
@@ -268,7 +268,7 @@ describe('scanWhereValuesResidual: the corner both earlier items left (item 2026
     expect(rows(plan, g)).toEqual([2]);
 
     /*
-     * ⚠️ THE NORMALIZATION ITSELF IS ALREADY PINNED by `values-is-count.test.ts`, which asserts the
+     * THE NORMALIZATION ITSELF IS ALREADY PINNED by `values-is-count.test.ts`, which asserts the
      * rewritten kinds are `['V', 'hasKey', 'count']` — so this file references that rather than
      * re-deriving it. Two independent confirmations that the engine takes the `hasKey` shape: that
      * test, and `gremlin-route-screen.mjs` printing this row's steps as `[count hasKey where]`.

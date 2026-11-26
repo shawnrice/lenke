@@ -18,7 +18,7 @@
  * two-conjunct one — `specializeSingleProp` takes exactly one entry in exactly one carrier. The
  * single-conjunct row is the control: same seek, same candidates, one predicate fewer.
  *
- * ⚠️ ONE SHAPE PER PROCESS (items 737, 762). `SHAPE=<key>` selects.
+ * ONE SHAPE PER PROCESS (items 737, 762). `SHAPE=<key>` selects.
  *
  *     SHAPE=two-clause node two-conjunct-seek-probe.mjs
  */
@@ -31,7 +31,7 @@ const SHAPE = process.env.SHAPE ?? 'two-clause';
 const BUCKETS = Number(process.env.BUCKETS ?? 20);
 
 /**
- * ⚠️ `MULTI=1` GIVES THE FIXTURE A SECOND LABEL, which is the control item 1608 needs. The vacuous-
+ * `MULTI=1` GIVES THE FIXTURE A SECOND LABEL, which is the control item 1608 needs. The vacuous-
  * label elision fires only when the queried label covers EVERY vertex, so a single-label fixture —
  * what most of this repo's probes use, including this one by default — measures the best case and a
  * multi-label graph measures nothing at all. Both numbers belong in the entry.
@@ -64,7 +64,7 @@ const g = new Graph();
 for (let i = 0; i < NODES; i += 1) {
   g.addVertex({
     id: `u${i}`,
-    // ⚠️ `i % 3`, NOT `i % 2`. `score = i % BUCKETS` with BUCKETS = 20, so a parity-based label
+    // `i % 3`, NOT `i % 2`. `score = i % BUCKETS` with BUCKETS = 20, so a parity-based label
     // CORRELATES with the seek key: every vertex in a given score bucket would share a parity and
     // therefore a label, making each query either all-match or all-reject on the label alone. With
     // `gcd(3, 20) = 1` each bucket holds a MIX, which is what a label test has to be measured over.

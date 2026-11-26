@@ -8,7 +8,7 @@
  * EVERY comparison to re-establish a fact that is per-string and invariant. This scans the key
  * column ONCE and, when it qualifies, sorts with the reduced comparator.
  *
- * ⚠️ THIS EXISTS BECAUSE ITEM 1712'S CORRECTNESS FIX COST 1.55x-1.68x, MEASURED. Gremlin used to
+ * THIS EXISTS BECAUSE ITEM 1712'S CORRECTNESS FIX COST 1.55x-1.68x, MEASURED. Gremlin used to
  * order strings with a plain `<` (code UNIT), which disagreed with the engine (code POINT) and was
  * a byte-identity break — the 15th open divergence. Fixing it routed strings through
  * `compareCodePoints`, which is correct and not optional, and on a 1,000,000-row string sort:
@@ -24,20 +24,20 @@
  * reduction below is what makes the correct comparator affordable: ~20M dispatch chains are replaced
  * by ~1M scan tests.
  *
- * ⚠️ IT IS BRANCH ELIMINATION WITH A PROOF, NOT A SECOND ORDERING. For two non-null strings
+ * IT IS BRANCH ELIMINATION WITH A PROOF, NOT A SECOND ORDERING. For two non-null strings
  * `compareTotal` takes none of its null arms (Gremlin sorts nulls FIRST, a language contract that is
  * untouched here), skips the number/NaN block, gets `typeRank` 1 on both sides so the rank branch is
  * dead, reaches `cmpSameType`'s string arm, and that arm is `compareCodePoints` — whose own fast
  * path, when neither string holds a high surrogate, is literally `a < b ? -1 : a > b ? 1 : 0`.
  * Anything the scan does not admit returns `false` and the untouched `compareTotal` runs.
  *
- * ⚠️ THE GQL TWIN IS `gql/src/executor/sort-column-specialize.ts` AND THE TWO ARE DELIBERATELY NOT
+ * THE GQL TWIN IS `gql/src/executor/sort-column-specialize.ts` AND THE TWO ARE DELIBERATELY NOT
  * ONE FUNCTION. They scan different shapes — GQL walks `rows[i][col]`, this walks `keyed[i].key` —
  * and a shared version would need a per-element getter closure, which is a cost on the hot path this
  * exists to make cheap. What IS shared, and what actually could drift, is the ordering itself:
  * `compareCodePoints` and `HAS_SURROGATE` both come from `@lenke/core`.
  *
- * ⚠️ A NUMERIC ARM IS DELIBERATELY ABSENT. Its GQL twin was built, measured six times
+ * A NUMERIC ARM IS DELIBERATELY ABSENT. Its GQL twin was built, measured six times
  * (0.93x-1.18x, straddling 1.0) and dropped, and the numbers above say the same thing here: the
  * NUMBER-key row could not reach the string arm and measured 0.87x/1.02x, i.e. nothing. A floor arm
  * on the GQL side showed the reduction IS worth ~25% on numbers and the O(n) scan eats it, so the
@@ -46,7 +46,7 @@
 import { HAS_SURROGATE } from '@lenke/core';
 
 /**
- * ⚠️ TWO SHAPES, AND THE SECOND ONE IS WHY THIS NOTE EXISTS. `order()` does not have one sort site:
+ * TWO SHAPES, AND THE SECOND ONE IS WHY THIS NOTE EXISTS. `order()` does not have one sort site:
  * `fusedProjectedOrder` sorts a FLAT array of values (the `values(k).order()` fusion, item 1586),
  * while `sortByBys` sorts `{ item, key }` WRAPPERS (the `order().by(...)` shapes). Wiring only the
  * wrapper path left `out('E').values('s').order()` completely untouched — a counter on all six
@@ -58,7 +58,7 @@ import { HAS_SURROGATE } from '@lenke/core';
  */
 
 /**
- * ⚠️ `allPlainStrings` WAS HERE AND IS GONE (item 1807). It scanned the flat column for
+ * `allPlainStrings` WAS HERE AND IS GONE (item 1807). It scanned the flat column for
  * `fusedProjectedOrder`, which ALREADY walks every value to raise the graph-element fault — so the
  * classification was a second pass over the same array. It now rides that pass, which is what made
  * the NUMERIC arm affordable: both modules recorded it as built, measured and dropped with "THE
@@ -74,7 +74,7 @@ import { HAS_SURROGATE } from '@lenke/core';
  * The reduced comparator over FLAT values. Negates for `descending` so ties stay 0 and the sort
  * remains stable, exactly as `-compareTotal(a, b)` does.
  *
- * ⚠️ IT SERVES NUMBERS AS WELL AS STRINGS (item 1807), and that is exact rather than a liberty: for
+ * IT SERVES NUMBERS AS WELL AS STRINGS (item 1807), and that is exact rather than a liberty: for
  * two non-null surrogate-free strings AND for two non-null NaN-free numbers, `compareTotal` reduces
  * to the same expression this body is — `x < y ? -1 : x > y ? 1 : 0`. The `as string` casts are
  * erased at runtime, and `<`/`>` on two numbers is the numeric comparison.
@@ -110,7 +110,7 @@ export const reducedValueComparator = (
 /**
  * Is every key a non-null, surrogate-free string?
  *
- * ⚠️ IT EXITS ON THE FIRST DISQUALIFYING KEY, so a column that does not qualify pays a partial scan
+ * IT EXITS ON THE FIRST DISQUALIFYING KEY, so a column that does not qualify pays a partial scan
  * rather than a whole one. The cost it must stay under is the sort it is helping, and a full scan is
  * ~1/20 of a 1,000,000-value sort's comparisons.
  *

@@ -6,16 +6,16 @@
 //     read: point lookup          ts 1.54M   engine 495.8k    TS 3.1x FASTER
 //     read: permission check      ts 494.1k  engine 145.6k    TS 3.4x faster
 //     read: 2-hop recommendation  ts 570.8k  engine 252.2k    TS 2.3x faster
-//     read: keyed dedup lookup    ts  94.3k  engine 166.5k    ⬅ TS 1.77x SLOWER
+//     read: keyed dedup lookup    ts  94.3k  engine 166.5k    <- TS 1.77x SLOWER
 //
-// ⚠️ ONE READING IS NOT A FINDING HERE, AND THE ROW SAYS SO. Its own comment records TS swinging
+// ONE READING IS NOT A FINDING HERE, AND THE ROW SAYS SO. Its own comment records TS swinging
 // **15.8k / 48.1k / 56.5k / 69.3k** across runs while native holds **134.5-143.1k**, calls that the
 // bimodality `ts-spelling-probe` documents, and prescribes reading it over several runs. 94.3k sits
 // inside that spread. So this runs the shape MANY times in one process and reports the whole series
 // rather than a summary — the rule CLAUDE.md gives for the TS per-row path ("print the per-rep series
 // before trusting any summary of it").
 //
-// 🔑 THE QUESTION IS WHETHER TS's MEDIAN IS GENUINELY BELOW NATIVE'S, or whether the usage bench
+// THE QUESTION IS WHETHER TS's MEDIAN IS GENUINELY BELOW NATIVE'S, or whether the usage bench
 // caught a slow mode. Those have different answers: the first is a target, the second is noise in a
 // row that already warns about it.
 //
@@ -45,12 +45,12 @@ for (let i = 0; i < USERS; i += 1) {
 const NDJSON = lines.join('\n');
 const tsGraph = tsDeserialize(NDJSON, 'ndjson', new Graph());
 
-// ⚠️ THE INDEX IS THE WHOLE POINT: the usage bench's `(+)` columns are indexed on name and score,
+// THE INDEX IS THE WHOLE POINT: the usage bench's `(+)` columns are indexed on name and score,
 // and without it both engines scan and the comparison is a different one.
 tsGraph.createIndex({ on: 'vertex', kind: 'hash', keys: ['score'] });
 
 /*
- * ⚠️ A SECOND INDEX, because the usage bench has one and this probe did not — its `(+)` columns are
+ * A SECOND INDEX, because the usage bench has one and this probe did not — its `(+)` columns are
  * "indexed on name, score". With only `score` indexed TS WON this row 1.16x, while the bench
  * reproducibly reports TS 93-94k against native 166k. `NAME_INDEX=0` turns this off, so the two
  * configurations can be compared in one place.

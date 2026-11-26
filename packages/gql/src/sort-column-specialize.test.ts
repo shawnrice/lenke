@@ -9,11 +9,11 @@
 // all. A specialization that admitted this column would return a correctly-sorted-looking result in
 // the wrong order, which no count assertion could see.
 //
-// ⚠️ THE ORACLE IS AN INDEPENDENT DERIVATION, not a second call to the engine's comparator: the test
+// THE ORACLE IS AN INDEPENDENT DERIVATION, not a second call to the engine's comparator: the test
 // sorts by code point using `[...s]` iteration, which yields code points by construction. Pinning the
 // new branch to `compareSort` would pass even if both agreed on something wrong.
 //
-// ⚠️ ASTRAL CHARACTERS ARE BUILT WITH `String.fromCodePoint`, NOT PASTED. A literal astral char in a
+// ASTRAL CHARACTERS ARE BUILT WITH `String.fromCodePoint`, NOT PASTED. A literal astral char in a
 // source file is invisible to `grep` and silently mangled by a tool that rewrites the file in the
 // wrong encoding; this repo has been bitten by searching for the escape form while the file held the
 // literal. The numeric form says exactly which code point is meant.

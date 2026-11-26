@@ -8,7 +8,7 @@ import { V, count, hasLabel, out, toArray, traversal } from './index.js';
  * `slotChainCount` against an INDEPENDENT WALK — the oracle `slot-chain-count.test.ts` does not have
  * (item 1423).
  *
- * ⚠️ THIS FILE EXISTS BECAUSE I ALMOST DESTROYED THAT ONE. Item 1110 already wrote
+ * THIS FILE EXISTS BECAUSE I ALMOST DESTROYED THAT ONE. Item 1110 already wrote
  * `slot-chain-count.test.ts` — TinkerPop 3.7.3 ground truth, three/four/five hops, the shapes the
  * dense route must decline, and a seed wide enough that the memo actually runs. I wrote a file of
  * the same name over it, and the only reason it surfaced is that a mutant which had been CAUGHT
@@ -102,7 +102,7 @@ describe('the 3+ hop chain count agrees with an independent walk (item 1423)', (
 
   for (const hops of [3, 4]) {
     test(`${hops} hops over a branchy 1,500-vertex graph, where runs exceed one entry`, () => {
-      // ⚠️ A PATH GIVES EVERY MEMO RUN LENGTH 1, so an off-by-one WITHIN a run is invisible there.
+      // A PATH GIVES EVERY MEMO RUN LENGTH 1, so an off-by-one WITHIN a run is invisible there.
       // Out-degree 2 makes runs length 2 and slots repeat across frontiers, which is what exercises
       // the `(off, len)` pair relative to each other.
       const g = branchy(1500);

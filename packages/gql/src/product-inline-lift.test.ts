@@ -13,7 +13,7 @@ import { query } from './index.js';
  * refusal was listed in that function's header with no reason beside it — an unmeasured scope
  * limit, not a decision, and the GQL spelling probe was measuring what it cost.
  *
- * ⚠️ THE MECHANISM IS NOT SEEDING. Inline props already seed through `indexCandidates`'s
+ * THE MECHANISM IS NOT SEEDING. Inline props already seed through `indexCandidates`'s
  * `node.pred.props` path, lifted or not — mutation proved it by restoring the old refusal and
  * leaving every assertion in THIS FILE green. So the seeding assertions below are real checks on
  * the seek, but they do NOT hold the lift; `lift-start-props.test.ts` does that. What the lifted
@@ -26,13 +26,13 @@ import { query } from './index.js';
  *     clause       14.20 -> 11.35      1.25x, NOT a target — see below
  *     MATCH MATCH  11.39 -> 10.18      1.12x, likewise
  *
- * ⚠️ THE LAST TWO ROWS ARE NOT WINS THIS ITEM EARNED DIRECTLY. They share a PROCESS with the
+ * THE LAST TWO ROWS ARE NOT WINS THIS ITEM EARNED DIRECTLY. They share a PROCESS with the
  * braces shape in that probe, and a shape that was 2x slower was polluting the dispatch sites its
  * group-mates use. Fixing it made them faster as a side effect. That is also why the probe
  * overstated the gap relative to a one-shape-per-process reading, and it is worth knowing before
  * quoting any group-mate's improvement as an engine win.
  *
- * ⚠️ AND A STANDALONE PROBE NEVER REPRODUCED THE GAP. `product-inline-seed-probe.ts` matches that
+ * AND A STANDALONE PROBE NEVER REPRODUCED THE GAP. `product-inline-seed-probe.ts` matches that
  * fixture on N, edge count, labels, property richness, the NDJSON load path, index-build order,
  * the second index, one-process multi-shape timing, two-pass min, and the per-rep `JSON.stringify`
  * — seven candidate causes, all refuted — and reads braces 8.78 against inlineWhere 8.66 both
@@ -156,7 +156,7 @@ describe('inline props on a second pattern reach the index', () => {
 
 describe('the refusals that must survive', () => {
   /**
-   * ⚠️ THE SUITE FOUND THIS, not the reasoning, and it is the one regression a performance rewrite
+   * THE SUITE FOUND THIS, not the reasoning, and it is the one regression a performance rewrite
    * must never cause: a query that MUST error returning a row instead.
    *
    * `MATCH p = (a:P {k: 1}), (p:P {k: 2})` collides a PATH variable with a node variable and must

@@ -2,10 +2,10 @@
  * ITEM 2227 — `MATCH (n:P) RETURN n.k AS k`, the plainest shape in the cliff finder, and the only one
  * whose `vs floor` ratio rises MONOTONICALLY with size (1.52 → 1.88 → 3.04x, item 2226).
  *
- * 🔑 THE LADDER adds one piece of the engine's machinery per rung, so a rung that closes the gap names the
+ * THE LADDER adds one piece of the engine's machinery per rung, so a rung that closes the gap names the
  * cause — and if that cause is already closed, there is no target (items 2216/2217).
  *
- * ⚠️ ONE ARM PER PROCESS (`ARM=`), because shapes timed in sequence pollute each other's dispatch (items
+ * ONE ARM PER PROCESS (`ARM=`), because shapes timed in sequence pollute each other's dispatch (items
  * 762, 2172-2175) and item 2214 measured a 2.6x that was purely first-row JIT warm-up.
  */
 import { Graph } from '@lenke/core';
@@ -19,7 +19,7 @@ for (let i = 0; i < NODES; i += 1) {
 }
 
 /*
- * ⚠️⚠️ **EDGES ARE PART OF THE FIXTURE EVEN THOUGH THIS SHAPE IS A NODE SCAN**, because the cliff finder's
+ * **EDGES ARE PART OF THE FIXTURE EVEN THOUGH THIS SHAPE IS A NODE SCAN**, because the cliff finder's
  * fixture has them and the first version of this probe did not — and the two instruments then disagreed
  * 2x (3.04x against 1.4x). A node scan touches no edge, but 320,000 of them change the heap the scan walks.
  * `EDGES=0` reproduces the edgeless arm.
@@ -128,12 +128,12 @@ const run = (): unknown => {
 };
 
 /*
- * ⚠️⚠️ **CONSUME THE RESULT CHEAPLY. `JSON.stringify` INSIDE THE TIMED LOOP DILUTES EVERY RATIO TOWARD
+ * **CONSUME THE RESULT CHEAPLY. `JSON.stringify` INSIDE THE TIMED LOOP DILUTES EVERY RATIO TOWARD
  * 1.0**, because it is a large cost IDENTICAL in both arms: the first version of this probe read the engine
  * at 1.3x the floor where the cliff finder read 3.04x, and stringifying 80,000 rows per iteration was the
  * whole difference.
  *
- * 🔑 It is the mirror of the dead-code trap (item 2200): consuming NOTHING lets the JIT delete the work,
+ * It is the mirror of the dead-code trap (item 2200): consuming NOTHING lets the JIT delete the work,
  * consuming EXPENSIVELY swamps it. A length read is enough to keep the array alive.
  */
 let sink = 0;

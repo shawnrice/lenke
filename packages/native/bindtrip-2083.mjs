@@ -41,7 +41,7 @@ const arms = {
 
     return sum;
   },
-  // ⚠️ THE BINDING IS STILL WRITTEN (a gate or a later clause may read it) but the read bypasses it.
+  // THE BINDING IS STILL WRITTEN (a gate or a later clause may read it) but the read bypasses it.
   // This is the arm the engine can actually ship if anything else in the loop needs the binding.
   writeonly: () => {
     const binding = new Map();
@@ -55,7 +55,7 @@ const arms = {
 
     return sum;
   },
-  // ⚠️ THE CONTROL: the loop and the property read, no closure and no Map. If `direct` is already at
+  // THE CONTROL: the loop and the property read, no closure and no Map. If `direct` is already at
   // this, the closure costs nothing and only the Map is in play.
   floor: () => {
     let sum = 0;
@@ -84,7 +84,7 @@ for (let r = 0; r < REPS; r++) {
   series.push(performance.now() - t0);
 }
 
-// ⚠️ EVERY ARM MUST PRODUCE THE SAME SUM. An arm reading a different thing is not a faster arm.
+// EVERY ARM MUST PRODUCE THE SAME SUM. An arm reading a different thing is not a faster arm.
 const expect = (N * (N - 1)) / 2;
 
 if (out !== expect) {

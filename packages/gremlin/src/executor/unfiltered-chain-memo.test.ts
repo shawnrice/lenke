@@ -1,17 +1,17 @@
 /*
  * Item 2131 — an UNFILTERED chain count is memoized per topology generation.
  *
- * 🔑 THE GQL TWIN ALREADY DID THIS (item 1890 put the degree product on its CSR), and the gap it left was
+ * THE GQL TWIN ALREADY DID THIS (item 1890 put the degree product on its CSR), and the gap it left was
  * the biggest cross-language one measured. Steady state, 200,000 vertices / 1,000,000 edges, identical
  * question and identical answer (5,000,000): GQL **0.3-0.5 ms** against Gremlin's **10.6-15.4**. After
  * this item Gremlin reads **0.0-0.1**.
  *
- * ⚠️⚠️ **THE WHOLE RISK IS STALENESS, SO THAT IS WHAT THIS FILE TESTS.** A cached count that outlives the
+ * **THE WHOLE RISK IS STALENESS, SO THAT IS WHAT THIS FILE TESTS.** A cached count that outlives the
  * thing it counted is a WRONG ANSWER, and it is the kind no timing probe and no answer-comparing test
  * finds unless the test MUTATES THE GRAPH between two asks. Every test below asks twice with a write in
  * between.
  *
- * 🔑 THE KEY IS `graph.topologyVersion`, chosen for two measured properties:
+ * THE KEY IS `graph.topologyVersion`, chosen for two measured properties:
  *
  *   - it advances SYNCHRONOUSLY on an edge or vertex write (verified: 2 -> 4 on `addEdge`, unchanged
  *     across a microtask drain) — unlike `version`/`epoch`, which advance only ON the drain and whose
@@ -56,11 +56,11 @@ const ringOf = (n: number): Graph => {
 const twoHop = (g: Graph): unknown => toArray(traversal(V(), out('E'), out('E'), count()), g)[0];
 
 describe('the unfiltered chain-count memo (item 2131)', () => {
-  describe('⚠️⚠️ it must GO STALE on a topology write — asked twice with a write between', () => {
+  describe('it must GO STALE on a topology write — asked twice with a write between', () => {
     test('an ADDED edge changes the answer', () => {
       /*
-       * 🔑 THE TEST THE WHOLE ITEM RESTS ON. The first ask populates the memo; the write must drop it.
-       * ⚠️ The arithmetic is checked, not just the inequality: one new edge `v0 -> v1` adds `v1`'s
+       * THE TEST THE WHOLE ITEM RESTS ON. The first ask populates the memo; the write must drop it.
+       * The arithmetic is checked, not just the inequality: one new edge `v0 -> v1` adds `v1`'s
        * out-degree (2 new paths leaving through v1) plus `v0`'s in-degree (2 existing arrivals that can
        * now continue through the new edge) — 4 more.
        */
@@ -90,8 +90,8 @@ describe('the unfiltered chain-count memo (item 2131)', () => {
 
     test('an ADDED vertex invalidates even though this count does not move', () => {
       /*
-       * ⚠️ An isolated vertex changes no 2-hop path, so the ANSWER is the same either way and this test
-       * cannot catch a stale read by itself. 🔑 What it pins is that the generation key moves — asserted
+       * An isolated vertex changes no 2-hop path, so the ANSWER is the same either way and this test
+       * cannot catch a stale read by itself. What it pins is that the generation key moves — asserted
        * directly, because the answer cannot assert it.
        */
       const g = ringOf(10);
@@ -106,7 +106,7 @@ describe('the unfiltered chain-count memo (item 2131)', () => {
       expect(twoHop(g)).toBe(40);
     });
 
-    test('⚠️ TWO writes in a row each invalidate — not just the first', () => {
+    test('TWO writes in a row each invalidate — not just the first', () => {
       const g = ringOf(10);
 
       expect(twoHop(g)).toBe(40);
@@ -139,7 +139,7 @@ describe('the unfiltered chain-count memo (item 2131)', () => {
     });
   });
 
-  describe('🔑 different SHAPES must not share one entry', () => {
+  describe('different SHAPES must not share one entry', () => {
     test('two hops and three hops', () => {
       const g = ringOf(10);
 
@@ -147,9 +147,9 @@ describe('the unfiltered chain-count memo (item 2131)', () => {
       expect(toArray(traversal(V(), out('E'), out('E'), out('E'), count()), g)[0]).toBe(80);
     });
 
-    test('⚠️ `out` and `in` — the direction is part of the key', () => {
+    test('`out` and `in` — the direction is part of the key', () => {
       /*
-       * In this ring both directions happen to give 40, so the ANSWER cannot separate them. 🔑 An
+       * In this ring both directions happen to give 40, so the ANSWER cannot separate them. An
        * asymmetric graph can: give one vertex an extra OUT edge and the out-chain count moves while the
        * in-chain count moves differently.
        */
@@ -167,16 +167,16 @@ describe('the unfiltered chain-count memo (item 2131)', () => {
       const [inCount] = toArray(traversal(V(), in_('E'), in_('E'), count()), g);
 
       /*
-       * ⚠️ A 2-hop count is actually direction-symmetric (reversing every path is a bijection), so these
+       * A 2-hop count is actually direction-symmetric (reversing every path is a bijection), so these
        * two are EQUAL by construction and cannot discriminate the key. The label test below is what does
        * — recorded here rather than leaving a test that looks discriminating and is not.
        */
       expect(outCount).toBe(inCount);
     });
 
-    test('⚠️⚠️ two different edge LABELS must not share an entry', () => {
+    test('two different edge LABELS must not share an entry', () => {
       /*
-       * 🔑 THE DISCRIMINATING SHAPE TEST. `E` and `F` have different topologies, so asking one after the
+       * THE DISCRIMINATING SHAPE TEST. `E` and `F` have different topologies, so asking one after the
        * other must give different answers — a key that ignored the label would return the first.
        */
       const g = ringOf(10);
@@ -204,11 +204,11 @@ describe('the unfiltered chain-count memo (item 2131)', () => {
     });
   });
 
-  describe('⚠️⚠️ the FILTERED count is NOT cached — a property write must still be seen', () => {
+  describe('the FILTERED count is NOT cached — a property write must still be seen', () => {
     test('a property write changes a filtered count', () => {
       /*
-       * 🔑 THE SOUNDNESS BOUNDARY OF THE WHOLE ITEM. `topologyVersion` does NOT advance on a property
-       * write (verified), so a cached FILTERED count would go stale silently. ⚠️ This test is what fails
+       * THE SOUNDNESS BOUNDARY OF THE WHOLE ITEM. `topologyVersion` does NOT advance on a property
+       * write (verified), so a cached FILTERED count would go stale silently. This test is what fails
        * if the memo's `unfiltered` guard is ever widened.
        */
       const g = ringOf(10);
@@ -227,7 +227,7 @@ describe('the unfiltered chain-count memo (item 2131)', () => {
       expect(filtered()).not.toBe(before);
     });
 
-    test('🔑 and the unfiltered count is unaffected by that same write', () => {
+    test('and the unfiltered count is unaffected by that same write', () => {
       const g = ringOf(10);
 
       expect(twoHop(g)).toBe(40);

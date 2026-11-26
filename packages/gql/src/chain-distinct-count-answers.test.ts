@@ -3,17 +3,17 @@ import { describe, expect, test } from 'bun:test';
 /**
  * The ANSWERS the `count(DISTINCT …)` chain rungs produce — item 1824.
  *
- * ⚠️ THIS IS AN AGGREGATE, WHICH MAKES A WRONG ANSWER THE WORST CLASS HERE, and the trap is
+ * THIS IS AN AGGREGATE, WHICH MAKES A WRONG ANSWER THE WORST CLASS HERE, and the trap is
  * specific and documented: **`count(DISTINCT x)` EXCLUDES nulls while `RETURN DISTINCT x` KEEPS
  * null as a row.** Over `1, null, absent, 2, 1` the count is 2 and the rows are three. So the
  * obvious implementation of these rungs — take the rung's rows, `distinctRows(...).length` — is a
  * silent wrong answer on any fixture carrying a null or an absent property, and every test in this
  * file that does not involve a null would pass anyway.
  *
- * ⚠️ WHICH IS WHY HALF OF THESE CASES ARE NULL CASES. The route change is answer-equivalent on
+ * WHICH IS WHY HALF OF THESE CASES ARE NULL CASES. The route change is answer-equivalent on
  * clean data, so clean data proves nothing.
  *
- * ⚠️ AND THE ORACLE IS NEVER A HAND-COUNTED NUMBER ALONE where it can be the GENERAL PATH'S OWN
+ * AND THE ORACLE IS NEVER A HAND-COUNTED NUMBER ALONE where it can be the GENERAL PATH'S OWN
  * ANSWER. A spelling the rungs decline (`ORDER BY`, or a `WITH` in front) routes the same question
  * through the general matcher, so the two can be compared directly — which catches a rung that is
  * merely self-consistent.
@@ -24,7 +24,7 @@ import { query } from './index.js';
 
 /**
  * Four levels of `n` vertices, fully connected level to level, so every depth is reachable and the
- * undeduped row count at depth d is `n^(d+1)`. ⚠️ Every level carries the same values, which item
+ * undeduped row count at depth d is `n^(d+1)`. Every level carries the same values, which item
  * 1822 learned the hard way: a fixture whose values live at ONE depth can only be read at one
  * depth, and it silently broke every test at a different width.
  */
@@ -36,7 +36,7 @@ const levels = (values: readonly unknown[]): Graph => {
     for (let i = 0; i < n; i += 1) {
       const properties: Record<string, unknown> = { s: `s${i % 2}` };
 
-      // ⚠️ `undefined` means the property is ABSENT, which is a different code path from a stored
+      // `undefined` means the property is ABSENT, which is a different code path from a stored
       // null — and `count(DISTINCT)` must treat both as "not a value" while `RETURN DISTINCT`
       // treats a stored null as a row. Both appear below.
       if (values[i] !== undefined) {
@@ -85,7 +85,7 @@ describe('count(DISTINCT) over a chain', () => {
   });
 
   /**
-   * ⚠️ THE NULL CASE, AND IT IS THE WHOLE POINT. A stored null and an absent property are both
+   * THE NULL CASE, AND IT IS THE WHOLE POINT. A stored null and an absent property are both
    * excluded from the count, so `[1, null, undefined, 2, 1]` counts **2** — while
    * `RETURN DISTINCT k` over the same data is THREE rows (1, 2 and null). Asserting both here
    * pins the difference rather than the count alone.
@@ -122,7 +122,7 @@ describe('count(DISTINCT) over a chain', () => {
   });
 
   /**
-   * ⚠️ AN EXPRESSION WRAPPING THE AGGREGATE MUST NOT TAKE THE RUNG. `count(DISTINCT k) + 1` folds
+   * AN EXPRESSION WRAPPING THE AGGREGATE MUST NOT TAKE THE RUNG. `count(DISTINCT k) + 1` folds
    * the same aggregate, but the row's value is the arithmetic — a rung answering the fold's result
    * directly would silently drop the `+ 1`. This is the identity test in both detectors.
    */
@@ -142,7 +142,7 @@ describe('count(DISTINCT) over a chain', () => {
   });
 
   /**
-   * ⚠️ THE CROSS-ROUTE ORACLE. `ORDER BY` declines these rungs, so the same question goes through
+   * THE CROSS-ROUTE ORACLE. `ORDER BY` declines these rungs, so the same question goes through
    * the general matcher and the two answers must agree — the check that catches a rung which is
    * merely self-consistent. Null and absent values are in the fixture deliberately.
    */
@@ -181,7 +181,7 @@ describe('count(DISTINCT) over a chain', () => {
  * `min`/`max` and plain `count(x)` over the same chains — item 1830, which widened item 1824's
  * `count(DISTINCT)` detector into an ALLOWLIST of order-invariant folds.
  *
- * ⚠️ THE ORACLE IS VERIFIED TO DECLINE BEFORE IT IS USED, which item 1827 learned the hard way: a
+ * THE ORACLE IS VERIFIED TO DECLINE BEFORE IT IS USED, which item 1827 learned the hard way: a
  * "cross-route" comparison is worthless if both spellings take the same route. Asked directly of
  * `compileLinear`:
  *
@@ -192,7 +192,7 @@ describe('count(DISTINCT) over a chain', () => {
  *   RETURN max(d.k), min(d.k)     -> []   (one aggregate only)
  * ```
  *
- * ⚠️ AND THE REFUSALS MATTER MORE THAN THE ADMISSIONS HERE. `sum`/`avg` are order-sensitive in the
+ * AND THE REFUSALS MATTER MORE THAN THE ADMISSIONS HERE. `sum`/`avg` are order-sensitive in the
  * last ulp and `collect`'s order IS its answer, so a rung whose walk order differs from the general
  * path's would break byte-identity with Rust. Those three are asserted to stay OFF this rung in
  * `routes-fired.test.ts`; what follows is the answers for the ones that are on it.
@@ -207,7 +207,7 @@ describe('min/max and count(x) over a chain', () => {
     expect(query(g, `${HOP2} RETURN min(c.k) AS m`)).toEqual([{ m: 1 }]);
   });
 
-  /** ⚠️ Nulls never reach `step`, so they neither win nor poison the extremum. */
+  /** Nulls never reach `step`, so they neither win nor poison the extremum. */
   test('a null and an absent property are ignored by the extremum', () => {
     const g = levels([5, null, undefined, 2]);
 
@@ -215,7 +215,7 @@ describe('min/max and count(x) over a chain', () => {
     expect(query(g, `${HOP3} RETURN min(d.k) AS m`)).toEqual([{ m: 2 }]);
   });
 
-  /** ⚠️ Every value null/absent means NO value reached the fold — the answer is null, not 0. */
+  /** Every value null/absent means NO value reached the fold — the answer is null, not 0. */
   test('an extremum over nothing is null', () => {
     const g = levels([null, undefined]);
 
@@ -234,7 +234,7 @@ describe('min/max and count(x) over a chain', () => {
   });
 
   /**
-   * ⚠️ THE VERIFIED CROSS-ROUTE ORACLE. `max(d.k) + 0` is the WRAPPING refusal, confirmed above to
+   * THE VERIFIED CROSS-ROUTE ORACLE. `max(d.k) + 0` is the WRAPPING refusal, confirmed above to
    * fire no rung at all — so this compares the rung against the general matcher on the same data,
    * rather than against itself.
    */

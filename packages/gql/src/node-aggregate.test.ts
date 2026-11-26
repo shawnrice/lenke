@@ -202,7 +202,7 @@ describe('a WRAPPED fold aggregate agrees with the general path', () => {
     expect(got).toEqual(viaGeneral(g, q));
   });
 
-  // ⚠️ THE EMPTY-SCAN CASE IS THE ONE THE WRAPPING CHANGES. A bare `min` over no rows owes ONE row
+  // THE EMPTY-SCAN CASE IS THE ONE THE WRAPPING CHANGES. A bare `min` over no rows owes ONE row
   // holding null; wrapped, the null must flow THROUGH the outer expression rather than short out,
   // so `coalesce` gets to replace it and arithmetic propagates it. A route that returned the raw
   // folded null would pass the non-empty rows above and fail only here.

@@ -1,7 +1,7 @@
 /**
  * Item 1345's degree gate on the per-endpoint extremum fold.
  *
- * ⚠️ WHY THE ARITHMETIC IS TESTED DIRECTLY. The gate chooses between two routes that return
+ * WHY THE ARITHMETIC IS TESTED DIRECTLY. The gate chooses between two routes that return
  * IDENTICAL rows — the per-endpoint fold (item 1246) and the per-row walk it replaces — so every
  * mutation of it is answer-equivalent and survives the differential and fuzzer suites untouched.
  * That is this repo's `perf-gate-needs-its-own-test` rule, and the remedy it prescribes is exactly
@@ -23,7 +23,7 @@ describe('endpointFoldBeatsRowWalk — the gate arithmetic', () => {
   });
 
   test('admits at degree 6 and above, every degree the fold is still measured to WIN (item 2402)', () => {
-    // ⚠️ WAS "degree 3 and above". Item 2402 re-measured the crossover at FIVE: the fold is flat in
+    // WAS "degree 3 and above". Item 2402 re-measured the crossover at FIVE: the fold is flat in
     // degree while the walk scales, and the walk has roughly halved since item 1345 set this gate
     // (items 2297/2298, 2401), so degrees 2-4 moved from the fold to the walk — 3.67x, 1.89x, 1.38x.
     expect(endpointFoldBeatsRowWalk(1_200_000, 200_000)).toBe(true);
@@ -132,7 +132,7 @@ describe('the route flip does not change the answer', () => {
     expect(endpointFoldBeatsRowWalk(graph.edgeCount, graph.vertexCount)).toBe(false);
     expect(query(graph, 'MATCH (a:P)-[:T]->(x) RETURN max(x.n) AS hi', {})[0].hi).toBe(49);
 
-    // Cross the threshold. Same query, other route, same answer. ⚠️ 270 edges, not 60: item 2402
+    // Cross the threshold. Same query, other route, same answer. 270 edges, not 60: item 2402
     // moved the boundary from 2 edges per vertex to 6, so 110 edges over 50 vertices (degree 2.2)
     // no longer crosses it. 320 over 50 is degree 6.4.
     for (let k = 0; k < 270; k++) {

@@ -1,10 +1,10 @@
 /**
- * ⚠️⚠️ **THE GREMLIN SURFACE HAS NEVER BEEN TIMED AGAINST THE NATIVE ENGINE (item 2241).**
+ * **THE GREMLIN SURFACE HAS NEVER BEEN TIMED AGAINST THE NATIVE ENGINE (item 2241).**
  * `bench-gremlin.ts` is TS-only, so every Gremlin number this session trusted was TS-vs-a-hand-rolled-floor.
  * Item 2240 left the question of whether a FAIR comparison is even constructible open; `gremlin-fuzz.test.ts`
  * settles it — **`planToGremlin` renders a programmatic plan to text**, so one plan can drive both engines.
  *
- * 🔑 **THREE THINGS THIS INSTRUMENT DOES THAT THE GQL BENCH DOES NOT (item 2236):**
+ * **THREE THINGS THIS INSTRUMENT DOES THAT THE GQL BENCH DOES NOT (item 2236):**
  *
  * 1. **IT COMPARES THE ANSWERS.** `bench.ts` discards every result (`void e.query(...)`), so none of its
  *    ratios prove the engines did the same work. Here a mismatch is printed loudly and counted.
@@ -14,7 +14,7 @@
  * 3. **IT SWEEPS THE SIZE.** Item 2236 found the GQL ratio growing 3.1x -> 16.1x purely because the native
  *    fixed cost amortizes. A one-size Gremlin ratio would mislead the same way.
  *
- * ⚠️ Row ORDER is not compared — unordered order is unspecified, and comparing it would be a false alarm.
+ * Row ORDER is not compared — unordered order is unspecified, and comparing it would be a false alarm.
  */
 import { Graph as TsGraph } from '@lenke/core';
 import {
@@ -43,7 +43,7 @@ const LIB = new URL(
   import.meta.url,
 ).pathname;
 
-/* ⚠️ FANOUT > 1 must split on the REPEAT INDEX or one vertex's whole fan-out lands on ONE target and every
+/* FANOUT > 1 must split on the REPEAT INDEX or one vertex's whole fan-out lands on ONE target and every
  * degree check still looks perfect (the recorded generator defect). */
 const doc = (() => {
   const lines = Array.from(
@@ -65,7 +65,7 @@ const doc = (() => {
 })();
 
 /*
- * ⚠️⚠️ **A LARGE RESULT SET MAKES THIS A MARSHALLING BENCHMARK, NOT AN ENGINE ONE.** The native arm
+ * **A LARGE RESULT SET MAKES THIS A MARSHALLING BENCHMARK, NOT AN ENGINE ONE.** The native arm
  * serializes every row to JSON and this side parses it back, so `values hop hop` (320,000 values) priced
  * the FFI boundary and reported TS "winning" 0.42x. That is not an engine comparison, so such rows are
  * marked `[BOUNDARY]` and must not be read as one. Only small-result shapes (the counts, a groupCount over
@@ -77,10 +77,10 @@ const SHAPES: Array<[string, Plan]> = [
   ['count hop + far has', traversal(V(), hasLabel('User'), out('E'), has('team', 7), count())],
   ['values groupCount', traversal(V(), hasLabel('User'), values('team'), groupCount())],
   /*
-   * 🔑🔑 **REAL WORK, ONE ROW — WHERE AN ENGINE COMPARISON ACTUALLY LIVES (item 2242).** The rows above
+   * **REAL WORK, ONE ROW — WHERE AN ENGINE COMPARISON ACTUALLY LIVES (item 2242).** The rows above
    * are engine-bound but TINY in absolute terms: `count hop` is a DEGREE-SUM CLOSED FORM at ~10 us, so its
    * 5.25x is ~8 us of difference and means nothing. The `[BOUNDARY]` rows below have real work but their
-   * result set prices the FFI boundary instead. ⚠️ **Both failure modes are avoided by a shape that walks a
+   * result set prices the FFI boundary instead. **Both failure modes are avoided by a shape that walks a
    * lot and returns ONE row** — a filtered multi-hop count. These are the finder's own heavy shapes.
    */
   ['count hop hop', traversal(V(), hasLabel('User'), out('E'), out('E'), count())],
@@ -102,12 +102,12 @@ const SHAPES: Array<[string, Plan]> = [
 /**
  * Row count plus an order-insensitive hash — enough to catch a decline or a wrong answer.
  *
- * ⚠️⚠️ **`JSON.stringify` IS NOT ENOUGH, AND THIS INSTRUMENT GOT IT WRONG ON ITS FIRST RUN.**
+ * **`JSON.stringify` IS NOT ENOUGH, AND THIS INSTRUMENT GOT IT WRONG ON ITS FIRST RUN.**
  * `JSON.stringify(new Map([[0, 2]]))` is `"{}"`, so every `groupCount()` row hashed to the SAME value and
  * the checker reported a DIVERGENCE that did not exist (ts `Map(3){0=>2,1=>2,2=>2}` against ffi
  * `{"0":2,"1":2,"2":2}` — the same answer). A blind spot of exactly the kind the checker exists to catch.
  *
- * 🔑 So Maps are walked explicitly, and an ELEMENT used as a group key is reduced to its id: keying
+ * So Maps are walked explicitly, and an ELEMENT used as a group key is reduced to its id: keying
  * `groupCount()` on vertices renders as `Vertex (v0) {}` in TS and as the id in the native engine — the two
  * format elements differently BY DESIGN (`gremlin-fuzz.test.ts` says so), and that is not a divergence.
  */
@@ -130,7 +130,7 @@ const canon = (v: unknown): string => {
   }
 
   /*
-   * ⚠️ A GROUP MAP CROSSES THE FFI AS A PLAIN JSON OBJECT, SO ITS KEYS ARE STRINGS. A `Map` keyed on the
+   * A GROUP MAP CROSSES THE FFI AS A PLAIN JSON OBJECT, SO ITS KEYS ARE STRINGS. A `Map` keyed on the
    * NUMBER 0 and an object keyed on `"0"` are the same answer; comparing their renderings is not. Keys are
    * therefore stringified on BOTH sides — the second false divergence this checker reported, after
    * `JSON.stringify(Map)` being `"{}"`.

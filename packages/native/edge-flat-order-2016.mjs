@@ -1,7 +1,7 @@
 /**
  * Item 2016 — DOES THE FLAT EDGE ARRAY EMIT THE SAME ROWS IN THE SAME ORDER AS THE BUCKET WALK?
  *
- * ⚠️⚠️ **THIS IS THE WHOLE CORRECTNESS ARGUMENT FOR THE FLAT ARM, AND THE SECOND-ASK POLICY MAKES IT
+ * **THIS IS THE WHOLE CORRECTNESS ARGUMENT FOR THE FLAT ARM, AND THE SECOND-ASK POLICY MAKES IT
  * SELF-CHECKING.** `edge-filtered-hop-values.ts` takes the flat array only from the SECOND ask on a
  * topology version (item 1889's policy, in its own `'e'` namespace). So within ONE process, with no
  * write between them:
@@ -16,10 +16,10 @@
  * cross-engine failure, not an unspecified-order liberty. And a checksum cannot see a reordering
  * (item 1955), which is why this compares positions.
  *
- * ⚠️ A WRITE BETWEEN ASKS RESETS THE POLICY, because the key includes `topologyVersion`. That is
+ * A WRITE BETWEEN ASKS RESETS THE POLICY, because the key includes `topologyVersion`. That is
  * asserted too: after a write the next ask must be the BUCKET walk again, and must still agree.
  *
- * ⚠️ FIXTURE SHAPES THAT COULD BREAK THE ORDER, all present below: a vertex with NO edge of the type
+ * FIXTURE SHAPES THAT COULD BREAK THE ORDER, all present below: a vertex with NO edge of the type
  * (an empty bucket the bucket walk skips and the flat build must also skip), a vertex with a
  * MULTI-EDGE bucket (so intra-bucket order matters), a SELF-LOOP, an edge of ANOTHER type
  * interleaved (so the build must filter by type, not position), and a vertex whose edges were added
@@ -89,7 +89,7 @@ const SHAPES = {
   // TWO `has` steps, so the multi-gate loop is exercised on both arms.
   'outE.has.has.inV.values': () =>
     traversal(V(), outE('E'), has('w', gt(3)), has('w', gt(4)), inV(), values('n')),
-  // ⚠️ INWARD: `inE` pairs with `outV`, and the flat build reads `adjTo` instead of `adjFrom` — a
+  // INWARD: `inE` pairs with `outV`, and the flat build reads `adjTo` instead of `adjFrom` — a
   // SECOND cache key and a second traversal order, so a build that ignored `outward` would show
   // here and nowhere above.
   'inE.has.outV.values(n)': () => traversal(V(), inE('E'), has('w', gt(3)), outV(), values('n')),
@@ -117,11 +117,11 @@ for (const [name, make] of Object.entries(SHAPES)) {
     bad += 1;
   }
 
-  console.log(`${ok ? '  ' : '⚠️'} ${name.padEnd(30)} ${ok ? a1 : `${a1}\n     VS  ${a2}`}`);
+  console.log(`${ok ? '  ' : ''} ${name.padEnd(30)} ${ok ? a1 : `${a1}\n     VS  ${a2}`}`);
 }
 
 /*
- * ⚠️ AND A WRITE MUST SEND IT BACK TO THE BUCKET WALK, because the policy's key includes
+ * AND A WRITE MUST SEND IT BACK TO THE BUCKET WALK, because the policy's key includes
  * `topologyVersion`. If the cache were merely STAMPED with the version rather than keyed on it, this
  * is the assertion that would fail — a stale flat array over a changed topology.
  */
@@ -149,11 +149,11 @@ if (!grew || !agree) {
 }
 
 console.log(
-  `\n${grew ? '  ' : '⚠️'} a write CHANGES the answer: ${String(grew)}` +
+  `\n${grew ? '  ' : ''} a write CHANGES the answer: ${String(grew)}` +
     `   (if false this fixture cannot test staleness)`,
 );
 console.log(
-  `${agree ? '  ' : '⚠️'} after the write, bucket and flat AGREE: ${String(agree)}\n` +
+  `${agree ? '  ' : ''} after the write, bucket and flat AGREE: ${String(agree)}\n` +
     `     bucket ${afterBucket}\n     flat   ${afterFlat}`,
 );
 

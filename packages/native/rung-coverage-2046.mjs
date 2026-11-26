@@ -1,7 +1,7 @@
 /*
  * Item 2046 — WHICH GREMLIN RUNGS DOES NO BENCHMARK SHAPE REACH?
  *
- * 🔑 **THE ROUTE CENSUS CANNOT ANSWER THIS.** It counts `applyStep` calls, so it says "fused" or
+ * **THE ROUTE CENSUS CANNOT ANSWER THIS.** It counts `applyStep` calls, so it says "fused" or
  * "generic" for a SHAPE — never which RUNG did the fusing, and never that a rung exists which no
  * shape visits at all. Item 2028 found the reconverging families had no census rows by reading
  * `pickFor` by hand across five files; item 2036 found the same for `hasLabel`. **This asks the
@@ -12,7 +12,7 @@
  * exactly the blind spot worth knowing: a rung nothing measures can rot (item 1870's 678x regression
  * sat in a shipped rung invisibly) and a gap in it cannot be found by timing.
  *
- * ⚠️ IT MUST RUN UNDER `node`, not `bun` — `NODE_V8_COVERAGE` is a V8/node facility. The wrapper
+ * IT MUST RUN UNDER `node`, not `bun` — `NODE_V8_COVERAGE` is a V8/node facility. The wrapper
  * below sets it and re-reads the JSON, so there is nothing to remember at the call site.
  *
  *     bun rung-coverage-2046.mjs        # spawns the node pass itself
@@ -28,14 +28,14 @@ const GREMLIN_SRC = join(HERE, '..', 'gremlin', 'src', 'executor');
 /*
  * Every exported RUNG entry point, read from the SOURCE so the list cannot go stale.
  *
- * ⚠️ FILTERED BY NAME SHAPE, because a bare "every exported const" sweep pulled in scores of helpers
+ * FILTERED BY NAME SHAPE, because a bare "every exported const" sweep pulled in scores of helpers
  * (`maxLocal`, `pageRankStep`, `tupleKey`, …) and buried the question. A rung is the thing `run`
  * consults to claim a plan, and they are named for it.
  */
 const RUNG = /(Shortcut|HopValues|Hop|Csr|Fusion|Walk|Residual|Existence|Shape|Step)$/;
 
 /*
- * ⚠️⚠️ **A SECOND PATTERN, BECAUSE THE SUFFIX ONE MISSED FIFTEEN ROUTE-DECIDERS (item 2071).** The
+ * **A SECOND PATTERN, BECAUSE THE SUFFIX ONE MISSED FIFTEEN ROUTE-DECIDERS (item 2071).** The
  * comment above says the list "cannot go stale", and as a list it cannot — but the FILTER could, and
  * had: every `fusable*` gate and every `*Projected*` emit ends in `Count`, `Cap`, `Fold`, `Order`,
  * `Bag`, `List`, `MinMax`, `TopK` or `Barrier`, none of which the suffix pattern matches. ELEVEN of
@@ -103,16 +103,16 @@ const { V, out, in_, both, values, count, hasLabel, has, order, dedupe, limit, p
 const failures = [];
 
 const shapes = [
-  // ⚠️ ITEM 2068: the three shapes that reach aggregateStep, which this audit had reported NEVER
+  // ITEM 2068: the three shapes that reach aggregateStep, which this audit had reported NEVER
   // ENTERED. aggregate('x').cap('x') does NOT reach it -- item 1911's fused residual claims that
   // shape whole -- so dropping the cap is the only way in. Added here as well as to both screens,
   // because an audit that keeps reporting a gap already covered elsewhere teaches you to ignore it.
   //
-  // ⚠️⚠️ NO BACKTICKS IN THIS LIST. It is embedded in the generated driver's TEMPLATE LITERAL, so a
+  // NO BACKTICKS IN THIS LIST. It is embedded in the generated driver's TEMPLATE LITERAL, so a
   // backtick here terminates it -- the trap items 2036, 2046 and 2049 each hit, and which this file
   // already asserts against for the driver's own text.
   () => traversal(V(), out('E'), aggregate('x'), count()),
-  // ⚠️ ITEM 2071: shapes for two rungs that PROVABLY WORK but had no shape here. Widening the rung
+  // ITEM 2071: shapes for two rungs that PROVABLY WORK but had no shape here. Widening the rung
   // FILTER without widening the SHAPES turns "unmatched" into "never entered" - which reads as an
   // engine gap and is an instrument artifact. The census reports both of these FUSED.
   () => traversal(V(), out('E'), values('n'), aggregate('x')),
@@ -176,7 +176,7 @@ for (let pass = 0; pass < 2; pass += 1) {
     try {
       toArray(mk(), g);
     } catch (e) {
-      // ⚠️⚠️ A SWALLOWED THROW USED TO BE INVISIBLE, AND THAT COST ITEM 2068 THREE RUNS. Three new
+      // A SWALLOWED THROW USED TO BE INVISIBLE, AND THAT COST ITEM 2068 THREE RUNS. Three new
       // shapes referenced aggregate/store, which the driver did not destructure from the
       // namespace, so every one threw on an undefined callee -- and the audit reported the SAME
       // "36 reached, aggregateStep NEVER ENTERED" it had before, which reads as "the shape does not
@@ -193,7 +193,7 @@ process.stdout.write(JSON.stringify({ shapes: shapes.length, failures }));
 `;
 
 /*
- * ⚠️⚠️ **THE ASSERTION THIS FILE ONLY HAD A COMMENT ABOUT (item 2068).** A backtick anywhere in the
+ * **THE ASSERTION THIS FILE ONLY HAD A COMMENT ABOUT (item 2068).** A backtick anywhere in the
  * driver's text terminates the template it lives in, and the failure surfaces as a SyntaxError about
  * whatever identifier followed it — nothing that names the real cause. The trap has now fired at
  * items 2036, 2046, 2049 and TWICE inside 2068, the second time in a comment warning about it. Item
@@ -213,13 +213,13 @@ const driverPath = join(HERE, 'rung-coverage-driver-2046-tmp.mjs');
 writeFileSync(driverPath, driver);
 
 /*
- * ⚠️ `node` BY NAME, NOT `process.execPath` — this wrapper itself runs under `bun`, where
+ * `node` BY NAME, NOT `process.execPath` — this wrapper itself runs under `bun`, where
  * `process.execPath` IS bun, and bun does not honour NODE_V8_COVERAGE. The first version spawned bun
  * with a node-only env var and reported "no coverage recorded", which reads like a broken facility
  * rather than the wrong interpreter.
  */
 /*
- * ⚠️⚠️ THE DRIVER IS DELETED IN A `finally`, AND IT WAS NOT (item 2068). It is written into THIS
+ * THE DRIVER IS DELETED IN A `finally`, AND IT WAS NOT (item 2068). It is written into THIS
  * directory rather than the temp dir — deliberately, so `@lenke/gremlin` resolves — and nothing
  * removed it, so every run of this probe left a generated file in the repo that `bun run lint` then
  * failed on (`prefer-template`, four times). A probe that breaks the gate after it runs is a probe
@@ -240,14 +240,14 @@ const driverResult = JSON.parse(out);
 const shapeCount = driverResult.shapes;
 
 /*
- * ⚠️⚠️ A SHAPE THAT THREW IS REPORTED, NOT SWALLOWED (item 2068). Three shapes referencing
+ * A SHAPE THAT THREW IS REPORTED, NOT SWALLOWED (item 2068). Three shapes referencing
  * `aggregate`/`store` threw on an undefined callee because the driver did not destructure them, and
  * the audit reported the same "NEVER ENTERED" as before — indistinguishable from the shape genuinely
  * not reaching the rung. This makes the two cases different on the page.
  */
 if (driverResult.failures !== undefined && driverResult.failures.length > 0) {
   console.log(
-    `\n  ⚠️ ${String(driverResult.failures.length)} shape(s) THREW and reached nothing — a coverage ` +
+    `\n  ${String(driverResult.failures.length)} shape(s) THREW and reached nothing — a coverage ` +
       `gap below may be this, not the rung:\n    ${driverResult.failures.join('\n    ')}`,
   );
 }
@@ -280,7 +280,7 @@ const reached = rungs.filter((r) => (counts.get(r) ?? 0) > 0);
 console.log(`\n  ${shapeCount} shapes x 2 passes; ${rungs.length} exported rungs in source\n`);
 console.log(`  REACHED (${reached.length}):`);
 console.log(`    ${reached.join(', ')}\n`);
-console.log(`  ⚠️ NEVER ENTERED (${unreached.length}) — no benchmark shape here reaches these:`);
+console.log(`  NEVER ENTERED (${unreached.length}) — no benchmark shape here reaches these:`);
 
 for (const r of unreached) {
   console.log(`    ${r}`);

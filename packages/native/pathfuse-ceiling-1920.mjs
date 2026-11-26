@@ -7,12 +7,12 @@
 // rung could build it directly, the way items 1912/1914 ride past that guard by claiming the whole
 // plan.
 //
-// ⚠️ PRICE IT BEFORE BUILDING IT. This would be a NEW MODULE — `tagged-hop-values.ts` is built
+// PRICE IT BEFORE BUILDING IT. This would be a NEW MODULE — `tagged-hop-values.ts` is built
 // around HAVING an `as_` label and a path shape has none — which means a recognizer plus a walk
 // written twice over two arms, i.e. the four paths item 1914 showed the obvious tests miss. That is
 // an item-sized build, and item 1916 priced a 13.1% profile frame at 0.4% for the cost of one micro.
 //
-// 🔑 THE QUESTION IS WHETHER THE ARRAY ALLOCATION EATS THE WIN. The fused rung must still allocate
+// THE QUESTION IS WHETHER THE ARRAY ALLOCATION EATS THE WIN. The fused rung must still allocate
 // one 2-element array per row — 600,000 of them — where the plain hop allocates none. So the ceiling
 // is not the hop floor; it is the hop floor PLUS that allocation, and if that lands near 124 ms
 // there is nothing to take.
@@ -91,7 +91,7 @@ const ARMS = {
 
     return out.length;
   },
-  // ⚠️ THE CEILING FOR THE FUSION: one 2-element array per row, pushed. This is the most a fused
+  // THE CEILING FOR THE FUSION: one 2-element array per row, pushed. This is the most a fused
   // `path()` rung could possibly achieve over this walk.
   pathrow: () => {
     const out = [];
@@ -142,7 +142,7 @@ console.log(
     `(pathrow ${results.pathrow.toFixed(2)} vs far ${results.far.toFixed(2)})`,
 );
 console.log(
-  `⚠️ READ AS A CEILING, NOT A PREDICTION: a real rung also pays the gate, the generator or drain,\n` +
+  `READ AS A CEILING, NOT A PREDICTION: a real rung also pays the gate, the generator or drain,\n` +
     `   and the CSR memo. Against the engine's ${ENGINE} ms for this shape, the hand walk is ` +
     `${(ENGINE / results.pathrow).toFixed(2)}x — so at most ${(ENGINE - results.pathrow).toFixed(2)} ms is available.`,
 );

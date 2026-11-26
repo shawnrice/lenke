@@ -8,7 +8,7 @@
  * amounts, the defect class this engine is named after. Item 1612's 214x sat next to a 464 us closed
  * form and no absolute reading would have flagged it.
  *
- * ⚠️ THE GQL SIDE CAN DO BETTER THAN A BOOLEAN. `compileLinear` returns a record of ~22 NAMED rungs,
+ * THE GQL SIDE CAN DO BETTER THAN A BOOLEAN. `compileLinear` returns a record of ~22 NAMED rungs,
  * so this prints WHICH ones fire rather than merely whether any did. That matters because of
  * `rung-precedence-decides-speed`: a willing rung can be starved by a broader one above it in
  * `runLinear`'s chain (1.80-6.00x at item 1583), and the fired-rung SET is the only thing that shows
@@ -49,7 +49,7 @@ for (let i = 0; i < NODES; i += 1) {
 }
 
 /**
- * ⚠️ SPLIT THE TARGET ON THE REPEAT INDEX. `to = (a * k + b) % N` is INVARIANT under `k -> k + N`,
+ * SPLIT THE TARGET ON THE REPEAT INDEX. `to = (a * k + b) % N` is INVARIANT under `k -> k + N`,
  * so a loop over `k < NODES * FANOUT` gives every one of a vertex's FANOUT edges the SAME target:
  * degree counts look perfect while the graph is FUNCTIONAL (CLAUDE.md, items 1516/1518).
  */
@@ -97,7 +97,7 @@ const routes = (src: string): string[] => {
   const q = parse(src) as never as { parts: readonly never[] };
   const cl = compileLinear(q.parts[0]) as unknown as Record<string, unknown>;
 
-  // ⚠️ A RUNG IS A FUNCTION — see the header. Excluding fields by name is what let a boolean in.
+  // A RUNG IS A FUNCTION — see the header. Excluding fields by name is what let a boolean in.
   return Object.entries(cl)
     .filter(([, v]) => typeof v === 'function')
     .map(([k]) => k)
@@ -107,7 +107,7 @@ const routes = (src: string): string[] => {
 /**
  * A shape, and optionally THE HONEST FLOOR FOR IT (item 2211).
  *
- * ⚠️⚠️ **FLOORS CAUSED THREE WRONG CALLS IN FOUR ITEMS (2206, 2208/2209, 2210), so the convention lives
+ * **FLOORS CAUSED THREE WRONG CALLS IN FOUR ITEMS (2206, 2208/2209, 2210), so the convention lives
  * HERE rather than in my head.** A `floor` is a hand-rolled arm that does **THE SAME WORK** as the query,
  * including work the query's clauses imply:
  *
@@ -115,11 +115,11 @@ const routes = (src: string): string[] => {
  *     unordered query PLUS a bare sort of its own rows*, and comparing against the unordered query alone
  *     **overstates by ~1.9x**. Item 2210 made exactly that error and withdrew a 3.5x "target".
  *   - a filtered shape's floor must apply the filter.
- *   - ⚠️ a floor may NOT use a cheaper ORDER than the engine is allowed to. The far-driven walk reorders
+ *   - a floor may NOT use a cheaper ORDER than the engine is allowed to. The far-driven walk reorders
  *     rows and tie order is observable between the engines (item 605), so a streamed top-k is sound only
  *     where ties are identical rows.
  *
- * 🔑 **`vs floor` IS THE VERDICT; the neighbour-pair ratios below are a hint.** A shape with no floor
+ * **`vs floor` IS THE VERDICT; the neighbour-pair ratios below are a hint.** A shape with no floor
  * prints `-` and is explicitly unpriced rather than implicitly compared to something irrelevant.
  */
 type Shape = {
@@ -130,7 +130,7 @@ type Shape = {
 };
 
 /**
- * ⚠️ EVERY FAMILY VARIES ONE CLAUSE AT A TIME, and each has a member the engine is known to answer
+ * EVERY FAMILY VARIES ONE CLAUSE AT A TIME, and each has a member the engine is known to answer
  * in closed form. A family of uniformly-slow shapes says nothing: the signal is the DISAGREEMENT
  * between neighbours, which is why the pairs at the bottom are declared rather than inferred.
  */
@@ -309,7 +309,7 @@ const hopTally = (): Map<unknown, number> => {
 /**
  * Count the `(a:P)-[:E]->(b:P)` paths, optionally keeping only `k === want`.
  *
- * ⚠️ A COUNT'S FLOOR MUST NOT MATERIALIZE ROWS — that would charge the engine for allocation its own
+ * A COUNT'S FLOOR MUST NOT MATERIALIZE ROWS — that would charge the engine for allocation its own
  * closed form avoids, which is the mirror image of item 698's mistake (a floor doing LESS work than the
  * query overstates; one doing MORE understates and hides a real gap).
  */
@@ -456,7 +456,7 @@ const SHAPES: Shape[] = [
     family: 'page',
     name: 'ordered rows',
     q: 'MATCH (n:P) RETURN n.k AS k ORDER BY k',
-    /* ⚠️ THE SORT IS PART OF THE FLOOR — item 698. */
+    /* THE SORT IS PART OF THE FLOOR — item 698. */
     floor: { label: 'scan + sort', run: () => scanRows().sort(byK) },
   },
   {
@@ -470,7 +470,7 @@ const SHAPES: Shape[] = [
     name: 'topk over a hop',
     q: 'MATCH (a:P)-[:E]->(b:P) RETURN b.k AS k ORDER BY k LIMIT 10',
     /*
-     * ⚠⚠ **THE FLOOR THAT ITEM 2210 GOT WRONG.** A streamed bounded top-10 reads 2,068 us and is NOT
+     * **THE FLOOR THAT ITEM 2210 GOT WRONG.** A streamed bounded top-10 reads 2,068 us and is NOT
      * the floor: it never sorts, and it walks in far-driven order, which would reorder ties (item 605).
      * The honest floor walks, keys, SORTS and slices — and against it the engine is 1.20-1.66x at every
      * degree, inside item 698's measured band.
@@ -540,7 +540,7 @@ for (const s of picked) {
 
   const fl = s.floor === undefined ? undefined : floorNs(s.floor.run);
   /*
-   * 🔑 Flag on the FLOOR ratio, which is the only one that says a win is reachable — **AND on an absolute
+   * Flag on the FLOOR ratio, which is the only one that says a win is reachable — **AND on an absolute
    * size**, which item 2212 added after `node/count` flagged at 17.63x for 1,410 ns against an 80 ns
    * `Set.size` read. A big ratio between two trivial numbers is arithmetic, not a target; 50 us is roughly
    * where this repo's ~10%-of-something-real threshold starts to mean anything.
@@ -556,7 +556,7 @@ for (const s of picked) {
 }
 
 /**
- * NEIGHBOUR PAIRS: each differs by ONE clause. ⚠️ A ratio is a SUSPECT, not a verdict — the filtered
+ * NEIGHBOUR PAIRS: each differs by ONE clause. A ratio is a SUSPECT, not a verdict — the filtered
  * or deeper member can legitimately do more work. What makes it a cliff is the rung column: a
  * neighbour answered by a named rung while this one reads `PIPELINE`, or a rung SET that shrinks
  * when a clause is added.

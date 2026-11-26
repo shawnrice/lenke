@@ -19,12 +19,12 @@ const seed = (): {
 
 describe('topologyVersion advances SYNCHRONOUSLY, which version and epoch do not', () => {
   /**
-   * ⚠️ THE MEASUREMENT THAT DECLINED ITEM 1571'S CACHE, pinned as a test. Both `version` and
+   * THE MEASUREMENT THAT DECLINED ITEM 1571'S CACHE, pinned as a test. Both `version` and
    * `epoch(name)` advance on a deferred, veto-checked step, so they read 0 through a sequence of
    * mutations and move only after a task drain. A cache keyed on either hands a STALE result to the
    * ordinary `g.addEdge(...); query(g, …)` shape — a wrong answer, silently.
    */
-  test('⚠️ version and epoch are DEFERRED through three mutations; topologyVersion is not', () => {
+  test('version and epoch are DEFERRED through three mutations; topologyVersion is not', () => {
     const { g, a, b } = seed();
     const before = g.topologyVersion;
 
@@ -39,7 +39,7 @@ describe('topologyVersion advances SYNCHRONOUSLY, which version and epoch do not
   });
 
   /**
-   * ⚠️ EXACT DELTAS, AND THE EXACTNESS IS LOAD-BEARING FOR THE **TEST** EVEN THOUGH THE
+   * EXACT DELTAS, AND THE EXACTNESS IS LOAD-BEARING FOR THE **TEST** EVEN THOUGH THE
    * CONTRACT FORBIDS A **CONSUMER** FROM RELYING ON IT. Those are different claims. A consumer may
    * only ask "is this the same number I saw before?", because the delta is an implementation detail
    * that may change. A test that pins the delta detects a MISSING or REDUNDANT bump, which is the
@@ -80,7 +80,7 @@ describe('topologyVersion advances SYNCHRONOUSLY, which version and epoch do not
   });
 
   /**
-   * ⚠️ THE ≥1-LABEL INVARIANT MAKES THE TWO EDGE-MAP BUMPS REDUNDANT, which is worth stating
+   * THE ≥1-LABEL INVARIANT MAKES THE TWO EDGE-MAP BUMPS REDUNDANT, which is worth stating
    * because it is why two mutants against them survive and why they are kept anyway.
    *
    * `addEdge` rejects an edge with no labels, so `edgesById.set` can never run without at least one
@@ -90,7 +90,7 @@ describe('topologyVersion advances SYNCHRONOUSLY, which version and epoch do not
    * not silently depend on an invariant enforced elsewhere in the file. The delta test above is what
    * keeps them live rather than dead code.
    */
-  test('⚠️ an edge cannot exist without a label, which is why the edge-map bumps are belt-and-braces', () => {
+  test('an edge cannot exist without a label, which is why the edge-map bumps are belt-and-braces', () => {
     const { g, a, b } = seed();
 
     expect(() => g.addEdge({ id: 'e', from: a, to: b, labels: [], properties: {} })).toThrow();
@@ -99,12 +99,12 @@ describe('topologyVersion advances SYNCHRONOUSLY, which version and epoch do not
 
 describe('what it does and does NOT respond to', () => {
   /**
-   * ⚠️ THE CASE `vertexCount`/`edgeCount` CANNOT COVER, and the reason they were rejected as the
+   * THE CASE `vertexCount`/`edgeCount` CANNOT COVER, and the reason they were rejected as the
    * key. They advance eagerly, but a delete plus an add leaves both at their original value while
    * the topology differs — so a cache keyed on a count would serve an adjacency structure built for
    * a graph that no longer exists.
    */
-  test('⚠️ a delete PLUS an add leaves both counts unchanged, and topologyVersion moves anyway', () => {
+  test('a delete PLUS an add leaves both counts unchanged, and topologyVersion moves anyway', () => {
     const { g, a, b } = seed();
     const e = g.addEdge({ id: 'e1', from: a, to: b, labels: ['E'], properties: {} });
     const counts = { v: g.vertexCount, e: g.edgeCount };
@@ -121,12 +121,12 @@ describe('what it does and does NOT respond to', () => {
   });
 
   /**
-   * ⚠️ TOPOLOGY, NOT MUTATION — and this is the property that makes the signal worth having rather
+   * TOPOLOGY, NOT MUTATION — and this is the property that makes the signal worth having rather
    * than just correct. A cached adjacency structure survives a property or label write, so bumping
    * on those would throw the cache away on every `SET` and the cache would never pay for itself on
    * a read-write workload.
    */
-  test('⚠️ a property write, or a VERTEX label write, does NOT bump it', () => {
+  test('a property write, or a VERTEX label write, does NOT bump it', () => {
     const { g, a } = seed();
     const v = g.topologyVersion;
 
@@ -138,7 +138,7 @@ describe('what it does and does NOT respond to', () => {
 
     // A vertex's labels feed `verticesByLabel`, which no adjacency structure is derived from.
     //
-    // ⚠️ BOTH THE SETTER AND THE METHODS, because they are DIFFERENT PATHS and only the methods
+    // BOTH THE SETTER AND THE METHODS, because they are DIFFERENT PATHS and only the methods
     // reach `commitElementLabels` — `v.labels =` bypasses it (which is a known hazard of its own).
     // A test that exercised only the setter scored a spurious bump on vertex-label commits as a
     // SURVIVOR, since the setter never reaches the site the mutant touched.
@@ -156,7 +156,7 @@ describe('what it does and does NOT respond to', () => {
   });
 
   /**
-   * ⚠️ THE HOLE THAT WOULD HAVE MADE THE FIRST CACHE A WRONG ANSWER, found while writing the
+   * THE HOLE THAT WOULD HAVE MADE THE FIRST CACHE A WRONG ANSWER, found while writing the
    * consumer rather than by this suite. The adjacency boxes are keyed BY EDGE TYPE, so an edge label
    * write moves the edge between buckets via `indexEdgeLabel`/`deIndexEdgeLabel` and never touches
    * `insertEdge`. A type-filtered CSR cached on a counter that ignored this would keep serving
@@ -165,7 +165,7 @@ describe('what it does and does NOT respond to', () => {
    *
    * So an EDGE label write bumps, where a VERTEX label write does not. The asymmetry is the point.
    */
-  test('⚠️ an EDGE label write DOES bump it — adjacency is keyed by type', () => {
+  test('an EDGE label write DOES bump it — adjacency is keyed by type', () => {
     const { g, a, b } = seed();
     const e = g.addEdge({ id: 'e1', from: a, to: b, labels: ['E'], properties: {} });
 
@@ -196,14 +196,14 @@ describe('what it does and does NOT respond to', () => {
 
 describe('rollback', () => {
   /**
-   * ⚠️ THE PROPERTY THAT MAKES IT SAFE WITHOUT UNDO SEMANTICS. The undo log stores inverse
+   * THE PROPERTY THAT MAKES IT SAFE WITHOUT UNDO SEMANTICS. The undo log stores inverse
    * operations as CLOSURES OVER THE PUBLIC MUTATORS (`insertEdge`'s inverse calls `removeEdge`,
    * `removeEdge`'s calls `addEdge`), so a rollback replays through the same four writes and bumps
    * this too. A consumer therefore rebuilds after a rollback rather than trusting a structure built
    * from the rolled-back state.
    *
    * It is deliberately NOT asserted that the version returns to its pre-transaction value, and
-   * ⚠️ NOT because restoring it would be unsafe — item 1674 believed that and a mutation pass
+   * NOT because restoring it would be unsafe — item 1674 believed that and a mutation pass
    * refuted it. A rollback restores state FAITHFULLY, so a counter restored alongside it is
    * CONSISTENT: a cache entry at the pre-transaction version was built from the pre-transaction
    * state, which is exactly the post-rollback state. Both restoring and not restoring are sound,
@@ -213,7 +213,7 @@ describe('rollback', () => {
    * when state changes. Not-restoring is simply the simpler choice — it over-invalidates by one
    * rebuild after a rollback and needs no bookkeeping in the undo path.
    */
-  test('⚠️ a rolled-back transaction still bumps it — conservative, not exact', () => {
+  test('a rolled-back transaction still bumps it — conservative, not exact', () => {
     const { g, a, b } = seed();
     const v = g.topologyVersion;
 

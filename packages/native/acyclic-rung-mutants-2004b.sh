@@ -1,16 +1,16 @@
 #!/bin/zsh
 # Item 2004 — mutation round on the ACYCLIC reached-set DFS arm in `reachability.ts`.
 #
-# ⚠️ FILTER IS THE CROSS-ENGINE PARITY TEST **AND** THE GQL SUITE, each status read SEPARATELY.
+# FILTER IS THE CROSS-ENGINE PARITY TEST **AND** THE GQL SUITE, each status read SEPARATELY.
 # Item 2002's harness ran both in one subshell and read `$?` — the LAST command's status — so every
 # mutant caught by parity alone reported SURVIVED. It printed six phantom survivors. That bug is
 # fixed here from the start, and it matters more in this file: the route is pinned by GQL route
 # tests while the ANSWER is pinned cross-engine, so the two filters catch different things.
 #
-# ⚠️ THE PARITY TEST READS THE BUILT DIST ([[fuzzers-read-built-dists]]), so each mutant needs a
+# THE PARITY TEST READS THE BUILT DIST ([[fuzzers-read-built-dists]]), so each mutant needs a
 # REBUILD before it is tested or the round measures the pristine build.
 #
-# ⚠️ PRISTINE IS VERIFIED GREEN before it is trusted — an interrupted loop otherwise poisons the
+# PRISTINE IS VERIFIED GREEN before it is trusted — an interrupted loop otherwise poisons the
 # baseline, and `reachability.ts` IS tracked so `git` could restore it, but the guard costs nothing.
 set -u
 
@@ -18,19 +18,19 @@ ROOT=/home/shawn/projects/pl-graph
 SRC=$ROOT/packages/gql/src/executor/reachability.ts
 PRISTINE=$ROOT/crates/lenke-engine/target/reachability.pristine.2004b.ts
 
-# ⚠️⚠️ **BUILDS ONLY `@lenke/gql`, AND THE FIRST VERSION'S FULL-MONOREPO BUILD MADE THIS ROUND
+# **BUILDS ONLY `@lenke/gql`, AND THE FIRST VERSION'S FULL-MONOREPO BUILD MADE THIS ROUND
 # UNRUNNABLE.** `bun run build` at the root rebuilds all 21 packages — about 2.5 minutes — so 14
 # mutants came to ~38 minutes, and the round had to be killed after 6. The parity test imports
 # `@lenke/gql` and nothing else that changes here, and `nx build @lenke/gql` takes **6 seconds**:
 # a 25x harness win for a one-line change, on a script whose whole job is to be run repeatedly.
 #
-# ⚠️ AND IT DOES NOT PIPE ITS OUTPUT THROUGH `tail`. The first run did, which buffers everything
+# AND IT DOES NOT PIPE ITS OUTPUT THROUGH `tail`. The first run did, which buffers everything
 # until exit — so a 16-minute round showed an EMPTY progress file and there was no way to tell
 # "working" from "wedged" without killing it.
 run_test() {
   build=$(cd "$ROOT" && npx nx build @lenke/gql --skip-nx-cache 2>&1)
   brc=$?
-  # ⚠️⚠️ **EACH SUITE IS UNDER ITS OWN `timeout`, AND OMITTING THAT STALLED THIS ROUND TWICE.**
+  # **EACH SUITE IS UNDER ITS OWN `timeout`, AND OMITTING THAT STALLED THIS ROUND TWICE.**
   # CLAUDE.md: "Run every mutant under a timeout AND a memory cap … a mutant is arbitrary broken
   # code, so it can hang or allocate without bound — treat that as the normal case." The cgroup cap
   # was here from the start; the TIMEOUT was not, and one mutant is guaranteed to need it:

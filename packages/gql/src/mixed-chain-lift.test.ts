@@ -20,11 +20,11 @@ import { query } from './index.js';
 //     [CTL]    <unliftable> alone       14.995   -> 14.819    flat
 //     [CTL]    a=50 alone (all-lift)     3.145   ->  3.148    flat
 //
-// ⚠️ A MULTI-ROW IN-PROCESS SWEEP OF THE SAME ARMS REPORTED THE BOUNDARY CONTROL 1.35x SLOWER in
+// A MULTI-ROW IN-PROCESS SWEEP OF THE SAME ARMS REPORTED THE BOUNDARY CONTROL 1.35x SLOWER in
 // all three rounds, and that was an artifact of rows interfering through the dispatch site — the
 // isolated run above shows it flat. A control moving against the change is the tell.
 //
-// ⚠️ ONLY A PREFIX LIFTS, AND THAT IS THE WHOLE SOUNDNESS ARGUMENT. The lifted families run before
+// ONLY A PREFIX LIFTS, AND THAT IS THE WHOLE SOUNDNESS ARGUMENT. The lifted families run before
 // the residual, so lifting a prefix cannot make any conjunct overtake another: executed order is
 // written order, and no shape's raise behaviour moves. Lifting a conjunct from AFTER the first
 // decliner would reorder, which is why that is a separate item rather than a wider `stop`.
@@ -52,7 +52,7 @@ const ids = (q: string): string[] =>
     .sort();
 
 describe('a mixed AND chain lifts its prefix (item 1284)', () => {
-  test('⚠️ ROUTE: the prefix lifts, the tail becomes the residual, and the reverse order lifts NOTHING', () => {
+  test('ROUTE: the prefix lifts, the tail becomes the residual, and the reverse order lifts NOTHING', () => {
     // Answer-equivalent by design, so only the compiler can see this. Without the route
     // assertions every mutant below passes every row assertion in the package.
     const prop = (k: string): Expr => ({ kind: 'prop', variable: 'n', key: k });
@@ -79,7 +79,7 @@ describe('a mixed AND chain lifts its prefix (item 1284)', () => {
     expect(two.eqProps?.length ?? 0).toBe(2);
     expect(two.where).toBeDefined();
 
-    // ⚠️ THE BOUNDARY MOVED AT ITEM 1544. This used to assert that a decliner FIRST lifts nothing
+    // THE BOUNDARY MOVED AT ITEM 1544. This used to assert that a decliner FIRST lifts nothing
     // at all, and its own comment said it was "the assertion that fails if the prefix rule is ever
     // widened to pick liftable conjuncts out of the middle of a chain". It was widened, on purpose:
     // the owner settled at item 1543 that evaluation order is chosen for SPEED per engine, and the
@@ -102,7 +102,7 @@ describe('a mixed AND chain lifts its prefix (item 1284)', () => {
   });
 
   /**
-   * ⚠️ WHY THE SPLIT IS WHERE IT IS (item 1545), at the ANSWER level rather than the route level.
+   * WHY THE SPLIT IS WHERE IT IS (item 1545), at the ANSWER level rather than the route level.
    *
    * The guard's own comment said `cmp`/`path` were held back because "an ordering comparison throws
    * on a cross-type pair". **In this engine it does not.** Seven operand pairs were tried — string
@@ -133,7 +133,7 @@ describe('a mixed AND chain lifts its prefix (item 1284)', () => {
     expect(ids("MATCH (n:P) WHERE upper(n.s) = 'ZZZ' AND n.s RETURN n.nm")).toEqual([]);
   });
 
-  test('⚠️ a RAISE-CAPABLE family does not lift ahead of a residual', () => {
+  test('a RAISE-CAPABLE family does not lift ahead of a residual', () => {
     // THE CORRECTION THIS ITEM NEEDED, and a wrong answer rather than a missed optimisation.
     // `truthProps` reads a value and coerces it to a boolean, which RAISES on a non-boolean; the
     // generic `and` arm does not, because FALSE dominates and settles the row first. Lifting a bare
@@ -145,7 +145,7 @@ describe('a mixed AND chain lifts its prefix (item 1284)', () => {
     //
     // So with a residual present, `truth`/`notTruth` may not lift.
     //
-    // ⚠️ `cmp`/`path` USED TO BE HELD BACK HERE AND NO LONGER ARE (item 1545). An ordering
+    // `cmp`/`path` USED TO BE HELD BACK HERE AND NO LONGER ARE (item 1545). An ordering
     // comparison does throw on a cross-type pair, so lifting one ahead of a residual can raise
     // where the chain settled the row FALSE first — a query that works today can start throwing on
     // mixed-type data. The owner took that trade on being shown it cost 1.55x on
@@ -198,12 +198,12 @@ describe('a mixed AND chain lifts its prefix (item 1284)', () => {
     expect(all.where).toBeUndefined();
   });
 
-  test('⚠️ a declining conjunct is not overtaken: the RAISE shapes are identical on both arms', () => {
+  test('a declining conjunct is not overtaken: the RAISE shapes are identical on both arms', () => {
     // `CAST(n.s AS INTEGER)` throws on a non-numeric string and is unliftable (its left operand is
     // a function call, not a property), which makes it the instrument for the ordering claim — a
     // reorder is otherwise invisible, since every answer here is the same either way.
     //
-    // ⚠️ THE FIRST SHAPE DOES NOT THROW, AND NOT BECAUSE OF THIS ITEM. `n.a = 999` matches nothing,
+    // THE FIRST SHAPE DOES NOT THROW, AND NOT BECAUSE OF THIS ITEM. `n.a = 999` matches nothing,
     // an empty seed pre-empts the scan, and the cast is never reached — measured identical on both
     // arms. So this engine does NOT preserve raise order in general, and the prefix rule is more
     // conservative than what already holds rather than less. What this test pins is that the

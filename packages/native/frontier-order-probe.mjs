@@ -7,7 +7,7 @@
  * The question this probe asks is the one that matters: holding the graph fixed, how much of that
  * spread does a different VISIT ORDER recover?
  *
- * ⚠️ WHY THIS IS A PROBE AND NOT AN ENGINE CHANGE. `descend` is depth-first: it chases one path to
+ * WHY THIS IS A PROBE AND NOT AN ENGINE CHANGE. `descend` is depth-first: it chases one path to
  * the leaf before touching the level above's next edge, so the vertices it dereferences at depth k
  * arrive in start order permuted by the topology. A level-synchronous walk can instead collect each
  * level's frontier and visit it in MEMORY order. That is a real design, and it is also the design
@@ -27,7 +27,7 @@
  * `sorted` win could be the restructuring rather than the ordering. The ordering's own contribution
  * is `level -> sorted`; `dfs -> level` is the restructuring's.
  *
- * ⚠️ THE ORDERING KEY IS FREE HERE AND WOULD NOT BE IN THE ENGINE. This probe reads an insertion
+ * THE ORDERING KEY IS FREE HERE AND WOULD NOT BE IN THE ENGINE. This probe reads an insertion
  * index captured once at build time into a plain array. In the engine that key is exactly the dense
  * ordinal item 1372 disqualified, so a win measured here is an OPTIMISTIC CEILING: it pays nothing
  * for maintaining the key under writes, and it still leaves the edge objects and adjacency buckets
@@ -135,7 +135,7 @@ const runLevel = (sort) => {
     const next = emitting ? undefined : [];
 
     if (sort) {
-      // ⚠️ IN THE TIMED REGION ON PURPOSE. The sort is a real cost of the design, so excluding it
+      // IN THE TIMED REGION ON PURPOSE. The sort is a real cost of the design, so excluding it
       // would price a mechanism nobody could ship. Only the KEY's maintenance is excluded, and the
       // header says why that makes this a ceiling.
       frontier = [...frontier].sort((a, b) => ordinal.get(a) - ordinal.get(b));
@@ -171,7 +171,7 @@ const runLevel = (sort) => {
  * Arm `blocked`: level-synchronous WITHIN A FIXED-SIZE BLOCK of starts, with the two frontier
  * buffers allocated ONCE and reused across blocks and levels.
  *
- * ⚠️ THIS ARM EXISTS BECAUSE `level` LOSES WHERE LOCALITY IS ALREADY GOOD, AND THE LOSS IS
+ * THIS ARM EXISTS BECAUSE `level` LOSES WHERE LOCALITY IS ALREADY GOOD, AND THE LOSS IS
  * ALLOCATION RATHER THAN BATCHING: at 200,000 nodes on the `chain` stride it runs 0.60-0.71x of
  * `dfs`, paying a 200,000-element array per level for a walk that was already ~16 ns/row. Blocking
  * bounds the live frontier to BLOCK entries — small enough to stay resident, reused rather than
@@ -253,7 +253,7 @@ const ARMS = {
 };
 
 /**
- * ⚠️ ANSWER EQUIVALENCE FIRST, AND AS A MULTISET. Row order is unspecified (item 198) and these arms
+ * ANSWER EQUIVALENCE FIRST, AND AS A MULTISET. Row order is unspecified (item 198) and these arms
  * deliberately produce different orders, so the comparison sorts. A timing from an arm that answers
  * a different question is meaningless, which is the whole reason this runs before the clock.
  */

@@ -5,7 +5,7 @@
  * `values('k')` alone costs (~2.1 ms over 50,000 vertices) — and that 75.8% of the profile is three
  * generator frames. The obvious next move is to fuse `values(k)` with its terminal into one step.
  *
- * ⚠️ BUT A FUSION IS NOT FREE TO ATTEMPT. `executor-edits-perturb` prices a new walk variant at up
+ * BUT A FUSION IS NOT FREE TO ATTEMPT. `executor-edits-perturb` prices a new walk variant at up
  * to 16% on UNRELATED rows, and item 1573 declined several step shortcuts on exactly that trade. So
  * the thing to know BEFORE building it is how much there is to win, and that is what a hand-written
  * loop over the same data answers. If the loop is 1.9 ms, the fusion can win 0.2 and is not worth
@@ -61,7 +61,7 @@ const rawloop = () => {
 };
 
 /**
- * The same, but re-reading `v.properties` the way the step does. ⚠️ `properties` is a GETTER
+ * The same, but re-reading `v.properties` the way the step does. `properties` is a GETTER
  * (`get properties` showed up at 2.8% in item 1585's profile), so this separates "reading the bag"
  * from "iterating the vertices".
  */

@@ -30,7 +30,7 @@ import { graphFromNdjson } from './graph.js';
 /**
  * Two `:T` vertices with an `s` property and one `:E` edge.
  *
- * ⚠️ JOINED INTO TEXT. `graphFromNdjson` and `tsDeserialize` both take the NDJSON text, which is
+ * JOINED INTO TEXT. `graphFromNdjson` and `tsDeserialize` both take the NDJSON text, which is
  * why the fuzzer hands the same value to both; passing an array reaches bun:ffi as a non-pointer
  * and the error ("cannot convert argument to 'ptr'") does not say that is why.
  */
@@ -57,7 +57,7 @@ const CASES: Record<string, string> = {
   // `list['a']` even is". Both say null, so the index is a RED HERRING.
   'bare-return': "RETURN [1, 2]['a'] AS x",
 
-  // ⚠️ THE ACTUAL INGREDIENT, which the native error named: `|| requires all operands to …`.
+  // THE ACTUAL INGREDIENT, which the native error named: `|| requires all operands to …`.
   // `n.s || 0.0` concatenates a string with a NUMBER. Native raises E_INVALID_VALUE; TS does not —
   // and the reduction above shows every case WITHOUT this conjunct agreeing.
   'concat-alone': "RETURN ('a' || 0.0) AS x",
@@ -70,7 +70,7 @@ const CASES: Record<string, string> = {
   // And the reverse order, to separate "short-circuit" from "evaluates right first".
   'fault-then-unknown': "RETURN ((('a' || 0.0) IS NOT NULL) AND (null <= 'z')) AS x",
 
-  // ⚠️ EVERY SCALAR `AND` CASE ABOVE AGREES, so the AND semantics are NOT the divergence. What is
+  // EVERY SCALAR `AND` CASE ABOVE AGREES, so the AND semantics are NOT the divergence. What is
   // left is the CONTEXT: a faulting expression over the pattern variable's property, inside an
   // inline WHERE, inside an OPTIONAL MATCH. These three separate those factors.
   'optional-inline-fault':
@@ -80,7 +80,7 @@ const CASES: Record<string, string> = {
   'optional-clause-fault':
     'MATCH (t:T) OPTIONAL MATCH (t)-[:E]->(n) WHERE ((n.s || 0.0) IS NOT NULL) RETURN t.n AS x, n.n AS y ORDER BY x, y',
 
-  // ⚠️ IS IT THE LIFT? The hypothesis (item 1543): the FIRST conjunct is lifted into `cmpProps`
+  // IS IT THE LIFT? The hypothesis (item 1543): the FIRST conjunct is lifted into `cmpProps`
   // and evaluated before `pred.where`, and an UNKNOWN lifted comparison returns `false` early — so
   // the faulting residual never runs. These separate the factors.
   //
@@ -102,7 +102,7 @@ const CASES: Record<string, string> = {
 /**
  * The shapes that currently diverge, so the assertion below guards the REST.
  *
- * ⚠️ THE FAMILY IS WIDER THAN THE ORIGINAL AND NARROWER THAN "AND WITH UNKNOWN" (item 1543). Each
+ * THE FAMILY IS WIDER THAN THE ORIGINAL AND NARROWER THAN "AND WITH UNKNOWN" (item 1543). Each
  * member pairs a conjunct comparing an ELEMENT PROPERTY (liftable into `cmpProps`) with a faulting
  * conjunct. `unliftable-unknown-first` uses `null <= 'z'` instead — nothing to lift — and both
  * engines AGREE, which is what points at the lift rather than at `AND`.
@@ -122,7 +122,7 @@ const suite = nativeReady ? describe : describe.skip;
 
 suite('item 1542 — the AND-with-UNKNOWN divergence inside a pattern predicate', () => {
   /**
-   * ⚠️ WHAT THIS ASSERTS, AND WHAT IT DELIBERATELY DOES NOT.
+   * WHAT THIS ASSERTS, AND WHAT IT DELIBERATELY DOES NOT.
    *
    * Every reduction EXCEPT `original` must agree across the engines — that is the real invariant,
    * and it is a genuine regression guard: a new divergence appearing in any of these shapes fails

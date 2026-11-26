@@ -1,7 +1,7 @@
 /**
  * WHY DOES ONE MORE HOP COST 9.5x AT THE SAME ROW COUNT? (item 1896)
  *
- * ⚠️ FANOUT 1 IS WHAT MAKES THE QUESTION SHARP, and it is the grid's own fixture: with one out-edge
+ * FANOUT 1 IS WHAT MAKES THE QUESTION SHARP, and it is the grid's own fixture: with one out-edge
  * per vertex every depth returns exactly N rows, so a cost difference across depth is about the
  * ROUTE and not about how many rows came back (item 1815). Isolated, 200,000 vertices, after item
  * 1895 gave the one-hop projection its CSR arm (`count-depth-floor-1890.mjs`):
@@ -158,7 +158,7 @@ const handBare = () => {
  * The hand walk PLUS the per-row work the engine does and `handWalk` does not: three label tests, a
  * binding per position, and a row built through a key list rather than a literal.
  *
- * ⚠️ IT EXISTS TO SPLIT THE 1.55x, because "delegation" is not a target — the individual costs are.
+ * IT EXISTS TO SPLIT THE 1.55x, because "delegation" is not a target — the individual costs are.
  * `matchesLabel(x, undefined)` is what a VACUOUS label compiles to, which is the grid's own query
  * and most real ones.
  */

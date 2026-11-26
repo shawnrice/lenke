@@ -1,10 +1,10 @@
 // The GATED three-hop degree product (item 1689), and the shapes that must decline it.
 //
-// ⚠️ EVERY AGREEMENT TEST IS AGAINST AN INDEPENDENT ROUTE — the same question as a `COUNT { … }`
+// EVERY AGREEMENT TEST IS AGAINST AN INDEPENDENT ROUTE — the same question as a `COUNT { … }`
 // subquery, which goes to the per-anchor composition and cannot reach this arm. A hand-computed
 // expectation would only prove that two copies of my arithmetic agree.
 //
-// ⚠️ AND A ROUTE CHOICE IS ANSWER-EQUIVALENT WHEN IT IS *TIGHTENED*. A clause wrongly relaxed here
+// AND A ROUTE CHOICE IS ANSWER-EQUIVALENT WHEN IT IS *TIGHTENED*. A clause wrongly relaxed here
 // returns a WRONG COUNT and these tests catch it; a clause wrongly tightened silently abandons the
 // arm and every answer stays right, so both predicates carry their own direct assertions below.
 import { describe, expect, test } from 'bun:test';
@@ -19,7 +19,7 @@ import {
 } from './three-hop-degree-product.js';
 
 /**
- * ⚠️ THE LABEL AND THE PROPERTY ARE MIXED DIFFERENTLY FROM THE DEGREE, which item 1688 learned the
+ * THE LABEL AND THE PROPERTY ARE MIXED DIFFERENTLY FROM THE DEGREE, which item 1688 learned the
  * hard way: labelling `i % 4 === 0` while taking the degree from `1 + ((i * 2654435761) % 4)` forces
  * every labelled vertex to degree 1, and two cases then counted ZERO with both routes agreeing on
  * it. In-degree varies too — a linear `(a*i+b) % N` target is a bijection per layer, which makes a
@@ -32,7 +32,7 @@ const countOf = (q: string): number => Number(query(g, q)[0].c);
 const viaSubquery = (pattern: string, where = ''): number =>
   Number(query(g, `MATCH (a:P) RETURN sum(COUNT { (a)${pattern}${where} }) AS c`)[0].c);
 
-describe('⚠️ the fixture, before any number measured against it is believed', () => {
+describe('the fixture, before any number measured against it is believed', () => {
   test('in-degree varies, branching exists, and the label is reachable through an E edge', () => {
     const inDeg = new Map<string, number>();
 
@@ -87,7 +87,7 @@ describe('the gated arm agrees with an independent route', () => {
   }
 });
 
-describe('⚠️ equivalent spellings must agree, which is this repo’s opening defect class', () => {
+describe('equivalent spellings must agree, which is this repo’s opening defect class', () => {
   test('a clause WHERE, an inline WHERE and an inline property on `c` all agree', () => {
     const clause = countOf(
       'MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) WHERE c.k = 3 RETURN count(*) AS c',
@@ -103,7 +103,7 @@ describe('⚠️ equivalent spellings must agree, which is this repo’s opening
   });
 });
 
-describe('⚠️ the shapes that must DECLINE, each still answering correctly', () => {
+describe('the shapes that must DECLINE, each still answering correctly', () => {
   /**
    * A label at `a` or `d` constrains the FAR ENDPOINT OF A DEGREE: it counts only edges whose other
    * end carries it, where the CSR counts them all. If the arm took these it would be a wrong count,
@@ -131,10 +131,10 @@ describe('⚠️ the shapes that must DECLINE, each still answering correctly', 
   }
 
   /**
-   * ⚠️ A SELF-LOOP UNDER AN UNDIRECTED LEG is the case that exclusion exists for, so it gets its own
+   * A SELF-LOOP UNDER AN UNDIRECTED LEG is the case that exclusion exists for, so it gets its own
    * fixture rather than relying on the shared graph containing one.
    */
-  test('⚠️ an undirected chain over a self-loop agrees', () => {
+  test('an undirected chain over a self-loop agrees', () => {
     const h = new Graph();
     const a = h.addVertex({ id: 'a', labels: ['P'], properties: { k: 11 } });
     const b = h.addVertex({ id: 'b', labels: ['P'], properties: { k: 12 } });
@@ -186,11 +186,11 @@ describe('a write between two counts is seen', () => {
   });
 
   /**
-   * ⚠️ A PROPERTY WRITE MUST BE SEEN THOUGH `topologyVersion` DOES NOT MOVE. The accept weights read
+   * A PROPERTY WRITE MUST BE SEEN THOUGH `topologyVersion` DOES NOT MOVE. The accept weights read
    * properties through the gate and are rebuilt per call; cached on that signal they would go stale
    * with no signal to catch it.
    */
-  test('⚠️ a property write changes the count with the topology unchanged', () => {
+  test('a property write changes the count with the topology unchanged', () => {
     const h = build(60);
     const before = Number(query(h, Q)[0].c);
     const tv = h.topologyVersion;
@@ -239,11 +239,11 @@ describe('the two route predicates, as pure functions', () => {
   });
 
   /**
-   * ⚠️ THE DIRECTION NO DIFFERENTIAL TEST CAN SEE. Each exclusion, if wrongly relaxed, is caught by
+   * THE DIRECTION NO DIFFERENTIAL TEST CAN SEE. Each exclusion, if wrongly relaxed, is caught by
    * the agreement tests above; a clause wrongly TIGHTENED keeps every answer right and silently
    * abandons the arm, so only these assertions cover it.
    */
-  test('⚠️ the gated arm takes b/c constraints and refuses a/d labels and undirected legs', () => {
+  test('the gated arm takes b/c constraints and refuses a/d labels and undirected legs', () => {
     expect(csrGatedDegreeProductApplies(gatedShape)).toBe(true);
     // The three the gated arm LIFTS are not even its inputs — a `c` label or either gate cannot
     // make it decline, which is the whole difference between the two predicates.

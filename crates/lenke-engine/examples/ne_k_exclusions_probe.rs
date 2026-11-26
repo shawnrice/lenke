@@ -92,7 +92,7 @@ fn main() {
         let q = query_with(k_count);
         let (a, ans_a) = ask(&periodic, &q);
         let (b, ans_b) = ask(&random, &q);
-        // ⚠️ THE TWO FIXTURES LEGITIMATELY ANSWER DIFFERENT COUNTS and that is NOT a warning: the
+        // THE TWO FIXTURES LEGITIMATELY ANSWER DIFFERENT COUNTS and that is NOT a warning: the
         // random draw does not land exactly 2,000 rows on each of the 100 values, so its filtered
         // counts differ by a fraction of a percent. Both are printed; the comparison that MUST
         // hold is between the two ARMS at the same k, which is read down the column.

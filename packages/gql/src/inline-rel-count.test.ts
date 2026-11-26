@@ -148,7 +148,7 @@ describe('an inline rel WHERE on a one-hop count', () => {
     ).toBe(2);
   });
 
-  // 🛑 THREE CASES THE MUTANTS DEMANDED. Each of these survived a first mutation run, and in
+  // THREE CASES THE MUTANTS DEMANDED. Each of these survived a first mutation run, and in
   // every case the code was right and the FIXTURE could not tell the difference:
   //
   //   - inline PROPERTIES had no case at all, so admitting them to the tally (where they

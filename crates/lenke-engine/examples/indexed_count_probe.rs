@@ -7,7 +7,7 @@
 //! (its third arm). So that row's 187-304 µs was never an index lookup, and the new arm was
 //! unmeasured.
 //!
-//! ⚠️ THIS IS THE FIXTURE THAT EXERCISES IT, and the reason the probe exists rather than the arm
+//! THIS IS THE FIXTURE THAT EXERCISES IT, and the reason the probe exists rather than the arm
 //! being trusted: a fix that never runs and a fix that does nothing are indistinguishable from a
 //! flat measurement (items 1215 and 1216 are both that mistake). Here the index is CREATED, so the
 //! hash arm is reached and `count(*)` can be answered from the bucket's length.

@@ -7,7 +7,7 @@
  * 2222. GQL takes `countShortcut` and the index seek IS working (the range twin costs 2.86 ms), so
  * the 2.5x is inside the rung.
  *
- * ⚠️ ONE SHAPE, ONE PROCESS, and the query is looped inside the timed region because a single call
+ * ONE SHAPE, ONE PROCESS, and the query is looped inside the timed region because a single call
  * is ~19 us — far below profiler resolution. The loop count is what makes the frames appear.
  */
 import { Graph } from '@lenke/core';

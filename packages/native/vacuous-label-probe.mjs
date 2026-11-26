@@ -19,7 +19,7 @@
  *    multi-agg      detectMultiNodeAggregate           11761
  * ```
  *
- * ⚠️ `MULTI=1` IS THE CONTROL, and it is the only honest one: the elision fires only when the
+ * `MULTI=1` IS THE CONTROL, and it is the only honest one: the elision fires only when the
  * queried label covers EVERY vertex, so a multi-label graph must measure FLAT at every row. The
  * label is assigned on `i % 3` while the seek key is `i % 20` — decorrelated on purpose, because
  * item 1608's first attempt used `i % 2` against `i % 20` and every bucket came out single-label,

@@ -1,7 +1,7 @@
 /**
  * `values(k).is(p).count()` folds to `has(k, p).count()` (item 1314).
  *
- * ⚠️ THE TWO SPELLINGS RETURN DIFFERENT THINGS — `values(k).is(p)` emits VALUES and `has(k, p)`
+ * THE TWO SPELLINGS RETURN DIFFERENT THINGS — `values(k).is(p)` emits VALUES and `has(k, p)`
  * emits ELEMENTS — so they agree on HOW MANY and on nothing else. That is why the tail must be
  * exactly `count`, and why the decline cases below assert NUMBERS that differ rather than merely
  * asserting the plan was left alone: each one is a real non-equivalence, measured before the
@@ -79,7 +79,7 @@ describe('item 1585: the `is` is OPTIONAL, so values(k).count() folds too', () =
   // file's header never needed a predicate: with single-valued properties `values(k)` emits one
   // value per element that HAS `k`, which is what the presence filter selects.
   //
-  // ⚠️ WITHOUT A PREDICATE THE STEP IS `hasKey`, NOT `has`. `has` carries a required `pred`, and
+  // WITHOUT A PREDICATE THE STEP IS `hasKey`, NOT `has`. `has` carries a required `pred`, and
   // `G.has('k')` parses to `{ kind: 'hasKey', keys: ['k'] }` — checked against what the builder
   // actually produces, because emitting a `has` with no `pred` does not even typecheck.
   test('the two steps become one hasKey', () => {
@@ -170,7 +170,7 @@ describe('the declines, each asserted by the NUMBER that differs', () => {
     expect(kinds(fuseValuesIsCount(plan).steps)).toEqual(['V', 'values', 'is', 'dedupe', 'count']);
     expect(n(g, plan)).toBe(1);
     expect(n(g, traversal(V(), has('k', gte(2)), dedupe(), count()))).toBe(2);
-    // ⚠️ THE CONTRAST WITH ITEM 1311, where a `dedupe, count` tail IS admitted: there both
+    // THE CONTRAST WITH ITEM 1311, where a `dedupe, count` tail IS admitted: there both
     // spellings emit the same ELEMENTS, so a coarser view stays equal. Here the rewrite changes
     // what flows, so dedupe sees it.
   });
@@ -179,7 +179,7 @@ describe('the declines, each asserted by the NUMBER that differs', () => {
     ['count that is not LAST', traversal(V(), values('k'), is(gte(2)), count(), is(gte(0)))],
     ['no count at all', traversal(V(), values('k'), is(gte(2)))],
     ['an order between is and count', traversal(V(), values('k'), is(gte(2)), order(), count())],
-    // ⚠️ `['values with no is', traversal(V(), values('k'), count())]` WAS IN THIS LIST and item
+    // `['values with no is', traversal(V(), values('k'), count())]` WAS IN THIS LIST and item
     // 1585 REMOVED IT, deliberately: that spelling now folds to `hasKey`, and the entry was
     // pinning the gate's narrowness as if it were a semantic. It is not — the header's
     // equivalence argument never needed the predicate, and the plain spelling cost 1.89x for it.

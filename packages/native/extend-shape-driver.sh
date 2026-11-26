@@ -10,7 +10,7 @@
 # cannot be observed -- while a spread in an object literal denies V8 a fixed hidden class for the
 # whole literal, and the base also allocates an empty `{}` on every no-sack extend.
 #
-# ⚠️ The comment at the site claims the no-sack path has "no cost". That is a claim about cost, and
+# The comment at the site claims the no-sack path has "no cost". That is a claim about cost, and
 # this measures it rather than trusting it.
 #
 # CONTROL: `V().count()` never calls `extend` (the source uses `startTraverser`), so it must not move.

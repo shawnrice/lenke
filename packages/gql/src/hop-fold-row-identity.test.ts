@@ -13,7 +13,7 @@ import { query } from './index.js';
  * projected row, and two aliased rows carry identical values, so no differential or multiset
  * comparison can see it. The rows go to the CALLER, who may write to one.
  *
- * ⚠️ `hop-far-driven.test.ts` ALREADY PINS THIS for one walk, with a test named "each row is a
+ * `hop-far-driven.test.ts` ALREADY PINS THIS for one walk, with a test named "each row is a
  * DISTINCT object, not one shared reference" — written for the fold item 1407 built and never
  * extended as five more folds were added. A mechanical sweep (`clone-sweep-1953.mjs`) aliased each
  * code site in turn and found **three of seven covered**: this file covers the other four.
@@ -25,7 +25,7 @@ import { query } from './index.js';
  *   4424  filteredHopWalk, the start-only fold   a start-only WHERE and a start-only projection
  * ```
  *
- * 🔑 EACH TEST NAMES THE SITE IT COVERS, because the shapes are not interchangeable — each one
+ * EACH TEST NAMES THE SITE IT COVERS, because the shapes are not interchangeable — each one
  * reaches exactly one fold, and a shape that drifts onto another arm would leave its site untested
  * while still passing. The sweep is how that is checked, not by reading.
  */
@@ -105,7 +105,7 @@ describe('every hop fold returns independent row objects (item 1953)', () => {
   });
 
   test('site 3967 — the counting CSR fold, on the second ask', () => {
-    // ⚠️ THE SAME QUERY TWICE, DELIBERATELY. `csrHopRoute` declines its own first ask rather than
+    // THE SAME QUERY TWICE, DELIBERATELY. `csrHopRoute` declines its own first ask rather than
     // pay the CSR build for a one-shot query, so a single call never reaches this fold.
     const g = build();
     const q = 'MATCH (a)-[:E]->(x) RETURN x.k AS k';

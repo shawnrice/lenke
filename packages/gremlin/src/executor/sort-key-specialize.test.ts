@@ -1,7 +1,7 @@
 // The `order()` comparator specialization (item 1713): which key columns it admits, and that an
 // admitted column sorts exactly as the untouched `compareTotal` would have sorted it.
 //
-// ⚠️ TWO ARMS BECAUSE `order()` HAS TWO SORT SITES, and that is the whole reason this module was
+// TWO ARMS BECAUSE `order()` HAS TWO SORT SITES, and that is the whole reason this module was
 // nearly useless on arrival. `fusedProjectedOrder` sorts a FLAT array of values (the
 // `values(k).order()` fusion) and `sortByBys` sorts `{ item, key }` WRAPPERS (the `order().by(...)`
 // shapes). The first wiring covered only the wrapper site and the `values('s').order()` row did not
@@ -9,7 +9,7 @@
 // wrapper arm's admit/decline counter never firing. So both arms are tested here, and the
 // end-to-end cases below are picked so that each SITE is exercised by at least one of them.
 //
-// ⚠️ THE CRUX CASE IS A COLUMN WHERE CODE-UNIT AND CODE-POINT ORDER DISAGREE. `''` is code
+// THE CRUX CASE IS A COLUMN WHERE CODE-UNIT AND CODE-POINT ORDER DISAGREE. `''` is code
 // point 57344 in one UTF-16 unit; an astral char's FIRST unit is a high surrogate in
 // 0xD800..0xDBFF, numerically LOWER. The reduced comparator is a plain `<`, so admitting such a
 // column would silently restore the byte-identity break item 1712 fixed — correct-looking output in
@@ -57,7 +57,7 @@ const byCodePoint = (a: string, b: string): number => {
 };
 
 /**
- * ⚠️ THE FLAT ARM'S CLASSIFICATION IS NO LONGER A FUNCTION, SO IT IS TESTED THROUGH `order()`
+ * THE FLAT ARM'S CLASSIFICATION IS NO LONGER A FUNCTION, SO IT IS TESTED THROUGH `order()`
  * (item 1807). `allPlainStrings` scanned the column; the classification now rides
  * `fusedProjectedOrder`'s existing element-fault pass, which is what made the numeric arm free.
  * These are the same columns its unit test covered, asserted where the behaviour is observable —
@@ -102,7 +102,7 @@ describe('the FLAT arm, through order() — the columns the scanner used to clas
     expect(sortedColumn(['a', LONE_LOW])).toEqual(['a', LONE_LOW].sort(byCodePoint));
   });
 
-  // ⚠️ THE NUMERIC ARM, NEW AT ITEM 1807 and the reason the scan had to get cheaper.
+  // THE NUMERIC ARM, NEW AT ITEM 1807 and the reason the scan had to get cheaper.
   test('a column of plain numbers, both directions', () => {
     expect(sortedColumn([3, 1, 2])).toEqual([1, 2, 3]);
     expect(sortedColumn([3, 1, 2], true)).toEqual([3, 2, 1]);
@@ -167,7 +167,7 @@ describe('allPlainStringKeys (the WRAPPER arm)', () => {
 });
 
 describe('the reduced comparators', () => {
-  // ⚠️ BOTH ARGUMENT ORDERS, AND A SURVIVING MUTANT IS WHY. The first draft asserted only
+  // BOTH ARGUMENT ORDERS, AND A SURVIVING MUTANT IS WHY. The first draft asserted only
   // `desc('a', 'b') === 1`. Flipping the descending branch's `x > y` arm to `1` — a comparator that
   // returns 1 whichever way round the arguments come, i.e. no ordering at all — SURVIVED the whole
   // 2105-test suite, because that one assertion still held. A comparator needs both directions

@@ -187,7 +187,7 @@ const MODERN = [
   // is why this fuzzer ran for a long time without noticing that native's
   // `hasLabel` matched only the first and the TS engine matched any.
   '{"type":"node","id":"13","labels":["PERSON","SOFTWARE"],"properties":{"name":"hybrid","age":40,"lang":"rust"}}',
-  // ⚠️ NO ASTRAL / U+E000 STRING IN THIS CORPUS, AND THAT IS A MEASURED DECISION (item 1712).
+  // NO ASTRAL / U+E000 STRING IN THIS CORPUS, AND THAT IS A MEASURED DECISION (item 1712).
   // Every `name` here is ASCII, where UTF-16 order already equals code-point order -- so this
   // fuzzer cannot see a string-ordering bug, and it did not: TS Gremlin ordered by code UNIT while
   // the engine orders by code POINT, across 59 `order(` cases, until item 1711 found it by hand.
@@ -202,7 +202,7 @@ const MODERN = [
   //
   // So the TS-side guard is `packages/gremlin/src/string-order.test.ts` (6 tests; 4 of them fail if
   // the fix is reverted, verified) and the three-way view including native is
-  // `packages/native/gremlin-order-codepoint-probe.mjs`. ⚠️ STILL OPEN: nothing in CI compares TS
+  // `packages/native/gremlin-order-codepoint-probe.mjs`. STILL OPEN: nothing in CI compares TS
   // against NATIVE on an astral column. The fix for that is a dedicated case with its OWN small
   // corpus, not a second attempt at this one.
   '{"type":"edge","id":"7","from":"1","to":"2","labels":["KNOWS"],"properties":{"weight":0.5}}',
@@ -725,13 +725,13 @@ const terminal = (r: () => number): unknown[] => {
   }
 
   /*
-   * ⚠️ `values(k)` FOLLOWED BY `sum()` / `mean()` WAS A BLIND SPOT (item 1918). The bare `sum()`
+   * `values(k)` FOLLOWED BY `sum()` / `mean()` WAS A BLIND SPOT (item 1918). The bare `sum()`
    * above is a terminal on ELEMENTS; this generator could not compose a projection with a numeric
    * fold at all, because the `values` arm and the `sum` arm were mutually exclusive branches. So
    * the shape `V().out(T).values(k).sum()` — whose f64 result is ORDER-SENSITIVE in its last ulp,
    * and which item 1918 fuses — was never compared between the engines.
    *
-   * ⚠️ THE WEIGHT COMES ENTIRELY OUT OF THE BARE-`sum` WINDOW (0.60-0.70 split 0.05/0.025/0.025),
+   * THE WEIGHT COMES ENTIRELY OUT OF THE BARE-`sum` WINDOW (0.60-0.70 split 0.05/0.025/0.025),
    * so no other terminal's probability moves and this widening cannot be confused with a change in
    * the rest of the distribution. Same construction as the `values + groupCount` arm below, which
    * exists for the same reason: a composition the general generator could not reach.
@@ -886,7 +886,7 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
     // step does.
     let orderLocalGenerated = 0;
     /**
-     * ⚠️ A GENERATOR BRANCH THAT NEVER FIRES IS A GUARD THAT GUARDS NOTHING (item 1918). The
+     * A GENERATOR BRANCH THAT NEVER FIRES IS A GUARD THAT GUARDS NOTHING (item 1918). The
      * composed numeric folds were added because `values(k).sum()` / `.mean()` had NO coverage, and
      * a weight that turned out unreachable would leave exactly the blind spot the widening was for
      * — silently. Reported like `order(local)` so the count is visible every run.
@@ -952,7 +952,7 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
         }
       };
 
-      // ⚠️ THE CENSUS KNOB (item 1817), matching the differential fuzzer's. `GREMLIN_DUMP=<path>`
+      // THE CENSUS KNOB (item 1817), matching the differential fuzzer's. `GREMLIN_DUMP=<path>`
       // appends every EMITTED traversal, which is the only way to ask what MIX this generator
       // produces — coverage counters answer "did this one step appear" and cannot answer "is the
       // generator skewed", which is the question that turned out to matter for its GQL twin.
@@ -978,7 +978,7 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
       // stays contractual is WHICH elements come back and HOW MANY (compared as a multiset
       // below), the VALUES, and the order a top-level `order()` actually specifies.
       //
-      // ⚠️ A REORDER HAS NOW SHIPPED, so the old form of this note ("the engines still AGREE on walk
+      // A REORDER HAS NOW SHIPPED, so the old form of this note ("the engines still AGREE on walk
       // order today -- nothing has been reordered yet") is retired: item 2407 drives the one-hop
       // `cyclicPath` rung off the type's edge set, which emits EDGE-insertion order where the
       // engines once both emitted vertex order. So a POSITIONAL divergence on an adjacency shape is
@@ -1072,7 +1072,7 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
     }
 
     const foldWarn =
-      projectedNumericFold === 0 ? '   ⚠️ BRANCH NEVER FIRED — the widening guards nothing' : '';
+      projectedNumericFold === 0 ? '   BRANCH NEVER FIRED — the widening guards nothing' : '';
 
     console.log(
       `  values(k).sum()/.mean()=${projectedNumericFold} of ${ITERATIONS} generated${foldWarn}`,
@@ -1083,7 +1083,7 @@ suite('differential fuzz: gremlin (TS engine vs Rust ENGINE)', () => {
         `  order(local)=${orderLocalGenerated}/${orderLocalNonEmpty}/${orderLocalWithNull} of ${ITERATIONS} ` +
           'generated/non-empty/with-a-null',
       );
-      // ⚠️ `orderLocalWithNull` WAS `> 5` AND FAILED A CLEAN RUN (item 1792). It reported a
+      // `orderLocalWithNull` WAS `> 5` AND FAILED A CLEAN RUN (item 1792). It reported a
       // coverage miss as a fuzzer failure on a GQL-only change, which is the worst thing a gate
       // can do: it costs a real investigation to clear. These three floors were set from a RANGE,
       // the method item 280 called unsafe and item 1098 replaced with mean − 4σ rounded down.
@@ -1221,7 +1221,7 @@ suite('differential fuzz: gremlin DENSE multi-hop route (TS engine vs Rust ENGIN
 });
 
 /**
- * ⚠️ `match()` OVER A MULTIGRAPH — the case that would have caught item 1793's wrong answer, and
+ * `match()` OVER A MULTIGRAPH — the case that would have caught item 1793's wrong answer, and
  * the TWO reasons the suite above could not.
  *
  *   1. **It never generates `match()` at all.** The step pool has no `match` arm, so no number of
@@ -1231,7 +1231,7 @@ suite('differential fuzz: gremlin DENSE multi-hop route (TS engine vs Rust ENGIN
  *      end values, so two parallel edges collapsed into one solution where TinkerPop 3.7.3 and the
  *      Rust engine both emit two.
  *
- * ⚠️ A DEDICATED CASE RATHER THAN A WIDER SHARED CORPUS, which is the decision the suite above
+ * A DEDICATED CASE RATHER THAN A WIDER SHARED CORPUS, which is the decision the suite above
  * records twice. Its coverage floors are calibrated on `MODERN`'s exact seven vertices — adding two
  * for the astral-string question put `orderLocalWithNull` at 0-3 against its floor and had to be
  * REVERTED, "the counter doing exactly its job". A parallel edge would reweight every draw the same
@@ -1241,7 +1241,7 @@ suite('differential fuzz: gremlin DENSE multi-hop route (TS engine vs Rust ENGIN
  * ONE SOURCE OF TRUTH: the NDJSON below is deserialized for TS and decoded for native, so the two
  * definitions cannot drift.
  *
- * ⚠️ EVERY MATCH CASE HAS ITS CHAIN TWIN, and that pairing is the point rather than decoration.
+ * EVERY MATCH CASE HAS ITS CHAIN TWIN, and that pairing is the point rather than decoration.
  * TinkerPop answers the same number for both (verified against `gremlin-console:3.7.3` at item
  * 1793: `match(a-T->b).count()` and `out(T).count()` are both 3 on a one-parallel-edge chain), so a
  * divergence that moved BOTH engines together would still show up as the match and the chain
@@ -1286,7 +1286,7 @@ suite('differential fuzz: gremlin MATCH over a MULTIGRAPH (TS engine vs Rust ENG
   };
 
   /**
-   * ⚠️ THE FIXTURE MUST ACTUALLY BE A MULTIGRAPH, asserted rather than assumed — this whole suite
+   * THE FIXTURE MUST ACTUALLY BE A MULTIGRAPH, asserted rather than assumed — this whole suite
    * exists because a corpus that looked adequate was not, and a fixture that lost its parallel
    * edges would make every case below pass by answering an easier question.
    */
@@ -1333,13 +1333,13 @@ suite('differential fuzz: gremlin MATCH over a MULTIGRAPH (TS engine vs Rust ENG
     // solver's own rather than an artefact of counting the step's output value.
     ['match two patterns, select(c), count', traversal(V(), match(ONE, TWO), select('c'), count())],
     ['match two patterns, select(a,b)', traversal(V(), match(ONE, TWO), select('a', 'b'))],
-    // ⚠️ THE ORACLE FOR ITEM 1798's REWRITE, and the only sound one: TS rewrites this into
+    // THE ORACLE FOR ITEM 1798's REWRITE, and the only sound one: TS rewrites this into
     // `out(T).out(T)` while native runs the solver, so the comparison is the rewrite against the
     // thing it claims to equal — ROWS AND ORDER, on a multigraph. A TS-only check would compare
     // the chain to itself.
     ['match two patterns, select(c) ROWS', traversal(V(), match(ONE, TWO), select('c'))],
     ['match one pattern, select(b) ROWS', traversal(V(), match(ONE), select('b'))],
-    // ⚠️ THE OTHER SOLVER ARM: `a` is bound by the first pattern, so `BACK` never builds a
+    // THE OTHER SOLVER ARM: `a` is bound by the first pattern, so `BACK` never builds a
     // candidate list and takes the already-bound consistency path instead. Its multiplicity over
     // the two parallel `m3 -> m1` edges is a DIFFERENT question from the one item 1793 fixed, and
     // this case is here to answer it rather than to confirm it.
@@ -1369,7 +1369,7 @@ suite('differential fuzz: gremlin MATCH over a MULTIGRAPH (TS engine vs Rust ENG
 });
 
 /**
- * ⚠️ THE EIGHTEEN STEPS ITEM 1796 TAUGHT THE EMITTER TO WRITE, each compared against the engine for
+ * THE EIGHTEEN STEPS ITEM 1796 TAUGHT THE EMITTER TO WRITE, each compared against the engine for
  * the first time.
  *
  * Item 1795's census found 19 steps that BOTH engines implement and `planToGremlin` could not
@@ -1377,7 +1377,7 @@ suite('differential fuzz: gremlin MATCH over a MULTIGRAPH (TS engine vs Rust ENG
  * feeds the Rust engine by emitting TEXT — that is how `match()` carried two wrong answers through
  * 20,000 queries a run (items 1793/1794).
  *
- * ⚠️ **EMITTING IS NOT EMITTING CORRECTLY, AND THAT IS WHAT THIS SUITE IS FOR.** A new arm can
+ * **EMITTING IS NOT EMITTING CORRECTLY, AND THAT IS WHAT THIS SUITE IS FOR.** A new arm can
  * render a syntactically valid query that means something ELSE, and the census cannot see it: it
  * only asks whether the parser accepted the text. Each case below runs the plan through TS and the
  * emitted text through native and compares the answers, so a wrong spelling fails here rather than
@@ -1437,7 +1437,7 @@ suite('differential fuzz: gremlin EMITTER ARMS (TS engine vs Rust ENGINE)', () =
     ['barrier', traversal(V(), barrier(), count())],
     ['index', traversal(V(), values('name'), index())],
     ['none()', traversal(V(), none(), count())],
-    // ⚠️ `sample(n)` picks n traversers and the choice is NOT specified, so only its CARDINALITY
+    // `sample(n)` picks n traversers and the choice is NOT specified, so only its CARDINALITY
     // is comparable. Asserting the rows would be asserting an unspecified order, which this repo
     // treats as a won't-fix question rather than a divergence.
     ['sample cardinality', traversal(V(), sample(2), count())],
@@ -1462,7 +1462,7 @@ suite('differential fuzz: gremlin EMITTER ARMS (TS engine vs Rust ENGINE)', () =
   }
 
   /**
-   * ⚠️ **AN OPEN DIVERGENCE, FOUND BY THE FIRST ARM THAT COULD ASK THE QUESTION (item 1796),
+   * **AN OPEN DIVERGENCE, FOUND BY THE FIRST ARM THAT COULD ASK THE QUESTION (item 1796),
    * AND IT IS STRUCTURAL RATHER THAN A SLIP.** `g.V().properties()` with NO key:
    *
    * ```text
@@ -1476,7 +1476,7 @@ suite('differential fuzz: gremlin EMITTER ARMS (TS engine vs Rust ENGINE)', () =
    * TinkerPop's count, which is why `properties('name')` above passes; with none or several there
    * is nothing to fan out to, so the element is kept.
    *
-   * ⚠️ **`test.failing` RATHER THAN A REGISTRY ENTRY.** This is a `value` divergence — the two
+   * **`test.failing` RATHER THAN A REGISTRY ENTRY.** This is a `value` divergence — the two
    * engines answer a determinate question differently — and the divergence registry may never
    * excuse one: "if the engines disagree about the answer to a determinate question, that is a bug
    * in one of them". So it is pinned here as a KNOWN failure that will turn green and shout the
@@ -1492,7 +1492,7 @@ suite('differential fuzz: gremlin EMITTER ARMS (TS engine vs Rust ENGINE)', () =
     expect(ts).toEqual(canonJson(nativeArms(planToGremlin(plan))));
   });
 
-  test('⚠️ the CONTROL for that divergence: each engine is self-consistent', () => {
+  test('the CONTROL for that divergence: each engine is self-consistent', () => {
     // Without this the failing test above could be read as "one engine is broken generally". TS
     // counts 9 properties over 4 vertices and native counts 4 elements, and BOTH agree on the
     // single-key spelling, which is what localizes the gap to the no-key fan-out.

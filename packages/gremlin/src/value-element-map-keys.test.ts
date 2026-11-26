@@ -17,7 +17,7 @@ import { traversal } from './traversal.js';
  *   - **no keys requested** → every own property, in bag order, no guard needed;
  *   - **keys requested** → only those, and a REQUESTED KEY MAY BE ABSENT, so that arm keeps the test.
  *
- * ⚠️ Key ORDER is part of the contract, not an implementation detail — column order is observable in
+ * Key ORDER is part of the contract, not an implementation detail — column order is observable in
  * the output bytes — so these assert `Object.keys(...)` sequences, not just membership.
  */
 

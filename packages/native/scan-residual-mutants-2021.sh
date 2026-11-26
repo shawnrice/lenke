@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2021 — mutation round on the scan rung's residual path.
 #
-# ⚠️⚠️ **FIRST, DOES THE TEST FILE REACH THE NEW CODE AT ALL?** Item 2018 wrote 13 tests for a new
+# **FIRST, DOES THE TEST FILE REACH THE NEW CODE AT ALL?** Item 2018 wrote 13 tests for a new
 # path and every walk mutant SURVIVED them, because rungs above answered each shape and the new code
 # never ran. The `count-never-fused` mutant below is that check made permanent: it forces
 # `fusableProjectedCount` to return false, so the fused case declines everywhere. It is
@@ -58,7 +58,7 @@ MUTANTS=(
   "residual-whole-plan@@  return values === undefined ? undefined : { values, rest: steps.slice(2) };@@s@rest: steps.slice(2)@rest: steps@"
   # ---- THE INHERITED REFUSALS: dropping the reuse would route around item 1870's hasLabel refusal ----
   "label-refusal-bypassed@@  const values = nodeValuesShortcut({ ...plan, steps: steps.slice(0, 2) }, graph);@@s@nodeValuesShortcut({ ...plan, steps: steps.slice(0, 2) }, graph)@nodeValuesShortcut({ ...plan, steps: [steps[0], steps[steps.length - 1]] }, graph)@"
-  # ⚠️ ANSWER-EQUIVALENT: the pipeline answers identically, so this SHOULD survive the answer tests
+  # ANSWER-EQUIVALENT: the pipeline answers identically, so this SHOULD survive the answer tests
   # and must be caught by the gate's own assertions. Item 2018's lesson as a standing check.
   "residual-never-fused@@  if (steps.length <= 2) {@@s@  if (steps.length <= 2) {@  if (true) {@"
 )

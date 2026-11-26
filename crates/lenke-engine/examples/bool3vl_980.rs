@@ -1,7 +1,7 @@
 //! Item 980: is `p.b = true` the same 3VL predicate as `p.b`, and `p.b = false` the same as
 //! `NOT p.b`, including over a NULL and an ABSENT cell?
 //!
-//! ⚠️ THIS PROBE DOES NOT REACH `try_filter_keep_bool_prop`, and that is recorded here rather
+//! THIS PROBE DOES NOT REACH `try_filter_keep_bool_prop`, and that is recorded here rather
 //! than discovered again. It reports SAME on all four pairs **with the fast path's polarity
 //! INVERTED**, so it cannot distinguish that change from its own inverse. Two reasons, both
 //! measured: on the original 4-node fixture `p.b = true` is seeded as an `IndexSeek`; with the

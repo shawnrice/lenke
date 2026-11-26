@@ -31,7 +31,7 @@ import { query } from './index.ts';
 /**
  * The fast route and an INDEPENDENT route on ONE pattern, asserted equal and returned.
  *
- * ⚠️ THE ORACLE IS A ROW PROJECTION, NOT `AND true`. The first version of this file used
+ * THE ORACLE IS A ROW PROJECTION, NOT `AND true`. The first version of this file used
  * `… AND true`, item 570's decline-forcer for the ONE-HOP count — and **this rung absorbs it**:
  * `a.k = 3 AND true` is still start-only, so both spellings took `firstLegUndirected` and every
  * assertion compared the route against ITSELF. A mutant that read the wrong end of the in-box edge

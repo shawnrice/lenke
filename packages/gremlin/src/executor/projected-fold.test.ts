@@ -24,7 +24,7 @@ import { foldProjectedList, fusableProjectedBagCap, fusableProjectedFold } from 
 /**
  * A residual global `fold()` over a fused projection (item 1909).
  *
- * ⚠️⚠️ **A FOLD'S ELEMENT ORDER IS ITS ANSWER**, which is the whole correctness surface and what
+ * **A FOLD'S ELEMENT ORDER IS ITS ANSWER**, which is the whole correctness surface and what
  * makes this different from the `min`/`max` residual (item 1857, order-invariant) and the `order()`
  * residual (item 1630, which destroys the input order). So every assertion below is on the LIST
  * CONTENTS IN ORDER, and the fused answer is compared against a spelling that does NOT take the
@@ -79,7 +79,7 @@ describe('a residual fold over a fused projection', () => {
     const g = fixture();
     const folded = listOf(toArray(traversal(V(), out('E'), values('k'), fold()), g));
 
-    // ⚠️ THE ORACLE IS THE SAME PROJECTION WITHOUT THE FOLD, which does not take this path: the
+    // THE ORACLE IS THE SAME PROJECTION WITHOUT THE FOLD, which does not take this path: the
     // list must be exactly those rows, in that order.
     expect(folded).toStrictEqual(toArray(traversal(V(), out('E'), values('k')), g));
     // And spelled out, so a change to BOTH spellings at once cannot pass:
@@ -112,7 +112,7 @@ describe('a residual fold over a fused projection', () => {
   });
 
   /**
-   * ⚠️ THE LAZY PATH TOO. `toArray` prefers a walk's `drain`, and this fusion calls `drain` itself —
+   * THE LAZY PATH TOO. `toArray` prefers a walk's `drain`, and this fusion calls `drain` itself —
    * so a consumer that spreads `run` instead must get the same list. Item 1889 caught a run-bound
    * off-by-one that lived in one of those two copies only.
    */
@@ -137,7 +137,7 @@ describe('a residual fold over a fused projection', () => {
 /**
  * The ELEMENT fold (item 1910) — `V().out(T).fold()`, with no projection between.
  *
- * ⚠️⚠️ ASSERTED ON THE REPEAT CALL, because this shape now rides item 1889's CSR and its
+ * ASSERTED ON THE REPEAT CALL, because this shape now rides item 1889's CSR and its
  * SECOND-ASK policy: the first ask declines and records, so a single `toArray` measures the bucket
  * walk and a repeat measures the CSR. Both must answer identically — five mutants survived a
  * single-`toArray` suite at item 1889 for exactly this reason.
@@ -201,7 +201,7 @@ describe('a residual fold over a BARE hop', () => {
 /**
  * `aggregate(k).cap(k)` and `store(k).cap(k)` over a fused hop (item 1911).
  *
- * ⚠️⚠️ **ITEM 1909 REFUSED THIS PAIR, so these tests are the evidence for reversing that**, not
+ * **ITEM 1909 REFUSED THIS PAIR, so these tests are the evidence for reversing that**, not
  * cover added afterwards. Its reason — a side effect that passes the stream through is a different
  * emit contract, and `aggregate`/`store` differ on eagerness — is true in general and unobservable
  * with `cap` TERMINAL. The declines below are where it becomes observable again, and they are the
@@ -250,7 +250,7 @@ describe('a residual aggregate/store + cap over a fused hop', () => {
     ).toStrictEqual([]);
   });
 
-  /** ⚠️ MISMATCHED KEYS: `cap('b')` reads a side effect this plan never wrote. */
+  /** MISMATCHED KEYS: `cap('b')` reads a side effect this plan never wrote. */
   it('aggregate(a) + cap(b) is an EMPTY list, not the walk', () => {
     const g = fixture();
 
@@ -260,7 +260,7 @@ describe('a residual aggregate/store + cap over a fused hop', () => {
   });
 
   /**
-   * ⚠️⚠️ THE EAGERNESS DISTINCTION, WHICH BECOMES OBSERVABLE THE MOMENT `cap` IS NOT TERMINAL —
+   * THE EAGERNESS DISTINCTION, WHICH BECOMES OBSERVABLE THE MOMENT `cap` IS NOT TERMINAL —
    * `side-effects.ts` names this exact shape. `aggregate` buffers the upstream so a later `limit(0)`
    * cannot cancel the collection; `store` is lazy, so it can. The fusion must not reach either, and
    * `rest.length === 2` is what keeps it away.
@@ -270,7 +270,7 @@ describe('a residual aggregate/store + cap over a fused hop', () => {
     const eager = toArray(traversal(V(), out('E'), aggregate('x'), limit(0), cap('x')), g);
     const lazy = toArray(traversal(V(), out('E'), store('y'), limit(0), cap('y')), g);
 
-    // ⚠️ THE NUMBERS ARE THE GENERIC PATH'S, UNCHANGED — this shape has three residual steps so the
+    // THE NUMBERS ARE THE GENERIC PATH'S, UNCHANGED — this shape has three residual steps so the
     // fusion declines it, and what matters is that the two still DIFFER. The barrier collected the
     // whole upstream before the slice (6); the lazy one was pulled once before `limit(0)` rejected
     // it (1), which is this engine's existing behaviour and not something this item decides.
@@ -322,7 +322,7 @@ describe('fusableProjectedBagCap — what it admits', () => {
     expect(fusableProjectedBagCap(stepsOf(traversal(cap('x'), aggregate('x'))))).toBe(false);
   });
 
-  /** ⚠️ `subgraph` writes a key `capStep` reads FIRST, and its value is a GRAPH, not a bag. */
+  /** `subgraph` writes a key `capStep` reads FIRST, and its value is a GRAPH, not a bag. */
   it('declines subgraph + cap', () => {
     expect(fusableProjectedBagCap(stepsOf(traversal(subgraph('x'), cap('x'))))).toBe(false);
   });
@@ -347,7 +347,7 @@ describe('fusableProjectedFold — what it admits', () => {
     expect(fusableProjectedFold(stepsOf(traversal(limit(1))))).toBe(false);
   });
 
-  /** ⚠️ `foldProjectedList` must wrap, not flatten: one row whose value is the list. */
+  /** `foldProjectedList` must wrap, not flatten: one row whose value is the list. */
   it('foldProjectedList yields exactly one row holding the list', () => {
     expect(foldProjectedList([1, 2, 3])).toStrictEqual([[1, 2, 3]]);
     expect(foldProjectedList([])).toStrictEqual([[]]);

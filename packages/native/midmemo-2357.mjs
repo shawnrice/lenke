@@ -1,22 +1,22 @@
 /**
- * ✅✅ **PRICING THE ONE LEVER ITEM 2155 LEFT OPEN ON THE BENCH's LARGEST ROW (item 2357).**
+ * **PRICING THE ONE LEVER ITEM 2155 LEFT OPEN ON THE BENCH's LARGEST ROW (item 2357).**
  *
  * Item 2155 aimed three levers at `query: 2-hop subquery item` and refuted all three — `edgesOfTypes`
  * already has a single-type fast path, and fusing the second leg measured **172.4 against 165.0 without**
- * ("V8 had already inlined the chain; 65.4% across four frames was attribution, not overhead"). 🔑 Its
+ * ("V8 had already inlined the chain; 65.4% across four frames was attribution, not overhead"). Its
  * closing line names what survives:
  *
  *   *"a memo on the mid-vertex's typed degree — each mid-vertex is reached ~1.5 times in this fixture, so
  *   it is worth little here and would want a high-in-degree fixture to price. That is the next thing to
  *   try on this row, not another chain rewrite."*
  *
- * ✅ **The memo's CEILING is exactly the reach factor**: if a mid-vertex is reached R times, memoizing its
+ * **The memo's CEILING is exactly the reach factor**: if a mid-vertex is reached R times, memoizing its
  * typed degree saves at most (R-1)/R of the second leg's degree work. So pricing the lever means measuring
  * R — first, before any code.
  *
- * ⚠️⚠️ **AND A SKEWED GENERATOR IS WHERE A DEGENERATE LCG HIDES (item 702).** `to = (a*k + b) % N` is
+ * **AND A SKEWED GENERATOR IS WHERE A DEGENERATE LCG HIDES (item 702).** `to = (a*k + b) % N` is
  * invariant under `k -> k + N`, which produced a FUNCTIONAL graph that answered correctly and measured 14x
- * fast. ✅ So this probe ASSERTS its own distribution: distinct endpoints, max in-degree, and the measured
+ * fast. So this probe ASSERTS its own distribution: distinct endpoints, max in-degree, and the measured
  * reach factor are all printed, and a degenerate fixture throws rather than reporting a number.
  */
 import { Graph } from '@lenke/core';
@@ -33,7 +33,7 @@ for (let i = 0; i < NODES; i += 1) {
 }
 
 /*
- * ✅ THE TARGET CHOICE, and the only thing SKEW changes. At `SKEW = 0` this is item 1633's repeat-index
+ * THE TARGET CHOICE, and the only thing SKEW changes. At `SKEW = 0` this is item 1633's repeat-index
  * split — uniform. Above 0 the target is drawn from the first `NODES / (1 + SKEW)` vertices, so in-degree
  * concentrates without the arithmetic becoming invariant under `k -> k + N`.
  */
@@ -56,13 +56,13 @@ for (let j = 0; j < NODES * FAN; j += 1) {
   });
 }
 
-/* ⚠️ A FUNCTIONAL graph (every source pointing at one target) answers correctly and measures fast. */
+/* A FUNCTIONAL graph (every source pointing at one target) answers correctly and measures fast. */
 if (seen.size < Math.min(hubs, NODES) * 0.5) {
   throw new Error(`degenerate fixture: ${seen.size} distinct endpoints of ${hubs} possible`);
 }
 
 /*
- * 🔑 **THE REACH FACTOR, WHICH IS THE MEMO's CEILING.** A two-hop walk reaches each mid-vertex once per
+ * **THE REACH FACTOR, WHICH IS THE MEMO's CEILING.** A two-hop walk reaches each mid-vertex once per
  * INCOMING edge, and asks its typed degree each time. So R = (edges) / (distinct mid-vertices reached),
  * and a memo can save at most (R - 1) / R of that degree work.
  */

@@ -6,7 +6,7 @@
  * "ALGORITHMIC (native seeks; TS scans every edge), not a closure-overhead one", with only ~1.4x of
  * TS-side headroom left against a hand floor.
  *
- * ⚠️ THE "NATIVE SEEKS" HALF OF THAT IS WRONG, AND CHECKING IT IS WHY THIS PROBE EXISTS: there is no
+ * THE "NATIVE SEEKS" HALF OF THAT IS WRONG, AND CHECKING IT IS WHY THIS PROBE EXISTS: there is no
  * `createIndex` anywhere in the Gremlin bench, so native has no index to seek. What native has is
  * COLUMNAR properties, which lets it test the predicate once per VERTEX and then test a bit per
  * edge. TS tests it once per EDGE.
@@ -25,7 +25,7 @@
  * The three hand arms separate the two effects: `perEdge` -> `perVertex` is the predicate's cost,
  * `perVertex` -> `perVertexCsr` is the generator chain's.
  *
- * ⚠️ ONE ARM PER PROCESS, AND THE FIRST VERSION OF THIS PROBE WAS NOT. Running all seven arms in one
+ * ONE ARM PER PROCESS, AND THE FIRST VERSION OF THIS PROBE WAS NOT. Running all seven arms in one
  * process read the SAME arm at 31.9, 44.2 and 65.6 ms across three runs, and the engine arm between
  * 108.1 and 145.4 — a 2x spread on identical code, wider than several of the differences being
  * compared. `start-filtered-hop-values.ts` records exactly this about the previous probe for this
@@ -65,7 +65,7 @@ for (let i = 0; i < N; i += 1) {
   }
 }
 
-// ⚠️ The fixture's own statistics, not its output: a degenerate generator returns the RIGHT answer
+// The fixture's own statistics, not its output: a degenerate generator returns the RIGHT answer
 // (item 1684). A functional graph would make this row a chain rather than a fan-out.
 if (targets.size < N / 2) {
   throw new Error(`FIXTURE DEGENERATE: ${targets.size} distinct endpoints over ${N} vertices`);
@@ -100,7 +100,7 @@ const buildCsr = () => {
 
 const CSR = buildCsr();
 
-/** ⚠️ Per-query: the predicate reads PROPERTIES, so this can never be cached on topology. */
+/** Per-query: the predicate reads PROPERTIES, so this can never be cached on topology. */
 const mask = () => {
   const ok = new Uint8Array(order.length);
 
@@ -176,7 +176,7 @@ const perVertexCsr = ({ off, nbr }, ok) => {
 };
 
 /**
- * ⚠️ THE ARM THAT DECOMPOSES THE WIN: a flat CSR walk with the predicate still PER EDGE. Without it,
+ * THE ARM THAT DECOMPOSES THE WIN: a flat CSR walk with the predicate still PER EDGE. Without it,
  * `perVertex` -> `perVertexCsr` conflates two changes, and `perVertex` additionally pays an
  * `idxOf.get(far)` per edge that `perEdge` does not — so the mask arm is handicapped and the CSR arm
  * flattered. This one isolates the adjacency representation from the predicate's placement.
@@ -200,7 +200,7 @@ const perEdgeCsr = ({ off, nbr }) => {
 };
 
 /**
- * ⚠️ THE ARM THAT WOULD ACTUALLY SHIP: the mask resolved LAZILY on first arrival, not eagerly over
+ * THE ARM THAT WOULD ACTUALLY SHIP: the mask resolved LAZILY on first arrival, not eagerly over
  * all V. Item 1689 learned why from a near-miss: a predicate can THROW (a string-vs-temporal `<=`
  * does, settled policy here), so gating every vertex raises errors on vertices the walk never
  * reaches. Lazy resolution keeps the EVALUATED SET exactly the walk's — every far vertex reached by
@@ -236,7 +236,7 @@ const lazyMaskCsr = ({ off, nbr }) => {
 };
 
 /**
- * ⚠️ THE FORM THAT KEEPS THE WALK'S EVALUATED SET *AND* STAYS TIGHT: mark, resolve, emit.
+ * THE FORM THAT KEEPS THE WALK'S EVALUATED SET *AND* STAYS TIGHT: mark, resolve, emit.
  *
  * `lazyMaskCsr` resolves on first arrival, which is semantically right — the walk tests exactly the
  * far vertices an edge reaches — but it puts a branch and a property read INSIDE the hot loop and
@@ -292,7 +292,7 @@ const ARMS = {
   perEdgeCsr: () => perEdgeCsr(CSR),
   perVertexCsr: () => perVertexCsr(CSR, MASK),
   /**
-   * ⚠️ THE HONEST EAGER ARM, AND THE REASON IT EXISTS IS AN ERROR IN THIS FILE. `perVertexCsr`
+   * THE HONEST EAGER ARM, AND THE REASON IT EXISTS IS AN ERROR IN THIS FILE. `perVertexCsr`
    * above reuses `MASK`, built ONCE at module scope — so it excludes all 200,000 property reads and
    * reported 80-91x. That is the same class of mistake as timing a warm cache against a cold one,
    * and it nominated a target that does not exist at that size. This arm builds the mask INSIDE the
@@ -302,7 +302,7 @@ const ARMS = {
   perVertexCsrPlusMask: () => perVertexCsr(CSR, mask()),
 };
 
-// ⚠️ ROW ORDER IS UNSPECIFIED for an unordered traversal, so the arms are compared as SORTED
+// ROW ORDER IS UNSPECIFIED for an unordered traversal, so the arms are compared as SORTED
 // multisets — sorting to fake agreement would be wrong, comparing sorted copies is not. The ENGINE
 // arm is the oracle and is always run once, even when another arm is being timed: an arm whose
 // answer was never checked is not a measurement of the same question.
@@ -325,7 +325,7 @@ if (got !== want) {
   throw new Error(`ARM ${PICK} DISAGREES with the engine`);
 }
 
-/** ⚠️ MEDIAN of the warm reps, not min: the TS per-row path plateaus and emits a rare fast rep. */
+/** MEDIAN of the warm reps, not min: the TS per-row path plateaus and emits a rare fast rep. */
 const series = [];
 
 for (let r = 0; r < REPS; r += 1) {

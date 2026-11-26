@@ -3,10 +3,10 @@
  * same 2.25x as a read following a HUNDRED — `per-write` falls as pure 1/W — so the penalty is a FIXED
  * global rebuild charged to the first read after any write, not per-write work.
  *
- * ⚠️ TWO ARMS, ONE SHAPE PER PROCESS. `PROF_ARM=clean` reads repeatedly with NO writes; `PROF_ARM=churn`
+ * TWO ARMS, ONE SHAPE PER PROCESS. `PROF_ARM=clean` reads repeatedly with NO writes; `PROF_ARM=churn`
  * writes one edge before each read. The frame that appears only in `churn` IS the rebuild.
  *
- * 🔑 A WALKING shape (`values` after a hop), because `out('E').count()` is the degree-sum closed form and
+ * A WALKING shape (`values` after a hop), because `out('E').count()` is the degree-sum closed form and
  * never touches an adjacency memo — item 2245's first attempt timed 0.0 ms and could detect nothing.
  */
 import { Graph } from '@lenke/core';

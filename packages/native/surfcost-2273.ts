@@ -1,10 +1,10 @@
 /**
- * ⚠️⚠️ **MY OWN CROSS-SURFACE "1.8x" WAS NOT APPLES-TO-APPLES (item 2273).** Item 2271 measured GQL at
+ * **MY OWN CROSS-SURFACE "1.8x" WAS NOT APPLES-TO-APPLES (item 2273).** Item 2271 measured GQL at
  * 3,323 ns/statement and item 2272 Gremlin at 1,851 ns/call, and I read that as GQL being 1.8x slower per
- * statement. ⚠️ **The two arms did DIFFERENT WORK**: the GQL probe scanned 200 vertices and returned 200
+ * statement. **The two arms did DIFFERENT WORK**: the GQL probe scanned 200 vertices and returned 200
  * rows; the Gremlin probe scanned 400 and returned ONE (a `count()`). A ratio across those is meaningless.
  *
- * 🔑 This makes them comparable: the SAME fixture, the SAME predicate, and the SAME single-row output on
+ * This makes them comparable: the SAME fixture, the SAME predicate, and the SAME single-row output on
  * both surfaces — so the only difference left is the per-statement machinery each surface carries.
  *
  *     gqlReuse    the same TEXT every call            — hits the parse cache (cap 512 since item 2271)
@@ -12,7 +12,7 @@
  *     gremReuse   ONE plan object, called many times
  *     gremFresh   a NEW traversal() per call
  *
- * ⚠️ Both surfaces are asserted to return the same count every call, so an arm cannot read fast by doing
+ * Both surfaces are asserted to return the same count every call, so an arm cannot read fast by doing
  * less — the trap item 1682 names and item 2272's row-count guard caught in practice.
  */
 import { Graph } from '@lenke/core';

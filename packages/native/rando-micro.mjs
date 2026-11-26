@@ -6,12 +6,12 @@
  * be free). This micro asks the follow-on question the owner needs answered before anything can
  * change: of that cost, how much is ENTROPY and how much is FORMATTING?
  *
- * ⚠️ EVERY ARM HOLDS ~122+ BITS OF ENTROPY. That is not a detail — these ids reach snapshots and
+ * EVERY ARM HOLDS ~122+ BITS OF ENTROPY. That is not a detail — these ids reach snapshots and
  * cross sync peers, so two clients minting independently must not collide. An arm that bought speed
  * by shortening the random part would be measuring a different and unsafe function, so the arms
  * differ only in how the same random bits are turned into a string.
  *
- * ⚠️ AND THE ANSWER IS ASSERTED: each arm's output is checked for uniqueness across the run and for
+ * AND THE ANSWER IS ASSERTED: each arm's output is checked for uniqueness across the run and for
  * its expected length, because a minting function that returned a constant would win every round.
  */
 const N = Number(process.env.N ?? 300_000);
@@ -73,7 +73,7 @@ const ARMS = { randomUUID: arandomUUID, base36: abase36, hex: ahex };
 const out = {};
 
 for (const [name, fn] of Object.entries(ARMS)) {
-  // ⚠️ THE UNIQUENESS CHECK RUNS OUTSIDE THE TIMER, and the first version of this micro got that
+  // THE UNIQUENESS CHECK RUNS OUTSIDE THE TIMER, and the first version of this micro got that
   // wrong: interning each id into a 300,000-entry `Set` added ~330 ns of string hashing to EVERY
   // arm, which reported `randomUUID` at 439.6 ns against Node's real ~100 and COMPRESSED the gaps
   // between the arms toward 1x. A correctness assertion in the measured loop is still a confound.

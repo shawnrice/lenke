@@ -13,7 +13,7 @@
  * ordinary way people write queries before they learn about parameters. A cache cannot help: the
  * text is new every time by construction.
  *
- * ⚠️ THE CACHE IS THE THING TO DEFEAT, and defeating it is the whole design of this probe. Each
+ * THE CACHE IS THE THING TO DEFEAT, and defeating it is the whole design of this probe. Each
  * `fresh` arm mints a UNIQUE query string per rep (a comment carrying the rep number, so the text
  * differs while the parsed shape does not), and each `warm` arm reuses one string. The difference
  * between them is the cached cost; the `fresh` number is what an uncached caller pays.
@@ -39,7 +39,7 @@ for (let i = 0; i < 200; i += 1) {
 
 /** Query texts, each a shape a real caller writes. */
 /**
- * ⚠️ A SECOND UNIQUIFIER, AND THE DIFFERENCE IS THE WHOLE MEASUREMENT (item 1502).
+ * A SECOND UNIQUIFIER, AND THE DIFFERENCE IS THE WHOLE MEASUREMENT (item 1502).
  *
  * `uniquify` appends a line comment, which makes the TEXT unique while leaving the AST identical —
  * built at item 1499 to defeat the parse cache. It also defeats AUTO-PARAMETERIZATION, because the
@@ -89,7 +89,7 @@ const timeRound = (fn) => {
 };
 
 /**
- * ⚠️ A UNIQUE TEXT PER REP, and it has to leave the parsed SHAPE identical — otherwise the arms
+ * A UNIQUE TEXT PER REP, and it has to leave the parsed SHAPE identical — otherwise the arms
  * compare different queries rather than cached against uncached. A trailing line comment does
  * exactly that: the lexer discards it, so every rep parses to the same AST from a different string.
  */
@@ -157,7 +157,7 @@ for (const name of names) {
     out[arm] = med(rounds.slice(DROP));
   }
 
-  // ⚠️ `PROF_ARM` picks WHICH arm the profiler sees, and it matters: a window over `fresh` mixes
+  // `PROF_ARM` picks WHICH arm the profiler sees, and it matters: a window over `fresh` mixes
   // parse, plan and execute, so the planner's own frames are diluted by whatever the query does.
   // `PROF_ARM=plan` profiles parse+compile with no execution at all.
   const profArm = process.env.PROF_ARM ?? 'fresh';

@@ -1,7 +1,7 @@
 /**
  * ONE GQL SHAPE PER PROCESS, for an isolated A/B (item 1618).
  *
- * ⚠️ THE SWEEP IS THE WRONG INSTRUMENT FOR A PER-ROW CHANGE, and CLAUDE.md says why: rows interfere,
+ * THE SWEEP IS THE WRONG INSTRUMENT FOR A PER-ROW CHANGE, and CLAUDE.md says why: rows interfere,
  * and item 737 recorded a 1.66x "regression" that an isolated A/B refuted at 25.2 against 24.7. The
  * first reading of item 1618's change in `gql-cliff-finder.ts` showed `hop2/rows` 1.29x BETTER and
  * `page/ordered rows` 2.76x WORSE in the same run — which is exactly the pattern that needs one
@@ -35,7 +35,7 @@ const QUERIES: Record<string, string> = {
   hop3rows: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN d.k AS k',
   hop3multi: 'MATCH (a:P)-[:E|F]->(b:P)-[:E|F]->(c:P)-[:E|F]->(d:P) RETURN d.k AS k',
   hop3both: 'MATCH (a:P)-[:E]-(b:P)-[:E]-(c:P) RETURN c.k AS k',
-  // ⚠️ THE SELECTIVE-LABEL CONTROL: `Q` is on a third of the vertices, so the elision must DECLINE
+  // THE SELECTIVE-LABEL CONTROL: `Q` is on a third of the vertices, so the elision must DECLINE
   // and the test must still run. If this moves, the change costs something where it cannot help.
   hop3sel: 'MATCH (a:Q)-[:E]->(b:Q)-[:E]->(c:Q)-[:E]->(d:Q) RETURN d.k AS k',
   hop3mixed: 'MATCH (a:P)-[:E]->(b:Q)-[:E]->(c:P)-[:E]->(d:Q) RETURN d.k AS k',
@@ -65,7 +65,7 @@ const g = new Graph();
 
 for (let i = 0; i < NODES; i += 1) {
   /**
-   * ⚠️ `P` ON EVERY VERTEX AND `Q` ON A THIRD — the second label is what makes a SELECTIVE control
+   * `P` ON EVERY VERTEX AND `Q` ON A THIRD — the second label is what makes a SELECTIVE control
    * possible (item 1623). A fixture whose only label is universal can measure a vacuous-label
    * elision's win and nothing about its cost, which is item 1608's confounded-control mistake.
    * `i % 3` against `k = i % 100` keeps the two decorrelated (gcd(3, 100) = 1).
@@ -77,7 +77,7 @@ for (let i = 0; i < NODES; i += 1) {
   });
 }
 
-/** ⚠️ Split on the REPEAT INDEX — items 1516/1518; a linear `(a*k+b)%N` makes the graph functional. */
+/** Split on the REPEAT INDEX — items 1516/1518; a linear `(a*k+b)%N` makes the graph functional. */
 let edges = 0;
 
 for (let k = 0; k < NODES * FANOUT; k += 1) {

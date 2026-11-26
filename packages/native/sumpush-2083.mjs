@@ -36,7 +36,7 @@ const arms = {
 
     return values.reduce((s, x) => s + numArg(x), 0);
   },
-  // ⚠️ THE PUSH ALONE — the array is built and then only its LENGTH read, so the three passes are
+  // THE PUSH ALONE — the array is built and then only its LENGTH read, so the three passes are
   // excluded. This is the term item 2077 did not separate.
   pushonly: () => {
     const values = [];
@@ -69,7 +69,7 @@ const arms = {
 
     return sum;
   },
-  // ⚠️ THE CONTROL: the walk and the read, no accumulation beyond a bare add.
+  // THE CONTROL: the walk and the read, no accumulation beyond a bare add.
   floor: () => {
     let sum = 0;
 

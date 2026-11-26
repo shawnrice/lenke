@@ -3,7 +3,7 @@
 // `V().out(T).cyclicPath()` is the SECOND largest absolute cost on the Gremlin workload screen —
 // **200.91 ms for TWO rows** at `NODES=200000` (item 1954's reading), behind only `tree()`.
 //
-// ⚠️⚠️ **AND ITS REFUSAL IS SUPERSEDED, WHICH IS WHY THIS IS BEING PRICED AT ALL.** Item 1923
+// **AND ITS REFUSAL IS SUPERSEDED, WHICH IS WHY THIS IS BEING PRICED AT ALL.** Item 1923
 // declined it with a reason: `cyclicPath` is `simplePath`'s complement, so a rewrite needs
 // `where(eq(tag))`, and item 1912's rung explicitly declines `eq`. That still holds for the REWRITE
 // route. But item 1923's own entry records a mechanism the refusal never considered, and
@@ -17,11 +17,11 @@
 //     V().out(E).cyclicPath()  =>  ["a", "a", "c"]      one row per self-loop EDGE
 //     V().in_(E).cyclicPath()  =>  ["a", "a", "c"]      a self-loop sits in both directions
 //
-// 🔑 SO THE CEILING IS A SELF-LOOP SCAN, and this prices it two ways, because which one is the
+// SO THE CEILING IS A SELF-LOOP SCAN, and this prices it two ways, because which one is the
 // ceiling depends on something the screen's fixture cannot show: whether the edges of a type are
 // reachable as a set (O(|E_T|)) or only through per-vertex adjacency (O(V + E_T)).
 //
-// ⚠️ THE ANSWERS ARE COMPARED, not just the times — a ceiling that answers something else is not a
+// THE ANSWERS ARE COMPARED, not just the times — a ceiling that answers something else is not a
 // ceiling. Item 600's rule, and the parallel self-loop is in the fixture for exactly that reason.
 //
 //     bun cyclicpath-ceiling-1986.mjs
@@ -53,7 +53,7 @@ for (let e = 0; e < NODES * FANOUT; e += 1) {
 }
 
 /*
- * ⚠️ A PARALLEL SELF-LOOP IS ADDED DELIBERATELY. The screen's generator produces self-loops only by
+ * A PARALLEL SELF-LOOP IS ADDED DELIBERATELY. The screen's generator produces self-loops only by
  * coincidence (2 of 1,000,000), and a fixture with at most one self-loop per vertex cannot tell a
  * per-EDGE answer from a per-VERTEX one — which is the single thing a self-loop route could get
  * wrong. Two parallel loops at one vertex must yield TWO rows.
@@ -102,7 +102,7 @@ const handAdj = () => {
 
 /**
  * CEILING B: the type's edge set directly, O(|E_T|), skipping the per-vertex walk entirely. Faster
- * if it exists — and ⚠️ its ORDER is edge-insertion order, NOT vertex order, so it is priced as an
+ * if it exists — and its ORDER is edge-insertion order, NOT vertex order, so it is priced as an
  * upper bound on speed and NOT proposed as the route unless the orders coincide.
  */
 const handEdges = () => {
@@ -158,14 +158,14 @@ console.log(
     : `CEILING B edge set       ${edges.ms.toFixed(2).padStart(8)} ms   rows ${String(edges.got.length)}`,
 );
 
-// ⚠️ ANSWER FIRST, THEN THE RATIO — a ceiling that answers something else is not a ceiling.
+// ANSWER FIRST, THEN THE RATIO — a ceiling that answers something else is not a ceiling.
 const same = (a, b) =>
   a !== undefined && b !== undefined && JSON.stringify(a) === JSON.stringify(b);
 
 console.log(`\nengine answer            ${JSON.stringify(engine.got)}`);
 console.log(`A agrees with engine     ${String(same(engine.got, adj.got))}`);
 const bVerdict = edges.got === undefined ? 'n/a' : String(same(engine.got, edges.got));
-// ⚠️ B's order differing is EXPECTED, not a failure — it is why B is a speed bound and not the route.
+// B's order differing is EXPECTED, not a failure — it is why B is a speed bound and not the route.
 const bNote =
   edges.got !== undefined && !same(engine.got, edges.got)
     ? '   <- ORDER differs; speed bound only'

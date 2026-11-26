@@ -4,7 +4,7 @@ import { coalesce, choose, map, optional, order, out, path, repeat, union, V } f
 import { traversal } from '../traversal.js';
 import { planReadsPath } from './runtime.js';
 
-// ⚠️ `subPlansOf` NO LONGER EXISTS — item 1504 folded it into `stepReadsPath` (in `ast.ts`), where
+// `subPlansOf` NO LONGER EXISTS — item 1504 folded it into `stepReadsPath` (in `ast.ts`), where
 // the plan-bearing fields are now read at plan CONSTRUCTION instead of walked at execution. The
 // filename is kept so this file's history stays findable; what it guards is unchanged and still
 // load-bearing.

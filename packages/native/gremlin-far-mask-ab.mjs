@@ -10,7 +10,7 @@
  *
  *   target        V().out(E).has(k, eq(1)).id()         the arm's row
  *   targetValues  V().out(E).has(k, eq(1)).values(n)    the arm's row, other projection
- *   limited       … .id().limit(50)                     ⚠️ MUST take the LAZY path: the arm is
+ *   limited       … .id().limit(50)                     MUST take the LAZY path: the arm is
  *                                                       drain-only, so this is both a control and
  *                                                       the early-exit guard
  *   noFilter      V().out(E).values(n)                  no far filter -> declines
@@ -54,7 +54,7 @@ for (let i = 0; i < N; i += 1) {
 let e = 0;
 const targets = new Set();
 
-// ⚠️ Target NONLINEAR in `i`, so in-degree varies and the graph is not functional (items
+// Target NONLINEAR in `i`, so in-degree varies and the graph is not functional (items
 // 1516/1518/1684): a linear `(a*i+b) % N` is a bijection per layer and makes this row a chain.
 for (let i = 0; i < N; i += 1) {
   const deg = 1 + ((i * 2654435761) % (2 * FANOUT - 1));
@@ -103,7 +103,7 @@ for (let r = 0; r < REPS; r += 1) {
   series.push(performance.now() - t0);
 }
 
-/** ⚠️ MEDIAN of the warm reps: the TS per-row path plateaus and emits a rare fast rep, so `min` is
+/** MEDIAN of the warm reps: the TS per-row path plateaus and emits a rare fast rep, so `min` is
  *  the wrong estimator and has reversed a verdict's sign in this repo before. */
 const warm = series.slice(3).sort((a, b) => a - b);
 

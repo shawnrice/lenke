@@ -5005,7 +5005,7 @@ impl Store {
                     // (item 716, the same route item 715 took for the adjacency mirror). Order is
                     // preserved, because a seek yields bucket members in order and that becomes
                     // ROW order.
-                    // 🛑 PRICED AND OPEN (item 716): `swap_remove` here is O(1) instead of
+                    // PRICED AND OPEN, NOT BUILT (item 716): `swap_remove` here is O(1) instead of
                     // O(bucket) and would remove the whole remaining cost of this path. It
                     // SURVIVED mutation against both the full Rust suite and all seven
                     // byte-identity fuzzers, so nothing currently pins bucket order — unlike the

@@ -1,26 +1,26 @@
 /**
  * WHICH SHALLOW SHAPES REACH NO RUNG AT ALL? (item 1854)
  *
- * ⚠️ ITEM 1853 IS WHY THIS EXISTS. Five consecutive items hunted modifier cliffs on the DEEP rungs
+ * ITEM 1853 IS WHY THIS EXISTS. Five consecutive items hunted modifier cliffs on the DEEP rungs
  * (two hops, three, the OPTIONAL hop) and found six. The seventh was a multi-column `DISTINCT`
  * over a plain node scan — **depth ZERO**, 27.7x its own one-column spelling — and none of those
  * screens could see it, because they all started at a hop. The shallowest shapes are also the
  * commonest, so a gap there costs the most and hides the best.
  *
- * ⚠️ IT SCREENS BY *ROUTE*, NOT BY TIME, and that is the point rather than a shortcut. A rung gap
+ * IT SCREENS BY *ROUTE*, NOT BY TIME, and that is the point rather than a shortcut. A rung gap
  * IS the absence of a rung: there is no hot frame to profile and no anomalous cell to notice,
  * because the general matcher answers correctly and merely slowly. `compileLinear` can be asked
  * directly which detectors claim a shape, so a query that reaches NOTHING is the signal. Timing
  * then prices the ones worth pricing — in that order, because a route check costs milliseconds and
  * a timing sweep costs minutes.
  *
- * ⚠️ DECLINING IS NOT AUTOMATICALLY A DEFECT, and the output says so per row rather than leaving
+ * DECLINING IS NOT AUTOMATICALLY A DEFECT, and the output says so per row rather than leaving
  * the reader to assume. Several shapes decline for recorded reasons: a window over a DISTINCT
  * (item 1853 — the dedupe and the window would be applied in the wrong order), an order-SENSITIVE
  * fold over a chain (sum/collect — byte-identity with the Rust engine), an `ACYCLIC` var-length
  * walk (it diverges from set reachability). Those are listed as KNOWN so a real find stands out.
  *
- * ⚠️ ITS FIRST RUN FOUND FIVE UNEXPLAINED DECLINES AND ALL FIVE WERE BENIGN — the bare `LIMIT`
+ * ITS FIRST RUN FOUND FIVE UNEXPLAINED DECLINES AND ALL FIVE WERE BENIGN — the bare `LIMIT`
  * with no `ORDER BY`, across every base. That is the screen's own caveat earning itself on the
  * first use: a route difference is not always a cost difference (item 1850). The general path
  * streams and stops at the limit, so it is already the right answer and a rung could only match
@@ -34,7 +34,7 @@ const ROOT = '/home/shawn/projects/pl-graph';
 
 /** Each base shape, and the modifiers layered onto it. */
 const BASES = {
-  // ⚠️ THE SECOND BASE WAS A DUPLICATE OF THE FIRST in this file's first version — both
+  // THE SECOND BASE WAS A DUPLICATE OF THE FIRST in this file's first version — both
   // `MATCH (n:T)` — so 25 of its 125 cells measured the same shapes twice and the coverage was
   // overstated by a fifth. An UNLABELLED scan is a genuinely different seed (no label bucket to
   // start from), which is what that row was meant to be.
@@ -153,7 +153,7 @@ if (unclaimed.length === 0) {
   for (const [bname, mname, text] of unclaimed) {
     const why = KNOWN[mname];
 
-    console.log(`  ${why === undefined ? '⚠️ UNEXPLAINED' : 'known        '}  ${bname} / ${mname}`);
+    console.log(`  ${why === undefined ? 'UNEXPLAINED' : 'known        '}  ${bname} / ${mname}`);
     console.log(`      ${text}`);
 
     if (why !== undefined) {

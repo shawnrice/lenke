@@ -13,16 +13,16 @@
 // `bench:gremlin` compares Gremlin against native, and both spelling probes compare spellings
 // WITHIN one surface.
 //
-// ⚠️ ~~STILL OPEN: `two-hop-count` with GQL 1.84x SLOWER~~ — REVERSED at item 1877: GQL 8.82 ms
+// ~~STILL OPEN: `two-hop-count` with GQL 1.84x SLOWER~~ — REVERSED at item 1877: GQL 8.82 ms
 // against Gremlin's 10.92, so GQL is now 1.24x FASTER and Gremlin's absolute fell from 18.17.
 //
-// ⚠️⚠️ AND THIS HARNESS TIMES ONE CALL PER REP, which is close to `performance.now()`'s resolution
+// AND THIS HARNESS TIMES ONE CALL PER REP, which is close to `performance.now()`'s resolution
 // for the fast arms (`count-all`, `hop-count`, `both-count` and `seek-count` all land at 1.5-20 us).
 // Item 1877 looped `seek-count` 20,000 times inside the timed region and read GQL 2.86 us against
 // this harness's 18.6 — the ABSOLUTES here are inflated ~6x. The RATIO survived and grew (2.6-3.6x),
 // so a flag is still worth chasing; the number beside it is not worth quoting.
 //
-// ⚠️ `seek-count` IS 2.6-3.6x AND WITHDRAWN AS A TARGET (item 1878) — READ THE FLOOR, NOT THE RATIO.
+// `seek-count` IS 2.6-3.6x AND WITHDRAWN AS A TARGET (item 1878) — READ THE FLOOR, NOT THE RATIO.
 // GQL's seeked count is O(matches) where Gremlin's reads the index bucket's SIZE, and scaling says
 // so: GQL 2.40/3.68/6.16 us at 1111/2222/4444 matches against Gremlin's 1.01/1.20/1.31. But the
 // ABSOLUTE is 2 us a query — ~2% of one core at 10,000 queries a second, on a shape that needs a

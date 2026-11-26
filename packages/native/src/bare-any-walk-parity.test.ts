@@ -1,6 +1,6 @@
 // Byte-identity for `anyWalk`, GQL's bare-`ANY` trail enumerator — item 1616.
 //
-// ⚠️ THE FUNCTION HAD NO TEST IN EITHER SUITE, and it was found mechanically rather than by reading:
+// THE FUNCTION HAD NO TEST IN EITHER SUITE, and it was found mechanically rather than by reading:
 // item 1616 duplicated every bare `yield` in the GQL executor one at a time and ran the suite. Ten
 // of eleven sites died; `matching.ts`'s `anyWalk` emission survived, and survived the NATIVE suite
 // too. Duplicating it makes every bare-`ANY` row come out twice, so nothing drained it at all.
@@ -93,7 +93,7 @@ suite('bare `ANY` over a non-reducible quantifier: TS vs native', () => {
 
   test('ONE row per endpoint, not one per path — the selector’s whole claim', () => {
     /**
-     * ⚠️ DERIVED, and this is the assertion the duplicated-`yield` mutant dies on. From `a` with
+     * DERIVED, and this is the assertion the duplicated-`yield` mutant dies on. From `a` with
      * `{2,3}`: the 2-hop ends are `c` (a>b>c) and `d` (a>b>d, a>c>d); the 3-hop ends are `d`
      * (a>b>c>d) and `e` (a>b>d>e, a>c>d>e). Distinct endpoints: c, d, e — THREE rows, where
      * enumerating every trail gives six.

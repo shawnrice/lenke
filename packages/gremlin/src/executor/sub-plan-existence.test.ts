@@ -26,7 +26,7 @@ import {
 import { allHopExistence, hasAdjacency, singleHopExistence } from './sub-plan-existence.js';
 
 /**
- * ⚠️ NOT `ReturnType<typeof where>`, which the first draft used and which does not typecheck:
+ * NOT `ReturnType<typeof where>`, which the first draft used and which does not typecheck:
  * `where` is OVERLOADED and that resolves to the `ByableStep` overload, not the plain `StepFn`
  * every one of these call sites actually passes. Taken from `traversal`'s own parameter so it
  * cannot drift from what `traversal` accepts.
@@ -47,13 +47,13 @@ type TraversalStep = Parameters<typeof traversal>[number];
  *     CONTROL plain hop          40.98 -> 41.58      flat
  *     CONTROL bare scan           5.02 ->  5.02      flat
  *
- * ⚠️ THE ORACLE IS A TWO-STEP SUB-PLAN, and `identity()` is the right disqualifier for the same
+ * THE ORACLE IS A TWO-STEP SUB-PLAN, and `identity()` is the right disqualifier for the same
  * reason `optional-bucket-hop.test.ts` gives: `singleHopExistence` admits exactly one step, so
  * appending `identity()` sends the IDENTICAL question down the general path, changing the sub-plan's
  * LENGTH and nothing else. Gremlin stream order is a TinkerPop contract compared ORDERED by the
  * differential fuzzer, so every comparison here is element for element.
  *
- * ⚠️ WHY "DOES THE SUB-PLAN EMIT" AND "IS A BUCKET NON-EMPTY" ARE THE SAME QUESTION, which is the
+ * WHY "DOES THE SUB-PLAN EMIT" AND "IS A BUCKET NON-EMPTY" ARE THE SAME QUESTION, which is the
  * whole correctness argument: `traverseToVertex` / `traverseToEdge` yield for EVERY adjacent edge
  * unconditionally — there is no per-edge filter in a bare adjacency step — so a non-empty bucket
  * always produces at least one traverser. Any widening of the gate to a step that can DROP a
@@ -96,7 +96,7 @@ describe('the single-hop existence gate', () => {
     expect(singleHopExistence(traversal(in_('E')))).toEqual({ kind: 'in', labels: ['E'] });
     expect(singleHopExistence(traversal(both('E')))).toEqual({ kind: 'both', labels: ['E'] });
 
-    // ⚠️ THE EDGE-EMITTING STEPS COLLAPSE ONTO THE VERTEX-EMITTING ONES: `outE(T)` and `out(T)` walk
+    // THE EDGE-EMITTING STEPS COLLAPSE ONTO THE VERTEX-EMITTING ONES: `outE(T)` and `out(T)` walk
     // the identical adjacency and differ only in WHAT they yield, which a yes/no cannot see.
     expect(singleHopExistence(traversal(outE('E')))).toEqual({ kind: 'out', labels: ['E'] });
     expect(singleHopExistence(traversal(inE('E')))).toEqual({ kind: 'in', labels: ['E'] });
@@ -133,7 +133,7 @@ describe('the single-hop existence gate', () => {
     // One unrecognized plan takes the whole step to the general path.
     expect(allHopExistence([traversal(out('E')), traversal(has('n', 'a'))])).toBeUndefined();
 
-    // ⚠️ LOAD-BEARING, NOT A DON'T-CARE: `and()` keeps EVERY traverser (`[].every` is true) and
+    // LOAD-BEARING, NOT A DON'T-CARE: `and()` keeps EVERY traverser (`[].every` is true) and
     // `or()` keeps NONE (`[].some` is false). An empty array here would send both to one loop.
     expect(allHopExistence([])).toBeUndefined();
   });
@@ -241,7 +241,7 @@ describe('the fused filters answer what the general path answers', () => {
   });
 
   /**
-   * ⚠️ ARITY TWO IS A DIFFERENT FUNCTION. `hopExistenceCombinedStep` routes arity ONE to
+   * ARITY TWO IS A DIFFERENT FUNCTION. `hopExistenceCombinedStep` routes arity ONE to
    * `hopExistenceStep` — `and(p)` and `or(p)` both mean exactly `p` — so only these cases reach the
    * combining loop. The split was made for speed (the one-iteration loop measured 36.6 ms against
    * the straight-line 20.9 on 200,000 vertices), which means the arity-1 tests above do NOT cover
@@ -294,7 +294,7 @@ describe('the fused filters answer what the general path answers', () => {
   });
 
   /**
-   * ⚠️ A NON-VERTEX TRAVERSER, which the fused step must treat exactly as the general path does and
+   * A NON-VERTEX TRAVERSER, which the fused step must treat exactly as the general path does and
    * NOT as an error or a pass. `traverseToVertex` `continue`s on a non-vertex, so the sub-plan emits
    * nothing: `where` drops the row and `not` KEEPS it. Reached by filtering after a projection,
    * which no other case here does.
@@ -324,7 +324,7 @@ describe('the fused filters answer what the general path answers', () => {
   });
 
   /**
-   * ⚠️ A `null` IN THE STREAM, which is what makes the `isVertex` guard checked rather than merely
+   * A `null` IN THE STREAM, which is what makes the `isVertex` guard checked rather than merely
    * defensive. [[null-first-class-policy]]: null is a STORED, PRESENT value here, so `values(k)`
    * over a null-valued property puts `null` in the stream — and `null.adjFrom` throws where
    * `undefined.adjFrom` on a string merely reads undefined. Without the guard every other case in

@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2104 — hop2Projection's execution-time orientation decline, LIVE against a KILLED gate.
 #
-# ⚠️ THE KILL IS IN TWO PLACES, because the field feeds two consumers: GQL's `matchesLabel` and
+# THE KILL IS IN TWO PLACES, because the field feeds two consumers: GQL's `matchesLabel` and
 # Gremlin's `labelOf`. Killing only one would measure half the change and look like a smaller win.
 set -u
 ROOT=/home/shawn/projects/pl-graph
@@ -19,10 +19,10 @@ restore_live() {
   cp "$P_GQL" "$GQL"
   (cd $ROOT && npx nx build @lenke/gql >/dev/null 2>&1)
 }
-# ⚠️ A kill between the swap and the swap back would leave the tree on the WRONG arm, still green.
+# A kill between the swap and the swap back would leave the tree on the WRONG arm, still green.
 trap restore_live EXIT INT TERM
 
-# ⚠️ ASSERT THE TREE IS LIVE BEFORE DOING ANYTHING — if a previous run died mid-swap, the "before"
+# ASSERT THE TREE IS LIVE BEFORE DOING ANYTHING — if a previous run died mid-swap, the "before"
 # reading would silently be the killed code.
 grep -qF 'shouldDeclineToOrientedMatcher(graph, cPath, params) ? null' "$GQL" || { print -- "TREE IS NOT LIVE — restore first"; exit 1; }
 
@@ -42,7 +42,7 @@ esac
 
 print -- "=== $ROUND ==="
 
-# ⚠️ PLAIN ARRAYS, NO CLEVER DEFAULTS. Two earlier scripts in this directory lost a whole round to
+# PLAIN ARRAYS, NO CLEVER DEFAULTS. Two earlier scripts in this directory lost a whole round to
 # `${=:-${ROWS:-"a\nb"}}`: a row name contains a space, `local IFS` is invalid outside a function,
 # and the loop silently ran one row. The lists are literal here.
 gqlrows=(hop2rows hop2distinct hop2rowswhere hoprows control)

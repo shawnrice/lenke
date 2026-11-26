@@ -1,14 +1,14 @@
 /**
  * ITEM 2233 — DELETES, the last write-path shape with no floored measurement.
  *
- * ⚠️ What IS recorded: deletes at 6.18x/11.34x under churn were the reason the DENSE VERTEX ORDINAL design
+ * What IS recorded: deletes at 6.18x/11.34x under churn were the reason the DENSE VERTEX ORDINAL design
  * was disqualified (items 1369-1372/1397) — a statement about a REJECTED design, not about this engine. And
  * item 2200 showed by-id lookup is unharmed by churn. The delete path's own cost has never been floored.
  *
- * 🔑 The floor must cascade: `removeVertex` has to drop the vertex's incident edges, so a floor that only
+ * The floor must cascade: `removeVertex` has to drop the vertex's incident edges, so a floor that only
  * deletes a map entry would be measuring a different operation (item 698's error, mirrored).
  *
- * ⚠️ ONE ARM PER PROCESS, a cheap sink, and a fresh graph per rep.
+ * ONE ARM PER PROCESS, a cheap sink, and a fresh graph per rep.
  */
 import { Graph } from '@lenke/core';
 
@@ -76,7 +76,7 @@ const removeEdges = (g: Graph): number => {
 
 /**
  * The FLOOR: the same deletions done by hand against plain maps that mirror the engine's indexes —
- * by-id, by-label, and both adjacency directions. 🔑 It cascades, because `removeVertex` must.
+ * by-id, by-label, and both adjacency directions. It cascades, because `removeVertex` must.
  */
 const handRolledBuild = (): {
   byId: Map<string, { id: string; k: number }>;
@@ -129,7 +129,7 @@ const handRolledBuild = (): {
 };
 
 /**
- * ⚠️⚠️ **THE FIXTURE BUILD IS ~75% OF EVERY ARM, SO IT MUST BE SUBTRACTABLE.** The first version of this
+ * **THE FIXTURE BUILD IS ~75% OF EVERY ARM, SO IT MUST BE SUBTRACTABLE.** The first version of this
  * probe measured `build` at 17,994 ns/delete while doing NO deletes — a large cost shared by every arm,
  * which is item 2227's dilution in a different coat (there it was the sink, here it is the setup). Both
  * halves therefore get their own arm: `build`/`floorbuild` measure setup, `vertices`/`floor` measure

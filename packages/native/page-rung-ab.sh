@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Interleaved driver for `page-rung-probe.mjs` (item 1775).
 #
-# ⚠️ ONE SHAPE PER PROCESS, AND THE ARMS INTERLEAVED ACROSS ROUNDS. Item 1367's prescription is
+# ONE SHAPE PER PROCESS, AND THE ARMS INTERLEAVED ACROSS ROUNDS. Item 1367's prescription is
 # `p25` per process, median across processes, because the noise on a 200k row is PROCESS-level and
 # no within-process estimator removes it. Item 762 is the other half: a two-shape in-process A/B
 # flatters any change that redistributes dispatch, which is exactly what a route question is.

@@ -28,14 +28,14 @@ import { fusableProjectedOrder } from './aggregation.js';
  * place (item 1630) — **2.35x** on `V().out(T).values(k).order()` and 2.23x on the descending
  * spelling, at 200,000 vertices / 1M edges, with `hopvaluesrows`, `hopbare` and `hopidrows` flat.
  *
- * ⚠️ ITEM 1394 CLOSED THIS ROW, correctly, and this does not re-attempt anything on its list. It
+ * ITEM 1394 CLOSED THIS ROW, correctly, and this does not re-attempt anything on its list. It
  * priced `evalBy` at 0.1% (refuted), the comparator at ~4.3% and `[...stream]` at ~5%. What it could
  * not price is a composite ROUTE: `hopValuesShortcut` consumed `[V, hop, values]` and handed back
  * `rest = [order]`, so a million raw values were wrapped in traversers one at a time, spread back
  * into an array by `orderStep`, and given a `{item, key}` wrapper plus three more passes by
  * `sortByBys` — when the walk already produces exactly the array the sort wants.
  *
- * ⚠️ THE ORACLE IS A TRAILING `identity()`. `rest.length !== 1` declines the fusion, so
+ * THE ORACLE IS A TRAILING `identity()`. `rest.length !== 1` declines the fusion, so
  * `…values(k).order().identity()` asks the identical question down the general path. Gremlin stream
  * order is a TinkerPop contract compared ORDERED by the differential fuzzer, so every comparison
  * below is element for element.
@@ -67,7 +67,7 @@ const g = ((): Graph => {
   for (const r of TABLE) {
     const properties: Record<string, unknown> = { id: r.id };
 
-    // ⚠️ `e` carries NO `k` AT ALL, which is not the same as `k: null`: `values(k)` drops the first
+    // `e` carries NO `k` AT ALL, which is not the same as `k: null`: `values(k)` drops the first
     // and emits the second, and `compareTotal` sorts a null FIRST. Both are in the fixture.
     if (r.k !== undefined) {
       properties.k = r.k;
@@ -121,7 +121,7 @@ describe('the fused sort answers what the general path answers', () => {
     expect(toArray(traversal(V(), out('E'), values('k'), order(), identity()), g)).toEqual(ASC);
   });
 
-  test('⚠️ descending via `Order.desc`, the spelling item 1591 got wrong', () => {
+  test('descending via `Order.desc`, the spelling item 1591 got wrong', () => {
     /**
      * `order(Order.desc)` arrives as `bys: [{kind:'identity', direction:'desc'}]`, NOT as
      * `desc: true`. Item 1591's first gate refused any `bys`, which made its own `desc` parameter
@@ -209,9 +209,9 @@ describe('the fused sort answers what the general path answers', () => {
 });
 
 describe('the fusion declines what it must, and the answer is unchanged', () => {
-  test('⚠️ an ELEMENT stream still throws — but from the STATIC check, not from the sort', () => {
+  test('an ELEMENT stream still throws — but from the STATIC check, not from the sort', () => {
     /**
-     * ⚠️ THIS TEST PASSES FOR A DIFFERENT REASON THAN I WROTE IT FOR, and the difference matters.
+     * THIS TEST PASSES FOR A DIFFERENT REASON THAN I WROTE IT FOR, and the difference matters.
      * I expected `sortByBys`' element pass to raise, which would make the value-mode gate the one
      * correctness question in the change. It is `assertFrontierTypes` that raises, at PLAN-CHECK
      * time, before any route is chosen — the stack is `checkStep` / `checkSteps` /
@@ -264,7 +264,7 @@ describe('the fusion declines what it must, and the answer is unchanged', () => 
     expect(fast).toEqual(slow);
   });
 
-  test('⚠️ a residual AFTER the `order` is not dropped', () => {
+  test('a residual AFTER the `order` is not dropped', () => {
     /**
      * The oracle spelling above puts `identity()` after the sort, which is answer-equivalent — so a
      * mutant that stopped checking `rest.length` would survive every test that uses it. `dedupe()`
@@ -281,7 +281,7 @@ describe('the fusion declines what it must, and the answer is unchanged', () => 
 
   test('the legacy `key` form declines — and a mutant admitting it SURVIVES', () => {
     /**
-     * ⚠️ MEASURED, not assumed: `order({key: 'k'})` over a stream of numbers answers EXACTLY `ASC`,
+     * MEASURED, not assumed: `order({key: 'k'})` over a stream of numbers answers EXACTLY `ASC`,
      * because `evalBy` falls back to the value itself when the key cannot be projected off a
      * non-element. So admitting the key form into a sort-by-value is answer-equivalent on any
      * fixture this walk can produce, and the gate's `key` check is a narrowing choice rather than a
@@ -290,7 +290,7 @@ describe('the fusion declines what it must, and the answer is unchanged', () => 
     expect(toArray(traversal(V(), out('E'), values('k'), order({ key: 'k' })), g)).toEqual(ASC);
   });
 
-  test('⚠️ the ROUTE is asserted through `drain`, not inferred from the answer', () => {
+  test('the ROUTE is asserted through `drain`, not inferred from the answer', () => {
     /**
      * A route choice is answer-equivalent, so `route/never-fires` and an off-by-one on the
      * last-consumed-step index both survive every assertion above. The fusion's return value
@@ -318,7 +318,7 @@ describe('the fusion declines what it must, and the answer is unchanged', () => 
      * `order(Scope.local)` sorts WITHIN each value; over scalars it passes them through unchanged,
      * so the walk's own order survives.
      *
-     * ⚠️ IT MUST BE THE SYMBOL. `order('local')` is silently accepted as a CONFIG OBJECT — the
+     * IT MUST BE THE SYMBOL. `order('local')` is silently accepted as a CONFIG OBJECT — the
      * overload is `order(symbol)` or `order({key?, desc?})`, and a string has neither field, so it
      * reads as a bare `order()` and sorts GLOBALLY. That spelling is what this test asserted first,
      * and it failed by returning the correctly-sorted stream.
@@ -328,7 +328,7 @@ describe('the fusion declines what it must, and the answer is unchanged', () => 
 });
 
 /**
- * ⚠️ THE GATE AS A PURE FUNCTION, because a route choice is ANSWER-EQUIVALENT and every
+ * THE GATE AS A PURE FUNCTION, because a route choice is ANSWER-EQUIVALENT and every
  * `route/never-fires` mutant therefore survives the differential tests above by construction (item
  * 1619 recorded that for all twenty GQL rungs). These are the assertions that can fail on one.
  */
@@ -357,7 +357,7 @@ describe('fusableProjectedOrder', () => {
     ).toBe(false);
   });
 
-  test('⚠️ declines a CAP, on a measured flat result rather than a judgement', () => {
+  test('declines a CAP, on a measured flat result rather than a judgement', () => {
     // `hopordercap` 2988.4 / 3335.4 / 2942.1 ms PRE against 3035.2 / 2977.6 / 2988.6 POST when the
     // cap was admitted: flat, because a capped order never materialized and that is what this
     // change removes. So it keeps item 1591's streaming top-k.
@@ -385,7 +385,7 @@ describe('fusableProjectedOrder', () => {
     ).toBeUndefined();
   });
 
-  test('⚠️ declines unless the LAST CONSUMED step is a single-key `values`', () => {
+  test('declines unless the LAST CONSUMED step is a single-key `values`', () => {
     // This is the element-mode gate, and it is the one correctness question in the whole change.
     expect(fusableProjectedOrder([ORDER], undefined)).toBeUndefined();
     expect(fusableProjectedOrder([ORDER], { kind: 'id' })).toBeUndefined();

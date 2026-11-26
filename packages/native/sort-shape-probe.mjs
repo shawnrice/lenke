@@ -51,7 +51,7 @@ const value = (i) => {
 };
 
 /**
- * ⚠️ `benchlike` REPLICATES `bench.ts`'s FIXTURE EXACTLY, and it exists because every hand-built
+ * `benchlike` REPLICATES `bench.ts`'s FIXTURE EXACTLY, and it exists because every hand-built
  * column above wins while the sweep row does not. The specialization is reached and ADMITTED on both
  * (counter-verified, on a decoded graph as well as a hand-built one) and the sort is 63% of the sweep
  * row, so neither routing, nor share, nor the string shape explains the gap. What is left is how the

@@ -11,7 +11,7 @@
  * Same final epoch numbers (a sum is a sum, and the counters are independent so order is free), with
  * the drain O(distinct) instead of O(writes) and no 80,000-element array to grow and collect.
  *
- * ⚠️ IT IS A TRADE, NOT A FREE WIN, which is the whole reason to measure instead of building: the push
+ * IT IS A TRADE, NOT A FREE WIN, which is the whole reason to measure instead of building: the push
  * side pays a hash `set` where it paid an array `push`. Few distinct tokens (one label, a narrow bag —
  * the common shape) should win big on the drain; ALL-DISTINCT tokens are the adversarial case and may
  * lose outright. Both arms are measured on both distributions, plus the GC each leaves behind.

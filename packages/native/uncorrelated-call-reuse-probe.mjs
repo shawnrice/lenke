@@ -10,7 +10,7 @@
  *   (a) the body runs ONCE and the 570 ns is per-row plumbing over a memoized 1-row side, or
  *   (b) the body runs PER OUTER ROW and 570 ns is a whole re-scan amortized by a fast rung.
  *
- * ⚠️ AND THE PROFILE CANNOT SETTLE IT EITHER, which is the trap worth naming: `callinline`'s
+ * AND THE PROFILE CANNOT SETTLE IT EITHER, which is the trap worth naming: `callinline`'s
  * profile shows `matchPattern` 9.2%, `seedVertices` 2.2% and `hoistedMatch` 5.1%, which LOOK like
  * per-row matching — but a body run once still shows those frames, just with a small share of a
  * large total. A share is not a count.
@@ -22,7 +22,7 @@
  *   - Under (a), time tracks the BODY and is flat in the outer row count.
  *   - Under (b), time tracks OUTER x BODY, so cutting the outer rows ~100x cuts the time ~100x.
  *
- * ⚠️ The outer filter must not change the BODY — `n` is not in scope inside a bare `CALL { }` (which
+ * The outer filter must not change the BODY — `n` is not in scope inside a bare `CALL { }` (which
  * is what item 1818 established: the bare form's answer is `outer x bodyRows`, so ISO's variable
  * scope clause really is the only way to import), so the body is byte-identical across every row
  * below and the only thing moving is how many times it could run.

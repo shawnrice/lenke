@@ -21,7 +21,7 @@ import { query } from './index.js';
  */
 describe('farDrivenPaysForMultiType — the gate arithmetic (item 1390)', () => {
   test('a fan-in BELOW 1 declines: there is nothing to walk', () => {
-    // ⚠️ RETARGETED AT ITEM 1434. This read "a fan-in of 1 declines: there is no hoist to amortize"
+    // RETARGETED AT ITEM 1434. This read "a fan-in of 1 declines: there is no hoist to amortize"
     // — true of item 1390's threshold of 8 and of item 1406's 3, and false now: at `min=1` degree 1
     // is exactly the floor and is accepted, because the route measured 1.87-2.09x FASTER there once
     // item 1407 rebuilt its rows. The case that still declines is a degree below one, which real
@@ -36,7 +36,7 @@ describe('farDrivenPaysForMultiType — the gate arithmetic (item 1390)', () => 
     expect(farDrivenPaysForMultiType(266_667, 2_000)).toBe(true);
   });
 
-  // ⚠️ THESE ENCODE THE THRESHOLD'S VALUE, which is the point. A test that pins a measured constant
+  // THESE ENCODE THE THRESHOLD'S VALUE, which is the point. A test that pins a measured constant
   // has to be edited when the measurement changes — that is the cost of the constant being measured
   // rather than assumed, and it is the right cost to pay. It has now moved FOUR times:
   //
@@ -68,7 +68,7 @@ describe('farDrivenPaysForMultiType — the gate arithmetic (item 1390)', () => 
     expect(farDrivenPaysForMultiType(1_000, 10)).toBe(true);
     // More edges can only make the hoist more worthwhile.
     expect(farDrivenPaysForMultiType(2_000, 10)).toBe(true);
-    // More receiving vertices can only make it less. ⚠️ At `min=1` (item 1434) the declining case
+    // More receiving vertices can only make it less. At `min=1` (item 1434) the declining case
     // has to be a degree BELOW one — 1,000 edges into 1,000 endpoints is degree 1 and is now
     // ACCEPTED, where item 1390's threshold of 8 refused it. Monotonicity is a property of the
     // formula and still holds; only where it crosses has moved.
@@ -109,7 +109,7 @@ const rowsOf = (g: Graph, src: string): unknown[] => query(g, src).map((r) => r[
 
 describe('the two multi-type routes agree (item 1390)', () => {
   test('fan-in 1 now takes the FAR-driven walk too, and answers the same 60 rows', () => {
-    // ⚠️ THIS TEST'S ROUTE EXPECTATION REVERSED AT ITEM 1434, and the valuable half did not. It
+    // THIS TEST'S ROUTE EXPECTATION REVERSED AT ITEM 1434, and the valuable half did not. It
     // used to read "fan-in 1 takes the start-driven walk": item 1390 measured the far-driven route
     // losing 1.24x at degree 1 and the gate refused it. After item 1407's row builder the same
     // comparison is 1.87-2.09x the OTHER way, so `min` is 1 and this fixture is accepted.

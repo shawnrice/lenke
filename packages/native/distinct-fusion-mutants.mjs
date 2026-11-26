@@ -4,15 +4,15 @@
  * It passed on its first run, and so does a test that checks nothing. CLAUDE.md's rule: mutate the
  * code and confirm the test catches it, or the test is worse than no test because it is believed.
  *
- * ⚠️ A VERDICT NEEDS EVIDENCE OF EXECUTION, NOT AN EXIT CODE. `bun test` writes its `N pass` /
+ * A VERDICT NEEDS EVIDENCE OF EXECUTION, NOT AN EXIT CODE. `bun test` writes its `N pass` /
  * `N fail` line to STDERR, never stdout. Items 767 and 772-773 each got this backwards in one
  * direction or the other. So: concatenate both streams, find a result line there, and only then
  * read the exit code.
  *
- * ⚠️ RESTORE BEFORE EACH MUTANT, never only after the loop — an interrupted loop otherwise leaves
+ * RESTORE BEFORE EACH MUTANT, never only after the loop — an interrupted loop otherwise leaves
  * the mutant in the tree with `git diff` the only thing between it and a commit.
  *
- * ⚠️ MUTANTS ARE APPLIED TO BOTH RUNGS WHERE THE CODE IS DUPLICATED. `chain-projection` and
+ * MUTANTS ARE APPLIED TO BOTH RUNGS WHERE THE CODE IS DUPLICATED. `chain-projection` and
  * `hop2-projection` each carry their own copy of the fusion; item 1832 learned that a mutant and a
  * test have to actually MEET.
  *
@@ -35,7 +35,7 @@ const KEYER_PRISTINE = `${ROOT}/crates/lenke-engine/target/pristine-1843-mut-cla
  */
 const MUTANTS = {
   'M1 key set hoisted out of the run (shared across executions)': [
-    // ⚠️ hop2 ONLY. The chain rung carries the same line TWICE (its walk and its sweep), so a
+    // hop2 ONLY. The chain rung carries the same line TWICE (its walk and its sweep), so a
     // single anchor there matches twice and applies nothing — the first run of this file reported
     // exactly that, as a BROKEN MUTANT rather than a survivor. One unambiguous site is enough to
     // ask the question, and the test covers both rungs.
@@ -97,7 +97,7 @@ const apply = (edits) => {
     const hits = s.split(find).length - 1;
 
     if (hits !== 1) {
-      console.log(`     ⚠️ anchor matched ${hits} times in ${name} — edit NOT applied`);
+      console.log(`     anchor matched ${hits} times in ${name} — edit NOT applied`);
       continue;
     }
 
@@ -160,14 +160,14 @@ try {
     const ran = /\d+ pass|\d+ fail/.test(text);
 
     if (!ran) {
-      console.log(`${label}\n     ⚠️ DID-NOT-RUN — no result line on either stream\n`);
+      console.log(`${label}\n     DID-NOT-RUN — no result line on either stream\n`);
       continue;
     }
 
     const fails = /([1-9]\d*) fail/.exec(text);
 
     console.log(
-      `${label}\n     ${code === 0 ? '⚠️ SURVIVED' : `CAUGHT (${fails ? fails[1] : '?'} failing)`}\n`,
+      `${label}\n     ${code === 0 ? 'SURVIVED' : `CAUGHT (${fails ? fails[1] : '?'} failing)`}\n`,
     );
   }
 } finally {

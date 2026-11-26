@@ -1,11 +1,11 @@
 // Item 1915 — does the sub-plan-existence fusion answer what the GENERIC path answers?
 //
-// 🔑 THE ORACLE HAS NO KILL SWITCH. `singleHopExistence` requires `plan.steps.length === 1`, so
+// THE ORACLE HAS NO KILL SWITCH. `singleHopExistence` requires `plan.steps.length === 1`, so
 // appending a step that cannot change the answer forces the DECLINE while leaving the question
 // identical: `where(out(E), limit(1000))` is `where(out(E))` on any vertex of degree < 1000. Each
 // pair below is (fused spelling, declining spelling) and they must agree exactly.
 //
-// ⚠️ THE FIXTURE IS BUILT FOR THE DISCRIMINATIONS, not for size. Every arm of the gate needs a
+// THE FIXTURE IS BUILT FOR THE DISCRIMINATIONS, not for size. Every arm of the gate needs a
 // vertex that separates it from every other arm:
 //   - `a` has out-E only                 -> out E yes, in E no
 //   - `b` has in-E only                  -> out E no,  in E yes
@@ -14,7 +14,7 @@
 //   - `e` is ISOLATED                    -> every arm no
 //   - `f` had its only E edge REMOVED    -> isolated BY A DIFFERENT ROUTE than `e`
 //
-// ⚠️ `f` IS NOT THE "PRESENT BUT EMPTY BUCKET" CASE, which is what it was written to be.
+// `f` IS NOT THE "PRESENT BUT EMPTY BUCKET" CASE, which is what it was written to be.
 // `emptybucket-probe-1915.mjs` found core DELETES a bucket as it empties, so after the removal `f`
 // has no `E` bucket at all. The arm is kept because it reaches a different path to the same state —
 // the adjacency-box memo being dropped and refetched — and the startup line below prints which case
@@ -109,9 +109,9 @@ for (const [name, fused, generic] of CASES) {
   }
 
   console.log(
-    `${okRaw ? '  ok  ' : '  ❌  '} ${name.padEnd(20)} fused ${JSON.stringify(got).padEnd(26)} generic ${JSON.stringify(want)}`,
+    `${okRaw ? '  ok  ' : '   '} ${name.padEnd(20)} fused ${JSON.stringify(got).padEnd(26)} generic ${JSON.stringify(want)}`,
   );
 }
 
-console.log(bad === 0 ? `\nALL ${CASES.length} AGREE` : `\n❌ ${bad} DISAGREE`);
+console.log(bad === 0 ? `\nALL ${CASES.length} AGREE` : `\n${bad} DISAGREE`);
 process.exit(bad === 0 ? 0 : 1);

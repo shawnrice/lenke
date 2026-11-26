@@ -23,14 +23,14 @@ import { normalizeDepth1SimplePath } from './index.js';
  * `V().out(T).simplePath()` rewritten to `V().as_(t).out(T).where(neq(t))` — item 1912's already
  * fused shape — because at depth one `simplePath` is "near !== far", the hop minus its self-loops.
  *
- *     pathdep: simplePath   308.81 -> 37.81 ms   ⬅ 8.17x, 599,998 rows
+ *     pathdep: simplePath   308.81 -> 37.81 ms   <- 8.17x, 599,998 rows
  *
- * ⚠️ THAT LANDS BELOW THE PLAIN HOP'S 50.21, WHICH LOOKS WRONG AND IS NOT: item 1913 measured
+ * THAT LANDS BELOW THE PLAIN HOP'S 50.21, WHICH LOOKS WRONG AND IS NOT: item 1913 measured
  * exactly this fused shape at 38.96 against the hop control's 41.18 and noted it "should always have
  * been below — it reads the same properties minus the self-loops". The rewrite lands on an
  * independently measured number.
  *
- * ⚠️ THE STEP IS A PURE FILTER AND THE ROW SHAPE IS THE PLAIN HOP'S, read off the engine rather than
+ * THE STEP IS A PURE FILTER AND THE ROW SHAPE IS THE PLAIN HOP'S, read off the engine rather than
  * assumed (`pathfam-shape-1923.mjs`): `V().out(E).simplePath()` yields the FAR VERTICES `b, c` where
  * `V().out(E)` yields `b, c, d` and `d` is the self-loop.
  */
@@ -45,7 +45,7 @@ const fixture = (): Graph => {
 
   g.addEdge({ id: 'e1', from: vx('a'), to: vx('b'), labels: ['E'], properties: {} });
   g.addEdge({ id: 'e2', from: vx('b'), to: vx('c'), labels: ['E'], properties: {} });
-  // ⚠️ THE SELF-LOOP IS THE WHOLE DISCRIMINATION at depth one: without it `simplePath` and the plain
+  // THE SELF-LOOP IS THE WHOLE DISCRIMINATION at depth one: without it `simplePath` and the plain
   // hop agree and every assertion below passes for the wrong reason.
   g.addEdge({ id: 'e3', from: vx('d'), to: vx('d'), labels: ['E'], properties: {} });
   g.addEdge({ id: 'e4', from: vx('a'), to: vx('c'), labels: ['F'], properties: {} });
@@ -60,12 +60,12 @@ describe('the depth-1 simplePath rewrite', () => {
     const p = normalizeDepth1SimplePath(traversal(V(), out('E'), simplePath()));
 
     expect(p.steps.map((s) => s.kind)).toStrictEqual(['V', 'as', 'out', 'where']);
-    // ⚠️ THE WHOLE POINT: the original is path-dependent and so reaches no rung; the rewrite is not.
+    // THE WHOLE POINT: the original is path-dependent and so reaches no rung; the rewrite is not.
     expect(p.readsPath).toBe(false);
   });
 
   /**
-   * ⚠️ THE TRAILING `values(k)` FORM IS WHAT THE SCREEN MEASURES, which is item 1912's own lesson —
+   * THE TRAILING `values(k)` FORM IS WHAT THE SCREEN MEASURES, which is item 1912's own lesson —
    * a four-step rung won 17.6x in isolation there and left the screen's rows untouched, because the
    * screen's spellings carry a fifth step. Without this the 8.17x would not have reached the row.
    */
@@ -82,9 +82,9 @@ describe('the depth-1 simplePath rewrite', () => {
       expect(normalizeDepth1SimplePath(plan)).toBe(plan);
     };
 
-    // ⚠️ DEPTH TWO IS A DIFFERENT TEST: it needs all THREE elements distinct, not just the ends.
+    // DEPTH TWO IS A DIFFERENT TEST: it needs all THREE elements distinct, not just the ends.
     same(traversal(V(), out('E'), out('E'), simplePath()));
-    // ⚠️ `cyclicPath` IS THE COMPLEMENT, so it needs `where(eq(t))` — which item 1912's rung
+    // `cyclicPath` IS THE COMPLEMENT, so it needs `where(eq(t))` — which item 1912's rung
     // explicitly declines. Rewriting into a shape that then declines would add a step for nothing.
     same(traversal(V(), out('E'), cyclicPath()));
     // `both`/multi-type/untyped: `soleTypeBucket` refuses them and the rung follows it.
@@ -102,7 +102,7 @@ describe('the depth-1 simplePath rewrite', () => {
     same(traversal(V('a'), out('E'), simplePath()));
 
     /*
-     * ⚠️⚠️ FIVE STEPS AND SIX, WHICH A MUTANT IS WHY — and it is item 1912's own finding repeating
+     * FIVE STEPS AND SIX, WHICH A MUTANT IS WHY — and it is item 1912's own finding repeating
      * in the same module family. Loosening the length gate to `steps.length < 3` SURVIVED every
      * other assertion here: the depth-TWO case it looks like it admits is actually refused by the
      * `tail.kind !== 'simplePath'` check below, because the fourth step is then the second `out`.
@@ -131,7 +131,7 @@ describe('the answer is unchanged', () => {
   });
 
   /**
-   * ⚠️ AND THEY PARTITION THE HOP, which is the arithmetic a wrong filter would break while still
+   * AND THEY PARTITION THE HOP, which is the arithmetic a wrong filter would break while still
    * returning a plausible count.
    */
   it('simplePath and cyclicPath partition the hop', () => {

@@ -1,18 +1,18 @@
 /**
  * DOES THE CSR-BACKED REACH ARM REGRESS A **COLD** QUERY? (item 2005)
  *
- * ⚠️⚠️ **THE WARM NUMBER CANNOT ANSWER THIS, AND IT IS THE ONE A SCREEN REPORTS.** Item 2005 replaced
+ * **THE WARM NUMBER CANNOT ANSWER THIS, AND IT IS THE ONE A SCREEN REPORTS.** Item 2005 replaced
  * `runReach`'s `Set<string>`-keyed BFS with a walk over `csrFor`'s slots, worth 2.4-3.2x on the
  * screen's rows. But the old arm needed NO CSR, so the new one makes a FIRST ask on a fresh topology
  * pay a build — and `varlen-body-split-2000.mjs` runs five reps against one graph, so four of its
  * five measurements find the CSR already cached. A many-reps harness flatters exactly this change.
  *
- * 🔑 THIS IS ITEM 1889'S SECOND-ASK QUESTION, which that item answered with a `seenBefore` gate: a
+ * THIS IS ITEM 1889'S SECOND-ASK QUESTION, which that item answered with a `seenBefore` gate: a
  * one-shot query must not pay for a structure it will not reuse. So the question here is not "is
  * warm faster" (measured: yes) but "is COLD not slower" — and if it is slower, this arm needs the
  * same gate.
  *
- * ⚠️ A FRESH GRAPH PER REP, and the build is OUTSIDE the timed region. The graph construction is far
+ * A FRESH GRAPH PER REP, and the build is OUTSIDE the timed region. The graph construction is far
  * more expensive than the query, so timing it would bury the difference entirely — which is the
  * `PROBES.md` closed-frames problem in miniature.
  *

@@ -8,7 +8,7 @@
  *   fold  2.165 -> 2.140      the CONTROL: not fused, flat
  * ```
  *
- * ⚠️ TWO KINDS OF TEST ARE NEEDED HERE, and only one of them is about answers.
+ * TWO KINDS OF TEST ARE NEEDED HERE, and only one of them is about answers.
  *
  * The fused generator REPLACES a pair whose semantics are spread across `projectValues`,
  * `aggregateComparable` and `aggregateNumber`, so each of those behaviours has to be re-asserted

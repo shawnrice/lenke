@@ -20,7 +20,7 @@ import { parsePredicate } from './parser.js';
 //     n.a IN [0..9]        3.890    -> 4.179    flat, already lifted (control)
 //     [CTL] bare count     0.002    -> 0.002    flat
 //
-// ⚠️ IT STAYS IN THE NON-RAISING GROUP, and that is measured against the ENGINE rather than
+// IT STAYS IN THE NON-RAISING GROUP, and that is measured against the ENGINE rather than
 // reasoned — the authority item 1286 established. `n.s` is a string, so coercing it is a data
 // exception; a tail that is FALSE for every row settles it and suppresses the raise IF hoisted:
 //
@@ -50,7 +50,7 @@ const countOf = (where: string): number =>
   Number(query(g, `MATCH (n:P) WHERE ${where} RETURN count(*) AS c`)[0].c);
 
 describe('NOT IN lifts into memberProps (item 1288)', () => {
-  test('⚠️ ROUTE: both spellings lift, and the flag is what distinguishes them', () => {
+  test('ROUTE: both spellings lift, and the flag is what distinguishes them', () => {
     // Answer-equivalent by design, so only the compiler can see the lift.
     const lifted = (src: string): readonly { key: string; negated: boolean }[] =>
       (compilePredicate(undefined, parsePredicate(src), 'n').memberProps ?? []).map(
@@ -78,7 +78,7 @@ describe('NOT IN lifts into memberProps (item 1288)', () => {
     }
   });
 
-  test('⚠️ a null or absent cell is UNKNOWN under BOTH spellings, so neither keeps it', () => {
+  test('a null or absent cell is UNKNOWN under BOTH spellings, so neither keeps it', () => {
     // The three-valued crux. `not3(UNKNOWN)` is UNKNOWN and a filter keeps only clean TRUE, so
     // `nulled` and `absent` drop either way. A lift that negated the BOOLEAN ("not true") instead
     // of the three-valued result would answer 4 here, not 2.
@@ -118,7 +118,7 @@ describe('NOT IN lifts into memberProps (item 1288)', () => {
     }
   });
 
-  test('⚠️ an empty haystack is FALSE even for a NULL needle, so NOT IN [] keeps EVERY row', () => {
+  test('an empty haystack is FALSE even for a NULL needle, so NOT IN [] keeps EVERY row', () => {
     // My first version of this test expected `['a1','a5','a9']`, reasoning that a null needle makes
     // membership UNKNOWN as it does for a non-empty haystack. It does not: an empty set contains
     // nothing, so `x IN []` is FALSE for every needle INCLUDING null, and `not3(FALSE)` is TRUE —

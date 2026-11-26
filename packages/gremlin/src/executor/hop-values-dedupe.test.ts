@@ -20,7 +20,7 @@ import { hopValuesDedupe } from './hop-values-dedupe.js';
 /**
  * The DISTINCT far values of a hop, fused (item 1899), in both of its spellings.
  *
- * ⚠️ THE ORACLE IS HAND-COMPUTED and every sequence assertion is `toStrictEqual` (item 1884 lost a
+ * THE ORACLE IS HAND-COMPUTED and every sequence assertion is `toStrictEqual` (item 1884 lost a
  * mutant to `toEqual`, which ignores `undefined` entries). The fixture is built to discriminate:
  * duplicate far values so the dedupe has work to do, a far vertex MISSING the key, a far vertex
  * whose value is a stored `null` (which [[null-first-class-policy]] makes a PRESENT value and so a
@@ -43,7 +43,7 @@ const fixture = (): Graph => {
   g.addVertex({ id: 'f', labels: ['T'], properties: { other: 9 } });
   // `z` has no edges at all.
   g.addVertex({ id: 'z', labels: ['T'], properties: { n: 9 } });
-  // ⚠️ `k`'s `n` is a STORED null — a present value and therefore its own distinct row.
+  // `k`'s `n` is a STORED null — a present value and therefore its own distinct row.
   g.addVertex({ id: 'k', labels: ['T'], properties: { n: null } });
 
   for (const spec of [
@@ -73,12 +73,12 @@ const fixture = (): Graph => {
  * A CHAIN whose every far value is distinct, which is the only fixture that can see a CSR run-bound
  * off-by-one.
  *
- * ⚠️⚠️ **THE DEDUPE MASKS AN OVER-READ ON ANY ORDINARY FIXTURE, and a mutant proved it.** Reading one
+ * **THE DEDUPE MASKS AN OVER-READ ON ANY ORDINARY FIXTURE, and a mutant proved it.** Reading one
  * slot past a vertex's run yields the NEXT vertex's first target — on `fixture()` that is a value
  * the set already holds, so the answer is byte-identical and the off-by-one survives everything.
  * Here `p1->p2->p3->p4` with values 11/22/33/44 makes every over-read introduce a value out of turn:
  * correct is [22, 33, 44], and the off-by-one appends 11 (slot 0, from the zero-filled tail of the
- * over-allocated `memo.flat`). ⚠️ So a deduping rung needs a UNIQUE-VALUE fixture beside its
+ * over-allocated `memo.flat`). So a deduping rung needs a UNIQUE-VALUE fixture beside its
  * duplicate-bearing one; neither alone has teeth.
  */
 const chain = (): Graph => {
@@ -101,10 +101,10 @@ const chain = (): Graph => {
 };
 
 /**
- * ⚠️ TWICE, BECAUSE THE RUNG RIDES ITEM 1889'S SECOND-ASK POLICY and declines its own first call.
+ * TWICE, BECAUSE THE RUNG RIDES ITEM 1889'S SECOND-ASK POLICY and declines its own first call.
  * A single `toArray` therefore measures the bucket walk rather than the CSR one, so every answer
  * below is asserted on a REPEAT — and the two are asserted equal, which is the real claim: the
- * policy may change the route but never the answer. ⚠️ FIVE MUTANTS SURVIVED a single-`toArray`
+ * policy may change the route but never the answer. FIVE MUTANTS SURVIVED a single-`toArray`
  * suite at item 1889 for exactly this reason.
  */
 const twice = (make: () => ReturnType<typeof traversal>, g: Graph): unknown[] => {
@@ -117,7 +117,7 @@ const twice = (make: () => ReturnType<typeof traversal>, g: Graph): unknown[] =>
 };
 
 /**
- * ⚠️ BOTH SPELLINGS ARE ONE QUESTION, so they are asserted against the SAME oracle in the same
+ * BOTH SPELLINGS ARE ONE QUESTION, so they are asserted against the SAME oracle in the same
  * test. `bun run spelling:gremlin` is the perf side of this claim; this is the answer side.
  */
 const bothSpellings = (hop: 'out' | 'in', key: string, type: string, g: Graph): unknown[] => {
@@ -160,7 +160,7 @@ describe('hopValuesDedupe — the answer, on the repeat call that takes it', () 
   });
 
   /**
-   * ⚠️ THE ROUTE IS ITS OWN ASSERTION, because taking it is ANSWER-EQUIVALENT — which is
+   * THE ROUTE IS ITS OWN ASSERTION, because taking it is ANSWER-EQUIVALENT — which is
    * [[perf-gate-needs-its-own-test]] exactly. Item 1899's own bug (a `By` is never the bare string
    * the caller writes, so `byKey` always declined) changed no answer at all: it cost 4x and the
    * whole suite passed. A mutant restoring it survived every test here until this one.
@@ -176,13 +176,13 @@ describe('hopValuesDedupe — the answer, on the repeat call that takes it', () 
   });
 
   /**
-   * ⚠️ THIS TEST EXISTS BECAUSE THE WALK IS WRITTEN TWICE — a lazy `[Symbol.iterator]` and an eager
+   * THIS TEST EXISTS BECAUSE THE WALK IS WRITTEN TWICE — a lazy `[Symbol.iterator]` and an eager
    * `drain` (item 1412: `toArray` prefers `drain`) — and item 1889 caught a run-bound off-by-one in
    * the DRAIN that survived in the ITERATOR, because every other test here goes through `toArray`.
    * Spreading `run` is the only thing that reaches the other copy.
    */
   /**
-   * ⚠️⚠️ ON THE **CHAIN** FIXTURE, AND A MUTANT IS WHY (item 1913). The lazy-iterator test below
+   * ON THE **CHAIN** FIXTURE, AND A MUTANT IS WHY (item 1913). The lazy-iterator test below
    * used `fixture()`, whose duplicate values ABSORB a CSR over-read — exactly the masking item 1899
    * built `chain()` to defeat, applied to the DRAIN path (which `toArray` takes) and never to the
    * iterator. So the iterator's own run-bound off-by-one survived a 21-test suite. The two paths are
@@ -219,7 +219,7 @@ describe('hopValuesDedupe — the answer, on the repeat call that takes it', () 
 
 describe('hopValuesDedupe — the tail it hands back', () => {
   /**
-   * ⚠️ A DROPPED `rest` IS ANSWER-VISIBLE ONLY WITH A STEP AFTER THE PROJECTION, and `limit` is the
+   * A DROPPED `rest` IS ANSWER-VISIBLE ONLY WITH A STEP AFTER THE PROJECTION, and `limit` is the
    * cheapest one: `rest: []` would silently ignore it and emit all four values.
    */
   it('runs a step that follows the projection', () => {
@@ -236,7 +236,7 @@ describe('hopValuesDedupe — what it declines', () => {
   const g = fixture();
 
   /**
-   * ⚠️ EACH DECLINE IS ASSERTED TWICE: the gate returns `undefined`, AND the plan still answers
+   * EACH DECLINE IS ASSERTED TWICE: the gate returns `undefined`, AND the plan still answers
    * correctly through whatever route does take it. A gate that declined by crashing would pass the
    * first assertion alone.
    */
@@ -247,7 +247,7 @@ describe('hopValuesDedupe — what it declines', () => {
   };
 
   /*
-   * ⚠️ THIS USED TO BE A `declines` CASE, and item 1971 ADMITTED the shape. The old comment's
+   * THIS USED TO BE A `declines` CASE, and item 1971 ADMITTED the shape. The old comment's
    * reasoning is kept because every word of it about the ANSWER is still true — it is a different
    * question from the distinct `other` values, and an absent `by` key filters the element — and the
    * conclusion it drew ("so the two keys cannot be fused into one walk in either direction") is the
@@ -259,7 +259,7 @@ describe('hopValuesDedupe — what it declines', () => {
   it('takes a `by` key differing from the projected key, and answers what the pipeline did', () => {
     // Keeps the FIRST element per `n` (b=2, k=null, d=3, a=1) and reads `other` off each: none of
     // those four carries `other`, so the answer is EMPTY — where the distinct `other` values are
-    // [9]. ⚠️ A `by` whose key is absent also FILTERS the element, which is why `f` never reaches
+    // [9]. A `by` whose key is absent also FILTERS the element, which is why `f` never reaches
     // the projection.
     const plan = traversal(V(), out('E'), dedupe().by('n'), values('other'));
 
@@ -268,7 +268,7 @@ describe('hopValuesDedupe — what it declines', () => {
   });
 
   /*
-   * 🔑 THE MISSING-KEY SEMANTICS, WHICH ARE THE WHOLE RISK OF ITEM 1971 and were measured off the
+   * THE MISSING-KEY SEMANTICS, WHICH ARE THE WHOLE RISK OF ITEM 1971 and were measured off the
    * GENERIC pipeline before the arm was written (`dedupekeys-1971.mjs`). This file's header records
    * that items 1561/1562 each found a silent ANSWER change in this area, so these are asserted as
    * values rather than trusted:
@@ -315,7 +315,7 @@ describe('hopValuesDedupe — what it declines', () => {
   });
 
   /*
-   * ⚠️ THE LAZY ARM NEEDS ITS OWN CASE, and mutation is what proved it: reordering the iterator's
+   * THE LAZY ARM NEEDS ITS OWN CASE, and mutation is what proved it: reordering the iterator's
    * two key tests so a missing PROJECTED key frees its dedupe slot **SURVIVED with 0 failing**,
    * because every other assertion here goes through `toArray`, which prefers `drain`. The walk keeps
    * three copies of this loop (iterator, drain CSR, drain bucket) and item 169 named that hazard;
@@ -329,7 +329,7 @@ describe('hopValuesDedupe — what it declines', () => {
       ['f1', { k: 1 }],
       ['f2', { k: 1, w: 11 }],
       ['f3', { k: 2, w: 12 }],
-      // ⚠️ NO `k` AT ALL, and mutation is why it is here: without it, deleting the lazy arm's
+      // NO `k` AT ALL, and mutation is why it is here: without it, deleting the lazy arm's
       // `value === undefined` test changed no answer. `f4` must contribute nothing AND must not
       // occupy the `undefined` dedupe slot in a way that suppresses anything.
       ['f4', { w: 13 }],
@@ -357,7 +357,7 @@ describe('hopValuesDedupe — what it declines', () => {
   });
 
   /*
-   * ⚠️ THE CSR ARM NEEDS THE DIFFERING-KEY SHAPE TOO, and mutation is why: with the two keys EQUAL,
+   * THE CSR ARM NEEDS THE DIFFERING-KEY SHAPE TOO, and mutation is why: with the two keys EQUAL,
    * the `projected !== undefined` test item 1971 added already excludes an undefined dedupe key, so
    * deleting the dedupe-key check is answer-equivalent — the mutant SURVIVED. It is observable only
    * when the keys DIFFER, and only on the CSR arm, which `twice()` is the way to reach.
@@ -466,7 +466,7 @@ describe('hopValuesDedupe — what it declines', () => {
   });
 
   it('declines a trailing `by` on the `values` spelling, which dedupes the VALUES by a key', () => {
-    // ⚠️ THIS ONE IS ANSWER-EQUIVALENT — a `by` over a scalar stream lands on the scalar itself, so
+    // THIS ONE IS ANSWER-EQUIVALENT — a `by` over a scalar stream lands on the scalar itself, so
     // it agrees with the fused walk. It is therefore caught ONLY by the gate assertion inside
     // `declines`, which is the whole reason that helper asserts the route as well as the rows.
     expect(declines(traversal(V(), out('E'), values('n'), dedupe().by('n')))).toStrictEqual([
@@ -479,7 +479,7 @@ describe('hopValuesDedupe — what it declines', () => {
 
   it('declines a multi-key projection in the `by` spelling too', () => {
     // The `by` key still equals the FIRST projected key, so only the arity check refuses this —
-    // and a mutant that dropped it survived until this case existed. ⚠️ The answer differs from the
+    // and a mutant that dropped it survived until this case existed. The answer differs from the
     // `values`-spelling twin below ([2, 9, …]): a `by` on an absent key FILTERS the element, so `f`
     // never reaches the projection and its `other` (9) never appears.
     expect(

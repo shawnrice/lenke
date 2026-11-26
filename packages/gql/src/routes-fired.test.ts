@@ -52,7 +52,7 @@ const routes = (src: string): string[] => {
 
   return (
     Object.entries(cl)
-      // ⚠️ A RUNG IS A FUNCTION. Filtering on that rather than on "not null, and not `clauses`"
+      // A RUNG IS A FUNCTION. Filtering on that rather than on "not null, and not `clauses`"
       // keeps this honest as `CLinear` grows: item 1510 added a `writes: boolean`, which is not a
       // rung, and the old predicate reported it as one. See `deferred-hop-order.test.ts`.
       .filter(([, v]) => typeof v === 'function')
@@ -68,13 +68,13 @@ describe('every fast-path detector fires for its own shape', () => {
     ['hop count', 'MATCH (a:L)-[:R]->(b:L) RETURN count(*) AS c', ['countShortcut']],
     [
       /*
-       * ⚠️⚠️ TWO RUNGS COMPILE FOR THIS SHAPE SINCE ITEM 2087, and the ORDER of this list is
+       * TWO RUNGS COMPILE FOR THIS SHAPE SINCE ITEM 2087, and the ORDER of this list is
        * alphabetical (the helper sorts), not precedence. `chainStarCount` is consumed ABOVE
        * `countShortcut` and DECLINES AT EXECUTION TIME when every label is vacuous — so with a
        * vacuous label `countShortcut` still answers (12.57 ms/rep via `twoHopUnfilteredCsrCount`),
        * and with a real one the level recurrence does (19.21 against the per-edge tally's 94.01).
        *
-       * 🔑 THIS TEST CANNOT SEE WHICH ONE ANSWERS — it reads the compiled record, so a rung that is
+       * THIS TEST CANNOT SEE WHICH ONE ANSWERS — it reads the compiled record, so a rung that is
        * merely WILLING appears here identically to one that fires. That is exactly how item 2087's
        * first attempt looked correct while being starved 357 lines down the chain.
        */
@@ -102,7 +102,7 @@ describe('every fast-path detector fires for its own shape', () => {
     [
       'grouped hop count on the NEAR key',
       'MATCH (a:L)-[:R]->(b:L) RETURN a.k AS k, count(*) AS c',
-      // ⚠️ `groupHopShortcut` JOINED THIS CASE AT ITEM 2011, and the far label is why. The shortcut
+      // `groupHopShortcut` JOINED THIS CASE AT ITEM 2011, and the far label is why. The shortcut
       // used to refuse a NEAR-keyed hop whose FAR end carried any label — one clause stricter than
       // its own runtime, which already picks the degree walk only when that label is vacuous and the
       // per-edge walk otherwise. The refusal cost 124x on the realistic corpus's own spelling.
@@ -134,7 +134,7 @@ describe('every fast-path detector fires for its own shape', () => {
       ['chainProjection'],
     ],
     /**
-     * ⚠️ `count(DISTINCT …)` OVER A CHAIN — item 1824. These two rungs are the reason this file's
+     * `count(DISTINCT …)` OVER A CHAIN — item 1824. These two rungs are the reason this file's
      * count went 21 -> 23, and they are the ONLY compile-time guard on the route: removing the
      * branch that consumes either one is answer-equivalent, so nothing else in the suite notices
      * (this file's own header records that for all of them).
@@ -142,7 +142,7 @@ describe('every fast-path detector fires for its own shape', () => {
     [
       'three-hop count(DISTINCT)',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN count(DISTINCT d.k) AS c',
-      // ⚠️ BOTH FIRE, and that is the design rather than a redundancy: `chainFoldLevels` (item 2010)
+      // BOTH FIRE, and that is the design rather than a redundancy: `chainFoldLevels` (item 2010)
       // is a LEVEL RECURRENCE for the same shapes `chainFoldedAggregate` answers by walking every
       // path, and it is strictly narrower — so both compile and `clauses.ts` runs the level arm
       // first. A shape the level arm declines still has the path arm compiled and waiting.
@@ -154,11 +154,11 @@ describe('every fast-path detector fires for its own shape', () => {
       ['chainFoldLevels', 'hop2FoldedAggregate'],
     ],
     /*
-     * 🔑 THE ROW TWIN of the case above (item 2119). Both compute the same distinct set; the count
+     * THE ROW TWIN of the case above (item 2119). Both compute the same distinct set; the count
      * reports its size, which is free on top — so the row spelling was paying **27x to do strictly
      * less** (517.5 ms against 18.8 on the same 97 values) because only the count had the recurrence.
      *
-     * ⚠️ `hop2Projection` IS STILL WILLING and is listed: it claimed this shape before item 2119 and is
+     * `hop2Projection` IS STILL WILLING and is listed: it claimed this shape before item 2119 and is
      * the 517.5. `chainDistinctLevels` is consulted above it, which is the only precedence change that
      * item made.
      */
@@ -168,23 +168,23 @@ describe('every fast-path detector fires for its own shape', () => {
       ['chainDistinctLevels', 'hop2Projection'],
     ],
     /**
-     * ⚠️ ITEM 1830's ALLOWLIST — ADMISSIONS NOW, AND THAT IS ITEM 2409's CHANGE TO THIS FILE.
+     * ITEM 1830's ALLOWLIST — ADMISSIONS NOW, AND THAT IS ITEM 2409's CHANGE TO THIS FILE.
      *
      * It used to read: _"the refusals are the load-bearing half: `sum`/`avg` are order-sensitive in
      * the last ulp … so admitting any of them would break byte-identity with Rust"_, and carried
      * three cases asserting an EMPTY rung list for `sum`, `avg` and `collect`.
      *
-     * 🔑🔑 TWO THINGS WERE WRONG WITH THAT, and item 2408 found the second one the hard way:
+     * TWO THINGS WERE WRONG WITH THAT, and item 2408 found the second one the hard way:
      *
      * 1. Item 2401 (owner ruling) replaced bit-identity for `sum`/`avg` with a PRECISION contract,
      *    and item 2400 freed the premise about walk order underneath it. So the stated reason is
      *    gone — `chain-fold-levels.ts`'s header carries the error-bound argument that replaced it.
-     * 2. ⚠️ **ASSERTING THE REFUSAL GIVES A NARROWING MUTANT A GREENER FILE, NOT A REDDER ONE.**
+     * 2. **ASSERTING THE REFUSAL GIVES A NARROWING MUTANT A GREENER FILE, NOT A REDDER ONE.**
      *    An `[]` expectation passes more easily the fewer rungs fire, so it cannot catch the
      *    regression it was written for — only the ADMISSION can ([[perf-gate-needs-its-own-test]],
      *    as item 2408 restated it). The `sum`/`avg` cases below now name the rung.
      *
-     * ⚠️ `collect` KEEPS ITS REFUSAL and keeps its `[]`, for a reason no ruling touches: a weighted
+     * `collect` KEEPS ITS REFUSAL and keeps its `[]`, for a reason no ruling touches: a weighted
      * fold cannot emit `u_v` copies of a value without materializing the list it exists to avoid.
      * Item 2404 made its element order unspecified, so order is not the blocker — there is simply
      * nothing to win. Its `[]` is honest about being the weaker form of assertion.
@@ -205,7 +205,7 @@ describe('every fast-path detector fires for its own shape', () => {
       ['chainFoldLevels', 'chainFoldedAggregate'],
     ],
     /*
-     * ⚠️ ONLY `chainFoldLevels` FIRES, not the path arm below it. `chainFoldedAggregate` reads
+     * ONLY `chainFoldLevels` FIRES, not the path arm below it. `chainFoldedAggregate` reads
      * `proj.foldedAggs`, which is undefined for `sum`/`avg` because the shared `foldFor` has no
      * entry — so unlike `min`/`max`/`count` above, these two have NO second rung waiting. That is
      * what makes the bail hand the query to the GENERAL path rather than to a sibling rung.
@@ -214,10 +214,10 @@ describe('every fast-path detector fires for its own shape', () => {
       'three-hop SUM is ADMITTED to the level fold (item 2409)',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN sum(d.k) AS s',
       /*
-       * ⚠️ TWO RUNGS COMPILE FOR THIS SHAPE SINCE ITEM 2411, and this list is alphabetical, NOT
+       * TWO RUNGS COMPILE FOR THIS SHAPE SINCE ITEM 2411, and this list is alphabetical, NOT
        * precedence. `chainFoldLevels` is consulted ABOVE `chainFoldedAggregate` (see `CLinear`'s
        * own note), so the level fold still answers this one and the path-walk rung is the fallback
-       * for the shapes it declines. 🔑 This harness reads the COMPILED RECORD, so it cannot see
+       * for the shapes it declines. This harness reads the COMPILED RECORD, so it cannot see
        * which of the two answers — the A/B timing is what says the plain shape did not regress.
        */
       ['chainFoldLevels', 'chainFoldedAggregate'],
@@ -229,23 +229,23 @@ describe('every fast-path detector fires for its own shape', () => {
       ['chainFoldLevels', 'hop2FoldedAggregate'],
     ],
     /*
-     * ⚠️⚠️ **AN AGGREGATE OVER A NON-FAR VARIABLE MUST STAY OFF — item 2410, and these rows are the
+     * **AN AGGREGATE OVER A NON-FAR VARIABLE MUST STAY OFF — item 2410, and these rows are the
      * route claim the ANSWER tests cannot make.** `foldLevel` binds the far variable and nothing
      * else, so this rung answered `count(a.n)` as 0 over 1,280,000 paths. The pair below is the whole
      * condition: the SAME chain with the SAME aggregate differs only in which variable it reads, and
      * one routes while the other must not.
      *
-     * ⚠️ An `[]` expectation passes more easily the fewer rungs fire (item 2409's own note), so the
+     * An `[]` expectation passes more easily the fewer rungs fire (item 2409's own note), so the
      * far-end row above is what makes these two readable: it fires, and these do not.
      */
     [
       'count over the START variable stays off the level fold (item 2410)',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN count(a.k) AS c',
       /*
-       * 🔑 IT DOES NOT FALL TO THE GENERAL MATCHER — it lands on `chainFoldedAggregate`, the
+       * IT DOES NOT FALL TO THE GENERAL MATCHER — it lands on `chainFoldedAggregate`, the
        * path-walk twin that binds EVERY variable and so answers this correctly. That is the right
        * shape of the fix: the level fold declines what it cannot bind, and a rung that can takes it.
-       * ⚠️ So the `[]` rows below are narrower claims than this one: `sum` has no such twin yet
+       * So the `[]` rows below are narrower claims than this one: `sum` has no such twin yet
        * because `ORDER_INVARIANT_AGGREGATES` still refuses it there.
        */
       ['chainFoldedAggregate'],
@@ -253,7 +253,7 @@ describe('every fast-path detector fires for its own shape', () => {
     [
       'sum over a MIDDLE variable stays off the level fold (item 2410)',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L)-[:R]->(d:L) RETURN sum(b.k) AS s',
-      // ⚠️ `[]` UNTIL ITEM 2411 WIDENED THE PATH-WALK RUNG — which is the point of the pair: the
+      // `[]` UNTIL ITEM 2411 WIDENED THE PATH-WALK RUNG — which is the point of the pair: the
       // level fold declines what it cannot bind, and the rung that binds every variable takes it.
       ['chainFoldedAggregate'],
     ],
@@ -263,7 +263,7 @@ describe('every fast-path detector fires for its own shape', () => {
       ['chainFoldedAggregate'],
     ],
     /*
-     * ⚠️ A DISTINCT SUM STAYS OFF, and this one is a real refusal rather than a stale one: a
+     * A DISTINCT SUM STAYS OFF, and this one is a real refusal rather than a stale one: a
      * weighted fold over a deduped multiset has no weight to apply.
      */
     [
@@ -282,14 +282,14 @@ describe('every fast-path detector fires for its own shape', () => {
       [],
     ],
     /**
-     * ⚠️ ITEM 1832's GROUPED COUNT, admissions and refusals. The refusals are where the risk is:
+     * ITEM 1832's GROUPED COUNT, admissions and refusals. The refusals are where the risk is:
      * TWO group keys would need a composite key (`buildGroups` keeps the stringify for that case
      * precisely because a plain join is not injective across a string cell), and a non-`count(*)`
      * aggregate is item 1829's order-sensitivity question again. Both decline, and nothing in the
      * ANSWERS would reveal it if they stopped declining.
      */
     /*
-     * ⚠️ KEYED ON THE **FAR** END, which is why `chainGroupedLevels` does NOT join this case: its
+     * KEYED ON THE **FAR** END, which is why `chainGroupedLevels` does NOT join this case: its
      * recurrence answers walks-per-START, so a far key is not a per-start quantity. The two cases
      * below are the near-keyed shapes it does take.
      */
@@ -301,12 +301,12 @@ describe('every fast-path detector fires for its own shape', () => {
     [
       'chain grouped count on the NEAR key',
       'MATCH (a:L)-[:R]->(b:L)-[:R]->(c:L) RETURN a.k AS k, count(*) AS c',
-      // ⚠️ TWO segments, so the overlap is `hop2GroupedCount` — `chainGroupedCount` wants three or
+      // TWO segments, so the overlap is `hop2GroupedCount` — `chainGroupedCount` wants three or
       // more. `chainGroupedLevels` admits 2+ and sits above both; the ladder runs it first.
       ['chainGroupedLevels', 'hop2GroupedCount'],
     ],
     /*
-     * ⚠️⚠️ **THIS CASE PINS A 2.96x SPELLING CLIFF.** `LET g = a.k … GROUP BY g` parses as THREE
+     * **THIS CASE PINS A 2.96x SPELLING CLIFF.** `LET g = a.k … GROUP BY g` parses as THREE
      * clauses and `detectChainGroupedCount` opens with `clauses.length !== 2`, so it reached NO rung
      * — 72.08 ms against the aliased form's 24.38 for the same groups (item 2012). `GROUP BY` takes
      * a BOUND NAME, so this is the only way to write the grouping explicitly, and it is the form
@@ -325,7 +325,7 @@ describe('every fast-path detector fires for its own shape', () => {
       ['hop2GroupedCount'],
     ],
     /**
-     * ⚠️ EVERY REFUSAL IS ASSERTED AT BOTH WIDTHS, and a mutation run is why. The two rungs live in
+     * EVERY REFUSAL IS ASSERTED AT BOTH WIDTHS, and a mutation run is why. The two rungs live in
      * DIFFERENT FILES (`hop2-projection.ts` and `chain-projection.ts`), so a refusal pinned only at
      * two hops leaves the three-hop copy unguarded — and a mutant in the chain file sailed through
      * until these were doubled. A duplicated rule needs a duplicated test.
@@ -356,7 +356,7 @@ describe('every fast-path detector fires for its own shape', () => {
       [],
     ],
     /**
-     * ⚠️ MULTI-COLUMN `DISTINCT` at ONE hop — item 1825, and the pair below is what keeps the two
+     * MULTI-COLUMN `DISTINCT` at ONE hop — item 1825, and the pair below is what keeps the two
      * one-hop DISTINCT rungs DISJOINT. `hopDistinctProjection` requires two or more columns;
      * `distinctProjection` serves exactly one. An `toEqual` on the whole fired-detector list is
      * what makes that a real assertion: if either rung widened to overlap the other, the one-column
@@ -374,7 +374,7 @@ describe('every fast-path detector fires for its own shape', () => {
       ['distinctProjection'],
     ],
     /**
-     * ⚠️ `ORDER BY` over the deeper widths — item 1827. Disjoint from every projection rung by
+     * `ORDER BY` over the deeper widths — item 1827. Disjoint from every projection rung by
      * construction: those gate on `plainRowProjectionIgnoringDistinct`, which refuses an `orderBy`,
      * and these REQUIRE one — so no chain ordering between them can starve anything (item 1825's
      * lesson). The one-hop twin is `hopProjection`, which has admitted a sort since item 607.
@@ -395,7 +395,7 @@ describe('every fast-path detector fires for its own shape', () => {
       ['hopProjection'],
     ],
     /**
-     * ⚠️ ~~A WINDOWED SORT MUST NOT REACH THE DEEPER ORDERED RUNGS~~ — **REVERSED AT ITEM 1852,
+     * ~~A WINDOWED SORT MUST NOT REACH THE DEEPER ORDERED RUNGS~~ — **REVERSED AT ITEM 1852,
      * and the premise was wrong rather than merely outdated.** This row used to assert `[]` and
      * said admitting a window "loses `boundedTopRows`' heap — ~280x per `sortOf`".
      *
@@ -423,13 +423,13 @@ describe('every fast-path detector fires for its own shape', () => {
       ['chainOrderedProjection'],
     ],
     /**
-     * ⚠️ THE SKIP-ONLY, UNORDERED PAGE AT DEPTH 2 AND 3+ — item 1885, and these rows are the ONLY
+     * THE SKIP-ONLY, UNORDERED PAGE AT DEPTH 2 AND 3+ — item 1885, and these rows are the ONLY
      * thing that holds it: admitting the page is answer-equivalent (`skip-only-page-parity.ts`
      * establishes that cross-engine), so no value test can tell the routes apart. Before it, every
      * window sent these widths to the general matcher at **26.9/36.2/49.6/59.5 ms against a ~6 ms
      * unpaged twin**; after, `rung-gap-screen.mjs` reads 5.5/3.0/3.6/4.4.
      *
-     * ⚠️ AND THE `LIMIT` ROWS BELOW ASSERT A DELIBERATE DECLINE, which is the half a reader will
+     * AND THE `LIMIT` ROWS BELOW ASSERT A DELIBERATE DECLINE, which is the half a reader will
      * want to change first. The general path is LAZY — `LIMIT 5` can stop after five rows — so
      * handing a bare limit to a rung that materializes every row and slices would be a regression
      * dressed as a win. `skipOnlyPage` refuses a `limit` for that reason and these rows pin it.
@@ -487,7 +487,7 @@ describe('every fast-path detector fires for its own shape', () => {
       'MATCH (n:L) RETURN size(collect(n.k)) + count(*) AS c',
       [],
     ],
-    // ⚠️ ITEM 1198 RE-ROUTED THIS DELIBERATELY, and this row is how that showed up: item 1197 left
+    // ITEM 1198 RE-ROUTED THIS DELIBERATELY, and this row is how that showed up: item 1197 left
     // the FOLD path declining and asserted it here, so widening it failed this test rather than
     // passing silently. That is the whole point of the file (its header: "if a future change
     // deliberately re-routes a shape, update the row and say why in the audit"). Priced at
@@ -520,7 +520,7 @@ describe('every fast-path detector fires for its own shape', () => {
     ],
     ['hop aggregate', 'MATCH (a:L)-[:R]->(b:L) RETURN max(b.k) AS m', ['hopAggregate']],
     /*
-     * ⚠️ `sum`, NOT just `max`, since item 2401. `sum` reaches this rung too, and before 2401 it
+     * `sum`, NOT just `max`, since item 2401. `sum` reaches this rung too, and before 2401 it
      * reached it only on a FORCED start-driven walk (`ORDER_SENSITIVE_AGGREGATES` conflated "this
      * rung admits the aggregate" with "its order is observable"). Splitting those let `sum` take the
      * far-driven walk: 280.2 -> 24.3 ms on the bench row, 11.5x.
@@ -570,7 +570,7 @@ describe('every fast-path detector fires for its own shape', () => {
     ],
     ['a bare LIMIT still declines', 'MATCH (n:L) RETURN n.k AS k LIMIT 2', []],
     ['a skip WITH a limit still declines', 'MATCH (n:L) RETURN n.k AS k OFFSET 2 LIMIT 2', []],
-    // ⚠️ A PARAMETERIZED SKIP TAKES THE RUNG TOO, SINCE ITEM 1778. The sibling rules decline a
+    // A PARAMETERIZED SKIP TAKES THE RUNG TOO, SINCE ITEM 1778. The sibling rules decline a
     // parameterized window because a `LIMIT $n` decides between a heap and a sort-and-slice — the
     // ROUTE depends on the value, while the plan cache is shared across params. A skip-only page
     // has no such dependence, so declining it only cost a 7.3x gap between two spellings of one
@@ -600,8 +600,8 @@ describe('every fast-path detector fires for its own shape', () => {
       ['optionalHopCount'],
     ],
     /*
-     * 🔑 THE GROUPED TWIN (item 2123). Each half had a rung and the PAIR did not, which cost 18x.
-     * ⚠️ The two cannot compete: this one needs a two-item projection and its sibling a bare
+     * THE GROUPED TWIN (item 2123). Each half had a rung and the PAIR did not, which cost 18x.
+     * The two cannot compete: this one needs a two-item projection and its sibling a bare
      * `count(*)`, so they are disjoint by construction.
      */
     [
@@ -610,9 +610,9 @@ describe('every fast-path detector fires for its own shape', () => {
       ['optionalGroupedHopCount'],
     ],
     /*
-     * ⚠️ `ANY SHORTEST` + `count(*)` (item 2151). The selector is what makes this DISJOINT from
+     * `ANY SHORTEST` + `count(*)` (item 2151). The selector is what makes this DISJOINT from
      * `varLengthCount` beside it: that rung refuses any selector, this one requires `anyShortest`.
-     * 🔑 And bare `ANY` is NOT this shape — `'any'` dedups per ENDPOINT where `'anyShortest'` dedups
+     * And bare `ANY` is NOT this shape — `'any'` dedups per ENDPOINT where `'anyShortest'` dedups
      * per endpoint PAIR, so the two count differently.
      */
     [
@@ -667,7 +667,7 @@ describe('every fast-path detector fires for its own shape', () => {
   /**
    * The `CLinear` fields that are NOT detectors, named rather than inferred.
    *
-   * ⚠️ This list is the exception register for the guard below, and it must stay as short as the
+   * This list is the exception register for the guard below, and it must stay as short as the
    * truth allows. The count cannot be derived by filtering on `typeof v === 'function'` the way
    * `routes()` does, because this test needs ALL twenty-one detectors and most are `null` for any
    * one query shape. So a new non-detector field has to be added here by hand — and the guard

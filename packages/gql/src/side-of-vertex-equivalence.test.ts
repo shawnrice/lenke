@@ -24,7 +24,7 @@ import { query } from './index.js';
  * Against Gremlin's twin (30.93 / 30.87) the cross-surface gap is not just closed but REVERSED:
  * GQL goes from 1.42-1.46x slower to 1.23-1.35x faster.
  *
- * ⚠️ WHAT THIS FILE CAN AND CANNOT HOLD. The swap is answer-equivalent AND route-equivalent — both
+ * WHAT THIS FILE CAN AND CANNOT HOLD. The swap is answer-equivalent AND route-equivalent — both
  * helpers return the same number by construction — so a mutant that simply reverts it SURVIVES,
  * and that is correct rather than a coverage gap: there is no behaviour to observe. The real risk
  * is reading the WRONG BOX (`adjFrom` where `adjTo` is meant), which IS a wrong answer, and that

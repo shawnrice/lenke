@@ -23,11 +23,11 @@
 // far endpoint` — so inlining it removes the array, the dispatch and the generator, and keeps one
 // loop over the stream.
 //
-// ⚠️ ONLY A SINGLE `out`/`in`/`both` STEP. Anything else falls through to `optionalStep` untouched: a
+// ONLY A SINGLE `out`/`in`/`both` STEP. Anything else falls through to `optionalStep` untouched: a
 // multi-step sub-plan, a filter, a barrier, a nested branch. The gate is a shape test, not a
 // capability claim.
 //
-// ⚠️ IT IS LAZY WHERE `optionalStep` IS EAGER, and that is safe HERE and nowhere else. The eager
+// IT IS LAZY WHERE `optionalStep` IS EAGER, and that is safe HERE and nowhere else. The eager
 // `[...]` means the whole sub-plan runs before any row is yielded, so making it lazy reorders side
 // effects relative to downstream consumption — which is why item 1480 declined the same change for
 // the general case, and why `sideeffect-in-branch.test.ts` exists. A vertex step has no side effects,
@@ -62,11 +62,11 @@ export const optionalSingleHop = (
  * `optional(<one vertex step>)`: emit the far endpoints when there are any, otherwise the traverser
  * itself.
  *
- * ⚠️ A NON-VERTEX TRAVERSER PASSES THROUGH, which is what the general path already does rather than
+ * A NON-VERTEX TRAVERSER PASSES THROUGH, which is what the general path already does rather than
  * a liberty taken here: `traverseToVertex` yields NOTHING for a non-vertex (it is lenient, unlike the
  * edge→vertex steps), so `optionalStep`'s empty branch emits the traverser. Mirrored exactly.
  *
- * ⚠️ ORDER IS `adjacentEdges`' OWN, unchanged — the same helper the general step calls, not a second
+ * ORDER IS `adjacentEdges`' OWN, unchanged — the same helper the general step calls, not a second
  * derivation of it. Gremlin results are compared ORDERED against the Rust engine by the differential
  * fuzzer, so a reordering here would be a cross-engine failure rather than an unspecified-order
  * liberty.
@@ -87,7 +87,7 @@ export const optionalHopStep = function* (
     const v = t.value;
     let any = false;
     /**
-     * ⚠️ THE BUCKET DIRECTLY FOR A DIRECTED SINGLE TYPE, and the loop is written twice for it
+     * THE BUCKET DIRECTLY FOR A DIRECTED SINGLE TYPE, and the loop is written twice for it
      * (item 1628). `optionalSingleHop` already removed the sub-plan DISPATCH; what was left is the
      * generator chain, which item 1480's profile of this exact shape puts at **~61%** —
      * `otherEndpoint` 20.97% + `iterLabeled` 19.47% + `get to` 7.57% + `traverseToVertex` 5.41% +

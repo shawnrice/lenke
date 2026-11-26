@@ -1,7 +1,7 @@
 /**
  * What does a GQL point query actually cost, one ARM PER PROCESS (item 1579)?
  *
- * ⚠️ THIS PROBE EXISTS BECAUSE TWO IN-PROCESS ATTEMPTS GAVE IMPOSSIBLE ANSWERS. Running several arms
+ * THIS PROBE EXISTS BECAUSE TWO IN-PROCESS ATTEMPTS GAVE IMPOSSIBLE ANSWERS. Running several arms
  * in one process reported, in order:
  *
  *     param FIXED text   1.493    interpolated VARY text   2.101    interpolated SAME text  0.312

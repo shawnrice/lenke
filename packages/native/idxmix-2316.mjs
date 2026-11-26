@@ -1,11 +1,11 @@
 /**
- * ⚠️⚠️ **PROFILE THE INDEXED WORKLOAD — THE ONE A REAL APPLICATION RUNS (item 2316).**
+ * **PROFILE THE INDEXED WORKLOAD — THE ONE A REAL APPLICATION RUNS (item 2316).**
  *
- * 🔑 Three targets dissolved this session the moment an index was added (items 2301, 2315), and the serving
+ * Three targets dissolved this session the moment an index was added (items 2301, 2315), and the serving
  * bench's worst TS rows were all unindexed scans (item 2301). **Every profile I have taken was therefore of
  * a configuration the guide tells callers not to use.** This one has the index in place.
  *
- * ✅ One process, a realistic serving mix, and the fixture built ONCE so the profile is query-dominated:
+ * One process, a realistic serving mix, and the fixture built ONCE so the profile is query-dominated:
  * each shape runs `ROUNDS` times with inner iterations, and the build is a single pass.
  */
 import { Graph } from '@lenke/core';
@@ -48,7 +48,7 @@ for (let i = 0; i < USERS; i += 1) {
   }
 }
 
-/* ✅ THE POINT OF THIS PROBE: the index is present, as the guide's first rule requires. */
+/* THE POINT OF THIS PROBE: the index is present, as the guide's first rule requires. */
 g.createIndex({ on: 'vertex', kind: 'hash', keys: ['name'] });
 
 let acc = 0;

@@ -1,6 +1,6 @@
 // Byte-identity for the EXACT-SEED skip — item 1607, where a seeded count stops re-validating.
 //
-// ⚠️ THE RISK IS THE LABEL, which is why this fixture shares `team` values ACROSS labels: a value
+// THE RISK IS THE LABEL, which is why this fixture shares `team` values ACROSS labels: a value
 // bucket for `t1` holds `User`s, `Admin`s and both-labelled vertices, so a skip that dropped the
 // label test would over-count and a same-label fixture could never see it. Item 149 names that as
 // the first of the two risks of seeking at all.

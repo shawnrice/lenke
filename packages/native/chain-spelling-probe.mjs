@@ -11,12 +11,12 @@
  * spread over absolutes where a fixed per-call cost can dominate, and `min of 3` cannot separate the
  * two explanations. This measures the same four spellings at serving size with a real estimator.
  *
- * ⚠️ ONE SPELLING PER PROCESS. The gate bench says so for its own cases ("item 290 recorded a large
+ * ONE SPELLING PER PROCESS. The gate bench says so for its own cases ("item 290 recorded a large
  * speedup making its NEIGHBOUR read 0.87x slower purely by warming it"), and item 762's redistribution
  * trap is the same hazard from the other side: four query shapes in one process share the dispatch
  * sites and the first one measured runs monomorphic.
  *
- * ⚠️ THE ANSWER IS PRINTED AND MUST MATCH ACROSS SPELLINGS. Three of the four ask the identical
+ * THE ANSWER IS PRINTED AND MUST MATCH ACROSS SPELLINGS. Three of the four ask the identical
  * question; the label form asks a different one (it selects a label rather than a property) and has
  * its own count, exactly as in the gate bench.
  *

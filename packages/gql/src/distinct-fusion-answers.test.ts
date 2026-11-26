@@ -8,7 +8,7 @@ import { describe, expect, test } from 'bun:test';
  * walk was the remaining lever, "with this one's number as the floor". This file is that lever's
  * guard.
  *
- * ⚠️ THE THREE WAYS THIS FUSION CAN SILENTLY BREAK, one describe block each. None of them is
+ * THE THREE WAYS THIS FUSION CAN SILENTLY BREAK, one describe block each. None of them is
  * caught by "does DISTINCT still return distinct rows" on a fixture of plain numbers, which is why
  * the existing `chain-distinct-answers` file passed against every mutant of the keying.
  *
@@ -29,7 +29,7 @@ import { Graph } from '@lenke/core';
 import { query } from './index.js';
 
 /**
- * ⚠️ THE FIXTURE CARRIES THE VALUES THAT ARE HARD, not a range of plain integers: a stored `null`,
+ * THE FIXTURE CARRIES THE VALUES THAT ARE HARD, not a range of plain integers: a stored `null`,
  * a `-0` against a `0`, a `NaN`, and a STRING that collides with a vertex id's key shape (`@v1`).
  * A fixture of distinct small integers cannot tell correct keying from almost any mutant of it.
  */
@@ -82,7 +82,7 @@ const keysOf = (rows: readonly Record<string, unknown>[]): string[] =>
 
 describe('the fused one-column DISTINCT', () => {
   /**
-   * ⚠️ MUTANT 1's GUARD, and the one a single-run test cannot give. Running the SAME TEXT twice
+   * MUTANT 1's GUARD, and the one a single-run test cannot give. Running the SAME TEXT twice
    * reuses the cached plan, so a key set that lives in the plan rather than in the run is empty
    * only the first time.
    */
@@ -101,7 +101,7 @@ describe('the fused one-column DISTINCT', () => {
   });
 
   /**
-   * ⚠️ MUTANT 2's GUARD, and the FIRST version of it did not work — recorded because the failure is
+   * MUTANT 2's GUARD, and the FIRST version of it did not work — recorded because the failure is
    * the interesting part. Asserting that `RETURN DISTINCT c` yields unique ids, and separately that
    * `c.k` contains the string `'@v1'`, catches NOTHING: each of those columns holds elements OR
    * strings, never both, so collapsing the two key spaces changes neither answer. The mutant
@@ -163,7 +163,7 @@ describe('the fused one-column DISTINCT', () => {
   });
 
   /**
-   * ⚠️ MUTANT 3's GUARD, and a cross-route oracle rather than a hand-written expectation. The
+   * MUTANT 3's GUARD, and a cross-route oracle rather than a hand-written expectation. The
    * two-column spelling REFUSES the fusion and keeps the materialize-then-dedupe tail, so it is a
    * genuine second implementation of the same keying. Projecting the same column twice makes the
    * two answers comparable: one column per row against two identical ones.
@@ -186,7 +186,7 @@ describe('the fused one-column DISTINCT', () => {
   });
 
   /**
-   * ⚠️ AND IT MUST STILL BE A SUBSET OF THE UNDEDUPED ROWS, with every value represented. A fusion
+   * AND IT MUST STILL BE A SUBSET OF THE UNDEDUPED ROWS, with every value represented. A fusion
    * that dropped a whole key would pass the agreement test above if BOTH routes dropped it; the
    * undeduped walk is the independent third opinion, and it reaches neither keyer.
    */

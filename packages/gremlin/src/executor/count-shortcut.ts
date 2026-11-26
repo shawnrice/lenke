@@ -109,7 +109,7 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
     return undefined;
   }
 
-  // ⚠️ `V(id, …)` / `E(id, …)` ENUMERATE A GIVEN SET, which every rung below assumes they do not —
+  // `V(id, …)` / `E(id, …)` ENUMERATE A GIVEN SET, which every rung below assumes they do not —
   // each one answers from a whole-graph bucket. Before item 1649 this was a flat decline, so one
   // vertex's out-degree went to the traverser pipeline: `V(id).out(T).count()` measured **584.4 ns
   // against an 18.3 ns closed form the graph already has** (`getVertexById` + `outDegree`), 31.9x,
@@ -131,7 +131,7 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
     return source.kind === 'V' ? graph.vertexCount : graph.edgeCount;
   }
 
-  // ⚠️ `hasId` IS THE OTHER SPELLING OF THE SEEDED SOURCE, and it has to be answered here or the
+  // `hasId` IS THE OTHER SPELLING OF THE SEEDED SOURCE, and it has to be answered here or the
   // two diverge. Before item 1649 both spellings walked and `V(ids)` was ~2x faster; teaching the
   // seeded source alone took it to **74.8 ns against `hasId`'s 1006-1170 — 13-16x**, which is the
   // defect class CLAUDE.md opens with (the right answer at 100-300x the cost). Handled BEFORE the
@@ -141,7 +141,7 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
       return distinctIdCount(mid[0].ids, source.kind, graph);
     }
 
-    // ⚠️ `hasId` + ONE HOP, and it is here because leaving it out CREATED an equivalent-spelling
+    // `hasId` + ONE HOP, and it is here because leaving it out CREATED an equivalent-spelling
     // gap rather than merely leaving one. Teaching the bare count both spellings but the hop only
     // the seeded one took `V(ids).out(T).count()` vs `V().hasId(ids).out(T).count()` to **14.40x**
     // on the Gremlin spelling probe — worse than the ~2x it was before item 1649 touched anything.
@@ -197,18 +197,18 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
   /*
    * ITEM-2130-REVERSED-TRAIL: the same chain spelled with its filter at the FAR end.
    *
-   * ⚠️⚠️ **WITHOUT THIS, ITEM 2130's OTHER HALF CREATES A 9.4x EQUIVALENT-SPELLING GAP** — the defect class
+   * **WITHOUT THIS, ITEM 2130's OTHER HALF CREATES A 9.4x EQUIVALENT-SPELLING GAP** — the defect class
    * this repo is organised around. `hopChainShape` collects hops from the END backwards and takes what
    * precedes them as filters, so it sees `[out, out, has]` as zero hops and declines. Giving the LEADING
    * spelling the CSR route and not this one measured **13.31 ms against 125.52 for the identical answer**
    * (2,499,750). Nothing got slower; the gap alone is the bug.
    *
-   * 🔑 THE REWRITE IS A BIJECTION ON PATHS, not an approximation. The k-hop OUT-paths from any vertex
+   * THE REWRITE IS A BIJECTION ON PATHS, not an approximation. The k-hop OUT-paths from any vertex
    * that END at a vertex passing P are in one-to-one correspondence with the k-hop IN-paths that START
    * at a P-passing vertex — reverse each path. A count is order-free, so the two are the same number.
    * Self-loops and parallel edges need no special case: reversal maps each walk to exactly one walk.
    *
-   * ⚠️ `both` IS REFUSED by the hop scan below, and a LEADING filter makes it decline too (the scan
+   * `both` IS REFUSED by the hop scan below, and a LEADING filter makes it decline too (the scan
    * requires a hop at index 0, so `has(a).out.out.has(b)` yields no hops) — that shape would need both
    * ends filtered, which is not this rewrite.
    */
@@ -306,7 +306,7 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
  * `V().out(T).out(T)…dedupe().count()` — the number of DISTINCT endpoints of a K-hop chain, by
  * expanding a SET per level instead of enumerating paths (item 1855).
  *
- * ⚠️ THE CLIFF THIS CLOSES IS 398x AND IT SITS BETWEEN TWO WIDTHS. `distinctHopCount` answers ONE
+ * THE CLIFF THIS CLOSES IS 398x AND IT SITS BETWEEN TWO WIDTHS. `distinctHopCount` answers ONE
  * hop from an index key count; two hops reached nothing and fell to the traverser pipeline:
  *
  *     V().out(E).dedupe().count()                0.64 ms
@@ -316,13 +316,13 @@ export const countShortcut = (plan: Plan, graph: Graph): number | undefined => {
  * and on that fixture all three answer the SAME 50,000, because every vertex is reachable — so the
  * extra work bought no extra answer at all.
  *
- * ⚠️ WHY A SET EXPANSION IS EXACT. `dedupe()` sits at the END, so the multiplicities of the
+ * WHY A SET EXPANSION IS EXACT. `dedupe()` sits at the END, so the multiplicities of the
  * intermediate frontiers cannot reach the answer: a vertex `w` is an endpoint of some K-path iff
  * it is reachable in one hop from the set of (K-1)-path endpoints. Expanding level by level
  * therefore computes the same SET the traverser would emit and then dedupe, in O(V + E) a level
  * rather than O(paths).
  *
- * ⚠️ AND THE MULTI-TYPE EDGE HAZARD DOES NOT APPLY, which is worth stating because it constrains
+ * AND THE MULTI-TYPE EDGE HAZARD DOES NOT APPLY, which is worth stating because it constrains
  * the sibling rungs (items 1846/1847) and the edge counts above. Those SUM per-label buckets, so
  * an edge carrying two named types is counted twice; this ADDS TO A SET, and adding a vertex twice
  * is adding it once. No `multiTypeEdgeCount` guard is needed or wanted.
@@ -425,7 +425,7 @@ const dedupedHopChainCount = (mid: readonly Step[], graph: Graph): number | unde
 /**
  * `V()[…filters] out(T) …filters dedupe() .count()` — a DISTINCT far-endpoint count with a filter.
  *
- * ⚠️ ITEM 1613 — A 76.5x CLIFF, found by `gremlin-cliff-finder.ts` rather than by a profile. Its
+ * ITEM 1613 — A 76.5x CLIFF, found by `gremlin-cliff-finder.ts` rather than by a profile. Its
  * neighbour one step away is answered in CLOSED FORM and this was not:
  *
  * ```text
@@ -442,7 +442,7 @@ const dedupedHopChainCount = (mid: readonly Step[], graph: Graph): number | unde
  * O(V) without walking edges and without a `Set`. The only change needed is to iterate its ENTRIES
  * rather than its values, because a filter needs the vertex and not just its adjacency row.
  *
- * ⚠️ NO MULTI-TYPE GUARD, and that is `distinctHopCount`'s own reasoning rather than an omission:
+ * NO MULTI-TYPE GUARD, and that is `distinctHopCount`'s own reasoning rather than an omission:
  * this counts VERTICES, and "has a non-empty bucket for any of these labels" is a UNION per vertex,
  * so an edge carrying two of the named types makes its target qualify once either way. The guard
  * the hop-COUNT rungs need exists because `degreeOfTypes` SUMS buckets; nothing is summed here.
@@ -531,7 +531,7 @@ const filteredDistinctHopCount = (mid: readonly Step[], graph: Graph): number | 
   let n = 0;
 
   /**
-   * ⚠️ DRIVEN FROM THE VERTICES, NOT FROM THE REVERSE INDEX, and that is worth 1.64x.
+   * DRIVEN FROM THE VERTICES, NOT FROM THE REVERSE INDEX, and that is worth 1.64x.
    *
    * `distinctHopCount` iterates `edgesToByLabel`'s VALUES, which is right for it: it needs only the
    * adjacency row, never the vertex. A filter needs the vertex, and the first version of this rung
@@ -698,7 +698,7 @@ const unrollSlots = (
 /**
  * A step as a `has` FILTER, with a single-key `hasKey` converted — `undefined` for anything else.
  *
- * ⚠️ ONE READER, BECAUSE THE DRIFT IS THE DEFECT (item 1283). `has('k')` with one argument builds
+ * ONE READER, BECAUSE THE DRIFT IS THE DEFECT (item 1283). `has('k')` with one argument builds
  * `{kind:'hasKey'}`, not `{kind:'has'}`, and item 1140 taught exactly ONE detector (`hasChain`) to
  * convert it. Its five siblings each tested `step.kind !== 'has'` against RAW steps and declined, so
  * a presence filter fell to the general traversal stream in every rung but one. Measured at 200,000
@@ -812,7 +812,7 @@ type FarFilters = {
  * `rest` as a chain of filters on the FAR END of a vertex hop — `hasLabel` tests and `has`
  * predicates — or `undefined` if anything else appears.
  *
- * ⚠️ THE FAR SIDE REFUSED `hasLabel` WHILE THE START SIDE HAS ALWAYS ACCEPTED IT (item 1302), and
+ * THE FAR SIDE REFUSED `hasLabel` WHILE THE START SIDE HAS ALWAYS ACCEPTED IT (item 1302), and
  * that asymmetry was the whole defect. `collectVertexFilters` admits `hasLabel` for the steps
  * BEFORE the hop, so `hasLabel(P).out(T).has(k,p)` took a rung; the two far-side readers
  * (`hasChain` and `collectHasFilters`) admitted only `has`, so moving the label test ACROSS the hop
@@ -834,7 +834,7 @@ type FarFilters = {
  * of the block: that item found item 1140's `hasKey` conversion had reached ONE detector of five
  * and the four siblings kept declining, and recorded that the drift IS the defect.
  *
- * ⚠️ NOT WIDENED INTO `hasChain`, whose other caller is `edgeHopSeededCount`. After `outE`, a
+ * NOT WIDENED INTO `hasChain`, whose other caller is `edgeHopSeededCount`. After `outE`, a
  * `hasLabel` filters the EDGE's label, not the far vertex's — the same step kind asking a different
  * question — so admitting vertex labels there would be a wrong answer. `hasChain` keeps the
  * edge-side semantics and this reader owns the vertex side.
@@ -882,7 +882,7 @@ const farFilters = (rest: readonly Step[]): FarFilters | undefined => {
 /**
  * Does `v` pass every far-side label test — each step an OR over its labels, the steps ANDed?
  *
- * ⚠️ `hasLabel()` WITH NO LABELS KEEPS NOTHING, because `some` over an empty list is false. That is
+ * `hasLabel()` WITH NO LABELS KEEPS NOTHING, because `some` over an empty list is false. That is
  * not a choice made here: it is exactly what the START side has always done
  * (`step.labels.some((l) => v.labels.has(l))` in `bothFilteredHopCount` and `bothChainCount`), and
  * the two sides agreeing is the property this function exists to guarantee.
@@ -1155,7 +1155,7 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
 
     const inward = filteredHopCount({ kind: 'in', labels: hop.labels }, rest, graph);
 
-    // ⚠️ `inward === undefined` IS UNREACHABLE TODAY, and a mutant replacing it with
+    // `inward === undefined` IS UNREACHABLE TODAY, and a mutant replacing it with
     // `outward + (inward ?? 0)` SURVIVES (item 1087). Recorded rather than left unexplained, which
     // is this file's practice two rungs below as well.
     //
@@ -1225,7 +1225,7 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
   // only removing both recovers the step. Widths above 2 keep the loop: the third filter costs
   // ~1.5 ns a row, so there is nothing there to unroll for.
   const [k0, p0, k1, p1, k2, p2] = unrollSlots(keys, preds);
-  // ⚠️ SPECIALIZED (item 1493), a lever that did not exist when item 593 chased this loop. That
+  // SPECIALIZED (item 1493), a lever that did not exist when item 593 chased this loop. That
   // item hoisted `labels[0]`, inlined the single-type degree and destructured the filter, and
   // measured 1.01-1.05x across four shapes and five controls — inside the noise floor — and
   // concluded that "what is left here is constant-factor: a JS property read and a predicate
@@ -1340,21 +1340,21 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
       }
 
       /*
-       * ⚠️⚠️ **THE DEGREE IS COMPUTED HERE, BELOW THE PREDICATE, AND THE ORDER IS THE POINT** (item 2126).
+       * **THE DEGREE IS COMPUTED HERE, BELOW THE PREDICATE, AND THE ORDER IS THE POINT** (item 2126).
        * It used to sit above the filters, so the dear half ran for EVERY vertex and the predicate's
        * selectivity was thrown away.
        *
-       * 🔑 THE TELL WAS A VACUOUS-PREDICATE CONTROL (item 570's instrument): `has(age, gt(-1))`, which
+       * THE TELL WAS A VACUOUS-PREDICATE CONTROL (item 570's instrument): `has(age, gt(-1))`, which
        * keeps every row, measured **32.4 ms against the real predicate's 31.9**. A predicate rejecting
        * half costing what one rejecting nothing costs means the cost is the ROUTE, not the rows.
        *
-       * ⚠️ AND THE DEAR HALF IS `adjTo`, NOT THE PREDICATE. Reading each box's typed degree over 200,000
+       * AND THE DEAR HALF IS `adjTo`, NOT THE PREDICATE. Reading each box's typed degree over 200,000
        * vertices / 1,000,000 edges: `adjFrom` 6.92 ms, `adjTo` **16.15** — 2.3x, and not the box read
        * (both boxes read in ~1.1 ms). A vertex's out-edges are created consecutively so its `adjFrom`
        * sets sit together; its IN-edges arrive from widely separated iterations, so `adjTo` is a cold
        * pointer chase. This rung drives the FAR side (item 168's 3x), so `out` reads the dear one.
        *
-       * ⚠️ ANSWER- AND FAULT-EQUIVALENT. A degree-0 vertex contributes 0 either way, so the `deg === 0`
+       * ANSWER- AND FAULT-EQUIVALENT. A degree-0 vertex contributes 0 either way, so the `deg === 0`
        * skip is an optimization, not semantics. The displaced comment said the old order "keeps the
        * evaluated set identical" — that argument exists to preserve FAULT parity with the edge-driven
        * walk, and item 930 established no `matches` can fault (a mutant removing the short-circuit
@@ -1362,7 +1362,7 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
        * evaluated set is unobservable, which is the same reason the label group may precede the
        * property chain two blocks above.
        *
-       * ⚠️ THE NUMBER HERE IS FROM AN A/B OF THE REAL RUNG, not a micro-probe — this loop's own history
+       * THE NUMBER HERE IS FROM AN A/B OF THE REAL RUNG, not a micro-probe — this loop's own history
        * says why (item 591's inlined probe read 18.29 ms against the row's 42.2 and the difference was
        * not in the loop at all), and item 2125 repeated the mistake one tick before this one.
        */
@@ -1395,7 +1395,7 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
       //
       // What is left here is constant-factor: a JS property read and a predicate dispatch per
       // vertex against native's columnar read, which is item 566's layout ceiling rather than a
-      // missing route. ~~The ORDER is already optimal~~ — ⚠️⚠️ **WRONG, AND ITEM 2126 MEASURED IT AT
+      // missing route. ~~The ORDER is already optimal~~ — **WRONG, AND ITEM 2126 MEASURED IT AT
       // 1.81-5.65x.** That sentence answers "can we test FEWER vertices?" (no, not without an index)
       // and reads as though it settled "in what order?", which it did not: the DEGREE was computed
       // above the predicate, so the dear half ran unconditionally and selectivity bought nothing. A
@@ -1417,7 +1417,7 @@ const filteredHopCount = (hop: Step, rest: readonly Step[], graph: Graph): numbe
     return undefined;
   }
 
-  // ⚠️ `tallyFarEnds` RATHER THAN A SECOND COPY OF THE WIDTH CHAIN (item 1302). This arm used to
+  // `tallyFarEnds` RATHER THAN A SECOND COPY OF THE WIDTH CHAIN (item 1302). This arm used to
   // spell out the same `width === 1/2/3/else` dispatch over `far.properties` that `tallyFarEnds`
   // already contains — two copies of one rule, which is the drift item 1282 recorded as the defect
   // and which the far-end label test would have made three. Collapsing them also took
@@ -1452,7 +1452,7 @@ const ORDERING_OPS: ReadonlySet<string> = new Set(['gt', 'gte', 'lt', 'lte']);
  * item 1492: `specializePredicate` replaces the megamorphic `matches` with a closure, which
  * measured 1.92x on the structurally identical loop in `propertyCount`.
  *
- * ⚠️ WIDTH 1 AND ORDERING OPS ONLY, AND THE WIDER ARMS WERE BUILT, MEASURED AND REMOVED. A
+ * WIDTH 1 AND ORDERING OPS ONLY, AND THE WIDER ARMS WERE BUILT, MEASURED AND REMOVED. A
  * closure over the chain has to be ONE closure — a per-filter branch inside the loop would
  * reintroduce the dispatch this removes — so at width w it costs the wrapper call plus w closure
  * calls against w `matches` calls. At width 1 that trade wins; past it, it loses. Built wide
@@ -1512,7 +1512,7 @@ const degreeOfTypes = (
     return deg;
   }
 
-  // ⚠️ A SINGLE-TYPE FAST PATH HERE IS REFUTED (item 1546). This function is **25.8% of
+  // A SINGLE-TYPE FAST PATH HERE IS REFUTED (item 1546). This function is **25.8% of
   // `hopcount3`'s profile** — the largest row in `bench:gremlin` — and `out(T)` names exactly one
   // type, so skipping the loop for `types.length === 1` looks free:
   //
@@ -1583,7 +1583,7 @@ const bucketsFor = (
  * is O(bucket) rather than O(V). A multi-label `hasLabel` is an OR over buckets a vertex may sit
  * in several of, so it stays a predicate here.
  *
- * ⚠️ That used to add "— `labelledCount` declines it for the same reason", and since item 1382 it
+ * That used to add "— `labelledCount` declines it for the same reason", and since item 1382 it
  * does NOT: `labelledCount` now counts the UNION. The decline HERE still stands on its own, because
  * this is a SOURCE for a tally that must then visit each element once, and a union COUNT does not
  * hand you an enumeration to visit. The citation was the stale half, not the decline.
@@ -1611,9 +1611,9 @@ const filterChainCount = (mid: readonly Step[], graph: Graph): number | undefine
   }
 
   /*
-   * ⚠️ `V().values(k).dedupe().count()` IS DISPATCHED FROM HERE RATHER THAN FROM `countShortcut`, and
+   * `V().values(k).dedupe().count()` IS DISPATCHED FROM HERE RATHER THAN FROM `countShortcut`, and
    * the reason is a `complexity` cap, not taste: that function sits at 35 and a new branch took it to 36.
-   * 🔑 Folding the check into its `mid.length === 2` path instead would have been a SILENT ROUTE CHANGE —
+   * Folding the check into its `mid.length === 2` path instead would have been a SILENT ROUTE CHANGE —
    * a two-step mid that declines these rungs must keep falling through to the later ones, and an early
    * `return … ?? …` would have stopped it. This function already owns two-step mids, so the case belongs
    * here and `countShortcut` gains nothing.
@@ -1775,7 +1775,7 @@ type HopStep = Extract<Step, { kind: 'out' | 'in' | 'both' }>;
  * `hopChainCount` asked again with the chain reversed, or `undefined` when the shape is not one
  * `reversedTrailChain` rewrites (item 2130).
  *
- * ⚠️ **HOISTED FOR THE COMPLEXITY CAP, WHICH THIS MAKES THE NINTH TIME IN THE TWO ENGINES.** Inlining the
+ * **HOISTED FOR THE COMPLEXITY CAP, WHICH THIS MAKES THE NINTH TIME IN THE TWO ENGINES.** Inlining the
  * two branches at the call site took `countShortcut` to 36 against a cap of 35. `bun run lint` is a gate,
  * so the branch moves rather than the cap.
  */
@@ -1789,13 +1789,13 @@ const reversedTrailCount = (mid: readonly Step[], graph: Graph): number | undefi
  * `[out, out, has]` rewritten as `[has, in, in]` — the same count read from the other end, or `undefined`
  * when the shape is not a hop run followed by vertex filters (item 2130).
  *
- * 🔑 Exported for its own unit test: this is a ROUTE rewrite, so both spellings answer identically either
+ * Exported for its own unit test: this is a ROUTE rewrite, so both spellings answer identically either
  * way and every behavioural test in this package is blind to a mutant of it.
  */
 export const reversedTrailChain = (mid: readonly Step[]): Step[] | undefined => {
   let i = 0;
 
-  // ⚠️ `both` is deliberately not accepted: its reverse is itself, so the rewrite would be a no-op that
+  // `both` is deliberately not accepted: its reverse is itself, so the rewrite would be a no-op that
   // re-enters `hopChainCount` with the same shape.
   while (i < mid.length && (mid[i].kind === 'out' || mid[i].kind === 'in')) {
     i += 1;
@@ -2038,7 +2038,7 @@ const chainDegree = (v: Vertex, hop: HopStep, reverse: boolean): number => {
 /**
  * `V()[…filters] out(T) …filters out(U) .count()` — a filter BETWEEN two hops.
  *
- * ⚠️ ITEM 1602: THIS SHAPE FELL OFF THE END OF EVERY RUNG, and the hole was invisible because all
+ * ITEM 1602: THIS SHAPE FELL OFF THE END OF EVERY RUNG, and the hole was invisible because all
  * four of its neighbours are answered in closed form. Measured on 20,000 vertices / 80,000 edges,
  * one shape per process, against the identical GQL question:
  *
@@ -2074,7 +2074,7 @@ const chainDegree = (v: Vertex, hop: HopStep, reverse: boolean): number => {
  * that `!== 1` (not `> 1`) is the correct test because `out()` iterates every bucket and visits a
  * multi-type edge once per label.
  *
- * ⚠️ A SEEKABLE INTERIOR `has` IS NOT REFUSED, where the leading filters still are, and the
+ * A SEEKABLE INTERIOR `has` IS NOT REFUSED, where the leading filters still are, and the
  * asymmetry is deliberate. The siblings refuse a seekable `has` because `countShortcut` runs before
  * `seedFromIndex` and a tally that scanned would preempt the seek — but a seek seeds the SOURCE, and
  * no route seeds from the MIDDLE of a walk (`seedForStep` reads the source step). So refusing here
@@ -2125,7 +2125,7 @@ const trailingHopChainShape = (
   }
 
   if (hops.length !== 2 || hops[1] === mid.length - 1) {
-    // ⚠️ `hops[1] === mid.length - 1` is REDUNDANT TODAY (mutation: removing it survived), for two
+    // `hops[1] === mid.length - 1` is REDUNDANT TODAY (mutation: removing it survived), for two
     // independent reasons — this rung is listed AFTER `interleavedHopChainCount` and
     // `hopChainCount`, which answer every untrailed shape first; and an EMPTY trailing filter list
     // would make the walk compute the same number anyway, just without the closed form those rungs
@@ -2136,7 +2136,7 @@ const trailingHopChainShape = (
   /**
    * No THIRD hop: this rung is the two-hop shape, and a deeper chain keeps the pipeline.
    *
-   * ⚠️ ALSO REDUNDANT TODAY, and mutation says so rather than my reading it: removing this loop
+   * ALSO REDUNDANT TODAY, and mutation says so rather than my reading it: removing this loop
    * SURVIVED, because a hop in the trailing run reaches `asVertexFilters` below and is refused
    * there — it is neither a `hasLabel` nor an `asHasFilter`. Kept for the reason
    * `specializeSingleProp` keeps its two unreachable guards: it states the rung's ARITY where a
@@ -2222,7 +2222,7 @@ const arrivalsAt = (
 /**
  * `V()[…filters] out(T) […filters] out(U) …filters .count()` — a TRAILING filter after the LAST hop.
  *
- * ⚠️ ITEM 1612 — THE SHAPE ITEM 1602 LEFT OPEN, and the cliff is **214x**. That item's own note said
+ * ITEM 1612 — THE SHAPE ITEM 1602 LEFT OPEN, and the cliff is **214x**. That item's own note said
  * a trailing filter "needs the last level walked" because the final contribution stops being a
  * degree, and left it. Measured on 20,000 vertices / ~80,000 edges, one shape per process:
  *
@@ -2248,7 +2248,7 @@ const arrivalsAt = (
  * narrows the starts, and a per-edge count when one does. That is the same `anyStart` split item
  * 1602 makes, in the same words.
  *
- * ⚠️ IT ALSO SUBSUMES THE INTERIOR FILTER, so `out(E).has(k,v).out(E).has(k,v)` — 16.2 ms, the other
+ * IT ALSO SUBSUMES THE INTERIOR FILTER, so `out(E).has(k,v).out(E).has(k,v)` — 16.2 ms, the other
  * shape item 1602 left — takes this rung too: a middle that fails the interior test contributes
  * zero arrivals. One rung, both holes.
  *
@@ -2342,7 +2342,7 @@ const interleavedHopChainCount = (mid: readonly Step[], graph: Graph): number | 
     return undefined;
   }
 
-  // ⚠️ THE LEAD FILTERS ARE PARSED WITH `seed: false`, and that is a CORRECTNESS condition, not a
+  // THE LEAD FILTERS ARE PARSED WITH `seed: false`, and that is a CORRECTNESS condition, not a
   // missed optimization. This walk is driven from the MIDDLE, so the lead filters are applied to
   // the far endpoint of an arriving edge — a leading `hasLabel` folded into a source bucket would
   // be DROPPED instead of applied, and the count would include starts of the wrong label. Seeding
@@ -2419,7 +2419,7 @@ const interleavedHopChainCount = (mid: readonly Step[], graph: Graph): number | 
 /**
  * Do every one of these vertex filters hold for `v`? The siblings' own inline loop, named.
  *
- * ⚠️ THE INDEXED LOOP IS DELIBERATE and the lint rule is disabled rather than obeyed: this runs
+ * THE INDEXED LOOP IS DELIBERATE and the lint rule is disabled rather than obeyed: this runs
  * once per vertex and, in the filtered-lead arm, once per arriving edge. `gateWith`'s own note
  * measures the alternative — `for (const f of filters)` allocates an iterator per element, over an
  * array that is usually length 1 and sometimes EMPTY, and cost an unfiltered scan **34%**.
@@ -2497,7 +2497,7 @@ const hopChainCount = (mid: readonly Step[], graph: Graph): number | undefined =
    * ITEM-2131-UNFILTERED-MEMO: an UNFILTERED chain count is a pure function of the TOPOLOGY, so a repeat
    * ask is free.
    *
-   * 🔑 THE GQL TWIN ALREADY DOES THIS (item 1890 put the degree product on its CSR) and the gap it leaves
+   * THE GQL TWIN ALREADY DOES THIS (item 1890 put the degree product on its CSR) and the gap it leaves
    * is the biggest cross-language one measured. Steady state, 200,000 vertices / 1,000,000 edges, the
    * identical question and the identical answer (5,000,000):
    *
@@ -2506,18 +2506,18 @@ const hopChainCount = (mid: readonly Step[], graph: Graph): number | undefined =
    *     GRM  V().out(E).out(E).count()                          10.6-15.4     <- recomputed every call
    * ```
    *
-   * ⚠️ BOTH ENGINES WARM UP OVER TWO REPS (82.5 then 204 for GQL, 80.6 then 150.6 here), so the figures
+   * BOTH ENGINES WARM UP OVER TWO REPS (82.5 then 204 for GQL, 80.6 then 150.6 here), so the figures
    * above are the steady state and not a first-call artifact — the series was printed rather than
    * summarised, which is what separates the two.
    *
-   * ⚠️⚠️ **SOUND ONLY BECAUSE IT IS UNFILTERED, AND `topologyVersion` IS WHY.** That counter advances
+   * **SOUND ONLY BECAUSE IT IS UNFILTERED, AND `topologyVersion` IS WHY.** That counter advances
    * SYNCHRONOUSLY on an edge or vertex write (verified: 2 -> 4 on `addEdge`, unchanged across a microtask
    * drain — unlike `version`/`epoch`, which advance only on the drain and whose use as a cache key cost
-   * item 1646 its design). ⚠️ But it does NOT advance on a PROPERTY write, so a cached FILTERED count
+   * item 1646 its design). But it does NOT advance on a PROPERTY write, so a cached FILTERED count
    * would be a wrong answer the moment a property changed. Hence `unfiltered` in the guard: this count
    * reads no property at all.
    *
-   * 🔑 It rides `chainCsrFor`'s generation map, which is already dropped WHOLE on any topology write, so
+   * It rides `chainCsrFor`'s generation map, which is already dropped WHOLE on any topology write, so
    * there is no second invalidation path to keep correct.
    */
   if (unfiltered) {
@@ -2544,7 +2544,7 @@ const hopChainCount = (mid: readonly Step[], graph: Graph): number | undefined =
  * Read or write the unfiltered-chain-count memo for `graph`, on `chainCsrFor`'s generation map so the
  * single `topologyVersion` invalidation covers both (item 2131).
  *
- * ⚠️ Passing `value` writes; omitting it reads. 🔑 The generation is replaced wholesale when
+ * Passing `value` writes; omitting it reads. The generation is replaced wholesale when
  * `topologyVersion` moves, so a stale count cannot survive a write — the same argument the CSR itself
  * relies on, and deliberately not a second mechanism to keep in step.
  */
@@ -2561,7 +2561,7 @@ const unfilteredChainMemo = (graph: Graph, key: string, value?: number): number 
     return entry.counts.get(key);
   }
 
-  // ⚠️ CAPPED like the CSR's own shape map: an entry is one number, but the KEY space is every distinct
+  // CAPPED like the CSR's own shape map: an entry is one number, but the KEY space is every distinct
   // hop shape, and the map lives as long as the graph generation.
   if (entry.counts.size >= MAX_CHAIN_SHAPES) {
     entry.counts.clear();
@@ -2624,7 +2624,7 @@ const hopChainCountUncached = (
     const [h0, h1] = hops;
 
     /*
-     * ⚠️⚠️ DENSE SLOTS ON A REPEAT ASK (item 1983). Items 1859-1861 priced this at 3.97x and
+     * DENSE SLOTS ON A REPEAT ASK (item 1983). Items 1859-1861 priced this at 3.97x and
      * DECLINED it; item 1982 re-opened the decline and located the arm, which is THIS one and not
      * the walk those items measured.
      *
@@ -2635,14 +2635,14 @@ const hopChainCountUncached = (
      * vertex (51.6 ms); the same count over flat `Int32Array` degrees costs 13.0 (item 1860's
      * hand-rolled ceiling, re-measured at item 1982). **3.97x, and it is the array reads.**
      *
-     * 🔑 WHY IT IS SAFE NOW AND WAS NOT AT ITEM 1860. Item 1695's criterion — "safe iff the walk
+     * WHY IT IS SAFE NOW AND WAS NOT AT ITEM 1860. Item 1695's criterion — "safe iff the walk
      * costs more than the rebuild" — fails here (52 ms walk against a 160 ms rebuild) and exists
      * because a build can be WASTED. `seenBefore` is item 1889's second-ask policy, keyed on
      * `graph.topologyVersion`: a ONE-SHOT query never builds, a WRITE-EVERY-READ workload never
      * reaches a second ask on any one version so it never builds either, and only a repeated read
      * on a stable topology builds — the case that wins. [[check-the-blocker-still-holds]].
      *
-     * ⚠️ THE KEY IS REUSED, NOT RE-KEYED, which is the convention `optional-hop-values.ts` states
+     * THE KEY IS REUSED, NOT RE-KEYED, which is the convention `optional-hop-values.ts` states
      * for this policy — and here it is load-bearing rather than tidy: `slotChainCount` reads
      * `chainCsrFor(graph, forward, labels)`, the SAME entry those single-hop callers warm, so a
      * graph where `V().out(T)` has already been asked hands this route a CSR it need not build.
@@ -2707,18 +2707,18 @@ const hopChainCountUncached = (
     /*
      * ITEM-2130-FILTERED-DENSE: the CSR propagation, with the SURVIVORS as its seeds.
      *
-     * ⚠️⚠️ **THE UNFILTERED IDENTITY IS GONE HERE AND THAT IS THE WHOLE COST** (items 2128/2129). Above,
+     * **THE UNFILTERED IDENTITY IS GONE HERE AND THAT IS THE WHOLE COST** (items 2128/2129). Above,
      * an unfiltered two-hop count is O(V) with no edge walk — `arrive * degreeOfTypes(outBox)`, two
-     * degree reads a vertex. 🔑 A filter of ANY kind invalidates it, because `arrivals(w)` would have to
+     * degree reads a vertex. A filter of ANY kind invalidates it, because `arrivals(w)` would have to
      * count in-edges FROM THE SURVIVORS, so the route fell to the per-edge walk below: **14.23 ms
      * unfiltered against 123 filtered, and 238 when the predicate is VACUOUS.** The vacuous arm being
      * dearer than the selective one is the identity's absence, not a predicate cost.
      *
-     * 🔑 `slotChainCount` needs no identity: it propagates multiplicities over a CSR in O(V + E) and
+     * `slotChainCount` needs no identity: it propagates multiplicities over a CSR in O(V + E) and
      * already takes an ARBITRARY seed set. It was simply never called with filtered seeds — its only
      * call site sat inside the `unfiltered` branch.
      *
-     * ⚠️ The seeds are materialized because `slotChainCount` reads `seeds.length` for its own floor and
+     * The seeds are materialized because `slotChainCount` reads `seeds.length` for its own floor and
      * iterates them once; the generator cannot answer the first without being consumed.
      */
     const seeds = [...survivors()];
@@ -2861,8 +2861,8 @@ const mapChainCount = (hops: readonly HopStep[], seeds: readonly Vertex[]): numb
  * complexity budget — it was already at 33 of 35 before this item.
  */
 /*
- * 🔑 EXPORTED FOR ITS OWN UNIT TEST, NOT FOR A CALLER — item 1983's practice for a route decision in this
- * file. ⚠️ Item 2130 relies on it answering for a PARTIAL seed set (the survivors of a filter), which is
+ * EXPORTED FOR ITS OWN UNIT TEST, NOT FOR A CALLER — item 1983's practice for a route decision in this
+ * file. Item 2130 relies on it answering for a PARTIAL seed set (the survivors of a filter), which is
  * a capability no answer-comparing test can see: replacing the call with `undefined` is
  * answer-equivalent, so that mutant SURVIVES by construction. Testing the function directly is the
  * strongest check available ([[perf-gate-needs-its-own-test]]).
@@ -2879,7 +2879,7 @@ export const denseChainCount = (
 /**
  * May an UNFILTERED two-hop count try the dense slot route? (item 1983)
  *
- * ⚠️⚠️ **A ROUTE CHOICE, SO ANSWER-EQUIVALENT, and every behavioural test in this package is blind
+ * **A ROUTE CHOICE, SO ANSWER-EQUIVALENT, and every behavioural test in this package is blind
  * to a mutant of it** — both arms count the same walks ([[perf-gate-needs-its-own-test]]). Exported
  * for its own unit test, not for a caller.
  *
@@ -2887,11 +2887,11 @@ export const denseChainCount = (
  *
  *   not `both`           a `both` hop arrives AND departs along both index boxes, so one CSR cannot
  *                        express it — item 590's reason that `both.out` and `out.both` differ.
- *                        ⚠️ `oneWalkThroughout` does NOT exclude it: two `both` hops share a `kind`
+ *                        `oneWalkThroughout` does NOT exclude it: two `both` hops share a `kind`
  *                        and labels, so it reports true, and only this clause refuses them. Measured
  *                        UNREACHABLE today — a `both` chain is answered by the `chainDegree` arm and
  *                        reached this gate 0 of 2 asks under a route counter — so it is a GUARD
- *                        against a later reordering rather than a fix. ⚠️ A wrong answer here would
+ *                        against a later reordering rather than a fix. A wrong answer here would
  *                        be INVISIBLE: `denseChainCount` admits only when
  *                        `seeds.length > max(vertexCount >> 4, 1024)`, and every fixture in this
  *                        package is below that, so no existing test could reach it.
@@ -2903,7 +2903,7 @@ export const denseChainCount = (
  *                        key would collide across every untyped shape.
  *
  * The second-ask half of the gate is `seenBefore`, which has its own test in
- * `hop-values-csr.test.ts`. ⚠️ The CONJUNCTION at the call site is not reachable from a unit test
+ * `hop-values-csr.test.ts`. The CONJUNCTION at the call site is not reachable from a unit test
  * without a route counter, so a mutant dropping `&& seenBefore(...)` survives this file; it is
  * caught instead by `twohop-coldask-1983.mjs`, whose one-shot and write-every-read arms would move.
  */
@@ -2944,7 +2944,7 @@ export type SlotMemo = {
 /**
  * Room for `need` more entries, doubling as needed.
  *
- * ⚠️ EXPORTED FOR ITS OWN UNIT TEST, and item 1418 is why rather than caution. The GQL twin's
+ * EXPORTED FOR ITS OWN UNIT TEST, and item 1418 is why rather than caution. The GQL twin's
  * identical growth copy survived FOUR black-box attempts to mutate it — a 4,096-slot fixture (growth
  * verified firing 3 times by counter), a cycle, a path with sinks, and an out-degree-2 graph —
  * because the dropped entry belongs to whichever slot was written just before a growth and whether
@@ -2981,7 +2981,7 @@ export const memoReserve = (m: SlotMemo, need: number): void => {
  * FILL (`walkBucket` 28.9% + `expandSlot` 9.9%) and the last hop's degree sum (`degreeOfTypes`
  * 24.0%). Both are pure functions of topology, so both belong in a cache rather than in the call.
  *
- * ⚠️ WHY THIS IS EAGER WHERE THE OLD MEMO WAS LAZY. The old structure resolved a slot's
+ * WHY THIS IS EAGER WHERE THE OLD MEMO WAS LAZY. The old structure resolved a slot's
  * neighbours on first touch, numbering vertices in DISCOVERY order — which made the slot indices a
  * function of the seed set, so nothing about it could be shared between traversals. Numbering every
  * vertex up front by `verticesById` order is what makes the memo a pure function of
@@ -2989,19 +2989,19 @@ export const memoReserve = (m: SlotMemo, need: number): void => {
  * admission rule: `denseChainCount` only fires when `seeds.length > max(vertexCount >> 4, 1024)`, so
  * most of the graph is seeded and the lazy build was already touching most of it.
  *
- * ⚠️ AND THE LAST HOP'S DEGREE IS NOW `len[slot]`, WHICH IS THE 24.0% GONE RATHER THAN MOVED.
+ * AND THE LAST HOP'S DEGREE IS NOW `len[slot]`, WHICH IS THE 24.0% GONE RATHER THAN MOVED.
  * `oneWalkThroughout` is the route's other admission condition and it requires every hop to walk the
  * same index with the same labels — so the final hop's `degreeOfTypes(byType, lastHop.labels)` counts
  * exactly the edges this CSR already walked for that slot. Parallel edges and self-loops are counted
  * the same way by both, which is what makes the substitution exact rather than approximate.
  *
- * ⚠️ THE KEY IS `graph.topologyVersion`, and nothing weaker would do (items 1674/1675):
+ * THE KEY IS `graph.topologyVersion`, and nothing weaker would do (items 1674/1675):
  * `graph.version` and `graph.epoch(name)` advance on a DEFERRED step and read stale through a
  * sequence of mutations; `vertexCount`/`edgeCount` miss a delete-plus-add. `topologyVersion` also
  * covers edge-LABEL writes, which matters here because `labels` selects buckets of a type-keyed
  * adjacency that `addLabelToEdge` re-buckets without touching `insertEdge`.
  *
- * ⚠️ `labels` IS NOT SORTED INTO THE KEY. Two orderings name the same buckets and sharing is
+ * `labels` IS NOT SORTED INTO THE KEY. Two orderings name the same buckets and sharing is
  * tempting, but the fill iterates `labels` in order, so the neighbour runs differ in POSITION. The
  * count is a sum of integer-valued f64 and would survive, but the conservative key is the one that
  * ships where byte-identity is the invariant.
@@ -3088,7 +3088,7 @@ const buildChainCsr = (graph: Graph, forward: boolean, labels: readonly string[]
 };
 
 /**
- * ⚠️ EXPORTED FOR `hop-chain-values.ts` (item 1680), and the slot numbering is what makes sharing
+ * EXPORTED FOR `hop-chain-values.ts` (item 1680), and the slot numbering is what makes sharing
  * it sound: every CSR numbers vertices by `graph.verticesById` iteration order regardless of
  * direction or labels, so two CSRs for two different hop shapes agree on which slot is which vertex.
  * A lazily-numbered memo could not be shared this way, which is the reason item 1678 made it eager.
@@ -3115,7 +3115,7 @@ export const chainCsrFor = (
     return hit;
   }
 
-  // ⚠️ CAPPED, because an entry holds a V-entry Map, a V-length array and a flat buffer sized by
+  // CAPPED, because an entry holds a V-entry Map, a V-length array and a flat buffer sized by
   // the walked degree, and it lives as long as the graph. A generation is cleared on any topology
   // write, so growth needs many distinct shapes with no write between them — the shape of a report
   // sweeping one traversal per edge type. Cleared rather than evicted one at a time: there is no
@@ -3361,7 +3361,7 @@ const soleHopAt = (mid: readonly Step[]): number | undefined => {
  * better than the scan a caller would do with it — the same decline `startFilteredHopCount` makes
  * inline, kept in one place now that several rungs need it.
  *
- * ⚠️ `refuseSeekable: false` IS FOR A FAR-SIDE RUN ONLY, and the asymmetry is deliberate rather
+ * `refuseSeekable: false` IS FOR A FAR-SIDE RUN ONLY, and the asymmetry is deliberate rather
  * than a relaxation (item 1603). The refusal exists because a seek seeds the SOURCE and
  * `countShortcut`/the values shortcuts run before `seedFromIndex`, so a tally or walk that scanned
  * would preempt a better route. Nothing seeds from the FAR side of a hop — `seedForStep` reads the
@@ -3435,7 +3435,7 @@ const tallyFarEnds = (
   // costs on these walks is exactly that — the per-row property load off a wider object, not the
   // comparison — so the hoist is principled rather than speculative.
   //
-  // ⚠️ IT IS NOT A MEASURED WIN, and the honest version matters more than the flattering one. A full
+  // IT IS NOT A MEASURED WIN, and the honest version matters more than the flattering one. A full
   // sweep read the no-far-label both-sides shape at 0.94x against a 1.00x control band, which is
   // what prompted this; but an ISOLATED 5-round A/B then put it at 1.09x the other way with a
   // within-arm spread of 1.26-1.39x and the CONTROL's own spread at 1.46x. So the arm is
@@ -3628,7 +3628,7 @@ const bothFilteredHopCount = (mid: readonly Step[], graph: Graph): number | unde
 /**
  * `V().values(k).dedupe().count()` — one pass over the vertices, no traverser (item 2169).
  *
- * ⚠️⚠️ **ADDING `dedupe()` DROPPED THIS SHAPE OFF A FUSED RUNG ONTO THE GENERATOR PIPELINE.** A windowed
+ * **ADDING `dedupe()` DROPPED THIS SHAPE OFF A FUSED RUNG ONTO THE GENERATOR PIPELINE.** A windowed
  * profile of the two arms:
  *
  * ```text
@@ -3636,17 +3636,17 @@ const bothFilteredHopCount = (mid: readonly Step[], graph: Graph): number | unde
  *     + dedupe()              8.71           generatorResume 73.3%, startTraverser 19.1%
  * ```
  *
- * 🔑 Flagged by the floor-subtracted Gremlin screen at **+5.95 ms against native's +0.79 — 7.5x on the
+ * Flagged by the floor-subtracted Gremlin screen at **+5.95 ms against native's +0.79 — 7.5x on the
  * STEP's own cost** — where its RAW ratio is only 6.6x and would have been dismissed as item 2167's 48x
- * property-scan floor. ⚠️ The same screen shows `values(k).order()` at PARITY and
+ * property-scan floor. The same screen shows `values(k).order()` at PARITY and
  * `out().dedupe().count()` CHEAPER than its floor, so this is specific, not "dedupe is slow".
  *
- * ⚠️ **BOTH EXISTING DEDUPE RUNGS ARE ELEMENT-BASED, which is why this one was missing**:
+ * **BOTH EXISTING DEDUPE RUNGS ARE ELEMENT-BASED, which is why this one was missing**:
  * `distinctHopCount` (one hop) and `dedupedHopChainCount` (two or more, "one hop is the rung above").
  * Item 2079 fused the `where`-GATED values-dedupe and item 1970 the `limit` form; the bare `count()` was
  * unserved.
  *
- * ### ⚠️⚠️ THE THREE SEMANTICS, ESTABLISHED EMPIRICALLY RATHER THAN READ
+ * ### THE THREE SEMANTICS, ESTABLISHED EMPIRICALLY RATHER THAN READ
  *
  * ```text
  *     vertices: k=1, k=1, k=2, k=null, (absent)
@@ -3655,7 +3655,7 @@ const bothFilteredHopCount = (mid: readonly Step[], graph: Graph): number | unde
  *     values(k).dedupe().count()         3
  * ```
  *
- * 🔑 So: an ABSENT key contributes nothing, an explicit `null` is a value, and the distinctness test must
+ * So: an ABSENT key contributes nothing, an explicit `null` is a value, and the distinctness test must
  * be `valueDedupeFilter` — the very function the generator path uses, which handles composites, object
  * refs, `Date`s and `Temporal`s. **A plain `Set` of raw values would answer differently for those**, and
  * this package has dedicated tests for temporal and namespaced dedupe keys.
@@ -3672,7 +3672,7 @@ const valuesDedupeCount = (mid: readonly Step[], graph: Graph): number | undefin
   }
 
   /*
-   * ⚠️ `labels` or a `by` on the dedupe changes what it keys on, and both are refused for the same reason
+   * `labels` or a `by` on the dedupe changes what it keys on, and both are refused for the same reason
    * the sibling rungs refuse them.
    */
   if (
@@ -3691,19 +3691,19 @@ const valuesDedupeCount = (mid: readonly Step[], graph: Graph): number | undefin
     const { properties } = v;
 
     /*
-     * ⚠️ `key in properties` AND NOT `=== undefined`: an explicit `null` IS emitted by `values()` and is
+     * `key in properties` AND NOT `=== undefined`: an explicit `null` IS emitted by `values()` and is
      * a distinct dedupe value, while an ABSENT key emits nothing at all. Testing for `undefined` would
      * conflate them and under-count by one whenever a null is present.
      *
-     * ⚠️⚠️ **AND THE VALUE IS PASSED RAW, NOT `?? null`, WHICH I BRIEFLY GOT WRONG.** A property can
+     * **AND THE VALUE IS PASSED RAW, NOT `?? null`, WHICH I BRIEFLY GOT WRONG.** A property can
      * genuinely HOLD `undefined` (`{k: undefined}` stores `in-map: true, value: undefined`), and
      * `values()` RENDERS it as `null` — so the raw stream for `k=1, k=undefined, k=null` prints
-     * `[1, null, null]` and looks like two duplicates. 🔑 But the UNFUSED `values(k).dedupe()` returns
+     * `[1, null, null]` and looks like two duplicates. But the UNFUSED `values(k).dedupe()` returns
      * all THREE rows: the generator's dedupe keys on the raw value, where `undefined` and `null` are
      * distinct, and only the rendering collapses them. **So 3 is the answer this rung must give**, and
      * coalescing to `null` first made it 2 — a wrong answer measured against its own unfused spelling.
      *
-     * ⚠️ That the rendered output then shows a seeming duplicate is a PRE-EXISTING conformance question
+     * That the rendered output then shows a seeming duplicate is a PRE-EXISTING conformance question
      * about `values()` and `undefined`, not something a count rung should decide. See item 2169's note.
      */
     if (key in properties && keep(properties[key])) {
@@ -3737,7 +3737,7 @@ const vertexStepCount = (step: Step, graph: Graph): number | undefined => {
     return adjacentCount(step.labels, graph);
   }
 
-  // ⚠️ `hasKey` REACHES THIS ARM TOO, and until item 1283 it did not — which is where the whole
+  // `hasKey` REACHES THIS ARM TOO, and until item 1283 it did not — which is where the whole
   // presence gap actually lived. The chain rungs were the obvious suspects and are fixed above, but
   // a VACUOUS label is dropped by a pre-pass, so `V().hasLabel(L).has(k).count()` on a
   // single-label graph reduces to `V, hasKey, count` and lands HERE, on the single-step arm, with
@@ -3794,7 +3794,7 @@ const vertexStepCount = (step: Step, graph: Graph): number | undefined => {
  * So 3.3x of that row is the pipeline, not the predicate — a traverser allocated per vertex to be
  * filtered and discarded.
  *
- * ⚠️ AND THE 2.5x BETWEEN THE TALLY AND THAT FLOOR WAS NOT THE PREDICATE EITHER (item 1492). It sat
+ * AND THE 2.5x BETWEEN THE TALLY AND THAT FLOOR WAS NOT THE PREDICATE EITHER (item 1492). It sat
  * unexplained for 1,258 items; decomposed one arm per process, it is `matches`'s own megamorphic
  * dispatch — ~20 call sites and every predicate shape through one `switch`, so it cannot inline.
  * The keyed read is free (a dynamic `properties[key]` measured 5.17 ns against an inline literal's
@@ -3826,7 +3826,7 @@ const propertyCount = (step: Extract<Step, { kind: 'has' }>, graph: Graph): numb
   }
 
   let n = 0;
-  // ⚠️ HOISTED (item 1492). `matches` is one site shared by ~20 callers and every predicate shape,
+  // HOISTED (item 1492). `matches` is one site shared by ~20 callers and every predicate shape,
   // so it is megamorphic and cannot inline; a specialized closure is monomorphic at THIS call and
   // measured the same as inline code. 14.20 -> 5.45 ns a vertex on this loop. `undefined` means the
   // predicate has no operator form, and then this is exactly the loop it was before.
@@ -3879,12 +3879,12 @@ const UNION_COUNT_MAX_LABELS = 8;
  * vertex-label buckets (`labelledCount`) — ONE copy of the rule, the drift item 1078 records as the
  * defect when a soundness condition was open-coded in seven places.
  *
- * ⚠️ THE GQL TWIN IS `globalBucketUnion` in `gql/src/executor/shortcuts.ts` (item 1386), and these
+ * THE GQL TWIN IS `globalBucketUnion` in `gql/src/executor/shortcuts.ts` (item 1386), and these
  * two ARE a deliberate pair of copies — this repo treats the surfaces as parallel implementations
  * sharing only core's data types. **But the order defect below drifted across them and had to be
  * fixed twice, two items apart (1382 then 1384).** If you change one, read the other.
  *
- * ⚠️ SORTED DESCENDING, and item 1382 is why. Bucket 0 is FREE and every later bucket is iterated,
+ * SORTED DESCENDING, and item 1382 is why. Bucket 0 is FREE and every later bucket is iterated,
  * so an unsorted walk costs whatever order the query happened to name: item 1379 shipped that and
  * `outE('E','F')` measured **1.781 ms** against `outE('F','E')`'s **6.468**, 3.63x, both answering
  * 400000 — an equivalent-spelling gap of exactly the kind CLAUDE.md says returns the right answer
@@ -3938,18 +3938,18 @@ const unionOfBuckets = <T>(
  * The per-vertex twin of {@link adjacentCount}: how many traversers does ONE hop step emit from ONE
  * vertex?
  *
- * ⚠️ IT REUSES `unionOfBuckets` RATHER THAN SUMMING THE LABELS, and that is load-bearing, not tidy.
+ * IT REUSES `unionOfBuckets` RATHER THAN SUMMING THE LABELS, and that is load-bearing, not tidy.
  * A vertex's `adjFrom`/`adjTo` is a `Map<label, Set<Edge>>`, so an edge labelled `['T','S']` sits in
  * BOTH buckets and `out('T','S')` would double-count it. That helper exists in this file precisely
  * to hold one copy of the overlap rule (its own header records item 1078's seven-copy drift), and it
  * is generic over `ReadonlyMap<string, ReadonlySet<T>>` — which is exactly the adjacency's shape.
  *
- * ⚠️ `both`/`bothE` IS out + in, SELF-LOOP INCLUDED TWICE. A self-loop is one edge from its source
+ * `both`/`bothE` IS out + in, SELF-LOOP INCLUDED TWICE. A self-loop is one edge from its source
  * and one from its target, so it is in `adjFrom` AND `adjTo` — which is the TinkerPop ground truth
  * this file already records on `edgeHopSeededCount`: on 4 `T` edges including a self-loop,
  * `outE(T)` and `inE(T)` are both 4 while `bothE(T)` is 8.
  *
- * ⚠️ THE UNTYPED HOP IS DECLINED. `out()` traverses every incident edge, and a vertex keeps no total
+ * THE UNTYPED HOP IS DECLINED. `out()` traverses every incident edge, and a vertex keeps no total
  * — the union across every bucket would be correct but is not O(1), and summing the buckets
  * overcounts a multi-label edge. The general path answers it.
  */
@@ -3958,7 +3958,7 @@ const SEEDABLE_HOPS: ReadonlySet<string> = new Set(['out', 'in', 'both', 'outE',
 /**
  * Can {@link seededHopDegree} answer this step at all?
  *
- * ⚠️ IT IS CHECKED BEFORE THE ID LOOP, NOT INSIDE IT. Asked per resolving id, an UNTYPED hop would
+ * IT IS CHECKED BEFORE THE ID LOOP, NOT INSIDE IT. Asked per resolving id, an UNTYPED hop would
  * decline for a seed set where something resolves and return 0 for one where nothing does — the same
  * query answered two ways depending on the data. The answer 0 happens to be right in that case, but
  * the route must not depend on it.
@@ -3999,11 +3999,11 @@ const EMPTY_ADJ: ReadonlyMap<string, ReadonlySet<Edge>> = new Map();
 /**
  * `count()` over an ID-SEEDED source: `V(ids).count()` and `V(ids).<one hop>.count()`.
  *
- * ⚠️ THE MULTIPLICITY IS `sourceFromIds`', NOT A SET'S. That generator walks the ids IN ORDER and
+ * THE MULTIPLICITY IS `sourceFromIds`', NOT A SET'S. That generator walks the ids IN ORDER and
  * yields one traverser per RESOLVING id with no dedup — so a DUPLICATE id counts twice and a MISSING
  * one not at all. `V('a','a').count()` is 2.
  *
- * ⚠️ AND IT RESOLVES THROUGH `asStringId`, so a non-string id RAISES here exactly as it does in
+ * AND IT RESOLVES THROUGH `asStringId`, so a non-string id RAISES here exactly as it does in
  * `applySource`. Item 1643 shipped a seeding rewrite that answered where the general path raised,
  * and only a pre-existing test caught it; this rung would have the same hole if it resolved ids
  * itself.
@@ -4069,14 +4069,14 @@ const idSeededCount = (
 /**
  * `V().hasId(ids).count()` / `E().hasId(ids).count()`: how many DISTINCT ids resolve?
  *
- * ⚠️⚠️ THE MULTIPLICITY IS NOT {@link idSeededCount}'S, AND THE DIFFERENCE IS LOAD-BEARING. The
+ * THE MULTIPLICITY IS NOT {@link idSeededCount}'S, AND THE DIFFERENCE IS LOAD-BEARING. The
  * seeded source walks the id LIST (`sourceFromIds`), so `V('a','a').count()` is **2**; `hasId` is a
  * FILTER over the element set — `step.ids.includes(v.id)`, one test per element — so
  * `V().hasId('a','a').count()` is **1**. That is item 1306's finding, which is why `hasId(ids)` is
  * not rewritten to `V(ids)` wholesale, and it is why this is a second rung rather than a call into
  * the first one.
  *
- * ⚠️ AND A NON-STRING ID MATCHES NOTHING RATHER THAN RAISING, which is the other half of the same
+ * AND A NON-STRING ID MATCHES NOTHING RATHER THAN RAISING, which is the other half of the same
  * asymmetry: ids are strings here, `includes` does not coerce, and `V(5)` throws while
  * `V().hasId(5)` answers 0 (item 1643 shipped a rewrite that got this backwards and a pre-existing
  * test caught it). So non-strings are skipped here, NOT passed through `asStringId`.

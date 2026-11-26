@@ -17,7 +17,7 @@ import { query } from './index.js';
 //     (a=50 AND b=0) AND c=0    7.615    -> 3.471    38.1 -> 17.4            2.19x
 //     a=50 AND (b=0 AND c=0)    6.732    -> 3.740    33.7 -> 18.7            1.80x
 //
-// ⚠️ WHAT THIS FILE GUARDS is that parenthesisation changes NOTHING observable: not the answer, and
+// WHAT THIS FILE GUARDS is that parenthesisation changes NOTHING observable: not the answer, and
 // not whether the query throws. The flatten is depth-first and left to right so the conjuncts
 // arrive in WRITTEN order — the same order the flat spelling produces — because this loop groups
 // what it lifts into families and the arrival order is the order a RAISE is reached in.
@@ -70,7 +70,7 @@ describe('a nested AND is flattened into its conjuncts (item 1271)', () => {
     }
   });
 
-  test('⚠️ parenthesisation does not change WHETHER the query throws', () => {
+  test('parenthesisation does not change WHETHER the query throws', () => {
     // `n.s` is a string in boolean context and must RAISE. Whether it is reached depends on what
     // the conjuncts before it do, so this is the assertion that a reordering flatten would break:
     // both spellings must behave alike, whichever way that is.
@@ -84,7 +84,7 @@ describe('a nested AND is flattened into its conjuncts (item 1271)', () => {
     expect(nestedDeep).toThrow();
   });
 
-  test('⚠️ ROUTE: a nested AND lifts EVERY conjunct, not just the outer level', () => {
+  test('ROUTE: a nested AND lifts EVERY conjunct, not just the outer level', () => {
     // Answer-equivalent, so only the compiler can see it: before the flatten, `compilePredicate`
     // returned a generic `where` and NO lifted lists for these trees.
     const eq = (key: string, value: number): Expr => ({
@@ -124,7 +124,7 @@ describe('a nested AND is flattened into its conjuncts (item 1271)', () => {
   });
 
   test('an UNLIFTABLE conjunct inside the nest becomes the residual, siblings still lift', () => {
-    // ⚠️ IT USED TO DECLINE THE WHOLE CHAIN, per-chain rather than per-level. Item 1544 made the
+    // IT USED TO DECLINE THE WHOLE CHAIN, per-chain rather than per-level. Item 1544 made the
     // unreadable conjunct the RESIDUAL instead, so its liftable siblings lift wherever they sit —
     // flattening still must not change what counts as readable, only what the decline costs.
     // The answer assertion below is the half that keeps its teeth: a conjunct that VANISHED rather

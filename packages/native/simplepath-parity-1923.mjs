@@ -4,12 +4,12 @@
 // already fuses — because at depth one `simplePath` is "near !== far", the hop minus its self-loops.
 // **308.81 -> 37.81 ms, 8.17x.**
 //
-// ⚠️ THAT LANDS BELOW THE PLAIN HOP'S 50.21, WHICH LOOKS WRONG AND IS NOT: item 1913 measured
+// THAT LANDS BELOW THE PLAIN HOP'S 50.21, WHICH LOOKS WRONG AND IS NOT: item 1913 measured
 // exactly this fused shape at 38.96 against the hop control's 41.18 and noted it "should always have
 // been below — it reads the same properties minus the self-loops". So the rewrite lands on an
 // independently measured number rather than on a surprise. Corroboration, not a coincidence.
 //
-// ⚠️ STILL, A ROW COUNT CANNOT TELL A CORRECT REWRITE FROM ONE THAT DROPS THE WRONG ROWS. The oracle
+// STILL, A ROW COUNT CANNOT TELL A CORRECT REWRITE FROM ONE THAT DROPS THE WRONG ROWS. The oracle
 // is a DECLINING spelling: a `limit` above the row count makes the plan one step too long, so the
 // gate refuses and the generic path answers the identical question.
 //
@@ -56,14 +56,14 @@ for (let e = 0; e < N * FANOUT; e += 1) {
   });
 }
 
-// ⚠️ THE FIXTURE MUST CONTAIN SELF-LOOPS or `simplePath` and the plain hop agree and the comparison
+// THE FIXTURE MUST CONTAIN SELF-LOOPS or `simplePath` and the plain hop agree and the comparison
 // proves nothing — the shape of error CLAUDE.md's "an answer INVARIANT to the property you varied"
 // rule is about.
 console.log(`fixture: ${N} vertices, ${N * FANOUT} edges, ${selfLoops} self-loop(s)`);
 
 if (selfLoops === 0) {
   console.error(
-    '⚠️ NO SELF-LOOPS: simplePath cannot differ from the plain hop here. Probe is vacuous.',
+    'NO SELF-LOOPS: simplePath cannot differ from the plain hop here. Probe is vacuous.',
   );
   process.exit(1);
 }
@@ -119,7 +119,7 @@ for (const { name, fused, generic } of ROWS) {
 
     console.log(
       `${name.padEnd(22)} ${pass.padEnd(5)} fused ${String(a.length).padStart(7)}  ` +
-        `generic ${String(b.length).padStart(7)}  ${ok ? '✅ identical' : `❌ DIFFERS at ${firstDiff}`}`,
+        `generic ${String(b.length).padStart(7)}  ${ok ? 'identical' : `DIFFERS at ${firstDiff}`}`,
     );
   }
 }
@@ -130,7 +130,7 @@ const simple = toArray(traversal(V(), out('E'), simplePath()), g).length;
 const cyclic = toArray(traversal(V(), out('E'), cyclicPath()), g).length;
 
 const partitions = plain === simple + cyclic;
-const verdict = partitions ? '✅ they partition the hop' : '❌ THEY DO NOT PARTITION IT';
+const verdict = partitions ? 'they partition the hop' : 'THEY DO NOT PARTITION IT';
 
 console.log(`\nout(E) ${plain} = simplePath ${simple} + cyclicPath ${cyclic}  ${verdict}`);
 process.exit(bad === 0 && partitions ? 0 : 1);

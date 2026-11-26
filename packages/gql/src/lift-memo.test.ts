@@ -1,7 +1,7 @@
 /**
  * The auto-parameterization lift memo (item 1541).
  *
- * ⚠️ THE MEMO IS ANSWER-EQUIVALENT WHEN IT WORKS, so it needs its own tests — but it has ONE way to
+ * THE MEMO IS ANSWER-EQUIVALENT WHEN IT WORKS, so it needs its own tests — but it has ONE way to
  * be wrong that is a wrong ANSWER, not a slow one: if the slot is consulted without comparing the
  * text, or compared against the LIFTED text rather than the original, then `LET x = 5` followed by
  * `LET x = 6` serves 5 twice. Both texts lift to the same `LET x = $__ap0 RETURN x`, so the lifted
@@ -29,7 +29,7 @@ const g = () => {
 
 describe('item 1541 — the lift memo', () => {
   /**
-   * ⚠️ THE ROUTE ITSELF. A memo is answer-equivalent, so the mutation run showed `never-store` and
+   * THE ROUTE ITSELF. A memo is answer-equivalent, so the mutation run showed `never-store` and
    * `store-before-parse` surviving all 3,858 answer tests. `parseCacheStats` reports the slot's hit
    * and store counts for exactly this reason — the same reason it reports `seen` for the LRU, whose
    * eviction item 1509 could not otherwise test.
@@ -68,7 +68,7 @@ describe('item 1541 — the lift memo', () => {
   });
 
   test('a FULL CYCLE of new texts evicts every earlier one, which still answers', () => {
-    // ⚠️ CURSOR-INDEPENDENT ON PURPOSE. The ring is module state shared by every test in this file,
+    // CURSOR-INDEPENDENT ON PURPOSE. The ring is module state shared by every test in this file,
     // so the write cursor is wherever earlier cases left it. My first version stored four texts and
     // asserted the FIFTH evicted the first — it did not, because the cursor did not start at slot
     // 0, and the test failed for a reason that had nothing to do with the behaviour. Writing a full
@@ -121,7 +121,7 @@ describe('item 1541 — the lift memo', () => {
   });
 
   test('a syntactically invalid text stores nothing — but see the limitation', () => {
-    // ⚠️ THIS DOES NOT COVER `store-before-parse`, AND I CHECKED RATHER THAN ASSUMED. The counters
+    // THIS DOES NOT COVER `store-before-parse`, AND I CHECKED RATHER THAN ASSUMED. The counters
     // say this text never ATTEMPTS a lift (liftStores delta 0, liftHits delta 0): `MAYBE_LIFTABLE`
     // rejects it, so the whole `if (lifted !== undefined)` block is skipped and no store happens on
     // either arm. The mutant that stores before the parse therefore SURVIVES, and it is

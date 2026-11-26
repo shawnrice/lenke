@@ -10,14 +10,14 @@ import { optionalSingleHop } from './optional-hop.js';
 /**
  * `V().optional(out(T)).values(k)` — the left-join idiom projected to bare values (item 1884).
  *
- * ⚠️ THE STEP IS ALREADY FUSED; THE PLAN IS NOT. `optional-hop.ts` (items 1480/1483/1628) removed
+ * THE STEP IS ALREADY FUSED; THE PLAN IS NOT. `optional-hop.ts` (items 1480/1483/1628) removed
  * `optionalStep`'s per-traverser sub-plan — a one-element input array, a 103-arm dispatch, a
  * generator per step and a full materialization just to test non-emptiness — and took the adjacency
  * bucket directly for a directed single type. What remains is that the whole plan still runs in the
  * TRAVERSER pipeline: a traverser is allocated per row, handed to `projectValues`, and unwrapped.
  * Its fused twin `V().out(T).values(k)` allocates none of that.
  *
- * ⚠️ PRICED BEFORE IT WAS BUILT, one shape per process, both orders
+ * PRICED BEFORE IT WAS BUILT, one shape per process, both orders
  * (`optional-hop-floor-1884.mjs`, 20,000 vertices / 100,000 edges, median of 9). On this fixture
  * every vertex has an out-edge, so `optional` never takes its empty branch and the two shapes do
  * the SAME walk over the SAME rows:
@@ -33,19 +33,19 @@ import { optionalSingleHop } from './optional-hop.js';
  * `isVertexShaped` 6.5%, `get properties` 4.5%, `extend` 1.4% — the traverser machinery and the
  * generator boundaries, not the walk.
  *
- * ⚠️ THE EMPTY BRANCH IS THE WHOLE POINT OF `optional` AND IT IS MIRRORED EXACTLY, including the
+ * THE EMPTY BRANCH IS THE WHOLE POINT OF `optional` AND IT IS MIRRORED EXACTLY, including the
  * subtle part: `optionalHopStep` sets `any` per EDGE, before the projection. So a vertex that HAS
  * edges whose far vertices all lack `k` emits **nothing** — not itself. Deciding emptiness from
  * whether any VALUE survived would be a different (and wrong) answer, and the fixture in the test
  * file has a vertex built to tell the two apart.
  *
- * ⚠️ A NEW MODULE, NOT A GUARD RELAXED IN `hop-values.ts` — items 1441/1466 measured an edit to that
+ * A NEW MODULE, NOT A GUARD RELAXED IN `hop-values.ts` — items 1441/1466 measured an edit to that
  * file at up to 16% on UNRELATED rows, arbitrarily signed, and item 1466 declined a 3.3x win on
  * that basis. `optional-hop.ts`'s own header opens with the same reasoning. The gate is reused from
  * there (`optionalSingleHop`) rather than restated, so the two cannot drift about which sub-plan
  * shapes are a single hop.
  *
- * ⚠️ AND THE WALK CALLS THE SAME HELPERS THE STEP CALLS (`soleTypeBucket`, `adjacentEdges`,
+ * AND THE WALK CALLS THE SAME HELPERS THE STEP CALLS (`soleTypeBucket`, `adjacentEdges`,
  * `otherEndpoint`), not a second derivation of them. Gremlin stream order is a TinkerPop contract
  * and the differential fuzzer compares Gremlin results ORDERED, so a reordering here is a
  * cross-engine failure rather than an unspecified-order liberty.
@@ -69,7 +69,7 @@ export const optionalHopValues = (plan: Plan, graph: Graph): HopValues | undefin
   }
 
   const hop = optionalSingleHop(wrapper.plan);
-  // ⚠️ THE CHAIN IS TRIED SECOND, so the single-hop walk above keeps every plan it already served:
+  // THE CHAIN IS TRIED SECOND, so the single-hop walk above keeps every plan it already served:
   // `hopChain` requires TWO OR MORE steps, so the two are disjoint by length and the order is for
   // reading. See `optionalHopChainValues` for what the extra width costs and why `any` moves.
   const chain = hop === undefined ? hopChain(wrapper.plan) : undefined;
@@ -105,7 +105,7 @@ type Hop = { kind: 'out' | 'in' | 'both'; labels: readonly string[] };
  * The sub-plan as a CHAIN of two or more vertex steps, or `undefined` for every other shape
  * (item 1887).
  *
- * ⚠️ TWO OR MORE. One step is `optionalSingleHop`'s and must stay there — the walks differ in more
+ * TWO OR MORE. One step is `optionalSingleHop`'s and must stay there — the walks differ in more
  * than width (see `chainWalk`), so overlapping them would be two routes for one shape.
  */
 const hopChain = (plan: Plan): readonly Hop[] | undefined => {
@@ -129,7 +129,7 @@ const hopChain = (plan: Plan): readonly Hop[] | undefined => {
 /**
  * The far end of `e` for this hop, given the bucket shape `soleTypeBucket` reported.
  *
- * ⚠️ A PLAIN FUNCTION, NOT A GENERATOR, and that distinction is measured: reading each hop's targets
+ * A PLAIN FUNCTION, NOT A GENERATOR, and that distinction is measured: reading each hop's targets
  * through a function that YIELDS put a generator frame back per vertex per hop and measured
  * **73.13 ms against the 68.75 of plain `adjacentEdges`**. This one is called per EDGE and returns a
  * vertex, so it inlines — and it exists at all only because the nested ternary it replaces is a
@@ -157,19 +157,19 @@ type ChainSpec = {
 /**
  * `V().optional(out(T), out(T)).values(k)` and deeper — item 1887.
  *
- * ⚠️ IT IS THE LARGEST GENERIC SHAPE THE GREMLIN ROUTE SCREEN HAD LEFT, by a factor of eight
+ * IT IS THE LARGEST GENERIC SHAPE THE GREMLIN ROUTE SCREEN HAD LEFT, by a factor of eight
  * (`gremlin-generic-floor-1887.mjs`, 20,000 vertices / 100,000 edges, one shape per process, median
  * of 20 less 3 warm-up):
  *
  * ```text
  *   optional(out(E), out(E)).values(n)   92.42 ms   320,000 rows   289 ns a row
- *   optional(out(E)).values(n)            6.41       80,000         80          ⬅ item 1884's twin
+ *   optional(out(E)).values(n)            6.41       80,000         80          <- item 1884's twin
  *   outE(E).has(w, gt 3).count()         11.41            1 row
  *   outE(E).has(w, gt 3).values(w)       11.42       45,713
- *   outE(E).values(w)        [FUSED]     11.49       80,000         ⬅ at PARITY, so not a target
+ *   outE(E).values(w)        [FUSED]     11.49       80,000         <- at PARITY, so not a target
  * ```
  *
- * ⚠️⚠️ AND THE OBVIOUS FIX WAS BUILT FIRST, MEASURED NEUTRAL, AND REVERTED — which is the finding
+ * AND THE OBVIOUS FIX WAS BUILT FIRST, MEASURED NEUTRAL, AND REVERTED — which is the finding
  * worth keeping. The route screen reads this shape as **4,002 `applyStep` calls for 2,000
  * vertices**, i.e. item 1480's per-traverser sub-plan dispatch in full: a one-element input array, a
  * 103-arm dispatch and a generator per step, then the whole output materialized just to test
@@ -178,20 +178,20 @@ type ChainSpec = {
  * a whole-plan rung emitting bare values removes those. A dispatch count is a route fact, not a
  * price.
  *
- * ⚠️ `any` MOVES TO THE END OF THE CHAIN, and that is a correctness difference rather than a loop
+ * `any` MOVES TO THE END OF THE CHAIN, and that is a correctness difference rather than a loop
  * shape. At one hop every adjacent edge produces an output, so "has an edge" and "produced a row"
  * are the same question; at two they are not — a vertex whose neighbours have no out-edges produces
  * NOTHING and must therefore emit ITSELF. The single-hop walk's `any = true` sits inside its edge
  * loop and must stay there; this one sets it only where a row is actually emitted.
  *
- * ⚠️ NO TRAVERSER AND NO PATH, like every walk in this file, which is what the `tracksPath` guard in
+ * NO TRAVERSER AND NO PATH, like every walk in this file, which is what the `tracksPath` guard in
  * `run` pays for: the chain's INTERMEDIATE vertices are on the general path's `path()` and are not
  * materialized here at all.
  */
 /**
  * Every hop as a DIRECTED SINGLE TYPE, which is what the CSR can answer — or `undefined`.
  *
- * ⚠️ `both` AND MULTI-TYPE ARE REFUSED, and the second is a correctness refusal rather than a
+ * `both` AND MULTI-TYPE ARE REFUSED, and the second is a correctness refusal rather than a
  * coverage one: `buildChainCsr` appends one named bucket at a time and is sound only because "the
  * multi-type guard has already cleared", so an edge carrying two of the named types would be
  * appended TWICE where `iterLabeled` dedupes it. `hop-chain-values.ts` passes a single type per hop
@@ -218,18 +218,18 @@ const csrShape = (
  * The chain over the CSR: one flat `Int32Array` of neighbour SLOTS per hop, walked depth-first with
  * an explicit index stack (item 1888).
  *
- * ⚠️ IT IS THE SAME STRUCTURE `hopChainValuesShortcut` USES, and that is why it is worth having:
+ * IT IS THE SAME STRUCTURE `hopChainValuesShortcut` USES, and that is why it is worth having:
  * item 1887 left this walk at **44.83 ms against the two-hop fused walk's 3.77** for comparable
  * rows, and named the gap as the CSR. `chainCsrFor` is cached per graph per `topologyVersion` per
  * shape, so the build amortizes across calls and is dropped WHOLE on any topology write.
  *
- * ⚠️ THE ORDER IS THE GENERATOR WALK'S, which the differential fuzzer compares ORDERED for Gremlin.
+ * THE ORDER IS THE GENERATOR WALK'S, which the differential fuzzer compares ORDERED for Gremlin.
  * `far-mask-drain.ts` states the argument this inherits: "`chainCsrFor` numbers slots by
  * `graph.verticesById` iteration order and fills each slot's run from that vertex's own bucket in
  * set order, so walking slots in order and each run in order emits the identical sequence to the
  * generator walk. Nothing is hoisted across vertices."
  *
- * ⚠️ AN EXPLICIT STACK, NOT RECURSION AND NOT NESTED GENERATORS. Item 1887 measured the three
+ * AN EXPLICIT STACK, NOT RECURSION AND NOT NESTED GENERATORS. Item 1887 measured the three
  * shapes: nested generators 78.78 ms, an unrolled double loop 68.75, and a per-hop helper that
  * YIELDS **73.13 — worse than plain adjacency**. The frame is the cost, so there are none here: two
  * `Int32Array`s hold the cursor and the bound per level.
@@ -297,7 +297,7 @@ const csrChainWalk = (
     }
   },
   /**
-   * ⚠️ THE EAGER FILL (item 1894). `toArray` prefers `drain` (item 1412) and item 1893 measured the
+   * THE EAGER FILL (item 1894). `toArray` prefers `drain` (item 1412) and item 1893 measured the
    * same omission on the edge rung at **1.64x** — the third item in a row where it was most of the
    * available win. Same loop written twice (item 169), because Gremlin results are compared ORDERED.
    */
@@ -378,7 +378,7 @@ const chainWalk = (graph: Graph, spec: ChainSpec): Iterable<unknown> => ({
       let any = false;
 
       /**
-       * ⚠️ DEPTH TWO IS A DOUBLE LOOP, NOT THE RECURSION, AND THE DIFFERENCE IS MOST OF THE WIN.
+       * DEPTH TWO IS A DOUBLE LOOP, NOT THE RECURSION, AND THE DIFFERENCE IS MOST OF THE WIN.
        * The recursive `descend` below is correct and was the whole walk at first: it took the shape
        * from **92.42 ms to 78.78**, 1.17x, where the fused two-hop values walk does 320,000 rows in
        * ~4.4 ms. The cost is the GENERATOR per vertex per hop plus a `yield*` delegation per row —
@@ -388,7 +388,7 @@ const chainWalk = (graph: Graph, spec: ChainSpec): Iterable<unknown> => ({
        */
       if (two !== undefined) {
         const b1 = soleTypeBucket(v, two[0].kind, two[0].labels);
-        // ⚠️ A `Set` IS DIRECTLY ITERABLE, so taking the bucket costs NO generator frame — which is
+        // A `Set` IS DIRECTLY ITERABLE, so taking the bucket costs NO generator frame — which is
         // the whole point of this arm. Reading it through a helper that yields (the first cut) put
         // the frame straight back and measured WORSE than plain `adjacentEdges`: 73.13 ms against
         // 68.75. The branch is per vertex, not per edge.
@@ -437,13 +437,13 @@ const chainWalk = (graph: Graph, spec: ChainSpec): Iterable<unknown> => ({
 /**
  * The chain walked DEPTH-FIRST from `v`, yielding each path's far endpoint.
  *
- * ⚠️ DEPTH-FIRST IS WHAT REPRODUCES THE GENERAL PATH'S ORDER, which the differential fuzzer compares
+ * DEPTH-FIRST IS WHAT REPRODUCES THE GENERAL PATH'S ORDER, which the differential fuzzer compares
  * ORDERED for Gremlin: the generic route runs hop 2 over hop 1's output through lazily-pulled
  * generators, so the emitted sequence is the depth-first one. It calls `adjacentEdges` and
  * `otherEndpoint` — the same helpers the general step calls — rather than re-deriving adjacency
  * order.
  *
- * ⚠️ AT MODULE SCOPE ([[ts-closure-size-is-load-bearing]]). The recursion depth is the sub-plan's
+ * AT MODULE SCOPE ([[ts-closure-size-is-load-bearing]]). The recursion depth is the sub-plan's
  * step count, two or three in any spelling anyone writes, not the graph's.
  */
 const descend = function* (
@@ -499,25 +499,25 @@ const pickFor = (proj: Step | undefined, valueKey: string | undefined): Picked |
   }
 
   /*
-   * 🔑 **A TERMINAL THIS WALK DOES NOT PROJECT STILL GETS THE WALK (item 2027).** `count()` used to
+   * **A TERMINAL THIS WALK DOES NOT PROJECT STILL GETS THE WALK (item 2027).** `count()` used to
    * decline the ENTIRE plan here, so `V().optional(out(E)).count()` ran the generic traverser
    * pipeline — two `applyStep` calls — while its `values(n)` sibling, which does strictly MORE work
    * (80,000 rows against one number), was fused. The route census read `opt: optional count` generic
    * with all four of its siblings fused.
    *
    * ```text
-   *     V().optional(out(E)).count()     7.20 ms   ⬅ one number
+   *     V().optional(out(E)).count()     7.20 ms   <- one number
    *     V().optional(out(E)).values(n)   1.23      80,000 rows, fused
    *     V().out(E).count()               0.00      O(1) from bucket sizes, countShortcut
    * ```
    *
-   * ⚠️ IT IS NOT CONSUMED, deliberately — the identical decision item 1956 made for the EDGE-FILTER
+   * IT IS NOT CONSUMED, deliberately — the identical decision item 1956 made for the EDGE-FILTER
    * rung, in the same words: this walk has nothing to contribute to a count beyond yielding the
    * elements, so `count` stays in `rest` and runs over this stream instead of over the generic
    * chain. Admitting the plan is the whole change. Since item 2020 that residual is counted on the
    * walk's `drain`, so it gets the eager fill too.
    *
-   * ⚠️ AND THE OPTIONAL FORM CANNOT BE O(1) like the plain hop's: `countShortcut` sums bucket sizes,
+   * AND THE OPTIONAL FORM CANNOT BE O(1) like the plain hop's: `countShortcut` sums bucket sizes,
    * but an unmatched vertex contributes ITSELF to an `optional`, so the count depends on which
    * vertices have no edge. One walk is the floor here, not a sum.
    */
@@ -531,11 +531,11 @@ type WalkSpec = {
 };
 
 /**
- * ⚠️ ONE LOOP, PARAMETERIZED, AT MODULE SCOPE. `ts-closure-size-is-load-bearing`: a walk defined
+ * ONE LOOP, PARAMETERIZED, AT MODULE SCOPE. `ts-closure-size-is-load-bearing`: a walk defined
  * INSIDE the returned closure gave unrelated queries a new slow mode at 4x, so the body lives here
  * and takes its spec as an argument.
  *
- * ⚠️ THE TWO ARMS ARE `optionalHopStep`'s TWO ARMS, for item 1628's reason: `soleTypeBucket` refuses
+ * THE TWO ARMS ARE `optionalHopStep`'s TWO ARMS, for item 1628's reason: `soleTypeBucket` refuses
  * `both`, a multi-type hop and an untyped one, and those keep `adjacentEdges` exactly as the step
  * calls it. Three duplicated lines against a generator chain that is most of the shape.
  */
@@ -543,27 +543,27 @@ type WalkSpec = {
  * The single-hop walk over the CSR where the hop is a directed single type, and the bucket walk
  * otherwise (item 1891).
  *
- * ⚠️⚠️ **AFTER ITEM 1889 THIS SHAPE WAS 4.1x ITS OWN UNWRAPPED TWIN, on the same rows and the same
+ * **AFTER ITEM 1889 THIS SHAPE WAS 4.1x ITS OWN UNWRAPPED TWIN, on the same rows and the same
  * walk.** That item gave `V().out(T).values(k)` the CSR and left `optional(out(T))` on the per-vertex
  * bucket, which the scale sweep then made obvious — isolated, one shape per process, 200,000
  * vertices / 1,000,000 edges, median of 9:
  *
  * ```text
  *   V().optional(out(E)).values(n)   174.13 ms   800,000 rows   218 ns a row
- *   V().out(E).values(n)              42.14      800,000         53   ⬅ item 1889's CSR arm
+ *   V().out(E).values(n)              42.14      800,000         53   <- item 1889's CSR arm
  * ```
  *
  * The two differ only in the empty branch, which cannot cost 165 ns a row. What differs is the
  * adjacency read: `soleTypeBucket` is a `Map.get` plus a `Set` iteration per vertex, where the CSR
  * is a run of a flat `Int32Array`.
  *
- * ⚠️ THE POLICY IS ITEM 1889'S, REUSED RATHER THAN RE-KEYED — `seenBefore(graph, forward, type)`,
+ * THE POLICY IS ITEM 1889'S, REUSED RATHER THAN RE-KEYED — `seenBefore(graph, forward, type)`,
  * so the build is deferred to the SECOND ask on any topology version (a one-shot query and a
  * write-heavy workload never pay it). Sharing the key with `hopValuesCsr` is deliberate and
  * desirable: both arms want the SAME CSR, so a warm `V().out(E)` leaves `optional(out(E))` warm
  * too.
  *
- * ⚠️ `both`, A MULTI-TYPE HOP AND AN UNTYPED HOP DECLINE for the CSR's own correctness reason —
+ * `both`, A MULTI-TYPE HOP AND AN UNTYPED HOP DECLINE for the CSR's own correctness reason —
  * `buildChainCsr` appends one named bucket at a time, so an edge carrying two of the named types
  * would be appended twice where `iterLabeled` dedupes it — and keep the bucket walk below.
  */
@@ -578,13 +578,13 @@ const oneHopValues = (graph: Graph, spec: WalkSpec): HopWalk => {
 };
 
 /**
- * ⚠️ THE EAGER `drain` IS HERE FOR ITEM 1889'S REASON, which cost that item most of its win before
+ * THE EAGER `drain` IS HERE FOR ITEM 1889'S REASON, which cost that item most of its win before
  * it was noticed: `toArray` prefers `drain` when the walk offers one (item 1412), so an arm measured
  * against one that has it is measured with its generator hand tied. The two fills are the same loop
  * written twice — item 169's rule, and Gremlin results are compared ORDERED, so a reordering between
  * them is a cross-engine failure.
  *
- * ⚠️ AND `any` NEEDS NO FLAG AT ONE HOP: the run length IS the answer, because every edge produces a
+ * AND `any` NEEDS NO FLAG AT ONE HOP: the run length IS the answer, because every edge produces a
  * row. The multi-hop chain arm cannot do this, which is why it keeps one.
  */
 const csrOneHop = (
@@ -657,7 +657,7 @@ const walk = (graph: Graph, spec: WalkSpec): Iterable<unknown> => ({
 
     for (const v of graph.vertices) {
       const direct = soleTypeBucket(v, kind, labels);
-      // ⚠️ `any` IS SET PER EDGE, BEFORE THE PROJECTION — `optionalHopStep`'s own order. A vertex
+      // `any` IS SET PER EDGE, BEFORE THE PROJECTION — `optionalHopStep`'s own order. A vertex
       // with edges whose far ends all lack the key emits NOTHING, not itself.
       let any = false;
 

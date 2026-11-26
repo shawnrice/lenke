@@ -7,7 +7,7 @@
 // an OPEN owner decision first: the public `v.labels = [...]` setter was recorded as NOT maintaining
 // that index, which would make every such elision a latent wrong answer.
 //
-// ⚠️ A "NOT BUILT BECAUSE X" NOTE IS A CLAIM ABOUT X, and three such claims were found overstated in
+// A "NOT BUILT BECAUSE X" NOTE IS A CLAIM ABOUT X, and three such claims were found overstated in
 // one earlier session. So this asks the setter directly rather than trusting the note.
 import { Graph } from '@lenke/core';
 
@@ -30,9 +30,7 @@ try {
 
 if (threw !== '') {
   console.log(`\nthe setter THREW: ${threw}`);
-  console.log(
-    '✅ BLOCKER DOES NOT HOLD THIS WAY — the public setter refuses, so no elision can be',
-  );
+  console.log('BLOCKER DOES NOT HOLD THIS WAY — the public setter refuses, so no elision can be');
   console.log('   desynchronized through it. Check the other mutators before concluding.');
 } else {
   const tSize = g.verticesByLabel.get('T')?.size ?? 0;
@@ -47,9 +45,9 @@ if (threw !== '') {
   );
   console.log(
     tSize === g.vertexCount
-      ? `  ⚠️ BLOCKER HOLDS: T still reads as VACUOUS (size ${tSize} === vertexCount ${g.vertexCount})\n` +
+      ? `  BLOCKER HOLDS: T still reads as VACUOUS (size ${tSize} === vertexCount ${g.vertexCount})\n` +
           `     though a is now U — so an elision reading this index would drop a test it must keep.`
-      : '  ✅ index maintained by the setter',
+      : '  index maintained by the setter',
   );
 }
 

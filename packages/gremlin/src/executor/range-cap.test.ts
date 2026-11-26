@@ -1,6 +1,6 @@
 // `rangeCap` — the cap behind item 1758's 2.39x on an indexed wide range.
 //
-// ⚠️ THIS EXISTS BECAUSE THE CHANGE IS ANSWER-EQUIVALENT. An index seed only has to be a SUPERSET
+// THIS EXISTS BECAUSE THE CHANGE IS ANSWER-EQUIVALENT. An index seed only has to be a SUPERSET
 // (declined filters stay in the plan as residuals and re-validate every element), so capping the
 // count — or breaking the cap — cannot change a single row. The gremlin suite and all seven
 // byte-identity fuzzers pass either way. `perf-gate-needs-its-own-test`: extract the arithmetic and
@@ -75,7 +75,7 @@ describe('seedForStep with cap 0 — "exact seeds only"', () => {
     expect(seedForStep(step({ op: 'gt', value: 100 }), idx, 0)).toBeNull();
   });
 
-  test('⚠️ still returns an EXACT seed — suppressing those would lose the fast path', () => {
+  test('still returns an EXACT seed — suppressing those would lose the fast path', () => {
     const idx = indexed().vertexPropertyIndex;
     const seed = seedForStep(step({ op: 'eq', value: 7 }), idx, 0);
 

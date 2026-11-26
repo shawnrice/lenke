@@ -757,7 +757,7 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             }
         }
         Expr::Index { base, index, elem } => {
-            // 🛑 FUSING `<node>.<key>['field']` HERE WAS TRIED AND REJECTED (item 957).
+            // FUSING `<node>.<key>['field']` HERE WAS TRIED AND REJECTED (item 957).
             //
             // The gap is real: a constant string subscript over a RECORD-valued property falls
             // past the list fast path below (whose pre-scan requires `Value::List`) to the
@@ -840,7 +840,7 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             let icol = eval(index, store, batch)?;
             // Index into the per-row list/record/map → the element value (or NULL).
             //
-            // 🛑 BORROWING THE ROW INSTEAD OF `value_at` WAS TRIED AND REFUTED (item 641).
+            // BORROWING THE ROW INSTEAD OF `value_at` WAS TRIED AND REFUTED (item 641).
             // `value_at` returns an OWNED `Value`, so reading ONE element copies the WHOLE
             // container first — an O(1) read doing O(len) work, and the same pattern
             // `size()`/`cardinality()` borrows around just below. Replacing this with a
@@ -1128,7 +1128,7 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             // materializes a `Col::Gen` of cloned lists at all. Item 648's technique applied to
             // the one other site whose base is a bare property.
             //
-            // 🛑 WHETHER THIS WINS WAS NOT OBVIOUS, which is why it is measured rather than
+            // WHETHER THIS WINS WAS NOT OBVIOUS, which is why it is measured rather than
             // assumed. Item 645 (below) refuted BORROWING the evaluated column here — 2.5x
             // SLOWER at length 8 — and attributed it to the clone COMPACTING: a freshly copied
             // local `Vec` scans faster than one allocated during `eval` among 100,000 others.
@@ -1173,7 +1173,7 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             }
 
             let hs = eval(haystack, store, batch)?;
-            // 🛑 BORROWING THE HAYSTACK INSTEAD OF `value_at` WAS TRIED AND REFUTED (item 645),
+            // BORROWING THE HAYSTACK INSTEAD OF `value_at` WAS TRIED AND REFUTED (item 645),
             // and it is the SECOND site to refute it the same way (item 641 was `Expr::Index`).
             //
             // `value_at` returns an OWNED `Value`, so every row copies the WHOLE list before
@@ -1309,7 +1309,7 @@ pub(super) fn eval(expr: &Expr, store: &Store, batch: &Batch) -> Result<Col, Str
             // `element_id(node|edge)` → the element's PRESERVED external id string.
             //
             // This is the GENERAL path, and it does materialize the id per row — a `GStr`
-            // clone and a boxed `Value::Str` each. ⚠️ But it is NOT the shape item 619
+            // clone and a boxed `Value::Str` each. But it is NOT the shape item 619
             // priced, and the "NOT FIXED" this comment used to carry was stale (item 650):
             // `opt::edge_id_pin` seeds an id equality, and `exec::try_filter_keep_element_id`
             // compares `Eq`/`Ne` over a BORROWED `&str` without coming here at all.

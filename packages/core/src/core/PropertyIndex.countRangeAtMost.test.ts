@@ -1,6 +1,6 @@
 // `countRangeAtMost` — the early-terminating range count behind item 1756's 1.60x.
 //
-// ⚠️ THIS EXISTS BECAUSE THE CHANGE IT GUARDS IS ANSWER-EQUIVALENT. An index seed only has to be a
+// THIS EXISTS BECAUSE THE CHANGE IT GUARDS IS ANSWER-EQUIVALENT. An index seed only has to be a
 // SUPERSET (`matchNode` and the residual `WHERE` re-validate), so swapping which seed the planner
 // picks — or breaking the count that decides it — cannot change a single query result. Every
 // differential and fuzz test passes either way. `perf-gate-needs-its-own-test` is the rule: extract
@@ -46,7 +46,7 @@ describe('PropertyIndex.countRangeAtMost', () => {
 
     // The contract is only "greater than the cap" — not the exact total, which is the whole point.
     expect(capped).toBeGreaterThan(10);
-    // ⚠️ AND IT MUST HAVE STOPPED: the exact count is 400, so a capped answer that reached 400 did
+    // AND IT MUST HAVE STOPPED: the exact count is 400, so a capped answer that reached 400 did
     // not terminate early and the fix would be inert. This is the assertion that has teeth.
     expect(capped).toBeLessThan(400);
   });

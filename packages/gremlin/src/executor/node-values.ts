@@ -15,13 +15,13 @@
 // traverser construction: `sourceFromIds` 17.3% + `extend` 9.1% + `startTraverser` 2.9% ~ 29% of the
 // run, where GQL's node-projection walk builds none.
 //
-// ⚠️ THE VALUES MUST BE THE WHOLE ANSWER. This returns a plain iterable of values, so it is only
+// THE VALUES MUST BE THE WHOLE ANSWER. This returns a plain iterable of values, so it is only
 // offered when nothing follows the `values(k)`. A residual step would need a traverser to carry, and
 // manufacturing one here would be slower than never having left the pipeline.
 //
-// ⚠️ `values(k)` DROPS A VERTEX LACKING `k`, it does not emit undefined — the same rule
+// `values(k)` DROPS A VERTEX LACKING `k`, it does not emit undefined — the same rule
 // `hopValuesShortcut` states for its value mode, and `projectValues` implements with `k in props`.
-// ⚠️ TWO DIFFERENT THINGS ARE CALLED "SEEDED" IN THIS ENGINE, and they are not the same rung.
+// TWO DIFFERENT THINGS ARE CALLED "SEEDED" IN THIS ENGINE, and they are not the same rung.
 // `seededNodeValuesShortcut` below is INDEX-seeded — `has(k, eq(v))` answered off a property index's
 // bucket (item 1595). `idSeededValuesShortcut` is ID-seeded — `V(id, …)`, the element ids given in
 // the query. They are disjoint by shape (one requires a `has`, the other requires ids on the source)
@@ -58,7 +58,7 @@ export type NodeValues = Iterable<unknown> & {
 /**
  * The projection this rung can serve: one property, or the element id.
  *
- * 🔑 **`id` ADDED AT ITEM 2056, AND IT WAS THE SLOWER OF THE TWO DESPITE BEING THE CHEAPER READ.**
+ * **`id` ADDED AT ITEM 2056, AND IT WAS THE SLOWER OF THE TWO DESPITE BEING THE CHEAPER READ.**
  * `V().values(k)` rode this rung at **4.42 ms** over 200,000 vertices while `V().id()` ran generically
  * at **8.29 — 1.88x** — even though an id is a field read and a property is a map lookup. The route
  * census named it unambiguously (`scan: id` generic, 1 dispatch `[id]`) where a timing alone would
@@ -82,19 +82,19 @@ const matchShape = (
     return { label: undefined, proj: { kind: 'values', key: second.keys[0] } };
   }
 
-  // ⚠️ `id()` TAKES NO MODULATOR and always yields, so there is no key to check and no row to drop —
+  // `id()` TAKES NO MODULATOR and always yields, so there is no key to check and no row to drop —
   // which is why its walk below is a separate closure rather than a branch.
   if (steps.length === 2 && second?.kind === 'id') {
     return { label: undefined, proj: { kind: 'id' } };
   }
 
   /*
-   * ⚠️ `label()` IS `id()`'s SIBLING AND WAS GENERIC WHILE `id()` WAS FUSED (item 2080). The census
+   * `label()` IS `id()`'s SIBLING AND WAS GENERIC WHILE `id()` WAS FUSED (item 2080). The census
    * put them side by side: both are zero-argument element accessors over a bare scan, and at 200,000
    * vertices `V().id()` read **3.19 ms** against `V().label()`'s **11.56** — 3.62x, same 200,000 rows
    * out. That disagreement between siblings is the census's actual signal (item 1854).
    *
-   * ⚠️ ~~WHAT IS NOT RECOVERED: the Set iterator.~~ **TAKEN AT ITEM 2085.** This entry said the
+   * ~~WHAT IS NOT RECOVERED: the Set iterator.~~ **TAKEN AT ITEM 2085.** This entry said the
    * per-element Set iterator "stays", because a Set has no indexed access — and it was the whole
    * residue of this fusion (~14 ns a row). Item 2085 added `soleLabel` to the core's label box, so
    * `labelOf` is a field read for the single-label case and only falls back to iterating for a
@@ -124,7 +124,7 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
   }
 
   /**
-   * ⚠️⚠️ A `hasLabel` IS REFUSED SINCE ITEM 1870, AND IT USED TO BE THE RUNG'S HEADLINE CASE.
+   * A `hasLabel` IS REFUSED SINCE ITEM 1870, AND IT USED TO BE THE RUNG'S HEADLINE CASE.
    * Item 1482 shipped this rung on exactly that shape at **2.39x** (PRE 13.11-14.18 ms, POST
    * 5.67-5.86). That measurement was right when it was taken and is now inverted: the PIPELINE
    * learned to seed a leading `hasLabel` from `graph.verticesByLabel` (`seedFromIndex`), so it
@@ -144,13 +144,13 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
    * label's size. So it loses for every selective label, ties when the label covers everything,
    * and **never wins** — which is why the refusal is unconditional rather than a crossover test.
    *
-   * ⚠️ AN A/B's VERDICT DECAYS WHEN THE ARM IT BEAT GETS FASTER, and nothing here was watching.
+   * AN A/B's VERDICT DECAYS WHEN THE ARM IT BEAT GETS FASTER, and nothing here was watching.
    * The rung kept returning correct answers, and no test asserted it CLAIMED this shape — the
    * whole gremlin suite passes with the refusal in place — so a 678x regression sat in a shipped
    * rung invisibly. `node-values-label-refusal.test.ts` now pins the route so it cannot flip back
    * unnoticed.
    *
-   * ⚠️ AND THIS ADDS NO READER OF `verticesByLabel`, which is the open owner decision it would
+   * AND THIS ADDS NO READER OF `verticesByLabel`, which is the open owner decision it would
    * otherwise have run into (the public `v.labels = [...]` setter leaves that index stale).
    * Refusing simply lets `seedFromIndex`, which already reads it, do the work.
    */
@@ -161,12 +161,12 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
   const { proj } = shape;
 
   /*
-   * ⚠️ ONE loop body, used by BOTH the iterator and `drain`. Writing `drain` as a second derivation
+   * ONE loop body, used by BOTH the iterator and `drain`. Writing `drain` as a second derivation
    * is item 169's lesson, and Gremlin results are compared ORDERED by the differential fuzzer, so a
    * divergence between the two would be a cross-engine failure rather than an unspecified-order
    * liberty.
    *
-   * ⚠️⚠️ **TWO CLOSURES, NOT ONE WITH A BRANCH** — this file's own record is that "a branch in that
+   * **TWO CLOSURES, NOT ONE WITH A BRANCH** — this file's own record is that "a branch in that
    * inner loop" cost 1.6x on the hot shape (item 159), and the hot shape here is the `values` one that
    * already rode this rung. The projection is chosen ONCE, outside the loop, so the `values` walk is
    * byte-for-byte the loop it was before item 2056.
@@ -188,7 +188,7 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
   };
 
   /*
-   * ⚠️ `labelOf` IS IMPORTED, NOT RE-IMPLEMENTED, and `?? null` matches the step exactly: a vertex
+   * `labelOf` IS IMPORTED, NOT RE-IMPLEMENTED, and `?? null` matches the step exactly: a vertex
    * with NO labels yields `null` there, not `undefined`, so a direct read must coerce here or the two
    * routes disagree on an unlabelled vertex. `dispatch.ts`'s `case 'label'` is the contract.
    */
@@ -199,29 +199,29 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
   };
 
   /*
-   * ⚠️ THREE SIBLING CLOSURES, NOT A BRANCH IN THE LOOP. Item 159 measured an inner-loop branch at
+   * THREE SIBLING CLOSURES, NOT A BRANCH IN THE LOOP. Item 159 measured an inner-loop branch at
    * 1.6x on this shape, and the projection is known once per QUERY — so the choice is made here and
    * each arm is its own generator.
    */
-  // ⚠️ AN `if` CHAIN, NOT A NESTED TERNARY — the lint refuses the latter, and the shape matters anyway:
+  // AN `if` CHAIN, NOT A NESTED TERNARY — the lint refuses the latter, and the shape matters anyway:
   // the choice is made ONCE PER QUERY and each arm stays its own closure, which is item 159's finding
   // (a branch in this inner loop measured 1.6x).
   let walk: () => Generator<unknown>;
   /*
-   * ⚠️⚠️ **A SIBLING DRAIN PER PROJECTION, NOT `[...walk()]` (item 2320).** `drain` was spreading the
+   * **A SIBLING DRAIN PER PROJECTION, NOT `[...walk()]` (item 2320).** `drain` was spreading the
    * generator, so a whole-label scan paid a `next()` call and a `{value, done}` object PER VERTEX. A
    * profile of `V().values(k)` over 50,000 vertices put `drain` at 55.08% and `walkValues` at 35.44%
    * — **90.52% in the two of them** — and item 2319 measured the same pattern at 2.16-2.83x on the
    * seeded rung.
    *
-   * ✅ NOTHING BECOMES EAGER THAT WAS NOT: `drain` was already `[...walk()]`, which materialized
+   * NOTHING BECOMES EAGER THAT WAS NOT: `drain` was already `[...walk()]`, which materialized
    * everything. The three generators are untouched, so `[Symbol.iterator]` stays lazy and a caller
    * that `break`s out of `run` is unaffected (`eager-tail-cache` is the failure mode if that is ever
    * confused). It is item 1412's "an already-eager terminal takes an eager walk", applied to `drain`.
    *
-   * ⚠️ THREE CLOSURES, CHOSEN ONCE, MIRRORING THE GENERATORS ABOVE — item 159 measured a branch in
+   * THREE CLOSURES, CHOSEN ONCE, MIRRORING THE GENERATORS ABOVE — item 159 measured a branch in
    * this inner loop at 1.6x, so the projection is still decided per QUERY and each arm keeps its own
-   * loop. ⚠️ The cost is item 169's: three pairs that could DIVERGE. `node-values-drain-parity.test.ts`
+   * loop. The cost is item 169's: three pairs that could DIVERGE. `node-values-drain-parity.test.ts`
    * pins iterator ≡ drain for all three projections, element for element and in order.
    */
   let drain: () => unknown[];
@@ -280,7 +280,7 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
  * The scan walk for a `V().values(k)` PREFIX, with whatever follows returned as a RESIDUAL
  * (item 2021).
  *
- * ⚠️⚠️ **`nodeValuesShortcut` REQUIRES THE PLAN TO BE EXACTLY `V() + values(k)` — "and nothing after
+ * **`nodeValuesShortcut` REQUIRES THE PLAN TO BE EXACTLY `V() + values(k)` — "and nothing after
  * it" — SO EVERY TRAILING STEP DROPPED THE WHOLE QUERY ONTO THE TRAVERSER PIPELINE.** That is why
  * `dedupe` needed a rung of its own below (item 1869, which priced the same gap at 11.96 against a
  * 5.81 floor), and it is why `order()` never got one. Measured at 200,000 vertices, one arm per
@@ -289,7 +289,7 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
  * ```text
  *     V().values(n)                      6.0 ms    30 ns/row   the fused scan
  *     V().values(n).order()             40.4      202          the PIPELINE
- *     the same by hand, collect + sort  11.8       59          ⬅ 3.4x off its own floor
+ *     the same by hand, collect + sort  11.8       59          <- 3.4x off its own floor
  *     collect alone                      3.1       16
  * ```
  *
@@ -297,18 +297,18 @@ export const nodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
  * 10.6%, `unwrap` 5.5%, `projectValues` 5.4%, `extend` 3.6%, `sourceFromIds` 3.3% — i.e. a traverser
  * allocated per value so `orderStep` can spread them back into an array.
  *
- * 🔑 **SO THE FIX IS NOT A RUNG PER RESIDUAL, WHICH IS THE SHAPE THIS FAMILY HAD BEEN GROWING.**
+ * **SO THE FIX IS NOT A RUNG PER RESIDUAL, WHICH IS THE SHAPE THIS FAMILY HAD BEEN GROWING.**
  * `fusedProjectedResidual` already handles a trailing `order()` (item 1630), `count()` (2020),
  * `fold()` (1909), `min`/`max` (1908) and `aggregate().cap()`/`store().cap()` (1911) for the HOP
  * walks. Handing it the scan walk too gives all five to this shape in one change.
  *
- * ⚠️ IT REUSES `nodeValuesShortcut` RATHER THAN RE-DERIVING THE WALK, by asking it about the prefix.
+ * IT REUSES `nodeValuesShortcut` RATHER THAN RE-DERIVING THE WALK, by asking it about the prefix.
  * The alternative — hoisting that walk to module scope and sharing it — would edit the code path of
  * `V().values(k)` itself, which is a 6 ms row, and [[executor-edits-perturb]] prices that kind of
  * edit at up to 16% on unrelated shapes. This way the existing walk is untouched: one `Plan` object
  * and one `slice` per QUERY, not per row.
  *
- * ⚠️ A PLAN WITH NO RESIDUAL RETURNS `undefined`, so `nodeValuesShortcut` keeps owning its own
+ * A PLAN WITH NO RESIDUAL RETURNS `undefined`, so `nodeValuesShortcut` keeps owning its own
  * shape and this cannot shadow it. The `dedupe` rung also runs BEFORE this (both are inside
  * `scanValuesShortcut`), so `values(k).dedupe()` keeps its narrower, better path.
  */
@@ -333,7 +333,7 @@ export const scanValuesResidual = (
  * (item 2025). Module scope for this file's own recorded reason: a per-call generator definition
  * made the sibling vertex rung **1.2x SLOWER than the pipeline it replaces**.
  *
- * ⚠️ THE TEST IS `hasAdjacency`, NOT A SECOND DERIVATION. `sub-plan-existence.ts` already decides
+ * THE TEST IS `hasAdjacency`, NOT A SECOND DERIVATION. `sub-plan-existence.ts` already decides
  * "does this vertex have any adjacency the hop would take", and its gate is deliberately BROADER
  * than `soleTypeBucket`'s — `both`, a multi-type hop and an untyped one are all admissible for a
  * yes/no, because double-counting, self-loop duplicates and endpoint choice are unobservable in an
@@ -342,7 +342,7 @@ export const scanValuesResidual = (
 /**
  * The COUNT of {@link nodeValuesWhereWalk}, as a tight loop (item 2062).
  *
- * ⚠️⚠️ **THIS EXISTS BECAUSE NEITHER EXISTING ARM WINS.** `countProjectedWalk` chooses between
+ * **THIS EXISTS BECAUSE NEITHER EXISTING ARM WINS.** `countProjectedWalk` chooses between
  * `drain().length` and `countIterable`, and an A/B over the three rows that actually reach it split
  * in OPPOSITE directions:
  *
@@ -356,12 +356,12 @@ export const scanValuesResidual = (
  * measured there). The choice is a property of the WALK, not of the count — so the walk that can
  * count cheaply says so, and the others are untouched.
  *
- * 🔑 **AND A TIGHT LOOP BEATS BOTH ARMS, because neither avoids the generator.** `drain().length`
+ * **AND A TIGHT LOOP BEATS BOTH ARMS, because neither avoids the generator.** `drain().length`
  * allocates a 200,000-element array for a query returning one number; `countIterable` skips the array
  * but still pays a `yield` per surviving row. This pays neither — item 2061's hand floor for exactly
  * this shape was 7.85 ms against the engine's 14.74.
  *
- * ⚠️ IT MUST STAY THE SAME PREDICATE AS THE WALK ABOVE, including the `key in props` drop that is
+ * IT MUST STAY THE SAME PREDICATE AS THE WALK ABOVE, including the `key in props` drop that is
  * `values(k)`'s contract — a count that disagreed with the walk it claims to count would be a wrong
  * answer no row-count test on the walk alone could see. `where-haskey-count.test.ts` asserts the two
  * agree.
@@ -408,7 +408,7 @@ const nodeValuesWhereWalk = function* (
 /**
  * `V().where(<one hop>).values(k)` — the scan with its existence filter folded in (item 2025).
  *
- * ⚠️⚠️ **THE FILTER WAS ALREADY FUSED AND THE PLAN STILL WAS NOT.** `sub-plan-existence.ts` removed
+ * **THE FILTER WAS ALREADY FUSED AND THE PLAN STILL WAS NOT.** `sub-plan-existence.ts` removed
  * the per-traverser SUB-PLAN dispatch (its header: this shape was **87.35 ms** at 200,000 vertices
  * against `V().values(n)`'s 4.17, the filter alone **404 ns a vertex**), which is why the row is no
  * longer catastrophic. But the plan still runs the traverser PIPELINE — a traverser per vertex, then
@@ -421,12 +421,12 @@ const nodeValuesWhereWalk = function* (
  *
  * ```text
  *     V().where(out(E)).values(n)          29.3 ms   146 ns/vertex
- *     the same BY HAND                      9.2      46            ⬅ 3.19x
+ *     the same BY HAND                      9.2      46            <- 3.19x
  *     V().values(n)   (the fused scan)      4.9      24
  *     the bucket test alone, counting       6.4      32
  * ```
  *
- * ⚠️ NO `hasLabel` ARM, deliberately — see `nodeValuesShortcut`'s note: a leading `hasLabel` is
+ * NO `hasLabel` ARM, deliberately — see `nodeValuesShortcut`'s note: a leading `hasLabel` is
  * refused there because `seedFromIndex` visits only the labelled vertices while a scan visits all,
  * and it **never wins** (up to 678x worse at 1-in-1000). An existence filter has no such index, so a
  * full scan is the only route and the refusal does not transfer.
@@ -451,14 +451,14 @@ export const nodeValuesWhereShortcut = (plan: Plan, graph: Graph): NodeValues | 
   }
 
   /*
-   * ⚠️ ONLY A SUB-PLAN `where` OR `filter`. The `where` kind is overloaded — `where(pred)` and
+   * ONLY A SUB-PLAN `where` OR `filter`. The `where` kind is overloaded — `where(pred)` and
    * `where(startKey, pred)` are value comparisons against a tagged step, not existence tests — and
    * `singleHopExistence` reads `plan`, so a `where` without one declines here by construction.
    *
-   * 🔑 **`filter` IS ADMITTED BECAUSE THE ENGINE ALREADY CONTRACTS IT AS THE SAME STEP (item 2323).**
+   * **`filter` IS ADMITTED BECAUSE THE ENGINE ALREADY CONTRACTS IT AS THE SAME STEP (item 2323).**
    * `dispatch.ts`'s `case 'filter'` says so in as many words — "the same step as the sub-plan `where`,
    * so the same fusion" — and calls `singleHopExistence(step.plan)` exactly as the `where` case does.
-   * ⚠️ This rung nevertheless gated on `'where'` alone, so `filter(out(E))` fell to the general
+   * This rung nevertheless gated on `'where'` alone, so `filter(out(E))` fell to the general
    * pipeline: **78.45 ns a row against `where`'s 13.56, a 5.8x divergence between spellings the
    * gremlin spelling probe asserts return the SAME ANSWER.** The divergence pre-dated item 2322
    * (`where` was 32.28 ns before it, already 2.4x) — that ship widened it rather than causing it,
@@ -474,15 +474,15 @@ export const nodeValuesWhereShortcut = (plan: Plan, graph: Graph): NodeValues | 
     ? undefined
     : {
         [Symbol.iterator]: () => nodeValuesWhereWalk(graph, hop, proj.keys[0]),
-        // ⚠️ THE COUNTING FAST PATH (item 2062), consumed by `countProjectedWalk` when a residual is
+        // THE COUNTING FAST PATH (item 2062), consumed by `countProjectedWalk` when a residual is
         // only a `count()`. Optional on the type, so every other walk is unaffected.
         count: () => nodeValuesWhereCount(graph, hop, proj.keys[0]),
-        // ⚠️ THE EAGER FILL: `toArray` prefers `drain` (item 1412), and a walk without one is
+        // THE EAGER FILL: `toArray` prefers `drain` (item 1412), and a walk without one is
         // measured against siblings that have it with its generator hand tied (item 1998's 1.55x).
         /*
-         * ⚠️ **A PLAIN LOOP, NOT A GENERATOR SPREAD (item 2322)** — items 2319/2320/2321 measured this
+         * **A PLAIN LOOP, NOT A GENERATOR SPREAD (item 2322)** — items 2319/2320/2321 measured this
          * pattern at 2.83x / 3.86x / 3.47x, and `graph.vertices` is MATERIALIZED, which is item 2321's test
-         * for whether a conversion can win at all. ✅ `drain` already spread the whole walk, so nothing
+         * for whether a conversion can win at all. `drain` already spread the whole walk, so nothing
          * becomes eager; the generator is untouched and `[Symbol.iterator]` stays lazy.
          */
         drain: (): unknown[] => {
@@ -509,13 +509,13 @@ export const nodeValuesWhereShortcut = (plan: Plan, graph: Graph): NodeValues | 
 /*
  * The existence-filtered scan with a FUSED `dedupe` (item 2079).
  *
- * ⚠️⚠️ **THIS IS THE ONE PRICED ROW ITEM 2026 LEFT OPEN, and its estimate was arithmetic.** That
+ * **THIS IS THE ONE PRICED ROW ITEM 2026 LEFT OPEN, and its estimate was arithmetic.** That
  * item's note: "`dedupe` IS NOT COVERED and that is not an oversight: `fusedProjectedResidual` handles
  * `order`/`count`/`fold`/`min`/`max`/`cap`, while `dedupe` has its own rung
  * (`nodeValuesDedupeShortcut`, item 1869) which this prefix cannot reach. Its ~1.3x stays open and is
  * the smallest of the three."
  *
- * 🔑 **MEASURED AT 1.29x WITH THE EXACT PAIR, which is what makes the two behaviours comparable** —
+ * **MEASURED AT 1.29x WITH THE EXACT PAIR, which is what makes the two behaviours comparable** —
  * same prefix, with and without `dedupe()`, and no `hasLabel` to confound it:
  *
  * ```text
@@ -527,11 +527,11 @@ export const nodeValuesWhereShortcut = (plan: Plan, graph: Graph): NodeValues | 
  * the `where` prefix it COSTS, because the generic path pays a traverser per element. The 4.44 ms
  * between those two behaviours is what this recovers.
  *
- * ⚠️ `valueDedupeFilter` IS THE EXISTING KEYER, imported rather than re-implemented. This file's own
+ * `valueDedupeFilter` IS THE EXISTING KEYER, imported rather than re-implemented. This file's own
  * header records that "items 1561/1562 each found a silent ANSWER change from a second keyer in this
  * area", and `nodeValuesDedupeWalk` beside this uses the same one.
  *
- * ⚠️ MODULE SCOPE, AND ONE BODY FOR BOTH CONSUMERS. Written as a closure inside the shortcut, the
+ * MODULE SCOPE, AND ONE BODY FOR BOTH CONSUMERS. Written as a closure inside the shortcut, the
  * sibling dedupe rung measured **1.2x SLOWER than the pipeline it replaces** — `drain()` at 203 ns on
  * a freshly constructed rung against 62.9 on a reused one, all of it the per-call closure.
  */
@@ -559,7 +559,7 @@ const nodeValuesWhereDedupeWalk = function* (
  * `V().where(<one hop>).values(k).dedupe()` — the existence-filtered scan with the dedupe fused in
  * (item 2079). See {@link nodeValuesWhereDedupeWalk} for the measurement and the keyer rule.
  *
- * ⚠️ IT REUSES `nodeValuesWhereShortcut`'s GATE by asking it about the PREFIX, which is items
+ * IT REUSES `nodeValuesWhereShortcut`'s GATE by asking it about the PREFIX, which is items
  * 2021/2025/2026's pattern and for their reason: the alternative edits the walk that serves the
  * three-step shape, and [[executor-edits-perturb]] prices that at up to 16% on unrelated rows. Every
  * refusal that rung makes — the predicate-`where` overload, the multi-key projection, the narrowed
@@ -571,7 +571,7 @@ const nodeValuesWhereDedupeWalk = function* (
  * neither number nor string, so both paths are genuinely reachable, and item 159 measured a branch in
  * an inner loop like this at 1.6x. The gate runs ONCE per query.
  *
- * ⚠️ `is` FILTERS THE PROJECTED VALUE, not another property — that is the whole difference from the
+ * `is` FILTERS THE PROJECTED VALUE, not another property — that is the whole difference from the
  * `has` arm. `dispatch.ts`'s `case 'is'` is `matches(step.pred, t.value)`, so the predicate sees
  * exactly what the walk is about to yield.
  */
@@ -606,12 +606,12 @@ const valuesIsWalkGeneral = function* (
 /**
  * `V().values(k).is(pred)` — a value filter on the fused scan (item 2081).
  *
- * ⚠️⚠️ **FOUND BY PRICING A CENSUS ROW ITEM 2080 ADDED AND LEFT, and the first version of that row was
+ * **FOUND BY PRICING A CENSUS ROW ITEM 2080 ADDED AND LEFT, and the first version of that row was
  * USELESS:** `values('n').is(5)` matched NOTHING on the screen's fixture — 0 rows — so it priced a
  * filter that never fires. With `is(gt(-1))`, which keeps every row, the comparison has EQUAL
  * EMISSIONS and reads **5.52 ms against 15.50 — 2.81x**, where the only difference is the filter.
  *
- * ⚠️ `key in props` COMES FIRST, matching `values(k)`'s contract: a vertex lacking the key emits no
+ * `key in props` COMES FIRST, matching `values(k)`'s contract: a vertex lacking the key emits no
  * row and its (absent) value is never offered to the predicate. The generic path has the same order —
  * `projectValues` drops before `is` sees anything — and a walk that tested the predicate against
  * `undefined` would differ on exactly those vertices.
@@ -619,7 +619,7 @@ const valuesIsWalkGeneral = function* (
 /*
  * THE RING FOR `V().values(k).tail(n)` (item 2082).
  *
- * ⚠️⚠️ **THE PROFILE REFUTED THE OBVIOUS NOMINATION, AND THE RING IS THE SMALL HALF.** `tail` already
+ * **THE PROFILE REFUTED THE OBVIOUS NOMINATION, AND THE RING IS THE SMALL HALF.** `tail` already
  * buffers boundedly — it is not materializing the stream — so the suspect was its `buf.shift()`, one
  * per row past `n`. Measured by hand over 200,000 rows (medians of 14, two rounds):
  *
@@ -634,7 +634,7 @@ const valuesIsWalkGeneral = function* (
  */
 const valuesTailWalk = function* (graph: Graph, key: string, n: number): Generator<unknown> {
   /*
-   * ⚠️ A RING, SO THE WRAP POINT IS THE OLDEST ROW. `seen % n` overwrites in place; after the loop the
+   * A RING, SO THE WRAP POINT IS THE OLDEST ROW. `seen % n` overwrites in place; after the loop the
    * oldest surviving row is at `seen % n` when `seen > n`, and at 0 when it is not — which is why the
    * emit below starts there and wraps, rather than iterating the buffer as stored.
    */
@@ -661,7 +661,7 @@ const valuesTailWalk = function* (graph: Graph, key: string, n: number): Generat
 /**
  * `V().values(k).tail(n)` — the fused scan with a ring buffer (item 2082).
  *
- * ⚠️ `tail(0)` IS A REAL CASE AND `new Array(0)` plus `% 0` IS NaN, so it is refused above rather than
+ * `tail(0)` IS A REAL CASE AND `new Array(0)` plus `% 0` IS NaN, so it is refused above rather than
  * handled: `n < 1` declines and the generic path answers it. A fused walk that divided by zero would
  * emit nothing for every input, which is coincidentally RIGHT for `tail(0)` and wrong the moment the
  * guard is reused.
@@ -683,14 +683,14 @@ export const valuesTailShortcut = (plan: Plan, graph: Graph): NodeValues | undef
     return undefined;
   }
 
-  // ⚠️ GLOBAL SCOPE ONLY: `tail(local)` slices each row's own iterable value, a different step.
+  // GLOBAL SCOPE ONLY: `tail(local)` slices each row's own iterable value, a different step.
   if (last.kind !== 'tail' || last.scope === 'local') {
     return undefined;
   }
 
   const { n } = last;
 
-  // ⚠️ See the doc comment: `% 0` is NaN and a zero-length ring cannot hold the answer.
+  // See the doc comment: `% 0` is NaN and a zero-length ring cannot hold the answer.
   if (!Number.isInteger(n) || n < 1) {
     return undefined;
   }
@@ -740,7 +740,7 @@ export const valuesIsShortcut = (plan: Plan, graph: Graph): NodeValues | undefin
 
   return {
     [Symbol.iterator]: walk,
-    // ⚠️ THE EAGER FILL: `toArray` prefers `drain` (item 1412), and a walk without one is measured
+    // THE EAGER FILL: `toArray` prefers `drain` (item 1412), and a walk without one is measured
     // against siblings that have it with its generator hand tied (item 1998's 1.55x).
     drain: () => [...walk()],
   };
@@ -756,7 +756,7 @@ export const scanWhereValuesDedupe = (plan: Plan, graph: Graph): NodeValues | un
   const [, , , last] = steps;
 
   /*
-   * ⚠️ A BARE `dedupe()` ONLY — the same three conditions the sibling rung checks. A labelled or
+   * A BARE `dedupe()` ONLY — the same three conditions the sibling rung checks. A labelled or
    * `by`-keyed dedupe keys on something else entirely, and no `scope` check exists because `dedupe`
    * has no local form in this AST (item 1016's rule: a gate nothing can observe comes out).
    */
@@ -771,7 +771,7 @@ export const scanWhereValuesDedupe = (plan: Plan, graph: Graph): NodeValues | un
 
   const [, filter, proj] = steps;
 
-  /* 🔑 `filter` admitted alongside `where` for item 2323's reason, stated at the sibling rung above. */
+  /* `filter` admitted alongside `where` for item 2323's reason, stated at the sibling rung above. */
   if (
     (filter.kind !== 'where' && filter.kind !== 'filter') ||
     !('plan' in filter) ||
@@ -791,13 +791,13 @@ export const scanWhereValuesDedupe = (plan: Plan, graph: Graph): NodeValues | un
   return {
     [Symbol.iterator]: () => nodeValuesWhereDedupeWalk(graph, hop, key),
     /*
-     * ⚠️ **A PLAIN LOOP, NOT A GENERATOR SPREAD (item 2322)** — items 2319/2320/2321 measured this
+     * **A PLAIN LOOP, NOT A GENERATOR SPREAD (item 2322)** — items 2319/2320/2321 measured this
      * pattern at 2.83x / 3.86x / 3.47x, and `graph.vertices` is MATERIALIZED, which is item 2321's test
-     * for whether a conversion can win at all. ✅ `drain` already spread the whole walk, so nothing
+     * for whether a conversion can win at all. `drain` already spread the whole walk, so nothing
      * becomes eager; the generator is untouched and `[Symbol.iterator]` stays lazy.
      */
     /*
-     * ⚠️⚠️ **`valueDedupeFilter()` IS CONSTRUCTED INSIDE THIS BODY, AND THAT IS LOAD-BEARING.** `keep` is
+     * **`valueDedupeFilter()` IS CONSTRUCTED INSIDE THIS BODY, AND THAT IS LOAD-BEARING.** `keep` is
      * STATEFUL: hoisting it would share one filter across every `drain` call, so the first call would be
      * right and every later one would return NOTHING. The generator gets a fresh filter per invocation
      * and this must match. `scan-drain-parity.test.ts` calls `drain` TWICE for exactly this.
@@ -827,7 +827,7 @@ export const scanWhereValuesDedupe = (plan: Plan, graph: Graph): NodeValues | un
  * The EXISTENCE-FILTERED scan for a `V().where(<one hop>).values(k)` PREFIX, with whatever follows
  * returned as a RESIDUAL (item 2026).
  *
- * ⚠️⚠️ **THE CORNER LEFT BY WIDENING THE GATE FROM TWO SIDES.** Item 2021 let the plain scan carry a
+ * **THE CORNER LEFT BY WIDENING THE GATE FROM TWO SIDES.** Item 2021 let the plain scan carry a
  * trailing residual; item 2025 let it carry a leading existence filter. Neither admits BOTH, so the
  * route census read:
  *
@@ -844,18 +844,18 @@ export const scanWhereValuesDedupe = (plan: Plan, graph: Graph): NodeValues | un
  *
  * ```text
  *                        with `where`   without   fused prefix + residual
- *     … .order()            49.5 ms      13.9      ~23.9   ⬅ ~2.1x available
+ *     … .order()            49.5 ms      13.9      ~23.9   <- ~2.1x available
  *     … .count()            19.3          2.3      ~12.3   ~1.6x
  *     … .dedupe()           18.6          4.4      ~14.4   ~1.3x
  *     … (no residual)       14.6          4.6
  * ```
  *
- * ⚠️ `dedupe` IS NOT COVERED and that is not an oversight: `fusedProjectedResidual` handles
+ * `dedupe` IS NOT COVERED and that is not an oversight: `fusedProjectedResidual` handles
  * `order`/`count`/`fold`/`min`/`max`/`cap`, while `dedupe` has its own rung
  * (`nodeValuesDedupeShortcut`, item 1869) which this prefix cannot reach. Its ~1.3x stays open and
  * is the smallest of the three.
  *
- * ⚠️ IT REUSES `nodeValuesWhereShortcut` BY ASKING IT ABOUT THE PREFIX — item 2021's pattern, for
+ * IT REUSES `nodeValuesWhereShortcut` BY ASKING IT ABOUT THE PREFIX — item 2021's pattern, for
  * item 2021's reason: the alternative edits the walk that serves the 3-step shape, and
  * [[executor-edits-perturb]] prices that kind of edit at up to 16% on unrelated rows. One `Plan`
  * object and one `slice` per QUERY, not per row. It also inherits every refusal that rung makes —
@@ -866,7 +866,7 @@ export const scanWhereValuesDedupe = (plan: Plan, graph: Graph): NodeValues | un
  * The COUNT of the existence-filtered scan, reached through the `hasKey` spelling the engine's own
  * rewrite produces (item 2061).
  *
- * ⚠️⚠️ **A SOUND REWRITE WAS DEFEATING A BIGGER FUSION.** `index.ts` turns `values(k) … count()` into
+ * **A SOUND REWRITE WAS DEFEATING A BIGGER FUSION.** `index.ts` turns `values(k) … count()` into
  * `hasKey(k) … count()` so a count never materializes values — a good rewrite, and the reason this
  * route was expected to be CHEAP. But `scanWhereValuesResidual` matches on `values` in the projection
  * slot, so the rewritten plan declined and fell through to the full generic pipeline. Item 2060
@@ -880,12 +880,12 @@ export const scanWhereValuesDedupe = (plan: Plan, graph: Graph): NodeValues | un
  *     V where hasKey count   -> DECLINED            <- what the engine actually hands the rung
  * ```
  *
- * 🔑 **THE EQUIVALENCE IS THE ENGINE'S OWN, NOT ONE INVENTED HERE.** The rewrite's comment states it:
+ * **THE EQUIVALENCE IS THE ENGINE'S OWN, NOT ONE INVENTED HERE.** The rewrite's comment states it:
  * `hasKey` is "exactly 'the property is present', i.e. what `values(k)` emitting nothing for a
  * missing key already means". So the number of rows a `values(k)` walk emits IS the `hasKey(k)` count,
  * and handing the prefix to `nodeValuesWhereShortcut` as a `values` step counts the right vertices.
  *
- * ⚠️⚠️ **GATED TO A `count` RESIDUAL AND NOTHING ELSE — ANY OTHER RESIDUAL WOULD BE A WRONG ANSWER.**
+ * **GATED TO A `count` RESIDUAL AND NOTHING ELSE — ANY OTHER RESIDUAL WOULD BE A WRONG ANSWER.**
  * `hasKey` keeps ELEMENTS (vertices); `values` emits VALUES. A residual that only asks "how many" is
  * blind to the difference, but `order()`, `min()`, `max()` and `fold()` are not: substituting the
  * projection under those would sort or fold the VALUES where the plan asks for the VERTICES. That is
@@ -936,17 +936,17 @@ export const scanWhereValuesResidual = (
  * ONE loop body for both the iterator and `drain`, AT MODULE SCOPE — the fused scan DEDUPE walk
  * (item 1869).
  *
- * ⚠️ MODULE SCOPE FOR THE REASON THE NEXT NOTE SPELLS OUT: a per-call generator definition made the
+ * MODULE SCOPE FOR THE REASON THE NEXT NOTE SPELLS OUT: a per-call generator definition made the
  * sibling vertex rung **1.2x SLOWER than the pipeline it replaces**. The parameters carry what a
  * closure would have captured.
  *
- * ⚠️ THE DEDUPE PREDICATE IS THE ENGINE'S OWN, not a second derivation. `valueDedupeFilter` is the
+ * THE DEDUPE PREDICATE IS THE ENGINE'S OWN, not a second derivation. `valueDedupeFilter` is the
  * exact code `dispatch.ts` runs — extracted at item 1869 rather than copied — so the dedup CLASSES
  * here are the pipeline's by construction, including the `LocalDate`-on-`days` space and the
  * composite `WeakSet` short-circuit. Re-deriving "which values are the same value" is the one thing
  * byte-identity against the Rust engine cannot survive.
  *
- * ⚠️ AND THE ORDER IS FIRST-OCCURRENCE, which is `dedupe()`'s contract and the pipeline's own
+ * AND THE ORDER IS FIRST-OCCURRENCE, which is `dedupe()`'s contract and the pipeline's own
  * behaviour. It holds here because this scans `graph.vertices` in the same order the pipeline's
  * source does and filters in place — it does not collect a `Set` and emit its contents, which would
  * be insertion order only by accident of the implementation. Gremlin results are compared ORDERED
@@ -975,7 +975,7 @@ const nodeValuesDedupeWalk = function* (
 /**
  * `V()[.hasLabel(L)].values(k).dedupe()` — the fused scan projection with its dedupe folded in.
  *
- * ⚠️ FOUND BY A ROUTE SCREEN AND PRICED BEFORE IT WAS BUILT (items 1868/1869). `nodeValuesShortcut`
+ * FOUND BY A ROUTE SCREEN AND PRICED BEFORE IT WAS BUILT (items 1868/1869). `nodeValuesShortcut`
  * requires NOTHING after `values`, so a trailing `dedupe` fell to the traverser pipeline — which
  * builds a traverser per value to keep 997 of 200,000:
  *
@@ -983,13 +983,13 @@ const nodeValuesDedupeWalk = function* (
  *     V().values(k).dedupe()        11.96        997 rows    the pipeline
  *     V().values(k).count()          2.42          1 row     a fused sibling
  *
- * ⚠️ AND THE GAP WAS ALREADY DIAGNOSED IN THE ENGINE'S OWN SOURCE. `dedupe`'s note records
+ * AND THE GAP WAS ALREADY DIAGNOSED IN THE ENGINE'S OWN SOURCE. `dedupe`'s note records
  * `values(k).dedup()` at 3.4-3.6x the GQL `RETURN DISTINCT` spelling for num and str columns and
  * says in terms that this residual "is the TRAVERSAL STREAM'S own cost and not a keying defect".
  * That sentence is the whole nomination: removing the stream is exactly what this does, and the
  * keying is reused untouched.
  *
- * ⚠️ A LABELLED OR MODULATED `dedupe` IS REFUSED. `dedupe('a')` keys on tagged values and
+ * A LABELLED OR MODULATED `dedupe` IS REFUSED. `dedupe('a')` keys on tagged values and
  * `dedupe().by(k)` on something other than the element — the same refusal `distinctHopCount` and
  * `dedupedHopChainCount` make. Only the BARE form reaches this.
  */
@@ -1001,7 +1001,7 @@ export const nodeValuesDedupeShortcut = (plan: Plan, graph: Graph): NodeValues |
     last?.kind !== 'dedupe' ||
     (last.labels?.length ?? 0) > 0 ||
     (last.bys?.length ?? 0) > 0
-    // ⚠️ NO `scope` CHECK: `dedupe` has no local form in this AST (`{ kind, labels?, bys? }`), so a
+    // NO `scope` CHECK: `dedupe` has no local form in this AST (`{ kind, labels?, bys? }`), so a
     // `scope === 'local'` guard was written here and `tsc` rejected it. A gate nothing can observe
     // comes out rather than staying untested — item 1016's rule, and the typechecker caught this
     // one before a mutant could report it as a survivor.
@@ -1019,7 +1019,7 @@ export const nodeValuesDedupeShortcut = (plan: Plan, graph: Graph): NodeValues |
   }
 
   /**
-   * ⚠️⚠️ A `hasLabel` IS REFUSED, AND THE REASON IS A MEASURED REGRESSION — admitting it made this
+   * A `hasLabel` IS REFUSED, AND THE REASON IS A MEASURED REGRESSION — admitting it made this
    * rung **2.3x SLOWER than the pipeline it replaces** (3.43 -> 7.91 ms at 200,000 vertices with
    * `U` on one in three).
    *
@@ -1028,12 +1028,12 @@ export const nodeValuesDedupeShortcut = (plan: Plan, graph: Graph): NodeValues |
    * traverser allocation covers 3x the vertices. The unlabelled shape has no such alternative — a
    * bare `V()` scan IS the whole graph either way — which is why it wins 1.58x and this loses.
    *
-   * ⚠️ AND SEEDING FROM `graph.verticesByLabel` IS NOT A FREE FIX. It is the index every GQL label
+   * AND SEEDING FROM `graph.verticesByLabel` IS NOT A FREE FIX. It is the index every GQL label
    * elision trusts and the public `v.labels = [...]` setter does NOT maintain — an OPEN owner
    * decision, with a wrong answer reachable through the public API. Adding another reader of it is
    * a thing to RAISE, not to slip into a speedup.
    *
-   * ⚠️ IT ALSO MEANS `nodeValuesShortcut` BESIDE THIS ONE MAY CARRY THE SAME LATENT REGRESSION: it
+   * IT ALSO MEANS `nodeValuesShortcut` BESIDE THIS ONE MAY CARRY THE SAME LATENT REGRESSION: it
    * accepts `hasLabel` and walks `graph.vertices`. Measured separately at item 1869 rather than
    * assumed from this result.
    */
@@ -1042,7 +1042,7 @@ export const nodeValuesDedupeShortcut = (plan: Plan, graph: Graph): NodeValues |
   }
 
   /*
-   * ⚠️ AN `id` PROJECTION DECLINES HERE, DELIBERATELY. `matchShape` learned `id()` at item 2056 for
+   * AN `id` PROJECTION DECLINES HERE, DELIBERATELY. `matchShape` learned `id()` at item 2056 for
    * the undeduped scan; this rung's walk dedupes PROPERTY VALUES, and `V().id().dedupe()` is a
    * different question (ids are already distinct, so the dedupe is a tautology this rung would pay
    * for). Declining leaves it to the general path rather than guessing — and [[hop-values-dedupe]]'s
@@ -1058,13 +1058,13 @@ export const nodeValuesDedupeShortcut = (plan: Plan, graph: Graph): NodeValues |
   return {
     [Symbol.iterator]: () => nodeValuesDedupeWalk(graph, undefined, key),
     /*
-     * ⚠️ **A PLAIN LOOP, NOT A GENERATOR SPREAD (item 2322)** — items 2319/2320/2321 measured this
+     * **A PLAIN LOOP, NOT A GENERATOR SPREAD (item 2322)** — items 2319/2320/2321 measured this
      * pattern at 2.83x / 3.86x / 3.47x, and `graph.vertices` is MATERIALIZED, which is item 2321's test
-     * for whether a conversion can win at all. ✅ `drain` already spread the whole walk, so nothing
+     * for whether a conversion can win at all. `drain` already spread the whole walk, so nothing
      * becomes eager; the generator is untouched and `[Symbol.iterator]` stays lazy.
      */
     /*
-     * ⚠️⚠️ **`valueDedupeFilter()` IS CONSTRUCTED INSIDE THIS BODY, AND THAT IS LOAD-BEARING.** `keep` is
+     * **`valueDedupeFilter()` IS CONSTRUCTED INSIDE THIS BODY, AND THAT IS LOAD-BEARING.** `keep` is
      * STATEFUL: hoisting it would share one filter across every `drain` call, so the first call would be
      * right and every later one would return NOTHING. The generator gets a fresh filter per invocation
      * and this must match. `scan-drain-parity.test.ts` calls `drain` TWICE for exactly this.
@@ -1089,7 +1089,7 @@ export const nodeValuesDedupeShortcut = (plan: Plan, graph: Graph): NodeValues |
 /**
  * ONE loop body for both the iterator and `drain`, AT MODULE SCOPE.
  *
- * ⚠️ MODULE SCOPE IS NOT STYLE, IT IS THE WHOLE WIN. Written as a closure inside the shortcut — so a
+ * MODULE SCOPE IS NOT STYLE, IT IS THE WHOLE WIN. Written as a closure inside the shortcut — so a
  * fresh generator function is defined on every call — this rung measured **1.2x SLOWER than the
  * traverser pipeline it replaces** (346 ns against 283), and the decomposition said why:
  * `drain()` cost **203 ns on a freshly constructed rung against 62.9 ns on a reused one**, all of it
@@ -1140,13 +1140,13 @@ const matchSeededShape = (
 ):
   | {
       /**
-       * Which id space the source names. ⚠️ ADDED AT ITEM 2374, when this gate read `kind !== 'V'` and the
+       * Which id space the source names. ADDED AT ITEM 2374, when this gate read `kind !== 'V'` and the
        * edge twin fell to the general machinery: `E(id).values(k)` measured **649.1 ns against
        * `V(id).values(k)`'s 209.5 — 3.1x** on one fixture, and a differential profile put the vertex arm at
        * **0.0%** in `projectValues` / `sourceFromIds` / `unwrap` / `applySource` because this rung claimed
        * it while the edge arm entered all of them.
        *
-       * 🔑 PARAMETERIZED, NOT DUPLICATED — the opposite of item 1604's and item 2370's choice for the
+       * PARAMETERIZED, NOT DUPLICATED — the opposite of item 1604's and item 2370's choice for the
        * predicate specializers, and deliberately. Those carriers had DIFFERENT semantics (a `props` null
        * matches, an `eqProps` null rejects), so a second contract beside the first was honest. Here the
        * logic is identical and only the id map differs, while the comments below pin three behaviours a
@@ -1194,7 +1194,7 @@ const matchSeededShape = (
  * `V(id, …)[.hasLabel(L)].values(k)` — THE POINT LOOKUP, answered by resolving the ids with no
  * traverser (item 1650).
  *
- * ⚠️ WHY THIS SHAPE, AND WHY NOW. Item 1642 decomposed this query and named the fix: "a closed-form
+ * WHY THIS SHAPE, AND WHY NOW. Item 1642 decomposed this query and named the fix: "a closed-form
  * route for seeded by id + one projection that never builds a traverser". Item 1649 built the
  * `count()` half; this is the projection half, and it was the LAST arm of the point lookup. Measured
  * against a hand floor (`getVertexById` + a property read) on `gremlin-point-floor.ts`:
@@ -1207,13 +1207,13 @@ const matchSeededShape = (
  * where per-element work is negligible and the whole cost is per-call pipeline setup for an answer
  * of ONE value.
  *
- * ⚠️ `asStringId` RAISES ON A NON-STRING ID, AND IT MUST RAISE FROM INSIDE THE GENERATOR. Ids are
+ * `asStringId` RAISES ON A NON-STRING ID, AND IT MUST RAISE FROM INSIDE THE GENERATOR. Ids are
  * strings here, so `V(5)` is a type error rather than a coercion — and the general path raises it
  * lazily too, because `sourceFromIds` is itself a generator. `V('a', 5).values(k)` therefore yields
  * `a`'s value and THEN raises, on both routes. A rung that resolved ids eagerly would move the
  * fault earlier, which is observable to a caller that reads one value and stops.
  *
- * ⚠️ THE MULTIPLICITY IS THE ID LIST'S: a duplicate id yields its value twice, a missing id nothing.
+ * THE MULTIPLICITY IS THE ID LIST'S: a duplicate id yields its value twice, a missing id nothing.
  * Same rule as `idSeededCount` (item 1649), and the opposite of `hasId`'s, which filters the element
  * set instead.
  */
@@ -1227,20 +1227,20 @@ export const idSeededValuesShortcut = (plan: Plan, graph: Graph): NodeValues | u
   const { kind, ids, label, key } = shape;
   const labels = label?.labels;
 
-  // ⚠️⚠️ THE GENERATOR ITSELF, NOT A `{ [Symbol.iterator], drain }` WRAPPER — 1.66x, and it also
+  // THE GENERATOR ITSELF, NOT A `{ [Symbol.iterator], drain }` WRAPPER — 1.66x, and it also
   // removes a divergence (item 1651). The wrapper was **53% of the query's self time**: an object
   // with a COMPUTED SYMBOL KEY plus two closures, allocated per call, for a `drain` that only
   // spread the same generator and so bought nothing. (`drain`'s point, item 1412, is an EAGER walk
   // that skips the generator; this rung has none to skip.)
   //
-  // ⚠️ AND ONE-SHOT IS THE ENGINE'S ACTUAL CONTRACT, which the wrapper quietly broke. `run`'s result
+  // AND ONE-SHOT IS THE ENGINE'S ACTUAL CONTRACT, which the wrapper quietly broke. `run`'s result
   // is a generator chain for nearly every plan, so iterating it twice yields nothing the second
   // time — measured: `V().values(k).identity()` gives `[1,2]` then `[]`. The wrapper made
   // `V(id).values(k)` re-iterable, so whether re-iteration worked depended on WHICH RUNG FIRED,
   // which is route-dependent observable behaviour. `nodeValuesShortcut` beside this one still has
   // it; see item 1651's entry in `CLOSED.md`.
   //
-  // ⚠️⚠️ AND THE ONE-ID CASE IS EAGER ANYWAY — 1.9x, item 1660 — WHICH REVERSES THE PARAGRAPH
+  // AND THE ONE-ID CASE IS EAGER ANYWAY — 1.9x, item 1660 — WHICH REVERSES THE PARAGRAPH
   // ABOVE FOR EXACTLY ONE ID AND NOTHING ELSE. Read both: the generator is still the route for every
   // other shape, and the reason is a RESULT-SIZE argument rather than a protocol one.
   //
@@ -1255,7 +1255,7 @@ export const idSeededValuesShortcut = (plan: Plan, graph: Graph): NodeValues | u
   //   run's prologue (newContext 7, effectivePlan 19, …)  30 ns   24%
   // ```
   //
-  // ⚠️⚠️ THAT 54 ns IS A PER-CALL FIXED COST, AND THAT IS THE WHOLE LICENCE FOR THIS BRANCH. It
+  // THAT 54 ns IS A PER-CALL FIXED COST, AND THAT IS THE WHOLE LICENCE FOR THIS BRANCH. It
   // dominates only when the answer is TINY. On `V().values(k)` over 200,000 vertices it is 54 ns
   // against 17.5 ms — 0.0003%, invisible — so eagerness there would buy nothing and would cost the
   // laziness that keeps the scan bounded. **So this generalizes to BOUNDED-RESULT rungs only, and
@@ -1268,13 +1268,13 @@ export const idSeededValuesShortcut = (plan: Plan, graph: Graph): NodeValues | u
   // generator object carries a suspended frame and a register file and is the LARGER object — which
   // is the same reason the CPU halves.
   //
-  // ⚠️ `typeof ids[0] === 'string'` IS THE LAZINESS GUARD, not a type narrowing. `asStringId` raises
+  // `typeof ids[0] === 'string'` IS THE LAZINESS GUARD, not a type narrowing. `asStringId` raises
   // on a non-string id and must raise from INSIDE the walk (see the contract above), so a non-string
   // id falls through to the generator and keeps raising exactly when it did. Dropping this test
   // would make `run(traversal(V(5), values('k')), g)` throw at CALL time instead of on first
   // `next()`, which `id-seeded-values.test.ts` pins.
   //
-  // ⚠️ AND THE RESULT IS RE-ITERABLE, which is a DELIBERATE choice and not an oversight. It puts
+  // AND THE RESULT IS RE-ITERABLE, which is a DELIBERATE choice and not an oversight. It puts
   // this rung with the three routes that already behave that way in the shipped engine —
   // `V().values(k)` (the wrapper item 1651 left on `nodeValuesShortcut`), `V(id).count()` and
   // `V().count()` (both return a bare `[n]`) — against the general path and the multi-id walk, which
@@ -1303,7 +1303,7 @@ export const idSeededValuesShortcut = (plan: Plan, graph: Graph): NodeValues | u
  * `V()[.hasLabel(L)].has(k, eq(v)).values(j)` — the SEEDED POINT LOOKUP, answered off the index
  * bucket with no traverser (item 1595).
  *
- * ⚠️ WHY THIS SHAPE. `bench:usage`'s builder rows put the TS Gremlin serving call at 2619 ns against
+ * WHY THIS SHAPE. `bench:usage`'s builder rows put the TS Gremlin serving call at 2619 ns against
  * ISO-GQL's 650 for the identical seeded lookup — 4.0x — and item 1593 showed only ~400 ns of that
  * is plan construction. So ~2150 ns is per-call machinery for a result of ONE element, where
  * per-element work is negligible and setup is the entire cost. Item 1594 then established that
@@ -1311,7 +1311,7 @@ export const idSeededValuesShortcut = (plan: Plan, graph: Graph): NodeValues | u
  * time surrendered nothing. A whole-plan shortcut is the remaining form, which is what this is — the
  * same answer `nodeValuesShortcut` gives for the unfiltered scan.
  *
- * ⚠️ THE BUCKET IS THE ANSWER SET, and that is the engine's own existing claim rather than a new
+ * THE BUCKET IS THE ANSWER SET, and that is the engine's own existing claim rather than a new
  * one: `seedForStep` returns `removable: true` for an `eq` predicate on a PLAIN `has` over an
  * indexed key, and `removable` means "dropping the owning step leaves an equivalent plan" — i.e.
  * the bucket is exactly the matching elements. Reusing `seedForStep` is what keeps this from
@@ -1388,12 +1388,12 @@ export const seededNodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues |
   // single body: it decides per vertex whether a value is yielded and WHICH, so the two loops below
   // cannot disagree about membership or order, only about how they accumulate.
   //
-  // ⚠️ `drain` IS A PLAIN LOOP, NOT A GENERATOR SPREAD (item 2319). `[...walk()]` paid the generator
+  // `drain` IS A PLAIN LOOP, NOT A GENERATOR SPREAD (item 2319). `[...walk()]` paid the generator
   // protocol per element — a `next()` call and a `{value, done}` object each — and a differential
   // profile against the `V(id)` control put `walk` at 30.05% and `drain` at 8.99% with the control at
   // EXACTLY 0.00% on both. That is ~39% of a shape whose bucket usually holds ONE vertex.
   //
-  // ✅ NOTHING BECOMES EAGER THAT WAS NOT. `drain` was already defined as `[...walk()]`, so it always
+  // NOTHING BECOMES EAGER THAT WAS NOT. `drain` was already defined as `[...walk()]`, so it always
   // materialized the whole bucket; this changes the mechanism, not the semantics. The iterator stays
   // a generator and therefore stays lazy, which is what a caller that `break`s out of `run` depends
   // on (`eager-tail-cache` is the failure mode if that is ever confused). It is item 1412's rule —
@@ -1429,7 +1429,7 @@ export const seededNodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues |
  * `V()[.hasLabel(L)].has(k, eq(v)).count()` — the SEEDED COUNT, answered off the bucket's SIZE
  * (item 1596).
  *
- * ⚠️ WHY NOBODY ANSWERED THIS ALREADY, because it looks like `countShortcut`'s job.
+ * WHY NOBODY ANSWERED THIS ALREADY, because it looks like `countShortcut`'s job.
  * `filterChainCount` declines a `has` the moment `seekWorthTaking` says a seek beats a scan —
  * deliberately, leaving the shape to the seeding path. But the seeding path then runs the TRAVERSER
  * PIPELINE over the seeded stream, so the shape falls between the two: recognised as seekable,
@@ -1446,7 +1446,7 @@ export const seededNodeValuesShortcut = (plan: Plan, graph: Graph): NodeValues |
  * The seeded count was SLOWER than the seeded projection, which is the tell: a count should never
  * cost more than reading a property off the same elements.
  *
- * ⚠️ WITH NO LABEL IT IS O(1) — the bucket's `size`, no iteration at all. With a label it is one
+ * WITH NO LABEL IT IS O(1) — the bucket's `size`, no iteration at all. With a label it is one
  * pass over the bucket, which is still the minimum: a label is not in the index, so the elements
  * have to be looked at. Both rest on the same `removable` claim item 1595 documents — the bucket IS
  * the matching set for an `eq` on a plain `has` over an indexed key, which is `seedForStep`'s own
@@ -1492,7 +1492,7 @@ const seededCountShape = (
 /**
  * WHICH WALK a predicate takes, as a pure function so the choice can be TESTED (item 2059).
  *
- * ⚠️⚠️ **THIS EXISTS BECAUSE A MUTANT SURVIVED.** Forcing the rung to always take the general walk
+ * **THIS EXISTS BECAUSE A MUTANT SURVIVED.** Forcing the rung to always take the general walk
  * changes NO answer — the two walks are answer-equivalent by construction, which is the whole point
  * of specializing — so every differential and unit test passed with the fast walk unreachable. That
  * is [[perf-gate-needs-its-own-test]] verbatim: "a route CHOICE is answer-equivalent, so every mutant
@@ -1507,7 +1507,7 @@ export const pickScanWalk = (
  * and `specializePredicate` declines for a predicate whose operand is neither number nor string, so
  * both paths are genuinely reachable. The gate is evaluated ONCE per query, in the rung below.
  *
- * ⚠️ THE `in` TEST IS THE `values()` CONTRACT, NOT AN OPTIMISATION: a vertex that passes the filter
+ * THE `in` TEST IS THE `values()` CONTRACT, NOT AN OPTIMISATION: a vertex that passes the filter
  * but lacks the PROJECTED key emits NO row, exactly as `V().values(k)` drops it. A walk that yielded
  * `undefined` there would add rows the generic route does not produce, and
  * [[toequal-blind-to-trailing-undefined]] is why that would survive a careless test.
@@ -1545,7 +1545,7 @@ const hasValuesWalkGeneral = function* (
 /**
  * The UNINDEXED `V().has(k, pred).values(key)` scan (item 2059).
  *
- * ⚠️⚠️ **THE GAP THIS FILLS WAS MIS-DIAGNOSED TWICE BEFORE IT WAS LOCATED.** Item 2057 read the `has`
+ * **THE GAP THIS FILLS WAS MIS-DIAGNOSED TWICE BEFORE IT WAS LOCATED.** Item 2057 read the `has`
  * row as 1.15x and called it correct-not-a-gap, because its filtered arm emitted 50x fewer rows than
  * the arm it was compared against. Item 2058 then put a RANGE predicate 14-23 ns a vertex AHEAD of an
  * EQUALITY — sign-consistent over three rounds — because all four arms shared `filterStream`'s
@@ -1557,13 +1557,13 @@ const hasValuesWalkGeneral = function* (
  *     V().has('c', gte(0)).values(n)    72.7             RANGE — indistinguishable
  * ```
  *
- * 🔑 **SO THE PREDICATE KIND IS FREE AND THE ~47 ns IS THE ROUTE.** `specializePredicate` (item 1492)
+ * **SO THE PREDICATE KIND IS FREE AND THE ~47 ns IS THE ROUTE.** `specializePredicate` (item 1492)
  * already compiles both ops to a one-comparison closure, and
  * [[closure-dispatch-is-cheap-keyed-loads-are-not]] prices calling one at ~3 ns. The rest is the
  * generic pipeline's per-element plumbing: `filterStream`'s generator layer, the
  * `isVertex(v) || isEdge(v)` recheck on every element, and a traverser per surviving row.
  *
- * ⚠️⚠️ **UNINDEXED MEANS `isIndexed(key)` IS FALSE, AND PRECEDENCE ALONE WAS NOT ENOUGH — an existing
+ * **UNINDEXED MEANS `isIndexed(key)` IS FALSE, AND PRECEDENCE ALONE WAS NOT ENOUGH — an existing
  * test caught that.** The first cut gated this rung only by sitting BELOW `seededNodeValuesShortcut`
  * in `index.ts`, reasoning that a seekable key would already have been claimed. That is wrong,
  * because **the seeded rung declines a RANGE predicate even on an indexed key** (its `seedForStep`
@@ -1577,16 +1577,16 @@ const hasValuesWalkGeneral = function* (
  * ```
  *
  * That test's own comment had said those cases "DECLINE the shortcut … the oracle and the subject
- * are then the same path", and this rung quietly broke that premise. 🔑 **The gate is now the direct
+ * are then the same path", and this rung quietly broke that premise. **The gate is now the direct
  * question — `!graph.vertexPropertyIndex.isIndexed(key)` — so an indexed key keeps the index seek
  * whatever its predicate kind**, which is both the ordering the test pins and the faster route.
  *
- * ⚠️ **A LEADING `hasLabel` IS REFUSED, inheriting item 1870's measurement rather than re-opening
+ * **A LEADING `hasLabel` IS REFUSED, inheriting item 1870's measurement rather than re-opening
  * it**: this rung is a FULL SCAN whatever the label matches, while the pipeline seeds from
  * `graph.verticesByLabel`, so the labelled form loses from 1.93x at one-in-two to 678x at
  * one-in-a-thousand and never wins.
  *
- * ⚠️ **ITS OWN WALK, NOT AN EDIT TO THE PLAIN SCAN'S.** Items 2021/2025/2026 all took the
+ * **ITS OWN WALK, NOT AN EDIT TO THE PLAIN SCAN'S.** Items 2021/2025/2026 all took the
  * reuse-by-prefix route for one reason — [[executor-edits-perturb]] prices a new variant inside an
  * existing walk at up to 16% on unrelated rows — but the filter here is INTERLEAVED with the
  * projection, so there is no prefix to delegate. A separate module-scope walk leaves
@@ -1618,7 +1618,7 @@ export const unindexedHasValuesShortcut = (plan: Plan, graph: Graph): NodeValues
   const { key, pred } = filter;
 
   /*
-   * ⚠️ THE INDEX CHECK IS THIS RUNG'S DEFINING GATE, not an optimisation — see the header. An
+   * THE INDEX CHECK IS THIS RUNG'S DEFINING GATE, not an optimisation — see the header. An
    * indexed key is seeded by the pipeline (and by the seeded rung when the predicate is seekable),
    * which visits only the matching bucket and emits in BUCKET order; a full scan here would be both
    * slower and a different row sequence. One `isIndexed` call per QUERY, not per row.
@@ -1636,7 +1636,7 @@ export const unindexedHasValuesShortcut = (plan: Plan, graph: Graph): NodeValues
 
   return {
     [Symbol.iterator]: walk,
-    // ⚠️ THE EAGER FILL: `toArray` prefers `drain` (item 1412), and a walk without one is measured
+    // THE EAGER FILL: `toArray` prefers `drain` (item 1412), and a walk without one is measured
     // against siblings that have it with its generator hand tied (item 1998's 1.55x).
     drain: () => [...walk()],
   };
@@ -1645,7 +1645,7 @@ export const unindexedHasValuesShortcut = (plan: Plan, graph: Graph): NodeValues
 /*
  * The scan walk that TAPS every vertex into a side-effect bag before projecting (item 2078).
  *
- * ⚠️⚠️ **THE BAG HOLDS VERTICES, NOT VALUES, AND THAT IS THE WHOLE DIFFERENCE FROM ITEM 2070.** There
+ * **THE BAG HOLDS VERTICES, NOT VALUES, AND THAT IS THE WHOLE DIFFERENCE FROM ITEM 2070.** There
  * the `aggregate` sat AFTER the projection, so `barrierProjectedBag` banked the already-projected
  * values. Here it sits BEFORE, so it banks the ELEMENTS — and a vertex lacking the projected key is
  * BAGGED but not EMITTED, because `aggregate` ran before `values` had the chance to drop it. A fusion
@@ -1657,7 +1657,7 @@ const scanBagValuesWalk = function* (
   bucket: unknown[],
 ): Generator<unknown> {
   for (const v of graph.vertices) {
-    // ⚠️ THE PUSH IS UNCONDITIONAL AND COMES FIRST. See the header: the bag is not the row set.
+    // THE PUSH IS UNCONDITIONAL AND COMES FIRST. See the header: the bag is not the row set.
     bucket.push(v);
 
     const props = v.properties;
@@ -1671,14 +1671,14 @@ const scanBagValuesWalk = function* (
 /**
  * `V().aggregate(k).values(key)` — the barrier BEFORE the projection (item 2078).
  *
- * ⚠️⚠️ **`store` IS REFUSED FOR ITEM 2070's REASON, which is unchanged by the step order.** The
+ * **`store` IS REFUSED FOR ITEM 2070's REASON, which is unchanged by the step order.** The
  * terminal `values` passes its stream to a caller who may stop early, and `hop-values.ts`'s rule is
  * that "`run` stays as lazy as it was for a caller that `break`s out". `aggregate` already
  * materializes its upstream — `side-effects.ts` buffers the whole thing so a later `limit(0)` cannot
  * cancel the collection — so draining it changes nothing observable. A drained `store` would collect
  * what an early-exiting caller must never have caused to be collected.
  *
- * 🔑 MEASURED BEFORE IT WAS BUILT: `V().aggregate(x).values(n)` reads **16.91 ms** against the bare
+ * MEASURED BEFORE IT WAS BUILT: `V().aggregate(x).values(n)` reads **16.91 ms** against the bare
  * fused scan's **5.76** at 200,000 vertices, same 200,000 rows out — **2.94x**, and the census had it
  * as its last unexplained generic row.
  */
@@ -1701,7 +1701,7 @@ export const scanBagValuesShortcut = (
   }
 
   /*
-   * ⚠️ ~~`aggregate` ONLY. `store` is lazy by contract~~ — **`store` IS ADMITTED SINCE ITEM 2113**, and
+   * ~~`aggregate` ONLY. `store` is lazy by contract~~ — **`store` IS ADMITTED SINCE ITEM 2113**, and
    * takes a different result below. The header's argument was about a DRAINED result; this walk is a
    * generator and was already as lazy as `store` requires. See `scanBagValuesResult`.
    */
@@ -1728,23 +1728,23 @@ export const scanBagValuesShortcut = (
 /**
  * The fused scan-bag walk's result: a RE-WALKABLE pair for `aggregate`, a SINGLE-PASS one for `store`.
  *
- * ⚠️⚠️ **THE TWO BAG STEPS NEED DIFFERENT RESULTS, AND THE REASON IS THE BAG, NOT THE ROWS.** Both emit
+ * **THE TWO BAG STEPS NEED DIFFERENT RESULTS, AND THE REASON IS THE BAG, NOT THE ROWS.** Both emit
  * the same rows. But this walk banks every vertex it VISITS, so what the result lets a caller do decides
  * how many times a vertex is banked:
  *
  *   - `aggregate` is a COLLECTING BARRIER — `side-effects.ts` materializes its whole upstream so a later
  *     `limit(0)` cannot cancel it. A factory per consumer is what it had and what it keeps.
- *   - `store` is LAZY: a caller that `break`s out must not have caused collection it never pulled. 🔑 A
+ *   - `store` is LAZY: a caller that `break`s out must not have caused collection it never pulled. A
  *     generator already satisfies that — the refusal this replaces was about a DRAINED result
  *     (`barrierProjectedBag`), not about this walk.
  *
- * ⚠️ BUT THE FACTORY WOULD DOUBLE-BAG IT. `[Symbol.iterator]: walk` makes a NEW generator per call and
+ * BUT THE FACTORY WOULD DOUBLE-BAG IT. `[Symbol.iterator]: walk` makes a NEW generator per call and
  * `drain` made another, so iterate-part-way-THEN-drain banks the prefix twice — item 2098 demonstrated
- * exactly that (10 where 5 is correct) and concluded a single-use latch was needed. 🔑 It is not: ONE
+ * exactly that (10 where 5 is correct) and concluded a single-use latch was needed. It is not: ONE
  * generator pulled by both paths makes "exactly once" the generator's own guarantee. Item 2112 shipped
  * the same design for the trailing-`store` barrier.
  *
- * ⚠️ SO THE `store` RESULT IS SINGLE-PASS, and that is strictly SAFER than what `aggregate` gets rather
+ * SO THE `store` RESULT IS SINGLE-PASS, and that is strictly SAFER than what `aggregate` gets rather
  * than a new hazard: with the factory, iterating twice already banks every vertex twice. Nothing in the
  * engine does either, and `scan-bag-store.test.ts` pins all four consumption patterns.
  */
@@ -1759,7 +1759,7 @@ const scanBagValuesResult = (
   if (!single) {
     return {
       [Symbol.iterator]: walk,
-      // ⚠️ THE EAGER FILL: `toArray` prefers `drain` (item 1412), and a walk without one is measured
+      // THE EAGER FILL: `toArray` prefers `drain` (item 1412), and a walk without one is measured
       // against siblings that have it with its generator hand tied (item 1998's 1.55x).
       drain: () => [...walk()],
     };
@@ -1769,12 +1769,12 @@ const scanBagValuesResult = (
 
   return {
     /*
-     * ⚠️⚠️ **A `function*` WRAPPER, NOT `() => gen`, AND A TEST CAUGHT THE DIFFERENCE.** Handing the raw
+     * **A `function*` WRAPPER, NOT `() => gen`, AND A TEST CAUGHT THE DIFFERENCE.** Handing the raw
      * generator out means `for...of` calls `.return()` on IT when the caller `break`s — which CLOSES it,
      * so a later `drain` yields NOTHING. That is silent LOSS, the mirror of item 2098's doubling, and the
      * part-way-then-drain test read `[]` where `[30, 40]` is correct.
      *
-     * 🔑 Wrapping means `break` closes the WRAPPER and `gen` survives at its cursor, so the drain resumes
+     * Wrapping means `break` closes the WRAPPER and `gen` survives at its cursor, so the drain resumes
      * from where the iterator stopped. Item 2112's barrier uses the same shape for the same reason.
      */
     [Symbol.iterator]: function* (): Generator<unknown> {
@@ -1833,17 +1833,17 @@ export const seededNodeCountShortcut = (plan: Plan, graph: Graph): number | unde
 /**
  * `E()[.hasLabel(L)].values(k)` — the EDGE twin of {@link nodeValuesShortcut}, item 1858.
  *
- * ⚠️ FOUND BY A ROUTE SCREEN, NOT A PROFILE, and the asymmetry is the whole finding: `E().count()`
+ * FOUND BY A ROUTE SCREEN, NOT A PROFILE, and the asymmetry is the whole finding: `E().count()`
  * is answered from a counter, `V().values(k)` rides the fused scan at **30 ns a row** — and
  * `E().values(k)` reached neither, at **77 ns a row** (15.34 ms over 200,000 edges). The vertex
  * shortcut's own `matchShape` requires a `V` source, so the edge spelling of the same question fell
  * to the traverser pipeline. 2.6x a row, on the shape that reads one property off every edge.
  *
- * ⚠️ THE GENERATOR IS AT MODULE SCOPE, which this file records as load-bearing rather than tidy: a
+ * THE GENERATOR IS AT MODULE SCOPE, which this file records as load-bearing rather than tidy: a
  * per-call generator definition made the vertex rung **1.2x SLOWER than the pipeline it replaces**
  * (346 ns against 283), all of it the closure. The parameters carry what it would have captured.
  *
- * ⚠️ AND ONE LOOP BODY SERVES BOTH `drain` AND ITERATION, for `nodeValuesShortcut`'s reason: Gremlin
+ * AND ONE LOOP BODY SERVES BOTH `drain` AND ITERATION, for `nodeValuesShortcut`'s reason: Gremlin
  * results are compared ORDERED by the differential fuzzer, so two derivations that could drift
  * would be a cross-engine failure rather than an unspecified-order liberty (item 169).
  */
@@ -1907,19 +1907,19 @@ export const edgeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
   const { key } = shape;
 
   /*
-   * ⚠️⚠️ **A PLAIN DRAIN LOOP, NOT `[...edgeValuesWalk()]` (item 2321).** This is the EDGE twin of the
+   * **A PLAIN DRAIN LOOP, NOT `[...edgeValuesWalk()]` (item 2321).** This is the EDGE twin of the
    * vertex scan item 2320 shipped at 3.86x: `graph.edges` is MATERIALIZED, so a plain loop over it owes
    * no generator protocol at all, where the spread paid a `next()` call and a `{value, done}` object per
    * edge. Measured over 60,000 edges, `E().values(k)`.
    *
-   * 🔑 **THE TEST FOR WHETHER A SPREAD IS WORTH CONVERTING, established at this item**: a plain `drain`
+   * **THE TEST FOR WHETHER A SPREAD IS WORTH CONVERTING, established at this item**: a plain `drain`
    * loop STILL pays the protocol if what it iterates is itself a GENERATOR. That is why the labelled
    * vertex scan — whose `drain` was already a plain loop, but over a `stream` — measured flat at 1.00x.
    * Convert only where the source is materialized, as `graph.edges` is here.
    *
-   * ✅ NOTHING BECOMES EAGER THAT WAS NOT: `drain` already spread the whole walk. The generator is
+   * NOTHING BECOMES EAGER THAT WAS NOT: `drain` already spread the whole walk. The generator is
    * untouched, so `[Symbol.iterator]` stays lazy (`eager-tail-cache` is the failure mode if that is ever
-   * confused). ⚠️ `emit` is the SINGLE per-edge decision body, so the two cannot disagree about
+   * confused). `emit` is the SINGLE per-edge decision body, so the two cannot disagree about
    * membership or order — item 169's concern, pinned by `edge-values-drain-parity.test.ts`.
    */
   const emit = (e: { labels: ReadonlySet<string>; properties: Record<string, unknown> }): boolean =>
@@ -1944,7 +1944,7 @@ export const edgeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
 /**
  * `V() + <seedable filter> + values(k)` — the `values` STEP fused onto `seedFromIndex`'s stream.
  *
- * 🔑 **WHY THIS IS THE SOUND HALF OF A 5.56x, AND WHAT IT DELIBERATELY LEAVES** (item 2037). One
+ * **WHY THIS IS THE SOUND HALF OF A 5.56x, AND WHAT IT DELIBERATELY LEAVES** (item 2037). One
  * ISOLATED off-label vertex makes `dropVacuousLabels` keep a `hasLabel` step, which declines
  * {@link nodeValuesShortcut}'s exact-shape gate, and the plan falls to the generic pipeline — a route
  * cliff the Gremlin route census caught as the ONLY one of 98 rows to change arm. Priced at 200,000
@@ -1962,38 +1962,38 @@ export const edgeValuesShortcut = (plan: Plan, graph: Graph): NodeValues | undef
  * remaining ~2.2x is the TRAVERSER WRAPPING inside the seed, and reaching it needs a rung that reads
  * `graph.verticesByLabel` itself.
  *
- * ⚠️⚠️ **THAT READER IS AN OPEN OWNER DECISION AND IS NOT TAKEN HERE**: the public `v.labels = [...]`
+ * **THAT READER IS AN OPEN OWNER DECISION AND IS NOT TAKEN HERE**: the public `v.labels = [...]`
  * setter leaves `verticesByLabel` stale, so every new reader widens a known wrong-answer surface.
  * This fusion consumes the stream `seedFromIndex` ALREADY produced, so it adds no reader and needs no
  * decision.
  *
- * ⚠️ AND IT IS NOT ITEM 1870's REFUSED RUNG. That one admitted `hasLabel` into the SCAN
+ * AND IT IS NOT ITEM 1870's REFUSED RUNG. That one admitted `hasLabel` into the SCAN
  * (`graph.vertices` + `labels.some`), which is a full scan whatever the label matches and loses
  * 1.93x / 3.35x / 7.98x / 46x / 678x as coverage narrows — `node-values-label-refusal.test.ts` pins
  * it out. This rides the SEEDED candidate set, so it is proportional to the label's size exactly as
  * the pipeline is, and cannot degrade into that scan: it never looks at `graph.vertices`.
- * ⚠️ DISTINCT FROM `seededNodeValuesShortcut`, which is PROPERTY-index seeded: its `seededShape`
+ * DISTINCT FROM `seededNodeValuesShortcut`, which is PROPERTY-index seeded: its `seededShape`
  * requires a `has(k, eq(v))` (with an optional `hasLabel` before it), so `V() + hasLabel + values(k)`
  * — no `has` at all — matches neither of its two forms and had no rung before this.
  */
 /**
  * The seeded-stream walk for `id()` and `label()` — the always-yielding accessors (item 2089).
  *
- * ⚠️ ONE FUNCTION FOR BOTH, CHOSEN ONCE PER QUERY by a boolean rather than per element: the accessor
+ * ONE FUNCTION FOR BOTH, CHOSEN ONCE PER QUERY by a boolean rather than per element: the accessor
  * is known when the plan is compiled, and item 159 measured an inner-loop branch on this shape at
  * 1.6x. The two closures below are selected before the loop runs.
  *
- * ⚠️ `labelOf` IS IMPORTED, NOT RE-IMPLEMENTED. Item 2085 made it a field read for the single-label
+ * `labelOf` IS IMPORTED, NOT RE-IMPLEMENTED. Item 2085 made it a field read for the single-label
  * case, falling back to iterating the set for a multi-labelled element.
  *
- * ⚠️⚠️ **NO `?? null` HERE, AND THAT IS DELIBERATE: ON THIS PATH IT IS DEAD CODE.** `dispatch.ts`'s
+ * **NO `?? null` HERE, AND THAT IS DELIBERATE: ON THIS PATH IT IS DEAD CODE.** `dispatch.ts`'s
  * `case 'label'` coerces a missing label to `null`, and item 2080's BARE-scan arm must too — but this
  * walk is reached only from `labelSeededValuesFusion`, whose single call site passes a `hasLabel`-
  * SEEDED stream. An element that satisfies `hasLabel(L)` carries `L`, so `labelOf` cannot return
  * `undefined` here. Three mutants proved it: a dropped coercion, a null-dropping guard and a
  * drain/iterator disagreement were all ANSWER-EQUIVALENT, because no input distinguishes them.
  *
- * 🔑 The branch is REMOVED rather than kept-and-documented, which is `RowsFn`'s own argument in this
+ * The branch is REMOVED rather than kept-and-documented, which is `RowsFn`'s own argument in this
  * package: "a defensive `?? []` at its call site would be an untestable branch — a mutant replacing it
  * is equivalent code, which is how a test suite comes to look like it has teeth it does not."
  */
@@ -2013,7 +2013,7 @@ const seededAccessorWalk = (
     }
   };
 
-  // ⚠️ THE EAGER FILL, for the reason the `values` arm states: `toArray` prefers `drain`, and a walk
+  // THE EAGER FILL, for the reason the `values` arm states: `toArray` prefers `drain`, and a walk
   // without one is measured against siblings that have it with its generator hand tied.
   const out = walk() as NodeValues & { drain: () => unknown[] };
 
@@ -2036,13 +2036,13 @@ export const labelSeededValuesFusion = (
   tracksPath: boolean,
 ): { values: NodeValues; rest: readonly Step[] } | undefined => {
   /*
-   * ⚠️⚠️ **THIS RETURNS `{ values, rest }` RATHER THAN A BARE ITERABLE, AND ITEM 2041 IS WHY.** The
+   * **THIS RETURNS `{ values, rest }` RATHER THAN A BARE ITERABLE, AND ITEM 2041 IS WHY.** The
    * first cut required the seeded residual to be EXACTLY `[values]` (`steps.length !== 1`), so
    * `V().hasLabel(L).values(k).order()` had a two-step residual, fell through, and took item 1630's
    * IN-PLACE sort with it — profiled at `sorted` 58.5 ms against an `orderStep`/`sortByBys`/`unwrap`/
    * `projectValues` chain costing **144.6 ms, 2.31-2.36x on two fixtures**.
    *
-   * 🔑 A TRAILING TERMINAL NOW RIDES `fusedProjectedResidual`, which is the pattern items 1956, 2027
+   * A TRAILING TERMINAL NOW RIDES `fusedProjectedResidual`, which is the pattern items 1956, 2027
    * and 2028 each established: **a terminal this walk does not project still gets the walk.** Three
    * prior items closed exactly this gap in three other rungs, and the rung I wrote at item 2037
    * reproduced it.
@@ -2056,7 +2056,7 @@ export const labelSeededValuesFusion = (
   const [only] = steps;
 
   /*
-   * ⚠️⚠️ **`id` AND `label` RIDE THIS TOO SINCE ITEM 2089, AND THEY ARE ITEM 2080's GAP ONE LEVEL UP.**
+   * **`id` AND `label` RIDE THIS TOO SINCE ITEM 2089, AND THEY ARE ITEM 2080's GAP ONE LEVEL UP.**
    * That item found `V().id()` fused and `V().label()` generic on a BARE scan. The same split existed
    * here: this fusion took `values` and left the two zero-argument accessors to the generic step, so
    * `V().hasLabel(L).id()` measured **3.36 ms/rep with a vacuous label and 8.42 with a real one —
@@ -2064,7 +2064,7 @@ export const labelSeededValuesFusion = (
    * the plan is the two-step `V().id()` that item 2056 already fused; with a real one the step
    * SURVIVES, the stream is seeded, and the accessor was generic.
    *
-   * 🔑 THE SEEDED STREAM IS NOT RE-DERIVED HERE. Whether a leading `hasLabel` may seed from
+   * THE SEEDED STREAM IS NOT RE-DERIVED HERE. Whether a leading `hasLabel` may seed from
    * `verticesByLabel` is settled upstream (item 1870 measured the seed FASTER than scanning and
    * testing); this walk only replaces the traverser over whatever stream it is handed.
    */
@@ -2085,17 +2085,17 @@ export const labelSeededValuesFusion = (
   const key = only.kind === 'values' ? only.keys[0] : undefined;
 
   /*
-   * ⚠️ A MISSING KEY IS DROPPED, NOT EMITTED AS `undefined`. That is what `valuesStep` does, and
+   * A MISSING KEY IS DROPPED, NOT EMITTED AS `undefined`. That is what `valuesStep` does, and
    * bun's `toEqual` treats a trailing `undefined` as absent — so a mutant emitting it survives a
    * `toEqual` assertion ([[toequal-blind-to-trailing-undefined]]). The tests use `toStrictEqual`.
    */
   /*
-   * ⚠️ ONE loop body, used by BOTH the iterator and `drain` — item 169's lesson, and Gremlin results
+   * ONE loop body, used by BOTH the iterator and `drain` — item 169's lesson, and Gremlin results
    * are compared ORDERED by the differential fuzzer, so a divergence between the two derivations
    * would be a cross-engine failure rather than an unspecified-order liberty.
    */
   /*
-   * ⚠️⚠️ **THE TWO ACCESSORS ALWAYS YIELD AND `values` DOES NOT, so they CANNOT share this walk.**
+   * **THE TWO ACCESSORS ALWAYS YIELD AND `values` DOES NOT, so they CANNOT share this walk.**
    * `values(k)` DROPS an element lacking the key; `id()` and `label()` emit a row for every element
    * — `label()` emitting `null` where there is no label, which is `dispatch.ts`'s `?? null`. A single
    * loop with a branch would also cost what item 159 measured at 1.6x on this shape, so the accessor
@@ -2119,14 +2119,14 @@ export const labelSeededValuesFusion = (
   };
 
   /*
-   * 🔑 **`drain` IS WHERE MOST OF THIS ITEM'S WIN LIVES, AND THE GENERATOR ALONE FELL SHORT.** The
+   * **`drain` IS WHERE MOST OF THIS ITEM'S WIN LIVES, AND THE GENERATOR ALONE FELL SHORT.** The
    * fusion first shipped as the generator above and took the mixed row 193.4 -> 145.9 ms (1.33x)
    * against a ~85 ms ceiling — a yield per value is not free. `toArray` prefers `drain` when the walk
    * consumed the WHOLE plan, which is this gate's precondition (`steps.length === 1` and that step is
    * the `values`), so there is no downstream step to reason about: a trailing `limit` would land in
    * `steps` and decline above.
    *
-   * ⚠️ `run` ITSELF STAYS AS LAZY AS IT WAS — a caller that `break`s out of the iterable still gets
+   * `run` ITSELF STAYS AS LAZY AS IT WAS — a caller that `break`s out of the iterable still gets
    * the generator; only the already-eager terminal takes the eager route (item 1412's rule).
    */
   const out = walk() as NodeValues & { drain: () => unknown[] };
@@ -2138,7 +2138,7 @@ export const labelSeededValuesFusion = (
       const value = pick(t);
 
       /*
-       * ⚠️ WRITTEN AS AN EARLY `continue` SO THIS GUARD IS TEXTUALLY DISTINCT from the iterator's
+       * WRITTEN AS AN EARLY `continue` SO THIS GUARD IS TEXTUALLY DISTINCT from the iterator's
        * `value !== undefined` above. Both derivations must drop a missing key identically, and a
        * mutation round cannot target either one while the two lines are identical — item 2037's
        * first round reported ANCHOR-DID-NOT-APPLY for exactly that reason, leaving the two guards
@@ -2155,7 +2155,7 @@ export const labelSeededValuesFusion = (
   };
 
   /*
-   * ⚠️ `rest` IS WHAT IS LEFT AFTER THE `values` STEP THIS WALK CONSUMED. An empty `rest` is the
+   * `rest` IS WHAT IS LEFT AFTER THE `values` STEP THIS WALK CONSUMED. An empty `rest` is the
    * item-2037 case (the walk answered the whole plan); a non-empty one is handed to
    * `fusedProjectedResidual`, which either fuses the terminal or declines — and declining leaves the
    * plan exactly where it was before this rung existed.

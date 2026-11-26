@@ -5,12 +5,12 @@
 //     gql: read after write        24.02 ms   vs   gql: read, no write      7.44   3.23x
 //     gremlin: read after write     7.22      vs   gremlin: read, no write  6.75   1.07x  FLAT
 //
-// ⚠️⚠️ THE SCREEN'S 3.23x CONFLATES THE WRITE WITH THE READ, and this probe's `ALONE` arms are what
+// THE SCREEN'S 3.23x CONFLATES THE WRITE WITH THE READ, and this probe's `ALONE` arms are what
 // decompose it. The honest number is 1.84x: `insert ALONE` is 0.10 ms and `read alone` 6.86, so the
 // 12.70 of `insert, read` means the READ itself went 6.86 -> ~12.60. Gremlin's equivalent is 0.96x,
 // i.e. nothing — so the demotion is in the GQL READ PATH's caching, not in core.
 //
-// ⚠️ The write is `INSERT (:W {n: 1})` — ONE VERTEX, with no edge and no relation to the `T`/`E`
+// The write is `INSERT (:W {n: 1})` — ONE VERTEX, with no edge and no relation to the `T`/`E`
 // subgraph the read traverses. And the ratio GROWS with N (2.68x at 5,000), which points at
 // something O(N) being redone rather than a constant.
 //
@@ -25,7 +25,7 @@
 //   3. does the write COUNT matter?       one invalidation vs per-write work
 //   4. is the cost in the READ or spread? compare the read alone against the pair
 //
-// ⚠️ FRESH GRAPH PER REP, and the build excluded from the timer: a write is not idempotent.
+// FRESH GRAPH PER REP, and the build excluded from the timer: a write is not idempotent.
 //
 //     bun writecliff-probe-1932.mjs
 import { Graph } from '@lenke/core';
@@ -65,7 +65,7 @@ const build = () => {
 
 const READ = 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x';
 /*
- * ⚠️⚠️ UNIQUE KEYS, AND THE COUNT IS VERIFIED BELOW. The first version of this probe wrote
+ * UNIQUE KEYS, AND THE COUNT IS VERIFIED BELOW. The first version of this probe wrote
  * `WHERE a.n = 0 AND b.n = 1`, and `n` is `i % 97` — so each side matched ~206 vertices and the
  * CARTESIAN PRODUCT inserted ~42,000 EDGES. It reported 80.72 ms as a "14.37x read cliff" when it
  * was bulk edge ingest. I had built exactly this check into `write-workload-screen-1932.mjs` an
@@ -77,7 +77,7 @@ const gremRead = (g) => toArray(traversal(V(), out('E'), values('n')), g).length
 
 const ARMS = {
   /*
-   * 🔑 THE CRUX ARM. `insert, read` (12.78) came out level with `read twice` (13.92), which cannot
+   * THE CRUX ARM. `insert, read` (12.78) came out level with `read twice` (13.92), which cannot
    * be right if the insert costs the 0.09 ms the write screen measured for it. So time the INSERT
    * ALONE on this fixture: if it is ~6.7 ms here, the cost is the WRITE and there is no read
    * cliff at all; if it is ~0.1 ms, the cost really is in the read that follows.
@@ -102,7 +102,7 @@ const ARMS = {
 
     return gqlRead(g);
   },
-  // ⚠️ THE DISCRIMINATING ARM for "one-time rebuild vs permanent demotion": time ONLY the second
+  // THE DISCRIMINATING ARM for "one-time rebuild vs permanent demotion": time ONLY the second
   // read. If the demotion is permanent this stays slow; if it is a rebuild, this is the fast read.
   'gql: insert, warm, then time': (g) => {
     query(g, 'INSERT (:W {n: 1})', {});
@@ -122,7 +122,7 @@ const ARMS = {
 
     return gqlRead(g);
   },
-  // ⚠️ A WRITE THAT MATCHES NOTHING. If this costs the same, the demotion is on the STATEMENT being
+  // A WRITE THAT MATCHES NOTHING. If this costs the same, the demotion is on the STATEMENT being
   // a write at all, not on anything it changed.
   'gql: read after EMPTY write': (g) => {
     query(g, 'MATCH (n:T) WHERE n.n = 9999 SET n.w = 9', {});
@@ -154,7 +154,7 @@ const ARMS = {
 };
 
 /*
- * ⚠️ PROVE THE EDGE ARM INSERTS EXACTLY ONE EDGE before trusting any number from it. A probe that
+ * PROVE THE EDGE ARM INSERTS EXACTLY ONE EDGE before trusting any number from it. A probe that
  * reports a ratio without checking what its write actually did is the failure above, repeated.
  */
 {

@@ -6,12 +6,12 @@
 // CSR POSITIONS that needs no inclusion-exclusion at all, where the recurrence needs
 // `trailCorrectionAt`'s depth-2/3/4 closed forms.
 //
-// ⚠️⚠️ **THAT IS A SECOND IMPLEMENTATION OF THE SAME COUNT, so the risk is that the two disagree**
+// **THAT IS A SECOND IMPLEMENTATION OF THE SAME COUNT, so the risk is that the two disagree**
 // — and one of them is derived arithmetic that took items 600/601/692 to get right. Native has
 // carried a seed mask since item 575 and is the reference implementation, so both TS routes are
 // checked against it here.
 //
-// ⚠️ THE FIXTURE IS ITEM 573'S MOTIF, REPLICATED, and the replication is the point rather than a
+// THE FIXTURE IS ITEM 573'S MOTIF, REPLICATED, and the replication is the point rather than a
 // detail. Item 1907's parity test uses the motif ONCE — six vertices — and `perSourceAdmissible`
 // refuses a fixture that small, so that suite passes 801 assertions while never entering this route
 // (measured: `entered=1, taken=0` on its graph). A test that cannot reach the code it names is the
@@ -86,7 +86,7 @@ describe.if(nativeReady)('the per-source route counts what native counts', () =>
   const ts = tsDeserialize(NDJSON, 'ndjson', new Graph());
 
   /*
-   * ⚠️ THE GATE ITSELF IS ASSERTED IN `packages/gql/src/var-length-per-source-gate.test.ts`, which
+   * THE GATE ITSELF IS ASSERTED IN `packages/gql/src/var-length-per-source-gate.test.ts`, which
    * can import `perSourceAdmissible` directly; nothing in this package reaches gql's internals and
    * adding a deep export for a test would be the wrong trade. What this file owns is the FIXTURE
    * SIZE, which is the half that silently went missing in item 1907's suite: a unique `n` selects

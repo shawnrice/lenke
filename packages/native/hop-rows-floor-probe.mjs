@@ -11,7 +11,7 @@
  * is 27.5 ns a call, which is a lot for that. Unlike item 1493's `degreeOfTypes` it has no callees
  * to absorb once warm, so the share is at least arithmetically possible. This probe decides it.
  *
- * ⚠️ EVERY ARM PRODUCES THE SAME 400,000-ELEMENT ARRAY the engine produces, so the comparison is
+ * EVERY ARM PRODUCES THE SAME 400,000-ELEMENT ARRAY the engine produces, so the comparison is
  * like with like — a floor that skips the materialization would price a different question, which
  * is the error four items in this corpus have made (1479, 1480/1483, 1485, 1488).
  *
@@ -44,7 +44,7 @@ const build = () => {
       id: `e${e}`,
       labels: ['E'],
       from: g.getVertexById(ids[(e * 7919) % NODES]),
-      // ⚠️ THE REPEAT INDEX IS LOAD-BEARING (item 1518). Any linear `(a*k + b) % N` is invariant
+      // THE REPEAT INDEX IS LOAD-BEARING (item 1518). Any linear `(a*k + b) % N` is invariant
       // under `k -> k + N`, and the FANOUT edges leaving one vertex are exactly k0, k0+N, k0+2N, …
       // — so the old `(k * 104_729) % NODES` sent EVERY one of them to the SAME target. Degrees
       // looked perfect and the graph was functional: one distinct out-neighbour per vertex at any
@@ -64,7 +64,7 @@ const graph = build();
 
 // Stash the endpoint id as a PLAIN own property for the `rowsplain` arm, once, outside any timed
 // loop. Probe-only: nothing in the engine reads this.
-// ⚠️ ONLY for that arm, and the reason is the arm's own finding: adding an own property to every
+// ONLY for that arm, and the reason is the arm's own finding: adding an own property to every
 // Edge transitions their hidden class, which slows EVERY access on them. Applied unconditionally
 // (as the first version did) it taxes every other arm in the run and the whole ladder reads wrong.
 if (process.env.ARM === 'rowsplain') {
@@ -79,7 +79,7 @@ const plan = traversal(V(), out('E'));
  * The flat adjacency the `flatceiling` arm walks: `off` indexes into `nbr`, counted then filled,
  * exactly as `algorithms/shortest-path.ts`'s `buildCsr` does (item 1470).
  *
- * ⚠️ Built in a LOCAL structure, not stashed on the vertices — item 1494's `rowsplain` arm measured
+ * Built in a LOCAL structure, not stashed on the vertices — item 1494's `rowsplain` arm measured
  * that adding an own property to the elements transitions their hidden class and slows every access
  * on all of them by 1.19x, which would tax this arm by the very mechanism it is trying to avoid.
  */
@@ -171,7 +171,7 @@ const EDGES = NODES * FANOUT;
 
 const ARMS = {
   // 0a. Walk the id map only. Every arm below pays this.
-  //     ⚠️ These three arms answer the VERTEX count, not the edge count, so they are excluded from
+  //     These three arms answer the VERTEX count, not the edge count, so they are excluded from
   //     the agreement check — they are a cost ladder for `reach`, not answers to its question.
   vonly: () => {
     let n = 0;
@@ -323,7 +323,7 @@ const ARMS = {
     return out_.length;
   },
 
-  // 5b. ⚠️ A PROBE-ONLY HACK, and the decisive one. `rowstoid` pays 33 ns an edge over `rowsedge`
+  // 5b. A PROBE-ONLY HACK, and the decisive one. `rowstoid` pays 33 ns an edge over `rowsedge`
   //     for reading `e.toId`, which is a getter returning a private string field — implausibly
   //     dear for that, so either the getter is not being inlined or the 33 ns is the `push` of a
   //     string rather than the read. This arm stashes the SAME string as a plain own property once
@@ -349,7 +349,7 @@ const ARMS = {
     return out_.length;
   },
 
-  // 7. ⚠️ THE CEILING FOR A FLAT ADJACENCY, which item 1494 priced at ~1.6x from arithmetic rather
+  // 7. THE CEILING FOR A FLAT ADJACENCY, which item 1494 priced at ~1.6x from arithmetic rather
   //    than measurement. This arm measures it instead: parallel dense arrays built ONCE outside the
   //    timed loop, so the walk pays no per-vertex `Map.get`, no `Set` iteration and no endpoint
   //    getter — the three shares that item 1494's decomposition left as the only levers.
@@ -378,7 +378,7 @@ const ARMS = {
     return out_.length;
   },
 
-  // 8. ⚠️ THE SAME STRUCTURE UNDER CHURN, which is the number that decides the design rather than
+  // 8. THE SAME STRUCTURE UNDER CHURN, which is the number that decides the design rather than
   //    the ceiling above. One edge added per rep, then the structure rebuilt, then walked — the
   //    naive invalidation policy (drop on any adjacency write, rebuild on the next read). This is
   //    item 680's failure mode priced on the TS side: there, `rebuild_csr` runs only at LOAD and
@@ -415,7 +415,7 @@ const ARMS = {
     return out_.length;
   },
 
-  // 9. ⚠️ THE MAINTAINABLE MIDDLE, and the most decision-relevant arm of the nine. `flatceiling`
+  // 9. THE MAINTAINABLE MIDDLE, and the most decision-relevant arm of the nine. `flatceiling`
   //    wins 30x and `flatchurn` loses 1.47x, so the lever's whole problem is that a GLOBAL packed
   //    array cannot absorb an insert — it has to be rebuilt. A per-vertex ARRAY can: appending is
   //    O(1) amortized and touches one vertex, so there is nothing to invalidate and no rebuild.
@@ -436,7 +436,7 @@ const ARMS = {
     return out_.length;
   },
 
-  // 9b. ⚠️ THE SAME, HOLDING EDGES RATHER THAN PRE-RESOLVED ENDPOINTS. `arrayadj` stores `e.to`,
+  // 9b. THE SAME, HOLDING EDGES RATHER THAN PRE-RESOLVED ENDPOINTS. `arrayadj` stores `e.to`,
   //     which a real adjacency box cannot do on its own: `outE`, edge properties and edge labels
   //     all need the edge. This arm holds `Edge[]` and reads `.to` during the walk, so it re-adds
   //     the ~10 ns an edge item 1494 measured for a warm endpoint read. It is the honest version
@@ -453,7 +453,7 @@ const ARMS = {
     return out_.length;
   },
 
-  // 9c. ⚠️ THE CONTROL THAT INVALIDATES arrayadj/arrayedge AS A PREDICTION (item 1498). Those arms
+  // 9c. THE CONTROL THAT INVALIDATES arrayadj/arrayedge AS A PREDICTION (item 1498). Those arms
   //     build their nested arrays in ONE tight loop, so the buckets land contiguously and the walk
   //     has near-perfect locality — which the engine's buckets never have, being allocated
   //     interleaved with vertices and edges across 400,000 `addEdge` calls. This arm builds nested
@@ -510,7 +510,7 @@ for (const name of names) {
   results.push({ name, ...r });
 }
 
-// ⚠️ EVERY arm answers 400,000 here — including `reach`, which counts rather than materializing.
+// EVERY arm answers 400,000 here — including `reach`, which counts rather than materializing.
 // So this is a real agreement check, not a decoration.
 /** The `v*` ladder counts VERTICES; everything else counts edges. */
 const VERTEX_ARMS = new Set(['vonly', 'vbox', 'vget']);

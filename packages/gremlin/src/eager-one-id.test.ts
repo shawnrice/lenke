@@ -2,7 +2,7 @@
  * THE ONE-ID EAGER ROUTE in `idSeededValuesShortcut` (item 1660), and the three properties that
  * decide whether it is allowed to exist.
  *
- * ⚠️ WHY A SECOND FILE BESIDE `id-seeded-values.test.ts`. That file pins the rung's ANSWERS and its
+ * WHY A SECOND FILE BESIDE `id-seeded-values.test.ts`. That file pins the rung's ANSWERS and its
  * laziness contract, and it kept passing when this route was added — because **every one of its
  * contract cases is written on a MULTI-id plan** (`V('a', 'b')` for one-shot, `V('a', 5)` for the
  * lazy fault). The one-id shape, which is the point lookup and the commonest serving query there is,
@@ -22,7 +22,7 @@
  *    that the shipped engine is already re-iterable on three of its five routes. This file is where
  *    that decision is written down, so the next reader finds the choice rather than inferring it.
  *
- * ⚠️ AND A FOURTH, which is the reason the route is sound at all: it is BOUNDED. One id and one key
+ * AND A FOURTH, which is the reason the route is sound at all: it is BOUNDED. One id and one key
  * is 0 or 1 values, so there is no walk made eager and no early exit destroyed. The large-result
  * shapes must stay lazy, and `the large shapes are untouched` below is what keeps a later widening
  * of this branch from silently becoming the memory regression it would otherwise be.
@@ -43,14 +43,14 @@ g.addVertex({ id: 'b', labels: ['P', 'Q'], properties: { k: 2 } });
 g.addVertex({ id: 'c', labels: ['Q'], properties: { k: null } });
 // `d` lacks `k` entirely, so it must yield nothing rather than `undefined`.
 g.addVertex({ id: 'd', labels: ['P'], properties: { j: 9 } });
-// ⚠️ A STORED `undefined`, which this engine DOES keep: `addVertex` leaves the key present, so
+// A STORED `undefined`, which this engine DOES keep: `addVertex` leaves the key present, so
 // `'k' in props` is true and the value is `undefined`. The general path's test is `key in props`, so
 // it EMITS here — and a rung testing `props[key] !== undefined` instead would silently drop the row.
 // A mutation pass caught exactly that (M3), and only after this vertex existed.
 g.addVertex({ id: 'e', labels: ['P'], properties: { k: undefined } });
 
 /**
- * ⚠️ `expect([undefined]).toEqual([])` PASSES in bun, so `toEqual` alone cannot tell an INVENTED
+ * `expect([undefined]).toEqual([])` PASSES in bun, so `toEqual` alone cannot tell an INVENTED
  * `undefined` row from no row at all — a mutant emitting `[props[key]]` unconditionally SURVIVED the
  * first version of this file for that reason. Every comparison here goes through a fingerprint that
  * carries the arity and each value's type, so `[]`, `[undefined]` and `[null]` are three distinct
@@ -59,7 +59,7 @@ g.addVertex({ id: 'e', labels: ['P'], properties: { k: undefined } });
 const fingerprint = (rows: readonly unknown[]): string =>
   `${rows.length}|${rows.map((r) => `${typeof r}:${String(r)}`).join(',')}`;
 
-describe('⚠️ 1. the one-id route agrees with the general path', () => {
+describe('1. the one-id route agrees with the general path', () => {
   for (const [label, rung, pipeline] of [
     ['a present key', traversal(V('a'), values('k')), traversal(V('a'), values('k'), identity())],
     ['a stored null', traversal(V('c'), values('k')), traversal(V('c'), values('k'), identity())],
@@ -99,17 +99,17 @@ describe('⚠️ 1. the one-id route agrees with the general path', () => {
     });
   }
 
-  test('⚠️ and the route is BOUNDED: one id and one key is at most one row', () => {
+  test('and the route is BOUNDED: one id and one key is at most one row', () => {
     for (const id of ['a', 'b', 'c', 'd', 'e', 'zz']) {
       expect(toArray(traversal(V(id), values('k')), g).length, id).toBeLessThanOrEqual(1);
     }
   });
 
   /**
-   * ⚠️ THE ARITY IS PINNED SEPARATELY from the value comparison, because that is the property
+   * THE ARITY IS PINNED SEPARATELY from the value comparison, because that is the property
    * `toEqual` cannot see: a row invented out of a missing key, or a row dropped for a present one.
    */
-  test('⚠️ exact arity per id, which toEqual cannot police', () => {
+  test('exact arity per id, which toEqual cannot police', () => {
     const arity = (id: string): number => toArray(traversal(V(id), values('k')), g).length;
 
     expect(arity('a'), 'a has k').toBe(1);
@@ -120,7 +120,7 @@ describe('⚠️ 1. the one-id route agrees with the general path', () => {
   });
 });
 
-describe('⚠️ 2. the fault is still LAZY, which the typeof guard is what preserves', () => {
+describe('2. the fault is still LAZY, which the typeof guard is what preserves', () => {
   /**
    * A non-string id must take the GENERATOR, so the throw lands on the first `next()` exactly as the
    * general path's does. Were the eager branch to accept it, `run` itself would throw — invisible to
@@ -147,7 +147,7 @@ describe('⚠️ 2. the fault is still LAZY, which the typeof guard is what pres
   });
 });
 
-describe('⚠️ 3. re-iterability: one id is re-iterable, more than one is not', () => {
+describe('3. re-iterability: one id is re-iterable, more than one is not', () => {
   test('ONE id yields the same values on a second pass', () => {
     const it = run(traversal(V('a'), values('k')), g);
 
@@ -170,7 +170,7 @@ describe('⚠️ 3. re-iterability: one id is re-iterable, more than one is not'
   });
 });
 
-describe('⚠️ 4. the large shapes are UNTOUCHED, which is what bounds the licence', () => {
+describe('4. the large shapes are UNTOUCHED, which is what bounds the licence', () => {
   /**
    * The rung fires only when it answers the WHOLE plan, so a trailing step lands in the residual and
    * the plan never reaches an eager route. This is the structural reason a 200,000-row scan cannot be

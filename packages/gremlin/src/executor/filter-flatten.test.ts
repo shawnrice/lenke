@@ -189,7 +189,7 @@ describe('bodies that are NOT keep-or-drop must decline', () => {
   });
 
   /**
-   * ⚠️ THIS CASE USED TO ASSERT `not(hasNot(k))` WAS LEFT ALONE, and item 1331 changed it
+   * THIS CASE USED TO ASSERT `not(hasNot(k))` WAS LEFT ALONE, and item 1331 changed it
    * deliberately. The distinction item 1327 draws applies: the assertion recorded a CONDITION of
    * this pass (it did not handle `not`), not a CONTRACT someone chose. Its stated reason — a
    * wrapper body must not be SPLICED into the chain, because a disjunction is not a chain — is

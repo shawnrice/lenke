@@ -1,12 +1,12 @@
 /**
  * DOES THE CARRIED-START-WHERE GATE HAVE TEETH? (item 1906)
  *
- * ⚠️ THE GATE DECIDES WHICH VERTICES THE WALK SEEDS FROM, so its mistakes are WRONG ANSWERS rather
+ * THE GATE DECIDES WHICH VERTICES THE WALK SEEDS FROM, so its mistakes are WRONG ANSWERS rather
  * than slow ones — a predicate on the far end admitted as a seed test would narrow the wrong set.
  * That is why `carriedStartGate` is a pure exported function with unit tests, and why those tests
  * are the subject here rather than the detector.
  *
- * ⚠️ `reachability.test.ts` IS IN THE TEST SET BESIDE THE NEW FILE: it is where the rung's existing
+ * `reachability.test.ts` IS IN THE TEST SET BESIDE THE NEW FILE: it is where the rung's existing
  * answers live, so a mutant that breaks the walk rather than the gate still has somewhere to fail.
  *
  *     bun sort-gate-mutants-1902.mjs
@@ -91,7 +91,7 @@ const MUTANTS = [
 const EXPECTED_SURVIVORS = new Set();
 
 /*
- * ⚠️⚠️ AND ONE ENTRY WAS REMOVED FROM THIS SET BECAUSE THE HARNESS CONTRADICTED IT. Reverting the
+ * AND ONE ENTRY WAS REMOVED FROM THIS SET BECAUSE THE HARNESS CONTRADICTED IT. Reverting the
  * change is ANSWER-EQUIVALENT — the old route returns the same rows, slower — so it was declared an
  * expected survivor on [[perf-gate-needs-its-own-test]] grounds. It is CAUGHT, by the ROUTE
  * assertions in `unwindowed-expr-sort.test.ts`, and the harness said so ("was expected to SURVIVE
@@ -101,18 +101,18 @@ const EXPECTED_SURVIVORS = new Set();
 /** The three outcomes as a label; a nested ternary is what the linter objects to. */
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
 /**
- * ⚠️ BOTH STREAMS, ALWAYS: `bun test` writes `N pass` to **stderr**, and item 767 read an empty
+ * BOTH STREAMS, ALWAYS: `bun test` writes `N pass` to **stderr**, and item 767 read an empty
  * stdout and concluded the runner never ran a test.
  */
 /**
- * ⚠️⚠️ **BOTH PACKAGES, AND THE MUTATION RUN IS WHY.** The gql-side tests cover the pure gate
+ * **BOTH PACKAGES, AND THE MUTATION RUN IS WHY.** The gql-side tests cover the pure gate
  * function; three mutants of the RUN-TIME seed gate — admitting every vertex, admitting an UNKNOWN
  * result, never consulting it — all SURVIVED a gql-only run, because the answers that can see them
  * are the cross-engine ones in `packages/native`. A battery whose test set cannot reach the code it
@@ -121,7 +121,7 @@ const verdictLabel = (caught, expected) => {
 const NATIVE_TESTS = ['src/reach-carried-where-parity.test.ts'];
 
 /**
- * ⚠️⚠️ **THE DIST MUST BE REBUILT PER MUTANT, and the mutation run is what exposed that too.**
+ * **THE DIST MUST BE REBUILT PER MUTANT, and the mutation run is what exposed that too.**
  * `@lenke/gql` resolves to `dist` inside `packages/native` ([[fuzzers-read-built-dists]]), so the
  * cross-engine tests ran against an UNMUTATED build and all three run-time seed-gate mutants
  * survived with the native suite nominally in the test set. A battery that mutates source and
@@ -146,7 +146,7 @@ const run = () => {
     encoding: 'utf8',
   });
   const text = [a.stdout, a.stderr, b.stdout, b.stderr].map((x) => String(x ?? '')).join('');
-  // ⚠️ EITHER failing is a catch, so the codes are combined rather than one being read.
+  // EITHER failing is a catch, so the codes are combined rather than one being read.
   const code = (a.status ?? -1) !== 0 ? (a.status ?? -1) : (b.status ?? -1);
 
   return { text, code };
@@ -198,7 +198,7 @@ try {
     const ran = /\d+ pass/.test(r.text);
 
     if (!ran && r.code !== 124) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -214,9 +214,9 @@ try {
       survivors.push(`${name} (was expected to SURVIVE and did not — update the entry)`);
     }
 
-    // ⚠️ THE `N failing` COUNT IS THE GQL RUN'S, because the regex takes the first result line in
+    // THE `N failing` COUNT IS THE GQL RUN'S, because the regex takes the first result line in
     // the concatenated output. A mutant caught only by the NATIVE suite therefore prints
-    // `0 failing` beside a ✅ — the verdict comes from the exit code, which is the contract
+    // `0 failing` beside a — the verdict comes from the exit code, which is the contract
     // (CLAUDE.md: concatenate both streams, find a result line, THEN read the code).
     console.log(
       `  ${verdictLabel(caught, expected)}  ${name.padEnd(56)} ` +
@@ -225,13 +225,13 @@ try {
   }
 } finally {
   restoreAll();
-  // ⚠️ AND REBUILD, or the finally leaves the LAST MUTANT in the dist that every TS harness reads.
+  // AND REBUILD, or the finally leaves the LAST MUTANT in the dist that every TS harness reads.
   // Restoring the source is not restoring the artifact.
   rebuild();
   console.log('\n# restored (source and dist)');
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

@@ -1,14 +1,14 @@
 /**
  * COUNTING A VAR-LENGTH PATH WITHOUT WALKING IT — the closed-form rung for `-[:T]->{m,n}`.
  *
- * ⚠️ THE LARGEST SELF-CONTAINED UNIT IN `shortcuts.ts`, and it was found by ownership rather than by
+ * THE LARGEST SELF-CONTAINED UNIT IN `shortcuts.ts`, and it was found by ownership rather than by
  * theme (item 1669). `shortcuts.ts` is not a tangle — 169 of its 173 symbols sit in no cycle at all
  * — it is a flat fan-out from 13 `detect*` entry points over ~10,000 lines of helpers. So the
  * question that yields a module boundary is not "what is cyclic" but "who can REACH this": 17
  * helpers here are reachable from `detectVarLengthCount` and from nothing else, which makes them its
  * machinery rather than the file\'s.
  *
- * ⚠️ THE TRAIL TABLES ARE THE SUBTLE PART AND THEY ARE WHY THIS IS ONE MODULE. A WALK may revisit;
+ * THE TRAIL TABLES ARE THE SUBTLE PART AND THEY ARE WHY THIS IS ONE MODULE. A WALK may revisit;
  * a TRAIL may not reuse an edge. So a closed-form count over a walk is a degree recurrence, while
  * the same count over a trail must SUBTRACT the paths that reuse an edge — which at depth 3 is
  * `reusedTrailsAt3` and at depth 4 needs the pair multiplicities in `Trail4Tables`. Those
@@ -106,7 +106,7 @@ export type DegreeCountSpec = {
    * A per-SEED test, from either spelling of a start predicate (item 1907) — `undefined` when
    * there is none.
    *
-   * ⚠️⚠️ **SOUND BECAUSE EVERY ARM OF THIS RUNG ACCUMULATES OVER THE SOURCE LIST, which is worth
+   * **SOUND BECAUSE EVERY ARM OF THIS RUNG ACCUMULATES OVER THE SOURCE LIST, which is worth
    * stating because the arithmetic is not obviously per-source.** The level arrays `u_j` span all
    * vertices, as they must — a path traverses them — but the answer is read off as
    * `sum over sources s of u_j(s)`, the depth-3 trail correction's terms are each anchored at the
@@ -120,18 +120,18 @@ export type DegreeCountSpec = {
    * `undefined` when there is no start predicate, where the sources are the start label's extent
    * and there is nothing to seek.
    *
-   * ⚠️ `undefined` ALSO MEANS "NO INDEX SERVED IT", in which case the caller keeps the label-extent
+   * `undefined` ALSO MEANS "NO INDEX SERVED IT", in which case the caller keeps the label-extent
    * path it always had. Routing the unindexed case through the seeker's generator instead cost
    * 1.37-1.72x — see `seekedSeeds`, which exists for exactly this distinction.
    *
-   * ⚠️⚠️ **A SUPERSET, NOT THE ANSWER, which is why `seedPasses` still runs over it.**
+   * **A SUPERSET, NOT THE ANSWER, which is why `seedPasses` still runs over it.**
    * `seedVertices` narrows by label and by whatever index serves the node, and its own contract is
    * that "the seed only has to be a SUPERSET (`matchNode` and the residual `WHERE` re-validate)" —
    * it also declines a seek that is not selective enough (`seekIsWorthIt`, break-even ~18%) and
    * falls back to the label scan, which is exactly what this rung did for every query before this.
    * So a broad seed resolves as it always did and a narrow one stops reading every vertex.
    *
-   * 🔑 **BOTH SPELLINGS MOVE TOGETHER FOR FREE**, which is item 583's requirement and the reason
+   * **BOTH SPELLINGS MOVE TOGETHER FOR FREE**, which is item 583's requirement and the reason
    * this is a two-line change rather than a predicate lift: `compileLinear` already attaches a
    * clause `WHERE` to the compiled start node as `pred`/`seedHints`, so passing that node to
    * `seedVertices` seeks the clause form and the inline form alike. Measured on a 20,000-vertex
@@ -473,13 +473,13 @@ type PerSourceTables = {
  * mutant of an inline gate survives the differential tests, so the arithmetic has to be reachable
  * from a unit test ([[perf-gate-needs-its-own-test]]). `var-length-gate.test.ts` owns it.
  *
- * ⚠️ IT IS DELIBERATELY NOT THE COST COMPARISON. `sources · deg^levels` against the recurrence
+ * IT IS DELIBERATELY NOT THE COST COMPARISON. `sources · deg^levels` against the recurrence
  * would be the natural gate and is wrong here: `deg` is an AVERAGE, and this repo's own fixtures
  * include ones piling 93% of the edges on 7% of the vertices (item 702), so a skewed graph makes
  * the estimate arbitrarily optimistic. The estimate only decides whether to ATTEMPT; the attempt
  * carries a WORK BUDGET and abandons, so skew costs bounded waste rather than a wrong route.
  *
- * ⚠️ AND IT REQUIRES A SEED. With no seed predicate `src` is every vertex (or every vertex of the
+ * AND IT REQUIRES A SEED. With no seed predicate `src` is every vertex (or every vertex of the
  * start label), the attempt could only ever blow its budget, and the 2x it would cost lands on
  * item 573's unseeded rung — the shape this file was built for.
  */
@@ -512,7 +512,7 @@ export const perSourceBudget = (levels: number, vertices: number, edges: number)
  * j-walks from `s` ending at a passing vertex. Forwards from one source that is a frontier
  * expansion of depth `max` — the same sums, and no |V|-wide vector.
  *
- * ⚠️ RETURNS `undefined` RATHER THAN A NUMBER IT CANNOT GUARANTEE, in two cases that are both about
+ * RETURNS `undefined` RATHER THAN A NUMBER IT CANNOT GUARANTEE, in two cases that are both about
  * agreeing with the route it replaces:
  *
  *   over budget         the graph was too dense for this route; the caller runs the recurrence.
@@ -581,19 +581,19 @@ const perSourceWalkCount = (
 /**
  * A TRAIL count from each source, by enumerating trails over CSR POSITIONS.
  *
- * 🔑 THIS NEEDS NO INCLUSION-EXCLUSION AT ALL, which is the part worth stating. The recurrence
+ * THIS NEEDS NO INCLUSION-EXCLUSION AT ALL, which is the part worth stating. The recurrence
  * counts WALKS and subtracts edge-reuse terms — `trailCorrectionAt`'s depth-2/3/4 closed forms,
  * derived over items 600/601/692 and the reason the detector is bounded at 4. Enumerating from one
  * source instead, "no edge reused" is just a mark per position, so the correction has nothing to
  * correct and the DEPTH BOUND is not needed on this route.
  *
- * ⚠️ POSITIONS, NOT NEIGHBOURS. One CSR position is one EDGE — `csr-cache` builds `nbr` from
+ * POSITIONS, NOT NEIGHBOURS. One CSR position is one EDGE — `csr-cache` builds `nbr` from
  * `edgesOfTypes`, which dedupes a MULTI-LABEL edge through a `Set`, so a position cannot be the
  * same edge twice. Marking neighbours instead would forbid two PARALLEL edges to the same vertex,
  * which are distinct edges and a legal trail: item 600 records parallel edges as exactly what
  * breaks a naive correction, and they break a naive enumeration the same way.
  *
- * ⚠️ The depth bound still applies to whether the DETECTOR admits the query; this route does not
+ * The depth bound still applies to whether the DETECTOR admits the query; this route does not
  * widen it. Relaxing the detector because this route is exact is a separate change with its own
  * correctness argument, and item 692 is what that mistake costs.
  */
@@ -668,7 +668,7 @@ export const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
   // ONLY from here down, which is the property that lets them be shared.
   const { order, idx, off, nbr } = csrFor(graph, inward, types);
   /*
-   * ⚠️⚠️ SEEKED WHEN AN INDEX SERVES THE START PREDICATE (item 1979). This used to be the start
+   * SEEKED WHEN AN INDEX SERVES THE START PREDICATE (item 1979). This used to be the start
    * label's WHOLE EXTENT, copied, and then `seedPasses` ran on every vertex of it — so a selective
    * equality on an indexed key never consulted the index and the rung was O(|V|) for a one-source
    * query. Item 1906's sibling rung has seeded through `seedVertices` since it was built, and the
@@ -680,12 +680,12 @@ export const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
   const seeked = spec.seeds?.();
   const unfiltered =
     seeked ?? (startName === undefined ? order : [...(graph.verticesByLabel.get(startName) ?? [])]);
-  // ⚠️ FILTERED ONCE, HERE, so every later reader — the depth-3 correction's `for (const s of src)`
+  // FILTERED ONCE, HERE, so every later reader — the depth-3 correction's `for (const s of src)`
   // and `srcIdx`, which `trailCorrectionAt` and `trailsAt4From` index by — sees the same set.
   const src = seedPasses === undefined ? unfiltered : unfiltered.filter((v) => seedPasses(v));
 
   /*
-   * ⚠️⚠️ THE PER-SOURCE ROUTE (item 1978), and WHERE IT SITS IS HALF THE WIN — which is a
+   * THE PER-SOURCE ROUTE (item 1978), and WHERE IT SITS IS HALF THE WIN — which is a
    * correction of my own first attempt, measured. `src` is resolved above it because the route
    * needs the seed applied; everything BELOW it is O(|V|) that a taken route never pays.
    *
@@ -698,7 +698,7 @@ export const walkLevelCount = (graph: Graph, spec: DegreeCountSpec): number => {
    * It takes a SEEDED, SELECTIVE count off a route that is O(levels · (|V| + |E|)) however narrow
    * the seed is, which is item 1977's finding.
    *
-   * ⚠️ IT CAN DECLINE, and the fall-through below is the recurrence running exactly the code it ran
+   * IT CAN DECLINE, and the fall-through below is the recurrence running exactly the code it ran
    * before — nothing it reads has been allocated or mutated by a declined attempt.
    */
   if (perSourceAdmissible(seedPasses !== undefined, src.length, order.length)) {
@@ -954,7 +954,7 @@ export const varLengthDegreeCount = (graph: Graph, spec: DegreeCountSpec): numbe
     return n;
   };
   /*
-   * ⚠️ SEEKED TOO (item 1979), and it has to be: this is the `max <= 1` arm and `walkLevelCount` is
+   * SEEKED TOO (item 1979), and it has to be: this is the `max <= 1` arm and `walkLevelCount` is
    * the `max >= 2` one. Seeking only one of them would make a `{1,1}` count cost |V| where `{1,2}`
    * costs a seek — a cliff between adjacent bounds, which is the same mistake as a cliff between
    * two spellings.
@@ -967,7 +967,7 @@ export const varLengthDegreeCount = (graph: Graph, spec: DegreeCountSpec): numbe
   let total = 0;
 
   for (const s of sources) {
-    // ⚠️ THE SEED GATE, before any term — a source that fails it contributes no path of any length.
+    // THE SEED GATE, before any term — a source that fails it contributes no path of any length.
     // Still required with a seeked `sources`: the seek is a SUPERSET (see `DegreeCountSpec.seeds`).
     if (seedPasses !== undefined && !seedPasses(s)) {
       continue;
@@ -1056,7 +1056,7 @@ export const degreeCountShape = (pattern: PathPattern): boolean => {
     (pattern.mode !== undefined &&
       pattern.mode !== 'trail' &&
       pattern.mode !== 'walk' &&
-      // ⚠️ `acyclic` IS ADMITTED BUT GOES NOWHERE NEAR THIS FILE'S ARITHMETIC (item 2002). It is
+      // `acyclic` IS ADMITTED BUT GOES NOWHERE NEAR THIS FILE'S ARITHMETIC (item 2002). It is
       // routed to `acyclic-count.ts`'s DFS by its own closure in `detectVarLengthCount`, BEFORE
       // `isTrail` is computed — because `isTrail` is `mode !== 'walk'`, so letting an acyclic
       // pattern reach the level recurrence would hand it the TRAIL correction and answer a trail
@@ -1090,7 +1090,7 @@ export const degreeCountShape = (pattern: PathPattern): boolean => {
  * by the closure, because a label every vertex carries is trivial and only the graph can say so
  * (item 1399). It used to refuse a label here too; that cost 11-13x and the measurements are below.
  *
- * ⚠️ THE MASK CONSTRAINT IS A CORRECTNESS CONSTRAINT, NOT CONSERVATISM — measured at item 1400.
+ * THE MASK CONSTRAINT IS A CORRECTNESS CONSTRAINT, NOT CONSERVATISM — measured at item 1400.
  * Removing the closure's runtime decline, so a FILTERING label reaches the depth-4 terms, answers
  * **−3** on randomized multigraphs: with a non-trivial mask the correction subtracts more than the
  * walk count it corrects. Item 1399 had measured that same removal as "correct and 9.9x faster" on
@@ -1103,7 +1103,7 @@ export const degreeCountShape = (pattern: PathPattern): boolean => {
  * no way to decline once chosen. So this refuses on the SYNTAX, which is stricter than necessary: a
  * label every node happens to carry would be vacuous at runtime and is refused here anyway.
  *
- * ⚠️ THAT "STRICTER THAN NECESSARY" IS NOW PRICED AT 11-13x (item 1398), on a 100,000-vertex graph
+ * THAT "STRICTER THAN NECESSARY" IS NOW PRICED AT 11-13x (item 1398), on a 100,000-vertex graph
  * where every vertex carries `P` so the label rejects nothing. Same answer, 400,000, every row:
  *
  *   MATCH ()-[:E]->{1,4}()           43.2 ms   closed form
@@ -1116,7 +1116,7 @@ export const degreeCountShape = (pattern: PathPattern): boolean => {
  * `walkLevelCount`, no `varLengthDegreeCount`, no `trailsAt4From` — it is `flatAdj` 36.6%,
  * `evalLabelExpr` 15.6%, `trailEnds` 14.6%, `walkSegments` 8.1%.
  *
- * ⚠️ AND `flatAdj` 36.6% IS ATTRIBUTION, NOT AN AVAILABLE WIN — do not read this list as a target
+ * AND `flatAdj` 36.6% IS ATTRIBUTION, NOT AN AVAILABLE WIN — do not read this list as a target
  * list. Item 1916 priced the one substitution that frame invites (its `Array.from(bucket)` replaced
  * by a `Set` iterator held in the DFS frame) at **2.099 ms of a 513.78 ms row, 0.4%**, and declined
  * it. Both forms pay the Set traversal; only the allocation is removed. The refutation and its
@@ -1134,7 +1134,7 @@ export const depth4Admissible = (
   mode: string | undefined,
   endPred: unknown,
 ): boolean =>
-  // ⚠️ `acyclic` IS EXEMPT because none of this predicate's reasoning applies to it: the depth-4
+  // `acyclic` IS EXEMPT because none of this predicate's reasoning applies to it: the depth-4
   // rule guards the TRAIL closed form, whose terms are derived for a trivial endpoint mask. The
   // acyclic route is a DFS with no terms and applies the endpoint test per reached endpoint, so a
   // filtering label is not a hazard there (item 2002).
@@ -1153,7 +1153,7 @@ export const depth4Admissible = (
  * complexity gate — inline it read 36 against a maximum of 35, which is the same reason this file
  * already factors out `depth4Admissible`.
  *
- * 🛑 BOTH CLAUSES ARE REDUNDANT TODAY, which is why a mutant replacing this whole body with `true`
+ * BOTH CLAUSES ARE REDUNDANT TODAY, which is why a mutant replacing this whole body with `true`
  * SURVIVES (item 744 recorded that survivor as unexplained; item 745 explains it):
  *
  *   - `max === 1` cannot reach here. `dropVacuousQuantifier` removes a `{1,1}` quantifier outright
@@ -1173,7 +1173,7 @@ export const mirrorAdmissible = (inward: boolean, max: number | null): boolean =
 export const detectVarLengthCount = (
   clauses: readonly Clause[],
   /*
-   * ⚠️ THE COMPILED CLAUSES, for ONE purpose: the compiled start node carries a clause `WHERE` as
+   * THE COMPILED CLAUSES, for ONE purpose: the compiled start node carries a clause `WHERE` as
    * `pred`/`seedHints`, which is what lets `seedVertices` seek either spelling (item 1979). The raw
    * `clauses` above decide the SHAPE, exactly as before; this decides only where the sources come
    * from. `detectReachableShortcut` takes the same pair for the same reason.
@@ -1224,7 +1224,7 @@ export const detectVarLengthCount = (
   // exactly one way to reuse an edge and the closed form subtracts it, while at three there are
   // several interacting ways and no single term. Native drew the line in the same place at item
   // 587, which is what keeps the two engines on one answer.
-  // ⚠️ ACYCLIC IS EXEMPT FROM THE DEPTH CEILING, and that is not a relaxation of the trail bound.
+  // ACYCLIC IS EXEMPT FROM THE DEPTH CEILING, and that is not a relaxation of the trail bound.
   // The ceiling exists because the TRAIL correction is a closed form whose terms are derived per
   // depth ("at two hops there is exactly one way to reuse an edge … at three there are several
   // interacting ways and no single term"). A DFS has no terms: it is exact at any depth, and the
@@ -1267,14 +1267,14 @@ export const detectVarLengthCount = (
   }
 
   /*
-   * ⚠️⚠️ A GATE ON THE START IS NOW CARRIED, FROM EITHER SPELLING (item 1907), where item 583
+   * A GATE ON THE START IS NOW CARRIED, FROM EITHER SPELLING (item 1907), where item 583
    * refused it. Its reason was a capability rather than a correctness one — "a filter on the SEED,
    * which this rung does not carry" — plus the observation that native needed a separate mask
    * (`node_pass_mask`, item 575) to do it. [[check-the-blocker-still-holds]]: the mechanism now
    * exists, `gateWith` already composes both spellings for the ENDPOINT, and every arm of this rung
    * accumulates over the source list, so restricting the sources restricts exactly the outer sum.
    *
-   * ⚠️ AND BOTH SPELLINGS MOVE TOGETHER, WHICH IS ITEM 583'S OWN REASONING APPLIED RATHER THAN
+   * AND BOTH SPELLINGS MOVE TOGETHER, WHICH IS ITEM 583'S OWN REASONING APPLIED RATHER THAN
    * DROPPED. It declined to keep "both of ITS spellings on the walk together rather than making a
    * new cliff" — so carrying only the clause form would have created exactly the inline-vs-clause
    * cliff this repo names first. `degreeCountShape`'s `plainNode(pattern.start)` is lifted in the
@@ -1314,13 +1314,13 @@ export const detectVarLengthCount = (
   }
 
   /*
-   * ⚠️⚠️ **THE ACYCLIC ROUTE RETURNS BEFORE `isTrail` EXISTS, and that ordering is the safety
+   * **THE ACYCLIC ROUTE RETURNS BEFORE `isTrail` EXISTS, and that ordering is the safety
    * property** (item 2002). `isTrail` is `mode !== 'walk'`, so every arm below treats an acyclic
    * pattern as a trail and would answer a TRAIL count — item 692's wrong answer (a depth-4 trail
    * taking the walk arithmetic, 3 where the trail answers 0) with a different mode name. Returning
    * here means nothing below is reachable for `acyclic`, so there is no bound to keep in step.
    *
-   * ⚠️ THE CLOSURE IS BUILT IN `acyclic-count.ts`, NOT HERE, and that is a lint gate's doing worth
+   * THE CLOSURE IS BUILT IN `acyclic-count.ts`, NOT HERE, and that is a lint gate's doing worth
    * recording: written inline it pushed this function to a complexity of 38 against a cap of 35 —
    * the cap this file's own note warns about ("`varLengthDegreeCount` is at the lint complexity cap
    * — an extra `||` in there is refused"). Moving it out is what the design said anyway: nothing
@@ -1357,7 +1357,7 @@ export const detectVarLengthCount = (
   // split did not fix a measured regression. It is kept because an unfiltered query running
   // literally the code it ran before cannot produce an ambiguous reading like that again —
   // which is the cheap half of the lesson.
-  // ⚠️ THE PREDICATE-FREE CLOSURE NOW REQUIRES BOTH TO BE ABSENT, which keeps item 583's split
+  // THE PREDICATE-FREE CLOSURE NOW REQUIRES BOTH TO BE ABSENT, which keeps item 583's split
   // doing what it was for: an unfiltered query runs literally the code it ran before, with exactly
   // the captures it had ([[ts-closure-size-is-load-bearing]]). A start predicate routes to the
   // carrying closure below, which is reached only by a query that has one.
@@ -1406,7 +1406,7 @@ export const detectVarLengthCount = (
         ? (v: Vertex): boolean => inlineHolds(endPred, v, binding, params, graph)
         : (v: Vertex): boolean =>
             v.labels.has(eff) && inlineHolds(endPred, v, binding, params, graph);
-    // ⚠️ ONE BINDING MAP FOR BOTH TESTS, and a mutant is why it is not two. `inlineHolds` writes the
+    // ONE BINDING MAP FOR BOTH TESTS, and a mutant is why it is not two. `inlineHolds` writes the
     // node's OWN variable, and a pattern's start and endpoint are necessarily different variables —
     // so the two tests write different keys and cannot overwrite each other. A separate map for the
     // seed test survived mutation, which is what an unnecessary one looks like; the idiom here is
@@ -1428,16 +1428,16 @@ export const detectVarLengthCount = (
           passes,
           seedPasses,
           /*
-           * ⚠️ THE NODE IS `pattern.start` AS COMPILED, which is what makes both spellings seek
+           * THE NODE IS `pattern.start` AS COMPILED, which is what makes both spellings seek
            * (item 1979). `compileLinear` attaches a clause `WHERE` reading the start to that node
            * as `pred`/`seedHints`, so `seedVertices` finds the same candidate for
            * `WHERE a.n = $p`, `(a {n: $p})` and `(a WHERE a.n = $p)` alike — no predicate lift
            * here, and no risk of carrying one spelling and not another.
            *
-           * ⚠️ Only when there IS a start predicate — this closure is also reached by a query with
+           * Only when there IS a start predicate — this closure is also reached by a query with
            * an ENDPOINT predicate and no start one, and such a node has nothing to seek.
            *
-           * ⚠️ A MUTANT REMOVING THIS GUARD SURVIVES, and that is recorded rather than papered
+           * A MUTANT REMOVING THIS GUARD SURVIVES, and that is recorded rather than papered
            * over. Without a start predicate `seekedSeeds` finds no candidate and returns
            * `undefined`, so the rung takes the same path and answers the same number — the guard
            * saves one `indexCandidates` enumeration per query and changes nothing observable. It is

@@ -6,7 +6,7 @@
  * writes `CALL pagerank() YIELD node, score` in ISO-GQL or `g.pageRank()` in Gremlin, and each
  * surface wraps the result before handing it back. That wrapper has never been measured.
  *
- * ⚠️ THERE IS A SPECIFIC REASON TO SUSPECT IT. The GQL `CALL` handler materializes the outer stream
+ * THERE IS A SPECIFIC REASON TO SUSPECT IT. The GQL `CALL` handler materializes the outer stream
  * and then, for every outer binding, maps over EVERY result row building `new Map(binding)` — a
  * Map clone per row. A whole-graph procedure returns one row per vertex, so at 160,000 vertices that
  * is 160,000 Map allocations layered on top of the algorithm. Whether that is visible against the
@@ -20,7 +20,7 @@
  *   gqlbare   query(g, 'CALL <name>() RETURN count(*)')        YIELD-less, same procedure
  *   gremlin   the Gremlin OLAP step for the same procedure
  *
- * ⚠️ `count(*)` IS DELIBERATE, and it is the control for its own trap: every arm must consume the
+ * `count(*)` IS DELIBERATE, and it is the control for its own trap: every arm must consume the
  * same number of rows without the COMPARISON being about how they are rendered. A `RETURN node.name`
  * arm would additionally pay property reads per row and confound the wrapper question with a
  * projection question.
@@ -63,7 +63,7 @@ if (COLUMN[ALGO] === undefined) {
 }
 
 /**
- * ⚠️ `WRITE=1` IS THE CONTROL FOR A FALSE COMPARISON. The `gremlin` arm looked like it had the
+ * `WRITE=1` IS THE CONTROL FOR A FALSE COMPARISON. The `gremlin` arm looked like it had the
  * highest surface overhead (30.86 against `direct`'s 21.09 on pagerank at 40,000), but a Gremlin
  * OLAP step is SPECIFIED to write its result to a vertex property and pass the traversers through,
  * which `CALL` and the direct call do not do. Its profile shows `setProperty` + `#commitNormalized`
@@ -120,12 +120,12 @@ const run = async () => {
     return () => Number(query(graph, text)[0].n);
   }
 
-  // ⚠️ GREMLIN'S OLAP MODEL IS NOT GQL'S, and the arm reflects that rather than papering over it.
+  // GREMLIN'S OLAP MODEL IS NOT GQL'S, and the arm reflects that rather than papering over it.
   // `CALL` YIELDs rows; a Gremlin OLAP step WRITES a property and passes the traversers through, so
   // the comparable shape is `V() -> step() -> count()`. The two numbers are therefore "what each
   // surface costs to reach the same procedure", not two renderings of one operation.
   //
-  // ⚠️ `toArray(plan, graph)` IN THAT ORDER — the reverse throws, and the Gremlin bench records
+  // `toArray(plan, graph)` IN THAT ORDER — the reverse throws, and the Gremlin bench records
   // losing a round to it (item 1349).
   const gremlin = await import('@lenke/gremlin');
   const step = {

@@ -1,15 +1,15 @@
 /*
  * Item 2101 — does the planner seed from a selective predicate on the FAR node?
  *
- * ⚠️ Item 2100 measured `list: subjects for object` at 30.5 ms unindexed and 31.7 INDEXED — the index
+ * Item 2100 measured `list: subjects for object` at 30.5 ms unindexed and 31.7 INDEXED — the index
  * did not help. That row is `MATCH (u:User)-[:MEMBER_OF]->(:Team)-[:CAN_VIEW]->(d:Doc) WHERE d.name =
  * $d`: the selective predicate is on `d`, the LAST node, while the pattern is written from `u`.
  *
- * 🔑 THE QUESTION: is the engine scanning all users because the predicate is at the far end? If the
+ * THE QUESTION: is the engine scanning all users because the predicate is at the far end? If the
  * SAME question written from `d` is much faster, the planner is not choosing its seed — and this is the
  * "who can see this document" query, i.e. a share dialog, not a synthetic shape.
  *
- * ⚠️ BOTH SPELLINGS MUST RETURN THE SAME ANSWER and it is asserted. Two spellings of one question that
+ * BOTH SPELLINGS MUST RETURN THE SAME ANSWER and it is asserted. Two spellings of one question that
  * disagree would make the comparison meaningless, and a reversed pattern is exactly where a
  * self-inflicted wrong answer would hide.
  */
@@ -66,7 +66,7 @@ if (process.env.INDEXED !== '0') {
 }
 
 /*
- * ⚠️ `d1` IS CHOSEN DELIBERATELY: team 1 is one of the SMALL teams, so the correct answer is a few
+ * `d1` IS CHOSEN DELIBERATELY: team 1 is one of the SMALL teams, so the correct answer is a few
  * hundred users rather than the 20,000 in the skewed team 0. A seeded walk should finish in the time
  * its own answer takes; a full user scan cannot tell the two docs apart.
  */

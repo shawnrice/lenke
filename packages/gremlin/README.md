@@ -93,7 +93,7 @@ import {
 traversal(V(), has('name', 'core'), repeat(pipe(in_('DEPENDS_ON'), dedupe())).emit(), dedupe());
 
 // shortestPath().with(ShortestPath.target, <sub-traversal>) → yields Vertex[][].
-// ⚠️ shortestPath() is UNDIRECTED: it does BFS over incident edges in BOTH
+// shortestPath() is UNDIRECTED: it does BFS over incident edges in BOTH
 // directions, so on a directed graph it can return paths that traverse edges
 // backwards. For direction-respecting shortest paths use the GQL `ANY SHORTEST`
 // form (`MATCH p = ANY SHORTEST (a)-[]->*(b)`), which honors edge orientation.

@@ -842,7 +842,7 @@ fn top_k_liftable(pinput: &Plan, key_exprs: &[&Expr], store: &Store) -> bool {
 /// the floor that must also walk (`count(b.k)` over the same hop): **8.18x (num) / 9.77x (str) /
 /// 10.49x (dict) / 8.30x (bool)**.
 ///
-/// ⚠️ ITEM 1065 MEASURED THIS COMPARISON AND REFUTED A LEVER ON IT — "hop min 11.87 vs hop top-10
+/// ITEM 1065 MEASURED THIS COMPARISON AND REFUTED A LEVER ON IT — "hop min 11.87 vs hop top-10
 /// 11.91, so the rows and the selection cost about zero; do not re-attempt it on the hop rung."
 /// That holds in ITS fixture and not on this rung. Holding the node count at 200,000 and varying
 /// only the degree: top-10 ÷ hop-min is **1.47x at degree 1** and **6.63x at degree 5**. Item

@@ -6,13 +6,13 @@
  * GQL's range seed did before item 1756. Its gate is the same rule (`SEEK_MAX_FRACTION = 1/8`,
  * `SEEK_FLOOR_ELEMENTS = 4096`), added at item 1322 after an index made a query **5x slower**.
  *
- * ⚠️ MEASURE BEFORE BUILDING. The GQL fix does not transfer by inspection: there `scan` is always
+ * MEASURE BEFORE BUILDING. The GQL fix does not transfer by inspection: there `scan` is always
  * the label bucket, while here `seekIsWorthIt(count, scan, total)` takes a `scan` that may be
  * ANOTHER candidate's count, discovered after this one. The safe cap is therefore `sourceSize / 8`
  * (the largest threshold either call site can use) rather than the GQL cap — but none of that is
  * worth writing if the regression is not there.
  *
- * ⚠️ `n` IS THE HIGH-CARDINALITY COLUMN (20,000 distinct) and `k` the low one (97). Item 1755
+ * `n` IS THE HIGH-CARDINALITY COLUMN (20,000 distinct) and `k` the low one (97). Item 1755
  * established that the cost tracks CARDINALITY, not selectivity, so the pair is the control.
  *
  *     INDEXED=1 SHAPE=rangewide node gremlin-range-count-probe.mjs
@@ -46,7 +46,7 @@ const PLANS = {
   rangelowcard: traversal(V(), hasLabel('P'), has('k', lt(48)), count()),
   // Highly selective, where the seek genuinely pays and must stay fast.
   rangetight: traversal(V(), hasLabel('P'), has('n', lt(10)), count()),
-  // ⚠️ THE `node-values` PATH (item 1759). Both `seedForStep` callers there require
+  // THE `node-values` PATH (item 1759). Both `seedForStep` callers there require
   // `removable: true`, and a range candidate is ALWAYS `removable: false` — so for a range
   // predicate they pay the O(distinct) count and then discard the candidate. These two shapes are
   // how that path is reached: a values projection behind a range filter.

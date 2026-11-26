@@ -8,13 +8,13 @@ import { V, as_, eq, gt, lt, neq, out, toArray, traversal, values, where } from 
  * `where(<predicate>)` — the tag-referencing form, after item 1900 gave its eq/neq case a
  * comparator chosen ONCE instead of a predicate object rebuilt per row.
  *
- * ⚠️ THE SPECIALIZATION IS SOUND ONLY BECAUSE `matches`' eq/neq arm IS `valueEq`, which is
+ * THE SPECIALIZATION IS SOUND ONLY BECAUSE `matches`' eq/neq arm IS `valueEq`, which is
  * `v === b` for every non-temporal operand (`predicates.ts` derives this for the fixed-operand
  * twin, `specializePredicate`). So the fast branch is guarded on `!isTemporal(end.value)` and the
  * ORDERING ops are not specialized at all — `gt` and friends go through `predCmp`, whose cross-type
  * NaN rule does not reduce to an operator.
  *
- * ⚠️ WHAT THESE TESTS DO **NOT** COVER, stated rather than implied: no shape reachable from this
+ * WHAT THESE TESTS DO **NOT** COVER, stated rather than implied: no shape reachable from this
  * surface puts a TEMPORAL in the tag while the current value is a DIFFERENT temporal object of equal
  * value, because the tag and the current value share one traverser lineage. The `isTemporal` guard
  * is therefore unproven-reachable soundness insurance, and unlike item 1899's dead adjacency arm it
@@ -60,7 +60,7 @@ describe('where(predicate) against a tag — the eq/neq fast branch', () => {
     ).toStrictEqual(['b', 'c']);
   });
 
-  /** ⚠️ `eq` IS THE OTHER HALF OF ONE FLAG, and a mutant that inverts it changes only this row. */
+  /** `eq` IS THE OTHER HALF OF ONE FLAG, and a mutant that inverts it changes only this row. */
   it('eq keeps ONLY the tagged element', () => {
     expect(
       ids(toArray(traversal(V('a'), as_('me'), out('E'), where(eq('me'))), fixture())),
@@ -74,7 +74,7 @@ describe('where(predicate) against a tag — the eq/neq fast branch', () => {
     ).toStrictEqual(['b', 'c', 'a']);
   });
 
-  /** ⚠️ SCALARS, not elements: the same branch, with `===` over numbers rather than identity. */
+  /** SCALARS, not elements: the same branch, with `===` over numbers rather than identity. */
   it('compares scalar values', () => {
     const g = fixture();
 
@@ -85,19 +85,19 @@ describe('where(predicate) against a tag — the eq/neq fast branch', () => {
   });
 
   /**
-   * ⚠️ THE ORDERING OPS MUST STAY ON THE GENERAL PATH, and these rows are what says so: `predCmp`
+   * THE ORDERING OPS MUST STAY ON THE GENERAL PATH, and these rows are what says so: `predCmp`
    * filters a cross-type or missing value to false rather than erroring, which `===` cannot express.
    */
   it('an ordering op still routes through `matches`', () => {
     const g = fixture();
 
-    // ⚠️ THE SCALAR PAIR IS VACUOUS AGAINST THE MUTANT THAT MATTERS, and the mutation run said so:
+    // THE SCALAR PAIR IS VACUOUS AGAINST THE MUTANT THAT MATTERS, and the mutation run said so:
     // each traverser's `n` IS its own tagged `n`, so "not greater" and "not equal" agree and a
     // mutant routing `gt` through the equality branch answers `[]` either way.
     expect(toArray(traversal(V(), values('n'), as_('x'), where(gt('x'))), g)).toStrictEqual([]);
     expect(toArray(traversal(V(), values('n'), as_('x'), where(lt('x'))), g)).toStrictEqual([]);
 
-    // ⚠️ THIS is the discriminating shape: a far VERTEX ordered against a tagged VERTEX is
+    // THIS is the discriminating shape: a far VERTEX ordered against a tagged VERTEX is
     // incomparable, so `predCmp` yields NaN and every row is filtered — where the equality branch
     // would keep every row that is merely DIFFERENT (b and c).
     expect(ids(toArray(traversal(V('a'), as_('me'), out('E'), where(gt('me'))), g))).toStrictEqual(

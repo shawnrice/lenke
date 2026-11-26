@@ -1,7 +1,7 @@
 /**
  * DOES THE SIZE OF A CLOSURE'S CAPTURED ENVIRONMENT COST ANYTHING? (item 1639)
  *
- * ⚠️ WHY THIS EXISTS. Three consecutive items found a 1.2-2.0x gap between an engine walk and a hand
+ * WHY THIS EXISTS. Three consecutive items found a 1.2-2.0x gap between an engine walk and a hand
  * floor doing the same work, and per-frame ablation explained a minority each time:
  *
  * ```text
@@ -27,7 +27,7 @@
  *   fatread  same 14, and the hot loop reads ONE of them per edge — the engine's actual pattern,
  *          which separates "a big context costs" from "reading through a big context costs"
  *
- * ⚠️ THE COLD REFERENCE IS LOAD-BEARING. A captured local that is never referenced anywhere is
+ * THE COLD REFERENCE IS LOAD-BEARING. A captured local that is never referenced anywhere is
  * dropped from the context entirely, so `fat` would silently BE `lean` and the arms would differ by
  * nothing — the null-result-that-looks-like-a-result this whole corpus keeps producing. Each extra
  * local is referenced in a branch guarded by a value the fixture never produces, and the probe
@@ -161,7 +161,7 @@ const fat = (): (() => number) => {
       }
     }
 
-    // ⚠️ THE COLD REFERENCE. Never true on this fixture (asserted via `coldHits`), but it is what
+    // THE COLD REFERENCE. Never true on this fixture (asserted via `coldHits`), but it is what
     // keeps all eleven extras alive in the closure's context rather than optimized away.
     if (n < 0) {
       coldHits += 1;
@@ -245,7 +245,7 @@ const fatread = (): (() => number) => {
 };
 
 /**
- * ⚠️ ENGINE AGAINST FLOOR, IN ONE PROCESS, ONE MEASUREMENT AT A TIME (item 1640) — the experiment
+ * ENGINE AGAINST FLOOR, IN ONE PROCESS, ONE MEASUREMENT AT A TIME (item 1640) — the experiment
  * item 1639 said to run before hunting a fifth lever.
  *
  * Items 1634, 1636 and 1638 each measured an engine walk 1.2-2.0x a hand floor and per-frame
@@ -258,7 +258,7 @@ const fatread = (): (() => number) => {
  * timing loop, its warm-up and its estimator; `ARM` selects one and the process does nothing else.
  * Whatever ratio they show is the engine's, with the harness held constant by construction.
  *
- * ⚠️ THE FLOOR MUST PUSH, NOT COUNT. `toArray` materialises an array, so a floor that increments a
+ * THE FLOOR MUST PUSH, NOT COUNT. `toArray` materialises an array, so a floor that increments a
  * counter is not doing the same work — and the `lean`/`fat`/`fatread` arms above DO count, which is
  * why they are not comparable with these two and why item 1639's note forbids cross-file comparison
  * in the first place.
@@ -298,7 +298,7 @@ const floor1 = (): (() => number) => {
 };
 
 /**
- * ⚠️ THE TWO-HOP FILTERED PAIR, which is where item 1638 measured **1.97x** in a twelve-arm process
+ * THE TWO-HOP FILTERED PAIR, which is where item 1638 measured **1.97x** in a twelve-arm process
  * — the largest of the gaps this family keeps producing. Same query, same fixture, same harness, one
  * arm per process. If the ratio collapses here the gap was the instrument; if it holds, it is the
  * engine.

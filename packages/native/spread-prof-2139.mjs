@@ -2,17 +2,17 @@
  * WHERE DO THE ~45 UNEXPLAINED MILLISECONDS IN THE FAR-KEYED OPTIONAL GROUPED COUNT GO? (item 2125)
  *
  * Item 2124 shipped that rung at 3.22x and measured it **1.85x above its own floor**: 112.0 ms against
- * the non-OPTIONAL far-key's 60.5. 🔑 Part of the 52 ms gap is inherent — the OPTIONAL form MUST visit
+ * the non-OPTIONAL far-key's 60.5. Part of the 52 ms gap is inherent — the OPTIONAL form MUST visit
  * every anchor to find the unmatched ones — but 200,000 anchor visits at ~34 ns is only ~7 ms, so **~45
  * ms is unaccounted for**. This profiles it rather than guessing at a mechanism.
  *
- * ⚠️⚠️ **THE PROFILE IS WINDOWED TO THE QUERY LOOP, WHICH IS THE WHOLE POINT.** `PROBES.md`'s closed-frames
+ * **THE PROFILE IS WINDOWED TO THE QUERY LOOP, WHICH IS THE WHOLE POINT.** `PROBES.md`'s closed-frames
  * table exists because every profile in this package surfaces the FIXTURE BUILD — `indexEdgeLabel`,
  * `commitElementLabels`, `#commitNormalized` — and all of those are closed targets with six prior
- * arrivals between them. 🔑 Starting the V8 profiler AFTER the build and stopping it before teardown
+ * arrivals between them. Starting the V8 profiler AFTER the build and stopping it before teardown
  * makes those frames structurally absent rather than something to remember to ignore.
  *
- * ⚠️ Run with `node`, not `bun`: this uses `node:inspector`'s Session to window the profile. `@lenke/*`
+ * Run with `node`, not `bun`: this uses `node:inspector`'s Session to window the profile. `@lenke/*`
  * resolve to built dist (plain ESM), so node can load them — but a TS source edit reaches this probe only
  * after `nx build`.
  *
@@ -22,10 +22,10 @@
  *   - `floor`    the same question without OPTIONAL. Itemizes edges, need not visit unmatched anchors.
  *   - `startkey` OPTIONAL + start key. Visits anchors, never itemizes edges.
  *
- * 🔑 So a frame heavy in `farkey` and absent from `startkey` is the EDGE itemization; heavy in `farkey`
+ * So a frame heavy in `farkey` and absent from `startkey` is the EDGE itemization; heavy in `farkey`
  * and absent from `floor` is the anchor visiting. A frame heavy in all three is neither.
  *
- * ⚠️⚠️ **READ THE WALK AND ITS CALLER AS ONE NUMBER — THEIR SPLIT IS NOT REPRODUCIBLE.** Four runs of this
+ * **READ THE WALK AND ITS CALLER AS ONE NUMBER — THEIR SPLIT IS NOT REPRODUCIBLE.** Four runs of this
  * probe, same binary, same fixture:
  *
  * ```text
@@ -33,8 +33,8 @@
  *     optionalHopCounts          8.1    18.2    40.1    13.3     <- the SAME code, 5x apart
  * ```
  *
- * 🔑 V8's inlining decisions vary per run, so the two frames TRADE self time while their sum stays put.
- * ⚠️ Item 2125 over-read one of those splits as "13.3% phantom self-time in a two-branch dispatcher that
+ * V8's inlining decisions vary per run, so the two frames TRADE self time while their sum stays put.
+ * Item 2125 over-read one of those splits as "13.3% phantom self-time in a two-branch dispatcher that
  * cannot cost 13 ms" and built a fix on it that measured 1.02-1.11x. A nomination that depends on WHICH
  * of a callee and its caller is hot is not a finding; sum them, or ablate with a control.
  */
@@ -79,7 +79,7 @@ for (let i = 0; i < N; i += 1) {
 
 let e = 0;
 
-/* ⚠️ HALF the anchors have no out-edge, as item 2124's fixture does — the `max(1, …)` needs them. */
+/* HALF the anchors have no out-edge, as item 2124's fixture does — the `max(1, …)` needs them. */
 for (let d = 0; d < 3; d += 1) {
   for (let i = 0; i < N; i += 1) {
     g.addEdge({
@@ -94,7 +94,7 @@ for (let d = 0; d < 3; d += 1) {
 }
 
 /*
- * ⚠️ THE SEEK KEY IS INDEXED, as the serving bench's `(+)` column is. Without it the seed is a 200,000-row
+ * THE SEEK KEY IS INDEXED, as the serving bench's `(+)` column is. Without it the seed is a 200,000-row
  * scan that dwarfs the 1-3 hop expansion this item is about — the walk would be invisible.
  */
 g.createIndex({ on: 'vertex', kind: 'hash', keys: ['name'] });
@@ -146,7 +146,7 @@ for (const node of profile.nodes) {
   const parts = String(url).split('/');
   const [file] = parts.slice(-1);
   /*
-   * ⚠️ AN EXPLICIT LENGTH TEST, NOT `??` — `functionName` is the EMPTY STRING for an anonymous frame,
+   * AN EXPLICIT LENGTH TEST, NOT `??` — `functionName` is the EMPTY STRING for an anonymous frame,
    * which is falsy but NOT nullish, so `??` would leave the label blank. Same trap as item 2117's empty
    * `join`; the lint's suggestion is wrong here.
    */

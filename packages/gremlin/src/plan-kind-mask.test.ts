@@ -4,7 +4,7 @@
  * Measured on a reused plan: count 200 → 162 ns, hop 265 → 215, filtered 1031 → 968; cumulative with
  * item 1504, count 315 → 162 (1.94x) and hop 456 → 215 (2.12x).
  *
- * ⚠️ A WRONGLY-SKIPPED FUSION IS INVISIBLE TO EVERY ANSWER TEST. The passes are answer-equivalent
+ * A WRONGLY-SKIPPED FUSION IS INVISIBLE TO EVERY ANSWER TEST. The passes are answer-equivalent
  * optimisations — `outE(T).inV()` becomes `out(T)` with identical rows — so a broken gate costs
  * speed and nothing else. Item 1307 measured that particular one at **18936-24433x**, and the 1,422
  * tests in this package would all stay green through it. That is `perf-gate-needed-its-own-test` in
@@ -13,7 +13,7 @@
  * The invariant it leans on: **`plan.kinds` must always equal `maskOfSteps(plan.steps)`**. That one
  * property covers construction, every rewrite, and the hazard below.
  *
- * ⚠️ THE HAZARD WORTH NAMING: `fuseLocal` runs FIRST in the pipeline and INLINES a sub-plan's steps
+ * THE HAZARD WORTH NAMING: `fuseLocal` runs FIRST in the pipeline and INLINES a sub-plan's steps
  * into the top level. So it can introduce a `union`, a `values` or an edge step that the original
  * mask never recorded — and a later pass gated on a stale mask would skip a fusion it should make.
  * Every rewrite therefore recomputes; `holdsInvariant` is what proves it.
@@ -86,12 +86,12 @@ describe('the mask records exactly the gate kinds in the top-level steps', () =>
     expect(plain.kinds & KIND_BITS.local).toBe(0);
     expect(plain.kinds & KIND_BITS.union).toBe(0);
     expect(plain.kinds & KIND_BITS.values).toBe(0);
-    // ⚠️ `out` is NOT an edge step — `outE` is. A mask that confused them would gate `fuseEdgeHop`
+    // `out` is NOT an edge step — `outE` is. A mask that confused them would gate `fuseEdgeHop`
     // on every vertex hop, which is the common case, and the pass would run for nothing.
     expect(plain.kinds & EDGE_STEP_BITS).toBe(0);
   });
 
-  it('⚠️ TOP-LEVEL ONLY — a union buried in a sub-plan does not set the top-level bit', () => {
+  it('TOP-LEVEL ONLY — a union buried in a sub-plan does not set the top-level bit', () => {
     // Each gated pass iterates `plan.steps` and never recurses, so a nested `union` is not
     // something it can fuse. Recording it would make the mask pessimistic and the gate useless.
     // (This is the opposite rule from `readsPath`, which MUST propagate — see item 1504.)
@@ -111,7 +111,7 @@ describe('the mask records exactly the gate kinds in the top-level steps', () =>
   });
 });
 
-describe('⚠️ the invariant survives every rewrite — kinds === maskOfSteps(steps)', () => {
+describe('the invariant survives every rewrite — kinds === maskOfSteps(steps)', () => {
   for (const [label, plan] of [
     ['plain count', traversal(V(), count())],
     ['vertex hop', traversal(V(), out('E'), count())],
@@ -132,12 +132,12 @@ describe('⚠️ the invariant survives every rewrite — kinds === maskOfSteps(
     });
   }
 
-  it('⚠️ holds when fuseLocal INLINES steps that carry a gate kind — the staleness hazard', () => {
+  it('holds when fuseLocal INLINES steps that carry a gate kind — the staleness hazard', () => {
     // `local` wrapping only LOCAL_TRANSPARENT_STEPS is inlined into the top level by `fuseLocal`,
     // the FIRST pass. If the inlined steps carry a gate bit the original plan lacked, a later pass
     // reading a stale mask would skip. `values` is both transparent and a gate kind, which is what
     // makes this shape the one that can catch it.
-    // ⚠️ THE TAIL IS `order`, NOT `count`, AND ITEM 1585 IS WHY. With a `count` tail this plan now
+    // THE TAIL IS `order`, NOT `count`, AND ITEM 1585 IS WHY. With a `count` tail this plan now
     // fuses TWICE: `fuseLocal` lifts the `values` to the top level, and then the widened
     // `fuseValuesIsCount` consumes it (`values(k).count()` -> `hasKey(k).count()`), so the
     // `values` step this test looks for is legitimately gone and the assertion failed. `order` is
@@ -149,7 +149,7 @@ describe('⚠️ the invariant survives every rewrite — kinds === maskOfSteps(
 
     const fused = effectivePlan(plan, graph, false);
 
-    // ⚠️ UNCONDITIONAL, AND THE FIRST VERSION WAS NOT. It guarded these assertions with
+    // UNCONDITIONAL, AND THE FIRST VERSION WAS NOT. It guarded these assertions with
     // `if ((fused.kinds & KIND_BITS.local) === 0)` — so a `wrong-gate` mutant (gate `fuseLocal` on
     // the `union` bit instead of `local`) made the fusion never happen, the `if` never run, and all
     // 20 tests pass. A gate that silently stops firing is invisible to every ANSWER test, because
@@ -170,7 +170,7 @@ describe('⚠️ the invariant survives every rewrite — kinds === maskOfSteps(
     expect(fused.kinds).toBe(maskOfSteps(fused.steps));
   });
 
-  it('⚠️ a kind LIFTED by one pass is visible to a later gated pass — the hazard, positively', () => {
+  it('a kind LIFTED by one pass is visible to a later gated pass — the hazard, positively', () => {
     // The sharper form of the test above, available since item 1585 widened `fuseValuesIsCount`.
     // `fuseLocal` lifts `values('k')` out of the `local`, which sets the `values` gate bit that
     // the original plan lacked; `fuseValuesIsCount` is gated on exactly that bit and runs LATER.
@@ -198,10 +198,10 @@ describe('⚠️ the invariant survives every rewrite — kinds === maskOfSteps(
     expect(fused.kinds).toBe(maskOfSteps(fused.steps));
   });
 
-  it('⚠️ each gated pass still FIRES for the plan it gates on', () => {
+  it('each gated pass still FIRES for the plan it gates on', () => {
     // The companion to the test above, for the other four gates. Each asserts the rewrite's own
     // observable effect, because a gate on the wrong bit changes no answer.
-    // ⚠️ `outE('E'), inV()` — NOT a bare `outE`. The pass fuses the PAIR into `out('E')` (item
+    // `outE('E'), inV()` — NOT a bare `outE`. The pass fuses the PAIR into `out('E')` (item
     // 1307, measured at 18936-24433x); a lone `outE` has nothing to fuse and legitimately survives,
     // which is what the first version of this assertion got wrong.
     const edgeHop = effectivePlan(traversal(V(), outE('E'), inV(), count()), graph, false);
@@ -215,7 +215,7 @@ describe('⚠️ the invariant survives every rewrite — kinds === maskOfSteps(
       'and becomes a vertex hop',
     ).toBe(true);
 
-    // ⚠️ `union(out(L), in(L))` with IDENTICAL labels and exactly one step per arm — that is
+    // `union(out(L), in(L))` with IDENTICAL labels and exactly one step per arm — that is
     // `bothFromUnion`'s precondition, read from the code after guessing it wrong twice (a bare
     // `outE` with no `inV`, then `union(out, both)`). Each wrong guess made the assertion fail for
     // a reason that had nothing to do with the gate.
@@ -240,7 +240,7 @@ describe('⚠️ the invariant survives every rewrite — kinds === maskOfSteps(
   });
 });
 
-describe('⚠️ item 1506 — the two passes gated LAST, and the kind I first missed', () => {
+describe('item 1506 — the two passes gated LAST, and the kind I first missed', () => {
   it('records hasLabel, and dropVacuousLabels still drops a vacuous label', () => {
     const labelled = traversal(V(), hasLabel('P'), count());
 
@@ -260,7 +260,7 @@ describe('⚠️ item 1506 — the two passes gated LAST, and the kind I first m
     expect(traversal(V(), out('E'), count()).kinds & KIND_BITS.hasLabel).toBe(0);
   });
 
-  it('⚠️ FILTER_WRAPPER_BITS covers all FIVE kinds, including hasLabelAnd', () => {
+  it('FILTER_WRAPPER_BITS covers all FIVE kinds, including hasLabelAnd', () => {
     // My first gate listed four — `not`, `filter`, `or`, `and` — read off the function body's
     // explicit `step.kind ===` tests. The fifth is `pushSplit`, which runs unconditionally at the
     // bottom of the loop and splits `hasLabelAnd` (item 1309); two existing tests failed on it.
@@ -274,9 +274,9 @@ describe('⚠️ item 1506 — the two passes gated LAST, and the kind I first m
     }
   });
 
-  it('⚠️ every KIND_BITS value is a DISTINCT POWER OF TWO', () => {
+  it('every KIND_BITS value is a DISTINCT POWER OF TWO', () => {
     /*
-     * ⚠️⚠️ **THIS IS THE ASSERTION THAT WOULD HAVE CAUGHT ITEM 2047's COLLISION.** `where` was given
+     * **THIS IS THE ASSERTION THAT WOULD HAVE CAUGHT ITEM 2047's COLLISION.** `where` was given
      * 16_384, which `hasId` already held, because the "next free bit" was computed with a regex of
      * `name: \d+,` that skips JS numeric separators (`16_384`, `32_768`) — so the maximum read as
      * 8192. Nothing broke and every gate stayed green: each pass scans the plan and finds nothing, so
@@ -293,9 +293,9 @@ describe('⚠️ item 1506 — the two passes gated LAST, and the kind I first m
     }
   });
 
-  it('⚠️ EVERY bit in FILTER_WRAPPER_BITS is a REAL KIND_BITS entry', () => {
+  it('EVERY bit in FILTER_WRAPPER_BITS is a REAL KIND_BITS entry', () => {
     /*
-     * ⚠️⚠️ **THIS IS THE ASSERTION THAT WOULD HAVE CAUGHT ITEM 2047's DEAD CODE.** `KIND_BITS` is
+     * **THIS IS THE ASSERTION THAT WOULD HAVE CAUGHT ITEM 2047's DEAD CODE.** `KIND_BITS` is
      * `Readonly<Record<string, number>>`, so `KIND_BITS.where` type-checked while being `undefined`,
      * and `FILTER_WRAPPER_BITS | undefined` is a no-op — the mask was unchanged, every `where`-only
      * plan kept `kinds === 0`, and a new rewrite behind the gate never ran. The test above only
@@ -313,7 +313,7 @@ describe('⚠️ item 1506 — the two passes gated LAST, and the kind I first m
     expect(FILTER_WRAPPER_BITS).toBeGreaterThan(0);
   });
 
-  it('⚠️ the hasLabelAnd split still FIRES — the fold the four-bit gate silently lost', () => {
+  it('the hasLabelAnd split still FIRES — the fold the four-bit gate silently lost', () => {
     // `has(label, key, pred)` builds a `hasLabelAnd`, which must split into `hasLabel` + `has`.
     const plan = traversal(V(), has('P', 'k', gt(3)), count());
 

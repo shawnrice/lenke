@@ -9,7 +9,7 @@
  * the number. A fixed cost of a few tens of ns is invisible in it, which is why removing work
  * measured flat twice.
  *
- * ⚠️ SO THE FIXTURE HERE IS AS SMALL AS THE LANGUAGE ALLOWS, and the arms are ordered by how much
+ * SO THE FIXTURE HERE IS AS SMALL AS THE LANGUAGE ALLOWS, and the arms are ordered by how much
  * graph they touch, so the fixed cost can be read off the DIFFERENCES rather than guessed at:
  *
  *   - `floor`  — `RETURN 1 AS v`. No graph access at all. This is the pure per-call cost: cache
@@ -49,7 +49,7 @@ const g1 = graphOf(1);
 const g10 = graphOf(10);
 
 /**
- * ⚠️ THE CONTROL FOR ITEM 1509'S GATE, and the arm where it can only LOSE.
+ * THE CONTROL FOR ITEM 1509'S GATE, and the arm where it can only LOSE.
  *
  * Item 1509 skips the parse cache's LRU `delete`+`set` while the cache is below `PARSE_CACHE_CAP`,
  * because nothing is evicted there so the recency order it maintains is never read. When the cache
@@ -78,7 +78,7 @@ const ARMS = {
   onerow: [g1, 'MATCH (n:P) RETURN n.k AS k', undefined],
   ten: [g10, 'MATCH (n:P) RETURN count(*) AS c', undefined],
   full: [g1, FILLERS[40], undefined],
-  // ⚠️ THE LIFT-CACHE GAP (item 1540). A text whose literals `normalizeLiterals` ADMITS is parsed
+  // THE LIFT-CACHE GAP (item 1540). A text whose literals `normalizeLiterals` ADMITS is parsed
   // and cached under the LIFTED text (`LET x = $__ap0 RETURN x`), so `parseCacheHit(originalText)`
   // misses on EVERY repeat call and the ~865 ns tokenize is paid again, forever. Verified by
   // querying the lifted text directly after four calls of the literal form: the cache size stays 1,
@@ -120,7 +120,7 @@ const timeRound = (fn) => {
 // Warm every cache before a single number is taken: a text is admitted on its SECOND sighting
 // (`seenOnce`), so one call is not enough and an unwarmed arm would measure the parse.
 /**
- * ⚠️ `full` RUNS IN ITS OWN PROCESS, and that is not tidiness. Saturating the cache changes the
+ * `full` RUNS IN ITS OWN PROCESS, and that is not tidiness. Saturating the cache changes the
  * regime for EVERY arm, not just this one: a 64-entry `Map` makes `get` itself measurably slower
  * than a 6-entry one, and filling it for all arms moved `floor` from 97 to 151 ns before anything
  * was being measured. So the fill happens only when `full` is the selected arm (`ARM=full`), and

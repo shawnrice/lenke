@@ -253,7 +253,7 @@ describe('aggregate() is an eager collecting barrier (store() is lazy)', () => {
     // The barrier drains the whole upstream at its point in the pipeline, so limit(0)
     // (fed the injected 1 first) never gets to block the collection.
     //
-    // ⚠️ "TinkerPop: 4" USED TO BE CLAIMED HERE AND IS FALSE. Measured against the console
+    // "TinkerPop: 4" USED TO BE CLAIMED HERE AND IS FALSE. Measured against the console
     // pinned at 3.8.1 (audit item 417), `V().aggregate('x').inject(1).limit(0).cap('x')`
     // returns an EMPTY aggregate. BOTH engines return everything, so they agree with each
     // other and differ from the reference — which a differential fuzzer cannot see, and why

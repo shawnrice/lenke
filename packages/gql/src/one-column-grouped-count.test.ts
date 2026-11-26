@@ -123,7 +123,7 @@ describe('one-column grouped count: the clauses that ride along', () => {
     ]);
   });
 
-  // ⚠️ `HAVING` is a clause of ISO's SELECT spelling, not of `RETURN`: every
+  // `HAVING` is a clause of ISO's SELECT spelling, not of `RETURN`: every
   // `RETURN … GROUP BY … HAVING …` raises `Unexpected trailing input 'HAVING'`, the two-column
   // form included. My first draft of this test wrote the `RETURN` spelling on the strength of
   // seeing `GROUP BY n.k HAVING count(*) > 1` in a sibling test file — which is in a SELECT
@@ -172,7 +172,7 @@ describe('one-column grouped count: the clauses that ride along', () => {
   test('ORDER BY still answers correctly, on whichever path takes it', () => {
     const graph = g();
 
-    // ⚠️ This spelling DECLINES the rung by design (see `groupedProjection`): its only resolvable
+    // This spelling DECLINES the rung by design (see `groupedProjection`): its only resolvable
     // sort target is the count column, and `colSortsOf` is written around a projected key column
     // this form does not have. The answer must still be right, because declining has to mean
     // "the general path handles it" and not "it is unsupported" — and the probe's `ord1` arm uses
@@ -285,7 +285,7 @@ describe('one-column grouped count: shapes that must NOT be mistaken for it', ()
   });
 });
 
-// ⚠️ THE ROUTE ITSELF NEEDS ASSERTING, and the answers above cannot do it.
+// THE ROUTE ITSELF NEEDS ASSERTING, and the answers above cannot do it.
 //
 // Declining a rung is ANSWER-EQUIVALENT — the general path returns the same rows — so a mutant
 // that makes the gate always refuse is invisible to every test in this file. Mutation says so

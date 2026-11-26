@@ -8,10 +8,10 @@
 # which is the exact mistake item 1599's own heading corrects ("the dismissal was arithmetic on a
 # share, not a measurement").
 #
-# ⚠️ INSTRUMENTATION ONLY — never shipped. It adds a `globalThis` counter to the two label entry
+# INSTRUMENTATION ONLY — never shipped. It adds a `globalThis` counter to the two label entry
 # points in `graph-queries.ts`.
 #
-# ⚠️ RESTORE REBUILDS (item 2031: a restored SOURCE with a stale DIST measures the experiment under
+# RESTORE REBUILDS (item 2031: a restored SOURCE with a stale DIST measures the experiment under
 # the control's name, because `@lenke/*` resolve to dist).
 set -u
 

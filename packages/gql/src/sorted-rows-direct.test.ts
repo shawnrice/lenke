@@ -1,6 +1,6 @@
 // `sortedRowsDirect` — `ORDER BY` with no per-row `Map` round-trip (item 2018).
 //
-// ⚠️⚠️⚠️ **EVERY QUERY HERE IS A COMMA PATTERN, AND THAT IS NOT INCIDENTAL — IT IS THE ONLY WAY TO
+// **EVERY QUERY HERE IS A COMMA PATTERN, AND THAT IS NOT INCIDENTAL — IT IS THE ONLY WAY TO
 // REACH THIS PATH.** My first version of this file used `MATCH (a:T) RETURN a.n AS x ORDER BY x` and
 // hop shapes. All 13 tests passed and tested NOTHING: the mutation round came back with
 // `sort-removed`, `keys-reversed`, `first-row-dropped`, `cmp-ignores-descending` and
@@ -8,7 +8,7 @@
 // entirely and never reach `projectedRows`. [[rung-precedence-decides-speed]] — a willing path is
 // starved by a broader one above it, and timing cannot tell declined from served.
 //
-// 🔑 **HOW THE REACHING SHAPES WERE IDENTIFIED: THE MUTANT WAS USED AS THE DETECTOR.** Deleting the
+// **HOW THE REACHING SHAPES WERE IDENTIFIED: THE MUTANT WAS USED AS THE DETECTOR.** Deleting the
 // `keyed.sort(...)` call and re-running a candidate list, the shapes whose ROW ORDER changed are
 // exactly the ones routed here:
 //
@@ -17,7 +17,7 @@
 //     rung     MATCH (a:T)-[:E]->(b:T) RETURN a.n AS x, b.n AS y ORDER BY x, y
 //     REACHES  MATCH (a:T), (b:T) …  ← every comma-pattern spelling
 //
-// ⚠️ WHAT THIS PATH MUST PRESERVE, none of which a row COUNT or a multiset comparison can see:
+// WHAT THIS PATH MUST PRESERVE, none of which a row COUNT or a multiset comparison can see:
 // COLUMN order (the output's observable shape, [[column-order-is-observable]]), TIE order (rows that
 // compare equal keep INPUT order — the differential fuzzer compares multisets, so it is blind to
 // this), each key's DESC/NULLS flags, and the row a faulting projection raises on.
@@ -32,11 +32,11 @@ const build = (): Graph => {
   const g = new Graph();
 
   /*
-   * ⚠️ `t` IS A TIE COLUMN WHOSE GROUPS ARE NOT INTERNALLY SORTED: `t = 1` holds v1, v3, v5 whose
+   * `t` IS A TIE COLUMN WHOSE GROUPS ARE NOT INTERNALLY SORTED: `t = 1` holds v1, v3, v5 whose
    * `n` reads 50, 40, 30 in input order — neither ascending nor descending. So `ORDER BY t` can
    * only produce that sequence from a STABLE sort, and any reordering of ties shows up.
    *
-   * ⚠️ `z` IS NULL on v2 and v5 — stored nulls, which are present values in this engine
+   * `z` IS NULL on v2 and v5 — stored nulls, which are present values in this engine
    * ([[null-first-class-policy]]) — so the null ordering is observable in both directions.
    */
   for (const [id, n, t, z] of [
@@ -99,7 +99,7 @@ describe('sortedRowsDirect: the answers', () => {
 
   test('THE SECOND KEY MUST ACTUALLY BREAK THE TIE — `y DESC` against input order', () => {
     /*
-     * ⚠️⚠️ **MY FIRST TWO-KEY TEST COULD NOT SEE A BROKEN SECOND KEY.** With `ORDER BY x, y` the
+     * **MY FIRST TWO-KEY TEST COULD NOT SEE A BROKEN SECOND KEY.** With `ORDER BY x, y` the
      * `b` rows arrive as y = 10 then 20, which is ALREADY ascending — so a comparator that ignored
      * every key after the first (or compared `keys[0]` twice) returned the same array, and both
      * mutants survived. `y DESC` makes the required order 20, 10 — the opposite of arrival — so
@@ -146,7 +146,7 @@ describe('sortedRowsDirect: the answers', () => {
   });
 
   test('COLUMN ORDER is the projection’s, whichever column the key names', () => {
-    // ⚠️ Row order is unspecified without ORDER BY, but COLUMN order is bytes.
+    // Row order is unspecified without ORDER BY, but COLUMN order is bytes.
     expect(Object.keys(rows(g, `${ONE}RETURN a.t AS t, a.n AS x ORDER BY x`)[0])).toEqual([
       't',
       'x',
@@ -159,7 +159,7 @@ describe('sortedRowsDirect: the answers', () => {
 
   test('the PROJECTION is what raises, on the row the general path raises on', () => {
     /*
-     * ⚠️ PROJECT FIRST, THEN THE KEYS. The general path builds each projected row before any
+     * PROJECT FIRST, THEN THE KEYS. The general path builds each projected row before any
      * comparison, so a projection that raises does so before the sort. A path that evaluated sort
      * keys first could surface a different error, or none.
      */
@@ -172,7 +172,7 @@ describe('sortedRowsDirect: the general path is the ORACLE', () => {
 
   test('every reaching shape matches its windowed twin, element for element', () => {
     /*
-     * 🔑 **A WINDOW DECLINES THIS PATH**, so `… LIMIT 1000` over a 5-row result is the SAME query
+     * **A WINDOW DECLINES THIS PATH**, so `… LIMIT 1000` over a 5-row result is the SAME query
      * answered by the general route — a real oracle rather than the fast path blessing itself. (The
      * window declines for a reason worth keeping in view: with `SKIP`/`LIMIT` the general path
      * projects only survivors, so projecting everything could raise where the query does not —
@@ -191,7 +191,7 @@ describe('sortedRowsDirect: the general path is the ORACLE', () => {
       const fast = rows(g, q);
       const general = rows(g, `${q} LIMIT 1000`);
 
-      // ⚠️ A NON-EMPTY RESULT IS ASSERTED FIRST: two empty arrays agree trivially.
+      // A NON-EMPTY RESULT IS ASSERTED FIRST: two empty arrays agree trivially.
       expect(fast.length).toBeGreaterThan(0);
       expect(fast).toEqual(general);
     }
@@ -238,7 +238,7 @@ describe('sortedRowsDirect: the four refusals, each answering identically', () =
 
 describe('sortedDirectRoute: the gate itself', () => {
   /*
-   * ⚠️⚠️ **THE FOUR REFUSALS ARE ANSWER-EQUIVALENT — the general path returns the same rows — so
+   * **THE FOUR REFUSALS ARE ANSWER-EQUIVALENT — the general path returns the same rows — so
    * NOTHING in the answer tests above can see one being dropped.** The mutation round proved it:
    * "admit aggregating" survived this whole file while every walk mutant was caught. The gate is a
    * pure function for exactly this ([[perf-gate-needs-its-own-test]], item 1776's pattern), and

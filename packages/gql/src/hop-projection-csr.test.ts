@@ -8,19 +8,19 @@ import { query } from './index.ts';
 /**
  * THE FAR-DRIVEN HOP PROJECTION'S CSR ARM (item 1895).
  *
- * ⚠️ IT IS THE MOST COMMON SHAPE IN THE LANGUAGE and the hand floors said the whole gap was the
+ * IT IS THE MOST COMMON SHAPE IN THE LANGUAGE and the hand floors said the whole gap was the
  * per-vertex `Map` work: iterating `verticesById` and reading `adjTo.get(type)` for each.
  * `gql-hop-ceiling-1895.mjs` at 200,000 vertices / 1,000,000 edges — engine 75.13 ms, the same walk
  * BY HAND 68.83 (1.09x, so no delegation left), the same over a flat (far, degree) index 21.16
  * (3.25x). After the arm: **25.96 ms, 2.89x**, and at fanout 1 the grid's own shape goes
  * **39.23 → 8.22, 4.8x**.
  *
- * ⚠️ ROWS ARE COMPARED AS MULTISETS, which is this engine's contract for an unordered result
+ * ROWS ARE COMPARED AS MULTISETS, which is this engine's contract for an unordered result
  * ([[order-is-unspecified]], and the differential fuzzer compares GQL rows the same way). The CSR
  * walks slots in `verticesById` order, which is the order the existing walk uses anyway, but
  * nothing here depends on that.
  *
- * ⚠️ AND EVERY CASE RUNS TWICE, because the arm declines its own first ask (item 1890's
+ * AND EVERY CASE RUNS TWICE, because the arm declines its own first ask (item 1890's
  * amortization policy): a single `query` measures the old walk. Item 1891 lost five mutants to
  * exactly this.
  */
@@ -72,7 +72,7 @@ const twice = (g: Graph, q: string): unknown[] => {
 };
 
 /**
- * ⚠️ THE ROUTE DECISION AS A PURE FUNCTION, because BOTH of its conditions are answer-equivalent and
+ * THE ROUTE DECISION AS A PURE FUNCTION, because BOTH of its conditions are answer-equivalent and
  * two mutants of them survived every test above. One of those two is the bug the first cut of this
  * arm shipped: reading the label's vacuity from the AST declines every labelled pattern, which is
  * nearly all of them, and it measured as a flat null.
@@ -87,7 +87,7 @@ const twice = (g: Graph, q: string): unknown[] => {
  *   at 0.04 coverage (below the gate)                        unchanged — the bucket walk wins 2.4x
  * ```
  *
- * ⚠️ `testFarLabel` IS THE CONTRACT, not a hint: the route admits a label it has not applied, so a
+ * `testFarLabel` IS THE CONTRACT, not a hint: the route admits a label it has not applied, so a
  * caller that ignored the flag would emit rows for off-label far vertices. That is why the return
  * shape changed rather than just the condition.
  */
@@ -114,7 +114,7 @@ describe('csrHopRoute — a BROAD far label is admitted and flagged (item 1941)'
     expect(csrHopRoute(g, true, 'E', undefined)?.testFarLabel).toBe(false);
   });
 
-  it('⚠️ a SELECTIVE far label still declines — item 1688s lesson is unchanged', () => {
+  it('a SELECTIVE far label still declines — item 1688s lesson is unchanged', () => {
     // `Q` is on 2 of 7 vertices (0.286), BELOW the shared threshold, so bucket iteration wins and
     // the route must stay out of the way. This is the assertion the threshold choice protected:
     // a lower constant would have flipped it, and a 7-vertex fixture is no place to set one.
@@ -151,12 +151,12 @@ describe('csrHopRoute — a BROAD far label is admitted and flagged (item 1941)'
     expect(route?.testFarLabel).toBe(true);
   });
 
-  it('⚠️ a COMPOUND far label whose coverage is UNREADABLE declines the route', () => {
+  it('a COMPOUND far label whose coverage is UNREADABLE declines the route', () => {
     /*
-     * ⚠️ `labelCoverage` answers only for a PLAIN label — a disjunction's buckets overlap so their
+     * `labelCoverage` answers only for a PLAIN label — a disjunction's buckets overlap so their
      * sizes do not add. The route must then DECLINE rather than guess, which is what `?? 0` encodes.
      *
-     * 🔑 THIS TEST EXISTS BECAUSE A MUTANT SURVIVED WITHOUT IT. Defaulting an unreadable coverage to
+     * THIS TEST EXISTS BECAUSE A MUTANT SURVIVED WITHOUT IT. Defaulting an unreadable coverage to
      * `?? 1` (i.e. "assume broad") changes NO answer — `matchesLabel` handles compounds, so the
      * per-slot test is still correct — it only sends an O(V) arm at a label that might be selective,
      * where bucket iteration is sub-linear (item 1688). A route-only regression, invisible to every
@@ -306,7 +306,7 @@ describe('the far-driven hop projection agrees across both routes', () => {
   });
 
   /**
-   * ⚠️ A SELECTIVE FAR LABEL MUST DECLINE, and the answer is the evidence: `candidateVertexSource`
+   * A SELECTIVE FAR LABEL MUST DECLINE, and the answer is the evidence: `candidateVertexSource`
    * iterates the `Q` bucket where this arm would scan every slot. Item 1688 learned from a test
    * that an answer can be right while the work is wrong — the route half is pinned by the A/B, this
    * half pins that declining still answers.

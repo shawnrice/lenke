@@ -1,7 +1,7 @@
 /**
  * THE BULK-WRITE FLOOR: what does `addVertex`/`addEdge` cost, with nothing else in the way?
  *
- * ⚠️ BUILT BECAUSE THE QUERY-LEVEL PROBE CANNOT RESOLVE THE QUESTION IT WAS ASKED (item 1674).
+ * BUILT BECAUSE THE QUERY-LEVEL PROBE CANNOT RESOLVE THE QUESTION IT WAS ASKED (item 1674).
  * `gql-merge-scaling-probe.mjs` reads 1.4-4.7 us an operation with a within-run spread of 1.5x
  * across sizes, so it cannot see a sub-1% change to the write path — and when it was pointed at
  * `topologyVersion`'s four integer increments it produced an incoherent answer: the arm that moved
@@ -72,7 +72,7 @@ const setPropertyOnly = () => {
 
 const ARMS = { addVerticesOnly, addEdgesToo, setPropertyOnly };
 
-// ⚠️ `await drain()` BETWEEN REPS IS LOAD-BEARING, AND WITHOUT IT THIS PROBE OOMs AT N=100,000.
+// `await drain()` BETWEEN REPS IS LOAD-BEARING, AND WITHOUT IT THIS PROBE OOMs AT N=100,000.
 // A discarded Graph is retained IN FULL by its pending `drainMutations` microtask, so a SYNCHRONOUS
 // build-and-discard loop holds every graph it ever made — 10 reps x 100,000 vertices filled a 4 GB
 // heap and the first run of this probe died with "Ineffective mark-compacts near heap limit". The

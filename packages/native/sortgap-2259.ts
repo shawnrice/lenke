@@ -1,5 +1,5 @@
 /**
- * ⚠️⚠️⚠️ **DOES ADDING `ORDER BY` COST TS 45x WHERE IT COSTS NATIVE 1.35x? (item 2259)**
+ * **DOES ADDING `ORDER BY` COST TS 45x WHERE IT COSTS NATIVE 1.35x? (item 2259)**
  *
  * The `ts,wasm` bench table holds two rows that, read together, say something extreme:
  *
@@ -7,12 +7,12 @@
  *     traverse 1-hop project + order by   ts 827.5      wasm 292.0
  *     -> adding ORDER BY costs TS 45.7x and native 1.35x
  *
- * 🔑 That is exactly [[accounted-shape-hides-a-term]]'s rule applied — **vary ONE thing in an accounted row
- * before dismissing it** — and nobody has read these two rows against each other. ⚠️ But ORDER BY is
+ * That is exactly [[accounted-shape-hides-a-term]]'s rule applied — **vary ONE thing in an accounted row
+ * before dismissing it** — and nobody has read these two rows against each other. But ORDER BY is
  * heavily worked (items 1902/1903/1905/1929/1930/1960/1961/1962, several ships), so the first job is to
  * confirm the effect exists at all rather than to explain it.
  *
- * ⚠️ **THE OBVIOUS CONFOUND, CHECKED BY A CONTROL:** an unordered projection may stream lazily while a sort
+ * **THE OBVIOUS CONFOUND, CHECKED BY A CONTROL:** an unordered projection may stream lazily while a sort
  * must materialize every row. So `projectAll` forces full materialization of the unordered form (it reads
  * `.length`, which the sorted arm also pays), making the two arms differ only in the SORT.
  */
@@ -29,7 +29,7 @@ for (let i = 0; i < N; i += 1) {
   g.addVertex({ id: `v${i}`, labels: ['Person'], properties: { name: `n${i % 9973}`, k: i % 97 } });
 }
 
-/* ⚠️ Split on the REPEAT INDEX, or one vertex's whole fan-out lands on ONE target (the recorded defect). */
+/* Split on the REPEAT INDEX, or one vertex's whole fan-out lands on ONE target (the recorded defect). */
 let e = 0;
 
 for (let d = 0; d < FANOUT; d += 1) {

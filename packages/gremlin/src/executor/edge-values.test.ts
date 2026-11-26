@@ -3,19 +3,19 @@ import { describe, expect, test } from 'bun:test';
 /**
  * `E()[.hasLabel(L)].values(k)` — the EDGE twin of the fused scan projection, item 1858.
  *
- * ⚠️ FOUND BY A ROUTE SCREEN, NOT A PROFILE, and the asymmetry is the finding: `E().count()` is
+ * FOUND BY A ROUTE SCREEN, NOT A PROFILE, and the asymmetry is the finding: `E().count()` is
  * answered from a counter and `V().values(k)` rides a fused scan, while `E().values(k)` reached
  * NEITHER and fell to the traverser pipeline — 77 ns a row against the vertex twin's 30. The
  * vertex shortcut's `matchShape` requires a `V` source, so the edge spelling of the same question
  * had no rung at all. **2.15x** (15.34 -> 7.14 ms over 200,000 edges).
  *
- * ⚠️ THE ORDER IS PART OF THE ANSWER HERE. Gremlin results are compared ORDERED by the differential
+ * THE ORDER IS PART OF THE ANSWER HERE. Gremlin results are compared ORDERED by the differential
  * fuzzer, so this walk must emit in the same sequence as the pipeline it replaces — every
  * assertion below compares ARRAYS, and the `drain` path is checked against the iterator path
  * because they are two consumers of one loop body and a drift between them would be a cross-engine
  * failure (item 169).
  *
- * ⚠️ AND A MISSING KEY IS NOT A NULL. `values(k)` emits NOTHING for an edge lacking `k` and a NULL
+ * AND A MISSING KEY IS NOT A NULL. `values(k)` emits NOTHING for an edge lacking `k` and a NULL
  * for one storing null — the fixture carries both, since a walk that conflated them would pass any
  * fixture where every edge has the key.
  */
@@ -59,7 +59,7 @@ describe('the fused edge-values walk', () => {
     const g = build();
 
     for (const [shortcut, oracle] of [
-      // ⚠️ THE ORACLE IS A SEEDED SOURCE, which `matchEdgeShape` refuses outright — so it runs the
+      // THE ORACLE IS A SEEDED SOURCE, which `matchEdgeShape` refuses outright — so it runs the
       // pipeline over the same edges and in the same order. Naming every id keeps the question
       // identical rather than merely similar.
       [
@@ -87,7 +87,7 @@ describe('the fused edge-values walk', () => {
   });
 
   /**
-   * ⚠️ STATED AS AN EXPLICIT SEQUENCE too, not only against the oracle: two routes that made the
+   * STATED AS AN EXPLICIT SEQUENCE too, not only against the oracle: two routes that made the
    * same mistake would agree with each other. `e1` stores null (emitted), `e2` and `e6` lack `w`
    * (not emitted), and `e5` carries two labels.
    */
@@ -101,7 +101,7 @@ describe('the fused edge-values walk', () => {
   /**
    * `drain` and the iterator are two consumers of ONE loop body; they must not drift.
    *
-   * ⚠️ THE LAZY SIDE MUST COME FROM `run`, NOT `toArray`. The first version of this test iterated
+   * THE LAZY SIDE MUST COME FROM `run`, NOT `toArray`. The first version of this test iterated
    * `toArray`'s own result — an array that had already been drained — so both sides were the same
    * call and it compared `drain` against itself. `toArray` takes the `drain` path when a shortcut
    * offers one; `run` returns the iterable, so stepping that is the other consumer.

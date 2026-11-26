@@ -9,13 +9,13 @@
  * floored, and the ratio is an upper bound on the opportunity rather than its size. (Item 1479 hit
  * the same trap one level down, where a bare `count()` tail was answered by a chain count.)
  *
- * ⚠️ THE TRICK IS A PROJECTION THE SHORTCUT DOES NOT RECOGNISE. `hopValuesShortcut` accepts exactly
+ * THE TRICK IS A PROJECTION THE SHORTCUT DOES NOT RECOGNISE. `hopValuesShortcut` accepts exactly
  * three third steps — `values(k)` (one key), `id()`, or nothing — and DECLINES anything else, falling
  * back to the full pipeline. So `label()` after the hop gives the general route over the identical
  * hop and the identical row count, where `values(k)` gives the fused one. Both read one thing per
  * far vertex.
  *
- * ⚠️ IT IS NOT A PERFECT PAIR and that is stated rather than hidden: a property read
+ * IT IS NOT A PERFECT PAIR and that is stated rather than hidden: a property read
  * (`props[key]`) is not a label read (first of a `Set`). It is the closest pair available without a
  * second engine build, and the two reads are the same order of cost — so a ~1.5x result would mean
  * the file's own comments are right, and a ~6x result would mean the fused walk's advantage is much
@@ -32,7 +32,7 @@ const REPS = Number(process.env.REPS ?? 9);
 const DROP = Number(process.env.DROP ?? 3);
 
 /**
- * ⚠️ THE STRIDE IS THE WHOLE BALLGAME HERE, which is why it is a knob and not a constant.
+ * THE STRIDE IS THE WHOLE BALLGAME HERE, which is why it is a knob and not a constant.
  *
  * `sequential` gives every vertex exactly FANOUT out-edges, added in vertex order, so the walk reads
  * adjacency in the order it was built. `scattered` draws the source from `(e * 7919) % NODES`, as
@@ -72,7 +72,7 @@ for (let e = 0; e < NODES * FANOUT; e += 1) {
   });
 }
 
-// ⚠️ TWO FAMILIES, because a trailing `count()` can be answered WITHOUT materializing the rows.
+// TWO FAMILIES, because a trailing `count()` can be answered WITHOUT materializing the rows.
 // The first reading of this probe (item 1484) used the `count()` forms and reported `values(k)` at 35
 // ns/row against `id()`'s 117 on the same walk — a 3.3x that made no sense. It was not the pick: a
 // `count()` tail lets the engine skip producing the values at all, which the no-count forms below
@@ -126,7 +126,7 @@ for (const [name, plan] of Object.entries(ARMS)) {
   );
 }
 
-// ⚠️ EVERY ARM MUST COVER THE SAME ROWS, or a ratio is between two different questions.
+// EVERY ARM MUST COVER THE SAME ROWS, or a ratio is between two different questions.
 console.log(
   `\nROWS (honest):  label/values = ${(results['rows label()'] / results['rows values(k)']).toFixed(2)}x` +
     `   label/id = ${(results['rows label()'] / results['rows id()']).toFixed(2)}x` +

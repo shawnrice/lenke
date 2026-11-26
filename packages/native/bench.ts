@@ -172,7 +172,7 @@ const hopPairDoc = (() => {
       `{"type":"node","id":"v${i}","labels":["Person"],"properties":{"age":${i % 90},"name":"person${i}","city":"city${i % 8}"}}`,
   );
 
-  // ⚠️ THE REPEAT-INDEX SPLIT, ADDED AT ITEM 1633. Item 1516 fixed `graphDoc` above and left
+  // THE REPEAT-INDEX SPLIT, ADDED AT ITEM 1633. Item 1516 fixed `graphDoc` above and left
   // THIS generator — also five edges per node — invariant under `k -> k + N`, so every one of a
   // vertex's five out-edges landed on the same target. Same defect, same file, one fixture over.
   for (let k = 0; k < N * 5; k++) {
@@ -189,16 +189,16 @@ const hopPairDoc = (() => {
 /**
  * THE OPTIONAL-MATCH FIXTURE: HALF THE VERTICES HAVE NO OUT-EDGE (item 2145).
  *
- * ⚠️⚠️ **`graphDoc` AND `sparseDoc` CANNOT MEASURE `OPTIONAL MATCH` AT ALL, AND THAT IS WHY THIS EXISTS.**
+ * **`graphDoc` AND `sparseDoc` CANNOT MEASURE `OPTIONAL MATCH` AT ALL, AND THAT IS WHY THIS EXISTS.**
  * Both give every node at least one out-edge, and the whole difference between `OPTIONAL MATCH` and a
  * plain `MATCH` is the null-filled row an UNMATCHED anchor contributes. With no unmatched anchor the two
  * are the same question, so a row on either fixture would watch nothing.
  *
- * 🔑 Item 2123 learned this the hard way: its first measurement fixture gave every vertex degree 3, the
+ * Item 2123 learned this the hard way: its first measurement fixture gave every vertex degree 3, the
  * OPTIONAL and plain forms agreed, and `378 -> 20.8 ms` "matched its non-OPTIONAL twin" while proving
  * nothing about correctness. Every anchor index here is EVEN, so the odd half contributes null rows.
  *
- * ⚠️ The repeat index is the second term in `to`, for items 1516/1518's reason — a flat `(a*k + b) % N`
+ * The repeat index is the second term in `to`, for items 1516/1518's reason — a flat `(a*k + b) % N`
  * sends one vertex's whole fan-out to the same target and every degree check still looks perfect.
  */
 const optionalDoc = (() => {
@@ -253,7 +253,7 @@ const graphDoc = (() => {
   // shape a reloaded snapshot actually has. A sparse or id-less fixture
   // understates everything on the edge path.
   //
-  // ⚠️ THE `to` INDEX USES THE REPEAT COUNTER, AND IT HAS TO (item 1516). This loop runs k from 0
+  // THE `to` INDEX USES THE REPEAT COUNTER, AND IT HAS TO (item 1516). This loop runs k from 0
   // to 5N, so the five edges leaving one vertex are exactly k0, k0+N, k0+2N, k0+3N, k0+4N — and
   // ANY linear `(a*k + b) % N` is invariant under `k -> k + N`. The old spelling was
   // `to = (k * 104729) % N`, so all five of a vertex's out-edges pointed at the SAME target:
@@ -278,7 +278,7 @@ const graphDoc = (() => {
 })();
 
 /**
- * ⚠️ THE FIXTURE CHECKS ITS OWN TOPOLOGY, because every degree statistic was already perfect while
+ * THE FIXTURE CHECKS ITS OWN TOPOLOGY, because every degree statistic was already perfect while
  * the graph was degenerate (item 1516). CLAUDE.md's rule after item 702 is that one line counting
  * the distinct endpoints would have caught it — this is that line, run once at startup so the
  * corpus cannot silently go back to measuring a functional graph.
@@ -432,7 +432,7 @@ const CASES: Case[] = [
     // misprediction cost is MAXIMAL near 50/50 and vanishes at the extremes, so a selective
     // threshold would measure the best case and call it the cost.
     //
-    // ⚠️ THE FIXTURE IS PERIODIC (`i % 90`) AND THAT FLATTERS A BRANCHY FILTER. Item 1206 found a
+    // THE FIXTURE IS PERIODIC (`i % 90`) AND THAT FLATTERS A BRANCHY FILTER. Item 1206 found a
     // periodic generator hiding a 6.7x because the branch predictor learns the cycle; the twin row
     // below varies the same question's selectivity so a reading that depends on periodicity is
     // visible here rather than inferred later.
@@ -800,7 +800,7 @@ const CASES: Case[] = [
     // DECLINE the per-endpoint fold here and take the row walk: 87.49 -> 66.37 ms, 1.32x, with the
     // five-edge rows above as the controls it must not move (they measured 0.97x, flat).
     //
-    // ⚠️ TWO WAYS TO MISREAD THIS ROW, BOTH FOUND BY MISREADING IT (item 1351).
+    // TWO WAYS TO MISREAD THIS ROW, BOTH FOUND BY MISREADING IT (item 1351).
     //
     // 1. ITS ABSOLUTE VALUE IS ONLY COMPARABLE WITHIN THE SAME `BENCH_ONLY` SELECTION. The same
     //    binary reads 74.0 among these four rows, 89.2 in the full sweep and 97.0 run ALONE — it
@@ -916,7 +916,7 @@ const CASES: Case[] = [
       (e, g) => void e.query(g, 'MATCH (a:Person)<-[:KNOWS]-{3}(y) RETURN count(*) AS c'),
     ),
   },
-  // 🛑 AND THERE IS NO QUANTIFIED UNDIRECTED ROW, because the number is why (item 743).
+  // AND THERE IS NO QUANTIFIED UNDIRECTED ROW, because the number is why (item 743).
   //
   // `MATCH (a:Person)-[:KNOWS]-{3}(y) RETURN count(*)` at 20,000 vertices: ts 4828.1 ms, ffi 99.0
   // — 48.78x — against the DIRECTED twin at the same N and depth, ts 14.4 and ffi 1.4 (item 732).
@@ -949,7 +949,7 @@ const CASES: Case[] = [
     // This row survives the correction — native is flat because it scans the `age` column once
     // either way — but its TWIN below did not, so both move to `> 45` to keep them comparable.
     //
-    // ⚠️ PART OF THE TS NUMBER IS THIS FIXTURE'S INGEST ORDER, not engine overhead (item 1263).
+    // PART OF THE TS NUMBER IS THIS FIXTURE'S INGEST ORDER, not engine overhead (item 1263).
     // `graphDoc` scatters BOTH endpoints, so neither adjacency index is in vertex creation order
     // and both per-vertex walks chase a scattered `Set` per survivor. Re-ingesting the SAME graph
     // — same degrees, same answers, only the edge order changed — moves the filtered side 3.9x:
@@ -974,7 +974,7 @@ const CASES: Case[] = [
     // had no row of this shape, which is why the TS engine evaluated it per edge unnoticed (item
     // 114). Keep both: a change can help one and not the other.
     //
-    // ⚠️ THIS IS NO LONGER A DIFFERENT COST CLASS, and the line that said so was stale for ~1100
+    // THIS IS NO LONGER A DIFFERENT COST CLASS, and the line that said so was stale for ~1100
     // items (item 1263). It read: "a start-only predicate can be decided once per vertex and
     // multiplied by that vertex's degree, so it scales with the vertex count where the row above
     // scales with the edge count." True when item 114 wrote it; item 137 then gave the FAR side
@@ -1058,14 +1058,14 @@ const CASES: Case[] = [
     // walk since item 129: 52.6ms against 14.0 on 20,000 users (audit item 206). The filter is
     // selective on purpose — that is what the walk exploits, rejecting a start before it expands
     // the start's adjacency at all.
-    // 🛑 THE UNGATED CONTROL, which did not exist until item 749 and is the row this family most
+    // THE UNGATED CONTROL, which did not exist until item 749 and is the row this family most
     // needed. `try_nhop_sweep_count` must NOT take an ungated shallow chain — item 301 measured
     // the sweep LOSING 1.50x to the three-segment product when there is nothing to filter, and
     // the code says so: "the tuned degree-product arms own the ungated shallow chains and this
     // must not steal them". There was no row for it, so a condition that admitted the ungated
     // case would have stolen it invisibly — which is exactly what item 749's first probe
     // (`2 => true`) did before this row caught it.
-    // 🛑 THE `_ => true` ARM'S FIRST COVERAGE (item 750). `try_nhop_sweep_count` takes FOUR or
+    // THE `_ => true` ARM'S FIRST COVERAGE (item 750). `try_nhop_sweep_count` takes FOUR or
     // more hops unconditionally — gated or not — and no row exercised a fixed 4-chain at all; the
     // only 4-hop row in the corpus is the QUANTIFIED `->{4}`, which is different machinery.
     //
@@ -1235,7 +1235,7 @@ const CASES: Case[] = [
     // precomputes a per-node passing out-degree (item 570's `node_pass_mask`), and doing the same
     // in TS was "the open lever this pair exists to watch".
     //
-    // ⚠️ ITEM 585 LANDED IT AND ITEM 1788 DELETED IT AS UNREACHABLE — the numbers below are a
+    // ITEM 585 LANDED IT AND ITEM 1788 DELETED IT AS UNREACHABLE — the numbers below are a
     // RECORD, not the behaviour of today's engine. `takesTheLevelRecurrence` sends every
     // `max >= 2` spec to `walkLevelCount` before the inversion's gate (which itself required
     // `max >= 2`) could be read, so it was orphaned by items 588/699 and never fired again. It was
@@ -1295,7 +1295,7 @@ const CASES: Case[] = [
     // mode, since `repeat()` lowers to `PathMode::Walk`, so a regression here would show up as
     // `g.V().repeat(out()).times(3)` getting slow rather than as an ISO-spelling curiosity.
     //
-    // ⚠️ THE 38.87 -> 3.97 TABLE BELOW IS NATIVE BEFORE -> NATIVE AFTER, NOT ts-vs-native.
+    // THE 38.87 -> 3.97 TABLE BELOW IS NATIVE BEFORE -> NATIVE AFTER, NOT ts-vs-native.
     // Item 1084 read it as a cross-engine pair because 38.87/3.97 = 9.79 matches the stated ratio
     // — but so does a before/after, the arithmetic cannot tell them apart, and item 587 is a RUST
     // change (`exec/fastpath.rs`). Its commit says what TS was on this row: **8362.9 ms**, "the TS
@@ -1318,7 +1318,7 @@ const CASES: Case[] = [
     ),
   },
   {
-    // 🛑 THE ONLY VAR-LENGTH ROW HERE THAT ENUMERATES. Every `count(*)` var-length row above
+    // THE ONLY VAR-LENGTH ROW HERE THAT ENUMERATES. Every `count(*)` var-length row above
     // takes a shortcut and never enters `trailEnds`'s flat walk — verified by throwing at its
     // entry (item 736): `{1,2}`, `{1,3}`, the end-filtered form and the WALK form all ANSWER.
     // A ROW-RETURNING var-length query enumerates at EVERY depth, which is the shape this row
@@ -1361,13 +1361,13 @@ const CASES: Case[] = [
     // to the depth-3 count plus one correction, item 692 built that in TYPESCRIPT and item 693
     // built it in RUST AND WASM.
     //
-    // ⚠️ BOTH ENGINES NOW TAKE THE CLOSED FORM HERE. This row's comment claimed for a while that
+    // BOTH ENGINES NOW TAKE THE CLOSED FORM HERE. This row's comment claimed for a while that
     // "ffi still enumerates at ~82ms" and that "native is the open half", and the row was NAMED
     // "TS only" — all three outlived item 693 by describing the state item 692 left behind. At
     // 20,000 vertices the recorded figures are ts 3365.6 -> 18.3 (190x, item 692) and ffi
     // 82.4 -> 10.5 (7.8x, item 693), both reproduced at item 732 as ts 18.2-18.6 and ffi 10.6.
     //
-    // ⚠️ AND THOSE FIGURES ARE AT 20,000 VERTICES, WHICH IS NOT WHAT THIS ROW RUNS. The bench
+    // AND THOSE FIGURES ARE AT 20,000 VERTICES, WHICH IS NOT WHAT THIS ROW RUNS. The bench
     // default is `BENCH_N=200000`, where the same two rows read ts 264.6 and ffi 122.7 (item 732).
     // A figure quoted in a row's comment is only comparable to a run at the N it was measured at;
     // pass `BENCH_N=20000` to compare against the numbers above.
@@ -1377,7 +1377,7 @@ const CASES: Case[] = [
       (e, g) => void e.query(g, 'MATCH (a:Person)-[:KNOWS]->{4}(y) RETURN count(*) AS c'),
     ),
   },
-  // 🛑 THERE IS DELIBERATELY NO DEPTH-5 ROW, and the reason is the measurement itself.
+  // THERE IS DELIBERATELY NO DEPTH-5 ROW, and the reason is the measurement itself.
   //
   // Depth 5 is the first depth neither engine has a closed form for — native refuses it in the
   // `deep_trail` gate (`fastpath.rs`) and says why: `u4` is four disjoint cases and what they
@@ -1400,7 +1400,7 @@ const CASES: Case[] = [
   {
     // The other half: the same walk, but PROJECTING an endpoint property, so 1,000,000 rows are
     // built. Traversal plus the row pipeline, which is the shape a user actually runs.
-    // ⚠️ `x.name` IS ABSENT ON EVERY NODE OF `graphDoc` — its nodes carry only `age` (item 726).
+    // `x.name` IS ABSENT ON EVERY NODE OF `graphDoc` — its nodes carry only `age` (item 726).
     // So this row and the two below project a million NULLS, not a million strings: they price the
     // hop, the row plumbing and an absent-property read, NOT a property read.
     //
@@ -1413,13 +1413,13 @@ const CASES: Case[] = [
     //
     // Left pointing at `name` rather than repointed at `age`, so every figure recorded against
     // these row names stays comparable — the same call item 356 made about `decode ndjson`.
-    // ⚠️ THESE THREE ROWS PROJECTED AN ABSENT PROPERTY AND SO MEASURED NOTHING (item 1716).
+    // THESE THREE ROWS PROJECTED AN ABSENT PROPERTY AND SO MEASURED NOTHING (item 1716).
     // They read `x.name`, and `graphDoc`'s nodes carry ONLY `age` — `propOf` is
     // `bound?.properties?.[key] ?? null`, so every one of 1,000,000 rows was `null`: no property
     // read, no string, no dictionary, and in the `order by` row a sort of a million NULLS. Verified
     // directly: 10,000 of 10,000 rows null on a graphDoc-shaped fixture, 0 of 10,000 for `x.age`.
     //
-    // ⚠️ EVERY NUMBER RECORDED FOR THESE THREE ROWS BEFORE ITEM 1716 IS VOID, the same way item 94
+    // EVERY NUMBER RECORDED FOR THESE THREE ROWS BEFORE ITEM 1716 IS VOID, the same way item 94
     // voided every row that was secretly timing a decode. Nothing can be compared across the change.
     //
     // The fix is `hopPairDoc`, whose topology is IDENTICAL — same `from`/`to` formulas, same five
@@ -1452,13 +1452,13 @@ const CASES: Case[] = [
   },
   {
     /*
-     * ⚠️⚠️ **TWO RUNGS SHIPPED THIS SESSION WITH NO ROW TO GUARD THEM** (item 2145): item 2123 took
+     * **TWO RUNGS SHIPPED THIS SESSION WITH NO ROW TO GUARD THEM** (item 2145): item 2123 took
      * `OPTIONAL MATCH` + `GROUP BY` from 307.8 to 29.0 ms (10.6x) and item 2124 the FAR-keyed variant from
-     * 358.3 to 111.3 (3.22x). 🔑 `bench.ts` already quotes the rule that makes this a defect — item 1177's
+     * 358.3 to 111.3 (3.22x). `bench.ts` already quotes the rule that makes this a defect — item 1177's
      * *"a win with no row is a win that quietly comes undone"* — and item 1184's rows exist for exactly
      * this reason: deleting a chain entry is ANSWER-EQUIVALENT and survives every test and every fuzzer.
      *
-     * ⚠️ ON `optionalDoc`, NOT `graphDoc`: half the anchors must have NO out-edge or the OPTIONAL and
+     * ON `optionalDoc`, NOT `graphDoc`: half the anchors must have NO out-edge or the OPTIONAL and
      * plain forms are the same question. See that fixture's note.
      */
     name: 'query: OPTIONAL + GROUP BY [item 2123]',
@@ -1496,40 +1496,40 @@ const CASES: Case[] = [
   },
   {
     /*
-     * 🔑 `UNION ALL` HAS NO ROW ANYWHERE EITHER, and item 2145 measured it as FREE — 43.97 ms for both
+     * `UNION ALL` HAS NO ROW ANYWHERE EITHER, and item 2145 measured it as FREE — 43.97 ms for both
      * arms against 49.6 for the two run separately, so the concatenation costs less than nothing (the
-     * arms share work). ⚠️ The row exists to keep it that way, not because it is slow.
+     * arms share work). The row exists to keep it that way, not because it is slow.
      */
     /*
-     * 🔑 THE DEDUPING TWIN, added at item 2147 to guard its own 5.55x. That item pushed the DISTINCT into
+     * THE DEDUPING TWIN, added at item 2147 to guard its own 5.55x. That item pushed the DISTINCT into
      * each arm of a non-`ALL` set operator — `DISTINCT(A ∪ B) = DISTINCT(DISTINCT(A) ∪ DISTINCT(B))` — so
-     * each arm yields its distinct values instead of its whole row set. ⚠️ The `UNION ALL` row below is
+     * each arm yields its distinct values instead of its whole row set. The `UNION ALL` row below is
      * its control: the rewrite must NOT touch it, and a row count there is the only thing that can see a
      * violation (deduping an `ALL` operator is a WRONG ANSWER the deduping forms would hide).
      */
     /*
-     * 🔑 DEEP PAGING, added at item 2148 — the last of item 2145's five unbenched features. ⚠️ That item
+     * DEEP PAGING, added at item 2148 — the last of item 2145's five unbenched features. That item
      * CLOSED it by measurement rather than building: `ORDER BY k LIMIT 10` costs 4.97 ms against a
      * scan-all-rows floor of 9.93, so the bounded path genuinely avoids materializing, and a deep `SKIP`
      * is a near-full sort BECAUSE IT MUST BE. The row exists to catch a regression in that routing, not
      * because a win is expected.
      */
     /*
-     * 🔑 `ANY SHORTEST`, the last of item 2145's five unbenched features. Item 2149 took it 1.32x at
+     * `ANY SHORTEST`, the last of item 2145's five unbenched features. Item 2149 took it 1.32x at
      * depth 12 by walking the typed adjacency bucket directly in the BFS instead of through `expand`'s
      * `{ edge, node }` generator — the saving is the WRAPPER OBJECT, not the lookup, which `expand`
      * already did the same way.
      */
     /*
-     * 🔑 THE NO-`WHERE` TWIN, added at item 2151 with its own rung — `ANY SHORTEST` + `count(*)` answered
-     * from the BFS's reachable set rather than the general matcher, 3.11x at depth 1. ⚠️ The row below
+     * THE NO-`WHERE` TWIN, added at item 2151 with its own rung — `ANY SHORTEST` + `count(*)` answered
+     * from the BFS's reachable set rather than the general matcher, 3.11x at depth 1. The row below
      * keeps a `WHERE`, which that rung DECLINES, so the two rows together guard both arms.
      */
     /*
-     * 🔑 `sum()` OVER A HOP — and `sum`/`avg` had NO bench row at all before item 2157, found by
+     * `sum()` OVER A HOP — and `sum`/`avg` had NO bench row at all before item 2157, found by
      * screening 40 features for coverage (the method that produced items 2146 at 33x and 2147 at 5.5x).
      *
-     * ⚠️⚠️ **IT COSTS MORE THAN MATERIALIZING EVERY ROW IT AGGREGATES.** Over this fixture's hop:
+     * **IT COSTS MORE THAN MATERIALIZING EVERY ROW IT AGGREGATES.** Over this fixture's hop:
      *
      * ```text
      *     count(*)  [a counter rung]      0.00 ms
@@ -1539,17 +1539,17 @@ const CASES: Case[] = [
      *     sum(1)   [no property read]     48.25         <- the PATH alone is 3.7x max(1)'s 12.88
      * ```
      *
-     * 🔑 `sum`/`avg`/`collect`/`stddev_*` are `ORDER_SENSITIVE_AGGREGATES`, which forces the
+     * `sum`/`avg`/`collect`/`stddev_*` are `ORDER_SENSITIVE_AGGREGATES`, which forces the
      * start-driven walk — and that is REQUIRED, not an oversight: float addition is not associative, so
-     * summation order is load-bearing for byte-identity with the Rust engine. ⚠️ What is NOT required is
+     * summation order is load-bearing for byte-identity with the Rust engine. What is NOT required is
      * materializing 300,000 `Row`s before aggregating them, which is where item 2157 left the lever.
      * The `max` row below is the control: same clause, same rows, a sane cost.
      */
     /*
-     * 🔑 THE PATH ACCESSORS, which had no bench row before item 2160 — found by the same
+     * THE PATH ACCESSORS, which had no bench row before item 2160 — found by the same
      * unbenched-feature screen that produced items 2146, 2147 and 2157.
      *
-     * ⚠️⚠️ **BINDING A PATH IS FREE; READING IT COSTS 24-28x PROJECTING A PROPERTY** over the same
+     * **BINDING A PATH IS FREE; READING IT COSTS 24-28x PROJECTING A PROPERTY** over the same
      * 300,000 rows:
      *
      * ```text
@@ -1559,13 +1559,13 @@ const CASES: Case[] = [
      *     p bound, edges(p)            386.43
      * ```
      *
-     * 🔑 A profile says why: the property arm shows `projectRow`/`walkRows` (the rung), and the
+     * A profile says why: the property arm shows `projectRow`/`walkRows` (the rung), and the
      * `nodes(p)` arm shows `walkSegments` 30.5%, `withBinding` 14.8%, `matchPattern` 8.4% — **the
-     * GENERAL MATCHER**. ⚠️ Reading the path drops the query off the rung, the same shape item 2151
+     * GENERAL MATCHER**. Reading the path drops the query off the rung, the same shape item 2151
      * fixed for `ANY SHORTEST`. For a SINGLE-segment path, `nodes(p)` is `[a, b]` and `edges(p)` is
      * `[edge]`, all three already in hand during the walk — so 1.1 us/row is overhead, not allocation.
      *
-     * ⚠️ The ratio against a plain hop COUNT is meaningless (that is a counter rung at 0.00 ms); the
+     * The ratio against a plain hop COUNT is meaningless (that is a counter rung at 0.00 ms); the
      * property-projection row below is the reference that isolates the accessor.
      */
     name: 'query: nodes(p) on a 1-hop path [2160]',
@@ -1589,14 +1589,14 @@ const CASES: Case[] = [
     ),
   },
   /*
-   * ⚠️⚠️ **THESE FOUR ROWS QUERIED `b.k`, WHICH `graphDoc` DOES NOT HAVE (item 2402).** Its nodes
+   * **THESE FOUR ROWS QUERIED `b.k`, WHICH `graphDoc` DOES NOT HAVE (item 2402).** Its nodes
    * carry ONLY `age` (see its builder above), so `sum(b.k)` answered **0** and `max(b.k)` answered
    * **null** — verified directly on a graphDoc-shaped fixture. Every value was discarded by
    * `nonNull`, so the rows measured the ABSENT-KEY path under names that read as the aggregate path,
    * and three items priced work against them: item 2157's 3.6x nomination, item 2159's 1.09x ship,
    * and item 2401's headline, which read 11.5x here against **4.0-4.9x** on a column that exists.
    *
-   * 🔑 So the aggregate rows now use `age`, and the absent-key shape keeps a row OF ITS OWN rather
+   * So the aggregate rows now use `age`, and the absent-key shape keeps a row OF ITS OWN rather
    * than masquerading as the other. Both are real questions; only one was being asked.
    */
   {
@@ -1630,22 +1630,22 @@ const CASES: Case[] = [
     ),
   },
   /*
-   * ⚠️ LITERALS, NOT PARAMS, and not by preference: this bench's `e.query(g, text)` takes TWO arguments —
+   * LITERALS, NOT PARAMS, and not by preference: this bench's `e.query(g, text)` takes TWO arguments —
    * there is no params channel — so a `$id` row reads `n/a` on every engine because the name is unbound.
-   * ✅ The literal list is also the shape item 1315 actually shipped and measured (`element_id(n) IN
+   * The literal list is also the shape item 1315 actually shipped and measured (`element_id(n) IN
    * [...]`), so it is the more faithful guard. The 10k list makes a ~90 KB query text, parsed ONCE and
    * then served by the parse cache (item 2271 raised its cap to 512).
    */
   /*
    * THE GQL ID SEED, WHICH NO INSTRUMENT IN THIS REPO COVERED (item 2377).
    *
-   * ⚠️ `element_id` appears 49 times in `CLOSED.md` and ZERO times in `bench.ts`, `spelling-probe.ts` and
+   * `element_id` appears 49 times in `CLOSED.md` and ZERO times in `bench.ts`, `spelling-probe.ts` and
    * `bench-usage.ts` — so item 1315's seeding ship (**614x** for the `=`-chain and **1276x** for
    * `element_id(n) IN [...]`) had nothing guarding it, and a regression in `seedHints` would have been
    * invisible to every bench and probe here. That is the third coverage hole found in three items; items
    * 2375 and 2376 closed the Gremlin ones.
    *
-   * 🔑 MULTI-ID for the measurable row, for the reason item 2375 gives: one seek answers 0 or 1 rows in
+   * MULTI-ID for the measurable row, for the reason item 2375 gives: one seek answers 0 or 1 rows in
    * ~200 ns and prints as `0.0`. The single-id row is kept anyway because it is the shape the mandate's
    * "O(1) access to get a vertex or edge by id" names, and a route that stops seeding shows up there as a
    * jump from ~0 to a full scan.
@@ -1750,7 +1750,7 @@ if (engines.length === 0) {
 /**
  * Minimum of `REPS` runs, in milliseconds.
  *
- * 🛑 THE SINGLE WARM CALL IS ADEQUATE HERE, AND IS NOT IN `bench-usage.ts` — do not carry item
+ * THE SINGLE WARM CALL IS ADEQUATE HERE, AND IS NOT IN `bench-usage.ts` — do not carry item
  * 752's conclusion across (item 753). There the unit is ONE small operation, so one warm call
  * tiers up almost nothing, two index columns run in one process at different warmth, and
  * best-of-batches cannot absorb it because the bias is BETWEEN the cells being compared: a

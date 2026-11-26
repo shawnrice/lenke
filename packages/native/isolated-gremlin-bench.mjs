@@ -16,7 +16,7 @@
  *
  *     SHAPE=hopcount3 NODES=200000 FANOUT=1 REPS=14 DROP=3 node isolated-gremlin-bench.mjs
  *
- * ⚠️ `toArray(plan, graph)` IN THAT ORDER. Item 1349 lost a round to the reverse, which throws
+ * `toArray(plan, graph)` IN THAT ORDER. Item 1349 lost a round to the reverse, which throws
  * nothing useful and simply measures something else.
  */
 import { PerformanceObserver } from 'node:perf_hooks';
@@ -71,7 +71,7 @@ const FAR_POOL = FANIN >= 1 ? NODES : Math.max(Math.floor(NODES * FANIN), 1);
  */
 const MULTILABEL = Number(process.env.MULTILABEL ?? 0);
 /**
- * ⚠️ `MULTILABEL=-1` IS DISJOINT: every other edge carries `F` INSTEAD of `E`, so both buckets are
+ * `MULTILABEL=-1` IS DISJOINT: every other edge carries `F` INSTEAD of `E`, so both buckets are
  * non-empty and NO edge is in two of them (item 1413).
  *
  * This knob could not express that before, and the gap invalidated a measurement. `0` means "no `F`
@@ -100,7 +100,7 @@ const edgeLabels = (k) => {
 const VLABEL = Number(process.env.VLABEL ?? 0);
 
 /**
- * ⚠️ HOW FAR A VERTEX'S SUCCESSOR SITS — **and this bench's DEFAULT IS NOT THE GQL BENCH'S**.
+ * HOW FAR A VERTEX'S SUCCESSOR SITS — **and this bench's DEFAULT IS NOT THE GQL BENCH'S**.
  *
  * `isolated-row-bench.mjs` has had this knob since item 1426 and defaults to `small`
  * (`to = (i * 7 + 3) % N`, a partly cache-resident successor). THIS bench had no knob at all and its
@@ -110,7 +110,7 @@ const VLABEL = Number(process.env.VLABEL ?? 0);
  * cross-engine comparison taking both defaults compared different graphs. Item 1426 built
  * `cross-engine-chain3-probe.mjs` to get around exactly that; the knob is the fix at the source.
  *
- * ⚠️ AND PASSING `STRIDE` HERE USED TO BE SILENTLY IGNORED, which is item 1431's trap: an A/B that
+ * AND PASSING `STRIDE` HERE USED TO BE SILENTLY IGNORED, which is item 1431's trap: an A/B that
  * sets a knob the bench does not have measures the default while reporting the knob. It cost item
  * 1431 a whole wrong reading, whose fix was to have the DRIVER assert the value back — impossible
  * here until now, because the bench emitted neither `stride` nor `rowCount`. Both are emitted below.
@@ -173,7 +173,7 @@ const SHAPES = {
   // 38.9 ms against 379.6 for the same edge set (9.8x).
   hopyieldsingle: () => traversal(V(), hasLabel('P'), out('E'), values('k')),
   hopyieldmulti: () => traversal(V(), hasLabel('P'), out('E', 'F'), values('k')),
-  // ⚠️ A SELECTIVE START LABEL, which is a DIFFERENT ROUTE from the vacuous one above and not an
+  // A SELECTIVE START LABEL, which is a DIFFERENT ROUTE from the vacuous one above and not an
   // obvious thing to read off the shape. `effectivePlan`'s `dropVacuousLabels` deletes
   // `hasLabel('P')` when every vertex carries `P`, so `hopyieldsingle` reaches
   // `hopValuesShortcut` with `out` as step 1 and rides the fused walk. With `VLABEL=2` only half
@@ -205,12 +205,12 @@ const SHAPES = {
   // by iterating the EDGE index once instead of every vertex twice.
   //
   // ~~`hopValuesShortcut` admits `both` but has no hand walk for it, so it falls to the general
-  // `adjacentEdges` tail~~ — ✅ STALE, FIXED AT ITEM 1432, which built `bothOneType` (a hand walk
+  // `adjacentEdges` tail~~ — STALE, FIXED AT ITEM 1432, which built `bothOneType` (a hand walk
   // with its own `drain`, out-bucket then in-bucket per vertex) and took 181 → 61 ms, **64.6%**.
   // The single-type `both` is no longer the general tail; the MULTI-type `both` still is, since
   // `manyTypes` excludes `both`. This row measures the hand walk now, not the tail.
   //
-  // ⚠️ And `both` canNOT take item 1431's edge-index trick, for a reason specific to this surface:
+  // And `both` canNOT take item 1431's edge-index trick, for a reason specific to this surface:
   // GQL row order is unspecified, so the undirected walk may reorder, while Gremlin stream order is
   // a TinkerPop contract the differential fuzzer compares ORDERED. Same trick, available on one
   // surface and not the other.
@@ -282,7 +282,7 @@ let answer;
 let rowCount = 0;
 
 /**
- * ⚠️ WINDOWED, so a profile of this bench is of the TRAVERSAL and not of the fixture build (1392).
+ * WINDOWED, so a profile of this bench is of the TRAVERSAL and not of the fixture build (1392).
  *
  * The GQL twin got this at item 1391 and this one did not, which matters retroactively: item 1389's
  * nomination — `iterLabeled` 20.3% + `iterByLabel` 7.9% + `outEdgesOf` 4.9% = 33.1% — was read off an
@@ -299,7 +299,7 @@ const measure = () => {
     series.push(dt);
     sink += Array.isArray(rows) ? rows.length : 1;
     answer = Array.isArray(rows) ? rows[0] : rows;
-    // ⚠️ THE ROW COUNT, kept separately from `answer`, which is only the FIRST ELEMENT. A first
+    // THE ROW COUNT, kept separately from `answer`, which is only the FIRST ELEMENT. A first
     // element of 0 is a perfectly good answer for a projection (item 1421), so the dead-fixture
     // check below needs the count and not the value.
     rowCount = Array.isArray(rows) ? rows.length : 1;
@@ -310,7 +310,7 @@ const measure = () => {
 
 await profileWindow(process.env.PROF_OUT, measure);
 
-// ⚠️ DRAIN before reading: `PerformanceObserver` delivers in a queued callback, so a synchronous
+// DRAIN before reading: `PerformanceObserver` delivers in a queued callback, so a synchronous
 // loop buffers every entry and reports 0 pauses (item 1361's fifth instrument defect).
 await new Promise((resolve) => setTimeout(resolve, 0));
 await new Promise((resolve) => setTimeout(resolve, 0));
@@ -322,7 +322,7 @@ if (sink === 0) {
 }
 
 /**
- * ⚠️ AND THE GUARD ABOVE DOES NOT CATCH A ZERO COUNT (item 1416).
+ * AND THE GUARD ABOVE DOES NOT CATCH A ZERO COUNT (item 1416).
  *
  * `sink` adds `rows.length` for an array but `1` for a scalar, so a `count()` that answers **0**
  * increments it and sails past — the row ran, found nothing, and reported a time for a dead path.
@@ -337,7 +337,7 @@ if (sink === 0) {
  * A row found NOTHING when it emitted no rows at all, or when it emitted exactly ONE numeric row
  * equal to 0 — which is what `count()` on a dead fixture looks like.
  *
- * ⚠️ BOTH CASES ARE ARRAYS, and getting that wrong broke this check twice (item 1421). `toArray`
+ * BOTH CASES ARE ARRAYS, and getting that wrong broke this check twice (item 1421). `toArray`
  * returns `[0]` for a count, so `Array.isArray` cannot separate "a scalar aggregate" from "a
  * projection", and neither can the first element's value on its own:
  *
@@ -362,7 +362,7 @@ console.log(
     nodes: NODES,
     fanout: FANOUT,
     fanin: FANIN,
-    // ⚠️ EMITTED SO A DRIVER CAN ASSERT WHAT IT ACTUALLY MEASURED. `stride` and `rowCount` were both
+    // EMITTED SO A DRIVER CAN ASSERT WHAT IT ACTUALLY MEASURED. `stride` and `rowCount` were both
     // computed-or-defaulted and never printed, which is what let a `STRIDE` that this bench did not
     // support pass unnoticed. `rowCount` is additionally the only way to normalize per row — two
     // arms answering different row counts are not comparable until divided (item 1437 settled a

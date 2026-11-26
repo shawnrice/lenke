@@ -14,7 +14,7 @@
  * `bucketSize` 11.6%, `edgesOfTypes` 7.8%, `sweepChain` 6.6% — about 62% in the walk, with ~22%
  * fixture leakage and 4.4% GC.
  *
- * ⚠️ THE LEVER IS NOT THE ONE `sweepChain`'s OWN MEMO ALREADY TRIES. It carries `slotNbrs`, a flat
+ * THE LEVER IS NOT THE ONE `sweepChain`'s OWN MEMO ALREADY TRIES. It carries `slotNbrs`, a flat
  * per-query memo gated `passes > 2` with item 1106's numbers (`count 4-hop` 550.5 -> 297.5, but
  * `count 3-hop + start filter` 162.0 against 165.7 — a small LOSS at two passes, because one building
  * pass is refunded by one consuming pass). A 3-leg chain with a START filter has `lastGated === false`
@@ -29,7 +29,7 @@
  *   csrStart / csrEnd          the same arithmetic over flat slot runs, CSR already built
  *   csrStartPlusBuild          with the O(V+E) CSR build inside the timed region — the cold case
  *
- * ⚠️ The seed/accept SET is per-query because the predicate reads properties, so it is rebuilt in
+ * The seed/accept SET is per-query because the predicate reads properties, so it is rebuilt in
  * every CSR arm and never cached — the same split item 1680 recorded for its projection memo.
  *
  *   node gql-filtered-chain-probe.mjs
@@ -100,7 +100,7 @@ const buildCsr = () => {
 
 const CSR = buildCsr();
 
-/** ⚠️ Per-query: the predicate reads properties, so this can never be cached on topology. */
+/** Per-query: the predicate reads properties, so this can never be cached on topology. */
 const acceptMask = () => {
   const ok = new Uint8Array(order.length);
 
@@ -205,7 +205,7 @@ const ARMS = {
   csrEndPlusBuild: () => csrChainEnd(buildCsr(), acceptMask()),
 };
 
-// ⚠️ START and END are DIFFERENT questions, so they are checked against their own engine arm.
+// START and END are DIFFERENT questions, so they are checked against their own engine arm.
 const wantStart = ARMS.engineStart();
 const wantEnd = ARMS.engineEnd();
 

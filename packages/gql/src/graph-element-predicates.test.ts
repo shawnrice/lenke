@@ -42,7 +42,7 @@ const g = (): Graph => {
   const nd = [
     '{"type":"node","id":"1","labels":["P"],"properties":{"n":1}}',
     '{"type":"node","id":"2","labels":["P"],"properties":{"n":2}}',
-    // ⚠️ The ids here must NOT collide with a vertex id. The first draft of this fixture gave
+    // The ids here must NOT collide with a vertex id. The first draft of this fixture gave
     // this edge the id "1" on purpose — a vertex and an edge sharing an id is the only
     // fixture that can tell an identity which compares ids BEFORE kinds from one that checks
     // kinds first. It cannot be used: `addEdge` with an existing vertex's id replaces that
@@ -172,7 +172,7 @@ describe('SAME', () => {
     expect(r(`MATCH (a:P {n: 1}), (b:P {n: 2}) RETURN SAME(a, b) AS r`)).toBe(false);
     expect(r(`MATCH (a:P {n: 1}), (b:P {n: 2}) RETURN SAME(a, a, b) AS r`)).toBe(false);
     expect(r(`MATCH (a:P {n: 1}), (b:P {n: 2}) RETURN SAME(a, b, b) AS r`)).toBe(false);
-    // ⚠️ NO TEST HERE CAN SEPARATE "every operand against the FIRST" FROM "each against its
+    // NO TEST HERE CAN SEPARATE "every operand against the FIRST" FROM "each against its
     // PREDECESSOR", and the draft of this test claimed `a, b, b` did. A mutant folding against
     // the predecessor SURVIVES, and not for want of a case: `sameElement` is an equivalence
     // relation (id equality, or `structuralEq` which bottoms out at `===`), so an
@@ -190,7 +190,7 @@ describe('SAME', () => {
   });
 
   test('a vertex is never the same element as an edge', () => {
-    // ⚠️ THIS TEST HAS NO TEETH AGAINST ONE SPECIFIC MUTANT, and saying so is the point.
+    // THIS TEST HAS NO TEETH AGAINST ONE SPECIFIC MUTANT, and saying so is the point.
     // `sameElement` checks the KINDS before the ids, so a vertex and an edge are different
     // whatever their ids. The only fixture that could tell that apart from a bare id
     // comparison is one where a vertex and an edge SHARE an id — and that is out of contract
@@ -208,7 +208,7 @@ describe('SAME', () => {
     // This is the arm that separates a TYPE MISMATCH (false: they are determinately not the
     // same thing) from a NULL operand (unknown: there is nothing to compare).
     //
-    // ⚠️ The `isElement(a) || isElement(b)` early return in `sameElement` is REDUNDANT, and a
+    // The `isElement(a) || isElement(b)` early return in `sameElement` is REDUNDANT, and a
     // mutant deleting it survives everything here. It cannot not survive: with the vertex and
     // edge arms already taken above it, the only operands that reach it are mixed, and
     // `structuralEq` ends at `a === b`, which is false for two different objects whatever

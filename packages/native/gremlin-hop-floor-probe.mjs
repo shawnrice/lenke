@@ -7,7 +7,7 @@
  * `V().hasLabel('P').out('E').values('k')` puts 59.0% there with `pick` at 23.8%. A share that large
  * on one frame reads like a target.
  *
- * ⚠️ BUT A SHARE IS A NOMINATION AND A FLOOR IS THE PRICE, and on this exact surface that
+ * BUT A SHARE IS A NOMINATION AND A FLOOR IS THE PRICE, and on this exact surface that
  * distinction has already retracted work: item 234 built floors for three Gremlin shapes and **two
  * of the three targets did not survive** — the big ratio was data layout, not step overhead. So the
  * floor is measured BEFORE anything is built, not after.
@@ -60,7 +60,7 @@ const build = () => {
     g.addEdge({
       id: `e${k}`,
       from: vs[(k * 7919) % NODES],
-      // ⚠️ THE REPEAT INDEX IS LOAD-BEARING (item 1518). Any linear `(a*k + b) % N` is invariant
+      // THE REPEAT INDEX IS LOAD-BEARING (item 1518). Any linear `(a*k + b) % N` is invariant
       // under `k -> k + N`, and the FANOUT edges leaving one vertex are exactly k0, k0+N, k0+2N, …
       // — so the old `(k * 104_729) % NODES` sent EVERY one of them to the SAME target. Degrees
       // looked perfect and the graph was functional: one distinct out-neighbour per vertex at any
@@ -81,7 +81,7 @@ const g = build();
 // `bare` yields the far VERTEX; `vals` yields `far.properties.k`, which is where `pick` appears.
 const wantsValue = SHAPE === 'vals';
 /**
- * ⚠️ HOISTED OUT OF THE LOOPS, and the probe was wrong until it was (item 1412).
+ * HOISTED OUT OF THE LOOPS, and the probe was wrong until it was (item 1412).
  *
  * `acc.push(wantsValue ? edge.to.properties['k'] : edge.to)` puts a branch on the HOT PATH that the
  * engine does not have — its `pick` is a monomorphic closure chosen once per plan. The giveaway was
@@ -133,7 +133,7 @@ const genBody = {
 const genfloor = () => [...genBody];
 
 /**
- * ⚠️ THE ARM THIS PROBE WAS MISSING, added at item 1412 after its absence was spotted.
+ * THE ARM THIS PROBE WAS MISSING, added at item 1412 after its absence was spotted.
  *
  * `floor` drains with `push` and `genfloor` with SPREAD, so `genfloor/floor` conflated two
  * differences and the 2.14x it reported could have been spread-vs-push rather than the generator.
@@ -197,7 +197,7 @@ const med = (xs) => {
   return s[Math.floor(s.length / 2)];
 };
 
-// ⚠️ THE ARMS MUST AGREE ON THE ROW COUNT, or the floor is measuring a different question. Row
+// THE ARMS MUST AGREE ON THE ROW COUNT, or the floor is measuring a different question. Row
 // ORDER is not compared: all three walk the same adjacency in the same order, but the engine is
 // free to reorder and the probe must not pretend otherwise.
 const lens = new Set(names.map((n) => got[n][0].len));

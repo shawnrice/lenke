@@ -1,7 +1,7 @@
 /**
  * LABEL VACUITY AND EMPTINESS: when a label constrains nothing, and when it constrains everything.
  *
- * ⚠️ THE TWO ARE OPPOSITE EDGE CASES OF ONE QUESTION, and both are elisions a planner must get
+ * THE TWO ARE OPPOSITE EDGE CASES OF ONE QUESTION, and both are elisions a planner must get
  * right in BOTH directions. `vacuousLabel` is a label every vertex carries, so testing it is pure
  * cost and the test is dropped (`effectiveLabel` is the dropper). `emptyLabel` is a label NO vertex
  * carries, so the pattern it sits on matches nothing and the whole rung can short-circuit (item
@@ -11,7 +11,7 @@
  * `shortcuts.ts` while `shortcuts.ts` needed four symbols back from `matching.ts` — one of the four
  * mutual import pairs that made this package cyclic (item 1666). One symbol closed that cycle.
  *
- * ⚠️ `vacuousLabel` READS `graph.verticesByLabel` AND `graph.vertexCount`, which is why it is
+ * `vacuousLabel` READS `graph.verticesByLabel` AND `graph.vertexCount`, which is why it is
  * graph-dependent rather than a property of the expression. A label is vacuous relative to the data
  * in the graph right now — and `verticesByLabel` is NOT maintained by the `v.labels =` setter, so an
  * elision taken from it can be a WRONG ANSWER on a graph mutated that way. That is a known open
@@ -55,14 +55,14 @@ import type { LabelExpr } from '../ast.js';
  * What FRACTION of the graph's vertices carry `expr`, or `undefined` when that cannot be read
  * cheaply (item 1940).
  *
- * ⚠️ DELIBERATELY NARROWER THAN {@link vacuousLabel}: only a PLAIN label, because only there is the
+ * DELIBERATELY NARROWER THAN {@link vacuousLabel}: only a PLAIN label, because only there is the
  * bucket's size the coverage. A disjunction's buckets overlap (their sizes do not add), a
  * conjunction's intersection is not a bucket at all, and a negation's complement would need the
  * whole-graph count minus a bucket it may not have — so each returns `undefined` and the caller
  * declines rather than guessing. `vacuousLabel` can answer the compound kinds because `===
  * vertexCount` is an EXACT test it can derive; a fraction is not.
  *
- * 🔑 WHY A FRACTION AT ALL. The edge-driven hop walk is O(|E|) whatever a start label excludes,
+ * WHY A FRACTION AT ALL. The edge-driven hop walk is O(|E|) whatever a start label excludes,
  * while the start-driven walk iterates the label BUCKET and is sub-linear when the label is
  * selective. Item 1939 swept the crossover across 1:1-5:1 fanout and 50k-200k vertices and found it
  * STABLE at 0.18-0.35, so a coverage test with a conservative constant decides between them. A
@@ -80,7 +80,7 @@ export const labelCoverage = (graph: Graph, expr: LabelExpr | undefined): number
   return total === 0 ? undefined : (graph.verticesByLabel.get(expr.name)?.size ?? 0) / total;
 };
 /**
- * ⚠️ The threshold for applying a label PER ELEMENT instead of declining a fast arm, as a named
+ * The threshold for applying a label PER ELEMENT instead of declining a fast arm, as a named
  * constant rather than a literal at a gate. Both arms that use it ask the same question: is this
  * label broad enough that testing it per element beats iterating its BUCKET?
  *
@@ -89,7 +89,7 @@ export const labelCoverage = (graph: Graph, expr: LabelExpr | undefined): number
  *   - the CSR arm's FAR label (item 1941). Its own crossover is LOWER — the counting walk straddles
  *     1.0x at 0.10-0.18 coverage and loses clearly at 0.04 — and the win above is ~2.4x-5.1x.
  *
- * 🔑 ONE CONSTANT, DELIBERATELY, AND IT IS THE CONSERVATIVE END. 0.4 sits above BOTH crossovers, so
+ * ONE CONSTANT, DELIBERATELY, AND IT IS THE CONSERVATIVE END. 0.4 sits above BOTH crossovers, so
  * either arm can only decline a win and never cause a regression. It forfeits the far side's
  * 0.25-0.4 band (measured ~1.5x-2.6x there), which is the smallest part of the range — and a
  * second constant would have had to come from the noisier low end of one sweep.
@@ -104,7 +104,7 @@ export const vacuousLabel = (graph: Graph, expr: LabelExpr | undefined): boolean
     case 'label':
       return (graph.verticesByLabel.get(expr.name)?.size ?? 0) === graph.vertexCount;
 
-    // ⚠️ THE COMPOUND KINDS, which this used to ignore (item 1549). `LabelExpr` has five, and only
+    // THE COMPOUND KINDS, which this used to ignore (item 1549). `LabelExpr` has five, and only
     // `label` was tested — so every compound spelling of a vacuous label stayed in the plan and
     // left the O(1) route. The same defect as item 1547's on the Gremlin side, where
     // `dropVacuousLabels` required `labels.length === 1`. Measured at 200,000 vertices, every arm
@@ -130,7 +130,7 @@ export const vacuousLabel = (graph: Graph, expr: LabelExpr | undefined): boolean
         expr.expr.kind === 'label' && (graph.verticesByLabel.get(expr.expr.name)?.size ?? 0) === 0
       );
 
-    // ⚠️ THE WILDCARD IS **NOT** VACUOUS, AND THAT IS MEASURED, NOT ASSUMED. `:%` reads as "any
+    // THE WILDCARD IS **NOT** VACUOUS, AND THAT IS MEASURED, NOT ASSUMED. `:%` reads as "any
     // node" and the obvious implementation here is `return true` — which is a WRONG ANSWER. On a
     // graph with one `:P` vertex and one UNLABELLED vertex:
     //
@@ -168,7 +168,7 @@ export const effectiveLabel = (
  * One is `size === vertexCount`, the other `size === 0`; between them they turn a label into "drop
  * the test" or "drop the query".
  *
- * ⚠️ WHY THE ENDS NEEDED THIS AND THE MIDDLE DID NOT. `buildTwoHopCount` drives from the MIDDLE —
+ * WHY THE ENDS NEEDED THIS AND THE MIDDLE DID NOT. `buildTwoHopCount` drives from the MIDDLE —
  * a two-hop count is a degree inner product over `b` — so an empty middle bucket yields an empty
  * driver and 0 falls out for free. The end labels are applied as per-edge FILTERS, so an empty one
  * costs the whole sweep to discover nothing. Measured at 200,000 vertices:

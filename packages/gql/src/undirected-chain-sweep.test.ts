@@ -9,7 +9,7 @@
  *   3-hop MIXED filtered  1158.37    ->  76.81   15.1x
  *   3/4/5-hop OUT filtered and 3-hop BOTH bare — CONTROLS — 1.00 / 1.00 / 0.98 / 0.98x
  *
- * ⚠️ WHAT BROKE FIRST, AND WHAT CAUGHT IT. `sweepChain`'s LAST position is not a pass: it is a
+ * WHAT BROKE FIRST, AND WHAT CAUGHT IT. `sweepChain`'s LAST position is not a pass: it is a
  * weighted sum of DEGREES, via `side(…, last.out, …)`, which the per-leg direction loop never
  * reaches. So the first cut counted ONE direction at the final hop and answered EXACTLY HALF —
  * caught by two pre-existing tests from item 484 at 8 against 16 and 0 against 1. Removing a

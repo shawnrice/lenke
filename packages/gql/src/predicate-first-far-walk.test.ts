@@ -1,17 +1,17 @@
 /*
  * Item 2133 — `farDrivenPredicatedHopWalk` tests the far predicate BEFORE the adjacency read.
  *
- * ⚠️⚠️ **THE REORDER WIDENS THE EVALUATED SET, AND THAT IS THE ONLY RISK.** Before, a far vertex with no
- * qualifying bucket was never evaluated; now every candidate far vertex is. 🔑 That is unobservable ONLY
+ * **THE REORDER WIDENS THE EVALUATED SET, AND THAT IS THE ONLY RISK.** Before, a far vertex with no
+ * qualifying bucket was never evaluated; now every candidate far vertex is. That is unobservable ONLY
  * because the caller's gate admits this walk exclusively when the predicate provably cannot raise —
  * `truthCannotRaise(clauseWhere) && predicateCannotRaise(farPred)`, whose own comment says *"A route that
  * reorders which far vertex is evaluated first needs BOTH."*
  *
- * ⚠️ So the tests below come in two halves: the ANSWER at several selectivities (the reorder must not drop
+ * So the tests below come in two halves: the ANSWER at several selectivities (the reorder must not drop
  * or duplicate a row), and the GATE (a predicate that could raise must not reach this walk at all — and
  * must still behave as it did).
  *
- * 🔑 Measured, A/B of the real walk, answers identical in every arm:
+ * Measured, A/B of the real walk, answers identical in every arm:
  *
  * ```text
  *     selectivity        BEFORE     NEW
@@ -30,7 +30,7 @@ import { query } from './index.js';
 /**
  * `ages[i]` is `v{i}`'s age; `edges` are `[from, to]` index pairs of type `E`.
  *
- * ⚠️ Some vertices are deliberately given NO in-edges: those are exactly the ones the reorder newly
+ * Some vertices are deliberately given NO in-edges: those are exactly the ones the reorder newly
  * evaluates, so every fixture needs them or the change is untested.
  */
 const graphOf = (
@@ -82,7 +82,7 @@ describe('farDrivenPredicatedHopWalk: predicate before the adjacency read (item 
       ],
     );
 
-    test('⚠️ SHARP — most far vertices fail, which is where the win is', () => {
+    test('SHARP — most far vertices fail, which is where the win is', () => {
       // Only v1 (90) and v3 (95) pass `> 85`, and both have exactly one in-edge.
       expect(rowsFor(g, 'MATCH (a:P)-[:E]->(b) WHERE b.age > 85 RETURN b.age AS k')).toBe('90,95');
     });
@@ -93,10 +93,10 @@ describe('farDrivenPredicatedHopWalk: predicate before the adjacency read (item 
       );
     });
 
-    test('⚠️ VACUOUS — every far vertex passes, so the reorder can only cost', () => {
+    test('VACUOUS — every far vertex passes, so the reorder can only cost', () => {
       /*
-       * 🔑 The arm where the reorder has nothing to skip, and it must still be exactly right: three
-       * edges, three rows. ⚠️ v0/v4/v5 pass the predicate and have no in-edge — they must contribute
+       * The arm where the reorder has nothing to skip, and it must still be exactly right: three
+       * edges, three rows. v0/v4/v5 pass the predicate and have no in-edge — they must contribute
        * NOTHING, which is the bucket guard still doing its job after being moved below the predicate.
        */
       expect(rowsFor(g, 'MATCH (a:P)-[:E]->(b) WHERE b.age > -1 RETURN b.age AS k')).toBe(
@@ -110,10 +110,10 @@ describe('farDrivenPredicatedHopWalk: predicate before the adjacency read (item 
       );
     });
 
-    test('⚠️⚠️ MULTIPLICITY: a far vertex with THREE in-edges yields THREE rows', () => {
+    test('MULTIPLICITY: a far vertex with THREE in-edges yields THREE rows', () => {
       /*
-       * 🔑 The walk emits one template plus `bucket.size - 1` copies, and the bucket read now happens
-       * AFTER the predicate. ⚠️ If the reorder had cost the walk its bucket, this would answer 1 instead
+       * The walk emits one template plus `bucket.size - 1` copies, and the bucket read now happens
+       * AFTER the predicate. If the reorder had cost the walk its bucket, this would answer 1 instead
        * of 3 — the sharpest form of a dropped-row bug.
        */
       const many = graphOf(
@@ -130,7 +130,7 @@ describe('farDrivenPredicatedHopWalk: predicate before the adjacency read (item 
       );
     });
 
-    test('⚠️ a MISSING property is not a pass, and does not raise', () => {
+    test('a MISSING property is not a pass, and does not raise', () => {
       const missing = graphOf(
         [10, undefined, 90],
         [
@@ -144,7 +144,7 @@ describe('farDrivenPredicatedHopWalk: predicate before the adjacency read (item 
       );
     });
 
-    test('⚠️ a far LABEL still filters, now tested after the predicate', () => {
+    test('a far LABEL still filters, now tested after the predicate', () => {
       const labelled = graphOf(
         [10, 90, 95],
         [
@@ -161,20 +161,20 @@ describe('farDrivenPredicatedHopWalk: predicate before the adjacency read (item 
 
     test('an INCOMING hop agrees too', () => {
       /*
-       * ⚠️ ONE row, not two, and I had this wrong by eye before the engine corrected me. Reversed, the
+       * ONE row, not two, and I had this wrong by eye before the engine corrected me. Reversed, the
        * question is "far vertices `b` with an OUT-edge, whose age passes": v1 (90) has `v1 -> v3`; v3
-       * (95) and v4 (99) pass the predicate but have no out-edge at all. 🔑 Those two are exactly the
+       * (95) and v4 (99) pass the predicate but have no out-edge at all. Those two are exactly the
        * vertices the reorder newly evaluates, which is what makes this case worth keeping.
        */
       expect(rowsFor(g, 'MATCH (a:P)<-[:E]-(b) WHERE b.age > 44 RETURN b.age AS k')).toBe('90');
     });
   });
 
-  describe('⚠️⚠️ the GATE: a predicate that could RAISE must not reach this walk', () => {
+  describe('the GATE: a predicate that could RAISE must not reach this walk', () => {
     /*
-     * 🔑 THE REORDER'S SOUNDNESS RESTS ENTIRELY ON THIS. The caller admits the walk only when BOTH
+     * THE REORDER'S SOUNDNESS RESTS ENTIRELY ON THIS. The caller admits the walk only when BOTH
      * raise-freedom keys hold, so a predicate with a raising operand takes another route — where the
-     * evaluated set is still the narrow one. ⚠️ These tests assert the ANSWER, which is what a user sees;
+     * evaluated set is still the narrow one. These tests assert the ANSWER, which is what a user sees;
      * a route change that altered any of them would be the bug.
      */
     const g = graphOf(
@@ -189,21 +189,21 @@ describe('farDrivenPredicatedHopWalk: predicate before the adjacency read (item 
       expect(rowsFor(g, 'MATCH (a:P)-[:E]->(b) WHERE b.age / 2 > 30 RETURN b.age AS k')).toBe('90');
     });
 
-    test('⚠️ a bare NUMERIC property as a truth value is a STATIC ERROR, not a coercion', () => {
+    test('a bare NUMERIC property as a truth value is a STATIC ERROR, not a coercion', () => {
       /*
-       * 🔑 I expected a coercion and the engine corrected me: GQL applies a STATIC boolean-context check
+       * I expected a coercion and the engine corrected me: GQL applies a STATIC boolean-context check
        * at the clause level, so `WHERE b.age` over a number is rejected at COMPILE time and never reaches
-       * any walk. ⚠️ That is a stronger guarantee than the gate needs — the shape cannot run at all — and
+       * any walk. That is a stronger guarantee than the gate needs — the shape cannot run at all — and
        * it is worth pinning here because a future relaxation to a runtime coercion would hand this walk a
        * predicate whose raise-freedom nobody has checked.
        */
       expect(() => query(g, 'MATCH (a:P)-[:E]->(b) WHERE b.age RETURN b.age AS k')).toThrow();
     });
 
-    test('⚠️ a STRING compared with `>` — no match, and no throw either way', () => {
+    test('a STRING compared with `>` — no match, and no throw either way', () => {
       /*
-       * 🔑 Item 2133 checked seven cross-type shapes in this position and none raises — which is the
-       * premise the gate encodes rather than a reason to widen it. ⚠️ The answer must be the same whether
+       * Item 2133 checked seven cross-type shapes in this position and none raises — which is the
+       * premise the gate encodes rather than a reason to widen it. The answer must be the same whether
        * the gate admits the walk or not.
        */
       const mixed = graphOf(

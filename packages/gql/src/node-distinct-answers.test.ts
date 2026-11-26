@@ -7,7 +7,7 @@ import { describe, expect, test } from 'bun:test';
  * only the one-column case, so `RETURN DISTINCT n.n, n.k` fell to the general matcher at **110.9 ms
  * against the one-column spelling's 4.0** — and 12x the cost of emitting every row it dedupes.
  *
- * ⚠️ THE RISK IS THE KEY, NOT THE WALK. The rung reuses `detectNodeProjection` to build rows and
+ * THE RISK IS THE KEY, NOT THE WALK. The rung reuses `detectNodeProjection` to build rows and
  * `distinctRows` to dedupe them, so nothing about the scan is new — what is new is that a
  * multi-column key now decides which rows collapse. The fixture is therefore built from the values
  * that make keying hard rather than from distinct integers: a stored `null`, `-0` against `0`,
@@ -92,7 +92,7 @@ describe('a multi-column DISTINCT over a node scan', () => {
         'number:0|number:0',
         '<null>|number:1',
         '#NaN|number:3',
-        // ⚠️ RENDERED WITH `JSON.stringify`, so the STRING '1' reads as `string:"1"` and cannot be
+        // RENDERED WITH `JSON.stringify`, so the STRING '1' reads as `string:"1"` and cannot be
         // confused with the NUMBER 1 — which is the collision this row exists to rule out.
         'string:"1"|number:2',
       ].sort(),
@@ -100,7 +100,7 @@ describe('a multi-column DISTINCT over a node scan', () => {
   });
 
   /**
-   * ⚠️ THE SWAPPED PAIR IS THE COLUMN-ORDER GUARD. `[1,2]` and `[2,1]` have the same VALUES, so a
+   * THE SWAPPED PAIR IS THE COLUMN-ORDER GUARD. `[1,2]` and `[2,1]` have the same VALUES, so a
    * key that joined them without respecting position would collapse two different rows into one.
    */
   test('a swapped pair stays two rows', () => {
@@ -129,7 +129,7 @@ describe('a multi-column DISTINCT over a node scan', () => {
   });
 
   /**
-   * ⚠️ A SORT OR WINDOW IS REFUSED, deliberately: `distinctRows` runs AFTER the rows exist, so a
+   * A SORT OR WINDOW IS REFUSED, deliberately: `distinctRows` runs AFTER the rows exist, so a
    * window would have to be applied after the dedupe while `detectNodeProjection` would have
    * applied it before — which returns different ROWS, not a different order.
    */

@@ -6,7 +6,7 @@ import { parse } from './parser.js';
 /**
  * Which rung serves a SEEDED var-length count (item 1907).
  *
- * ⚠️⚠️ **THE ROUTE NEEDS ITS OWN ASSERTION BECAUSE CARRYING THE SEED GATE IS ANSWER-EQUIVALENT.**
+ * **THE ROUTE NEEDS ITS OWN ASSERTION BECAUSE CARRYING THE SEED GATE IS ANSWER-EQUIVALENT.**
  * Refusing a start predicate sends the query to the general path, which answers the same number more
  * slowly — so a mutant restoring item 583's refusal passed a 540-assertion cross-engine suite.
  * [[perf-gate-needs-its-own-test]], and the cost of the refusal was 129-138x.
@@ -32,7 +32,7 @@ const rungFor = (text: string): string => {
 };
 
 describe('a seeded var-length count reaches the rung in every spelling', () => {
-  /** ⚠️ ALL THREE, because item 583 refused the gate precisely to keep them from splitting. */
+  /** ALL THREE, because item 583 refused the gate precisely to keep them from splitting. */
   const CLAIMED = [
     'MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p RETURN count(*) AS c',
     'MATCH (a:T {n: $p})-[:E]->{1,3}(b:T) RETURN count(*) AS c',
@@ -51,7 +51,7 @@ describe('a seeded var-length count reaches the rung in every spelling', () => {
     });
   }
 
-  /** ⚠️ A predicate reading BOTH ends is not a seed test and must still decline. */
+  /** A predicate reading BOTH ends is not a seed test and must still decline. */
   test('a predicate spanning both ends still declines', () => {
     expect(rungFor('MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = b.n RETURN count(*) AS c')).toBe(
       'GENERAL',

@@ -1,13 +1,13 @@
 #!/bin/zsh
 # Item 2016 — the flat edge array's PRE/POST A/B, with controls.
 #
-# ⚠️ ONE SHAPE PER PROCESS (item 762), so each arm is its own `bun` invocation and the figure never
+# ONE SHAPE PER PROCESS (item 762), so each arm is its own `bun` invocation and the figure never
 # belongs to a mix of shapes sharing a dispatch site.
 #
-# ⚠️ ORDER-ALTERNATED, because the machine drifts and a one-way sweep attributes that drift to the
+# ORDER-ALTERNATED, because the machine drifts and a one-way sweep attributes that drift to the
 # change (CLAUDE.md: "match sample counts on both sides").
 #
-# ⚠️ CONTROLS ARE MANDATORY FOR A NEW WALK — [[executor-edits-perturb]], where a new walk variant
+# CONTROLS ARE MANDATORY FOR A NEW WALK — [[executor-edits-perturb]], where a new walk variant
 # cost UNRELATED rows up to 16% and item 1466 declined a 3.3x on exactly that ground. Here the
 # controls are the shapes that take the VERTEX CSR (`hop`, `unfiltered`), because the `kind`
 # namespace change in `second-ask.ts` is on their path too: if this rung accidentally armed their
@@ -16,7 +16,7 @@
 #   PRE  = the flat arm made to DECLINE  (`spec.flat` read as `false`)
 #   POST = as shipped
 #
-# ⚠️ NOT `undefined ??` IN FRONT of anything — see `disabling-a-rung-for-an-oracle` in memory and
+# NOT `undefined ??` IN FRONT of anything — see `disabling-a-rung-for-an-oracle` in memory and
 # `battery-2014.mjs`'s corrected header. The arm is GREPPED before each build.
 set -u
 
@@ -47,7 +47,7 @@ PY
 
 round() {
   set_arm "$2" "$3" || exit 1
-  # ⚠️ ASSERT THE ARM IS THE CODE IT CLAIMS BEFORE BUILDING — CLAUDE.md's rule. A patch that
+  # ASSERT THE ARM IS THE CODE IT CLAIMS BEFORE BUILDING — CLAUDE.md's rule. A patch that
   # silently did nothing leaves the previous arm in place and the "after" reading is the "before"
   # code: a null that looks like a result.
   grep -F -q -- "$2" "$SRC" || { print -- "ARM NOT SET: $1"; exit 1; }
@@ -55,7 +55,7 @@ round() {
   measure "$1"
 }
 
-# ⚠️⚠️ **RESTORE ON ANY EXIT, NOT ONLY AT THE END — AND A KILL IS THE CASE THAT PROVES IT.** Item
+# **RESTORE ON ANY EXIT, NOT ONLY AT THE END — AND A KILL IS THE CASE THAT PROVES IT.** Item
 # 2018's run of this script was killed mid-round by the system's low-memory reaper and left the PRE
 # arm (`&& false`) in `projection.ts`: the fast path silently disabled, the tree still compiling, and
 # nothing to notice it but a `git diff`. The mutation harnesses restore in a loop and re-verify at

@@ -1,6 +1,6 @@
 // Unit tests for the realistic-workload GENERATOR (item 1817).
 //
-// ⚠️ WHY THE GENERATOR NEEDS ITS OWN TEST, SEPARATE FROM THE FUZZER THAT USES IT. The fuzzer
+// WHY THE GENERATOR NEEDS ITS OWN TEST, SEPARATE FROM THE FUZZER THAT USES IT. The fuzzer
 // compares two engines, so anything it generates that is answer-equivalent across them passes —
 // including a family that silently stops matching rows, a family that stops being drawn, and a
 // family whose queries all take a route nobody intended. That is the same reasoning the repo
@@ -43,7 +43,7 @@ describe('item 1817 — the workload generator', () => {
 
     expect([...counts.keys()].sort()).toEqual([...WORKLOAD_FAMILY_NAMES]);
 
-    // ⚠️ THE FLATNESS IS THE WHOLE ITEM. The generator this arm was added beside puts 60.8% of
+    // THE FLATNESS IS THE WHOLE ITEM. The generator this arm was added beside puts 60.8% of
     // its queries on one shape; a replacement that merely moved the lump somewhere else would
     // not be an improvement. Expected share is 1/17 ≈ 5.9%, and every family must land within a
     // factor of 1.5 of it — loose enough not to be a flake at 8,000 draws, tight enough that a
@@ -88,13 +88,13 @@ describe('item 1817 — the workload generator', () => {
       // A scalar aggregate returns exactly one row, so it is trivially ordered without a sort —
       // that is the one admitted exception, and it is named rather than left as a loophole.
       //
-      // ⚠️ `collect` JOINED THE LIST AT ITEM 1831, and it is the interesting member: it also returns
+      // `collect` JOINED THE LIST AT ITEM 1831, and it is the interesting member: it also returns
       // exactly one row, so it is trivially ordered AS A ROW SEQUENCE — while the LIST inside that
       // row has an order which IS the answer. Comparing it in order is therefore both correct and
       // the whole point of generating it (items 1829/1830 refused to assume that order matches
       // across engines; this is what checks it).
       //
-      // ⚠️ AND THIS EXCEPTION LIST FAILS CLOSED, which is why item 1817 wrote it as an allowlist:
+      // AND THIS EXCEPTION LIST FAILS CLOSED, which is why item 1817 wrote it as an allowlist:
       // adding `collect` to the generator without adding it here made this test FAIL rather than
       // silently widening what counts as "ordered". A denylist would have let it through.
       const scalarAggregate = /RETURN (count|sum|avg|min|max|collect)\(/.test(w.text);
@@ -135,7 +135,7 @@ describe('item 1817 — the workload generator', () => {
   });
 
   test('the chain family draws the BARE spelling, which is the only one the rung accepts', () => {
-    // ⚠️ THE GUARD ON THE ROUTE, NOT ON THE TEXT. The TS chain rung declines an `ORDER BY`
+    // THE GUARD ON THE ROUTE, NOT ON THE TEXT. The TS chain rung declines an `ORDER BY`
     // outright, so a chain family that only ever emits the ordered spelling generates perfectly
     // good queries and reaches the rung ZERO times. That is not hypothetical — the first draft of
     // this generator did exactly that, and a `throw` at the rung's first statement left 20,000

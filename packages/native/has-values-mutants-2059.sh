@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2059 — mutation round on the unindexed has+values fused scan.
 #
-# ⚠️⚠️ **FIRST, DOES THE TEST FILE REACH THE NEW CODE AT ALL?** Item 2018 wrote 13 tests for a new
+# **FIRST, DOES THE TEST FILE REACH THE NEW CODE AT ALL?** Item 2018 wrote 13 tests for a new
 # path and every walk mutant SURVIVED them, because rungs above answered each shape and the new code
 # never ran. The `count-never-fused` mutant below is that check made permanent: it forces
 # `fusableProjectedCount` to return false, so the fused case declines everywhere. It is
@@ -47,48 +47,48 @@ fi
 
 print -- "baseline green, both filters. mutating.\n"
 
-# ⚠️ THE SAME GATE NOW APPEARS IN FOUR RUNGS (the `optional` one from item 2027 included), so each
+# THE SAME GATE NOW APPEARS IN FOUR RUNGS (the `optional` one from item 2027 included), so each
 # mutant is scoped to ONE FILE via $SRC — a repo-wide line anchor would edit all four and the verdict
 # would cover four decisions at once (item 2020's over-broad mutant, item 2018's extraction).
-# ⚠️ EVERY MUTANT IS ANSWER-EQUIVALENT OR NOT, and the ones that are must still be CAUGHT — by the
+# EVERY MUTANT IS ANSWER-EQUIVALENT OR NOT, and the ones that are must still be CAUGHT — by the
 # gate tests (accept/decline) or by the iterator/drain agreement. A route choice alone changes no
 # answer, which is why this rung needed its own tests ([[perf-gate-needs-its-own-test]]).
-# ⚠️ THE RESIDUAL IS ANSWER-AFFECTING IN ONE DIRECTION AND ROUTE-ONLY IN THE OTHER: dropping a
+# THE RESIDUAL IS ANSWER-AFFECTING IN ONE DIRECTION AND ROUTE-ONLY IN THE OTHER: dropping a
 # trailing `order` changes the ANSWER (the sequence), while refusing to fuse it only changes the
 # ROUTE. Both are in the battery, and only the route-only ones need a test that asserts a route.
-# ⚠️ EVERY MUTANT HERE IS ANSWER-PRESERVING OR ANSWER-BREAKING, and the answer-preserving ones are the
+# EVERY MUTANT HERE IS ANSWER-PRESERVING OR ANSWER-BREAKING, and the answer-preserving ones are the
 # point: this rewrite changes a ROUTE, and the route was already correct. Only the plan-shape
 # assertions can catch them.
-# ⚠️ EVERY MUTANT HERE IS ANSWER-PRESERVING OR ANSWER-BREAKING, and the answer-preserving ones are the
+# EVERY MUTANT HERE IS ANSWER-PRESERVING OR ANSWER-BREAKING, and the answer-preserving ones are the
 # point: this rewrite changes a ROUTE, and the route was already correct. Only the plan-shape
 # assertions can catch them.
 #
-# ⚠️ LITERAL SINGLE QUOTES, not \x27 — these are DOUBLE-quoted zsh strings, where a single quote needs
+# LITERAL SINGLE QUOTES, not \x27 — these are DOUBLE-quoted zsh strings, where a single quote needs
 # no escape at all. The first round used \x27 and all four quote-bearing anchors reported
 # ANCHOR-DID-NOT-APPLY, which reads like a stale anchor rather than a quoting mistake.
-# ⚠️ LITERAL SINGLE QUOTES inside these DOUBLE-quoted zsh strings — item 2047 lost four anchors to
+# LITERAL SINGLE QUOTES inside these DOUBLE-quoted zsh strings — item 2047 lost four anchors to
 # \x27 escapes that zsh does not expand.
-# ⚠️⚠️ **ANCHORS MADE UNIQUE AND EVERY GATE MUTANT SCOPED TO THIS FUNCTION.** The first run reported
+# **ANCHORS MADE UNIQUE AND EVERY GATE MUTANT SCOPED TO THIS FUNCTION.** The first run reported
 # `anchors 2` for three mutants: `if (steps.length !== 3) {`, the multi-key check and the `V(ids)`
 # check are IDENTICAL in `nodeValuesWhereShortcut` above, so those mutants edited BOTH rungs and were
 # "caught" by code they were not aiming at — [[ambiguous-anchor-strings]] exactly. Each gate mutant
 # now anchors on this rung's UNIQUE export line and applies its sed only between that line and the
 # function's close.
 #
-# ⚠️ AND `&&` IS WRITTEN LITERALLY. Escaping it as \& left `grep -F` hunting for a backslash, so four
+# AND `&&` IS WRITTEN LITERALLY. Escaping it as \& left `grep -F` hunting for a backslash, so four
 # walk mutants silently reported ANCHOR-DID-NOT-APPLY rather than failing loudly.
-# ⚠️⚠️ **THE HARNESS VERIFIES BY RE-COUNTING THE ANCHOR**, so a mutant whose anchor is not the line it
+# **THE HARNESS VERIFIES BY RE-COUNTING THE ANCHOR**, so a mutant whose anchor is not the line it
 # changes always reports ANCHOR-DID-NOT-APPLY — seven did, on a run where every sed had in fact
 # applied correctly. The anchor must BE the mutated text.
 #
-# ⚠️ A DUPLICATED ANCHOR IS THEREFORE FINE **when the sed is range-scoped**: `if (steps.length !== 3)`,
+# A DUPLICATED ANCHOR IS THEREFORE FINE **when the sed is range-scoped**: `if (steps.length !== 3)`,
 # the multi-key check, the `V(ids)` check and the `yield` all appear in a sibling rung too, so those
 # seds are limited to this function (or this walk) and the count drops 2 -> 1, which both proves the
 # edit landed and proves it landed HERE. An UNSCOPED sed with a duplicate anchor is the real bug —
 # the first run had three, each silently editing `nodeValuesWhereShortcut` as well
 # ([[ambiguous-anchor-strings]]).
 #
-# ⚠️ AND `&&` IS LITERAL in the anchors: escaping it left `grep -F` hunting for a backslash.
+# AND `&&` IS LITERAL in the anchors: escaping it left `grep -F` hunting for a backslash.
 MUTANTS=(
   "rung-never-fires@@  if (filter.kind !== 'has') {@@s@filter.kind !== 'has'@true@"
   "admits-four-steps@@  if (steps.length !== 3) {@@/^export const unindexedHasValuesShortcut/,/^};/ s@steps.length !== 3@false@"

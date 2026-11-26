@@ -9,13 +9,13 @@
 //     order by EXPRESSION             53.92  vs  bound name 19.50  = 2.77x
 //     NODE expr key, OFFSET no LIMIT  55.20  vs  alias key  21.12  = 2.61x
 //
-// ⚠️ IT IS ALREADY PRICED, AND THE PRICE IS AN ATTRIBUTION, NOT A MEASUREMENT. Item 1902 recorded
+// IT IS ALREADY PRICED, AND THE PRICE IS AN ATTRIBUTION, NOT A MEASUREMENT. Item 1902 recorded
 // the cause as "per-row compiled-key evaluation plus a `KeyRow` allocation against the plain arm's
 // direct column read" and left it. [[frame-attribution-trap]]: a frame is attribution until a
 // DELETION TEST WITH A CONTROL says otherwise — this repo has been wrong about exactly this four
 // times, and at item 1667 the control moved 7.5x.
 //
-// 🔑 SO THIS SPLITS THE RESIDUAL INTO ITS TWO CLAIMED HALVES, by arms that differ in ONE of them:
+// SO THIS SPLITS THE RESIDUAL INTO ITS TWO CLAIMED HALVES, by arms that differ in ONE of them:
 //
 //     alias       ORDER BY x          the rung. No key eval, no KeyRow.
 //     exprId      ORDER BY n.n        an EXPRESSION that is the identity of the projected column —
@@ -40,7 +40,7 @@ const N = Number(process.env.N ?? 200000);
 const REPS = Number(process.env.REPS ?? 9);
 const SHAPE = process.env.SHAPE ?? 'expr1';
 
-// ⚠️ DISTINCT KEYS, because item 1903 established that a tie-heavy fixture lets a WRONG ORDER share
+// DISTINCT KEYS, because item 1903 established that a tie-heavy fixture lets a WRONG ORDER share
 // its first rows with the right one — and the screen's own fixture gives eight distinct `n` over
 // 200,000 vertices, where a broken sort measured 7.6x faster and looked like a win.
 const g = new Graph();
@@ -50,7 +50,7 @@ for (let i = 0; i < N; i += 1) {
     id: String(i + 1),
     labels: ['T'],
     /*
-     * ⚠️ `m` ADDED AT ITEM 1961, and the reason is an instrument flaw this probe had. Its
+     * `m` ADDED AT ITEM 1961, and the reason is an instrument flaw this probe had. Its
      * `exprOther` arm (`ORDER BY n.k`) was being read as the cost of the UNPROJECTED-key route —
      * but `n` is NUMERIC and `k` is a STRING, so that arm changes the key's TYPE as well as its
      * projectedness, and `sortColumnKind` classifies a string column as `string` (reduced
@@ -88,7 +88,7 @@ const SHAPES = {
   /** Its control: the SAME key, projected, so `aliasOf` rewrites it to a column. */
   numProj: 'MATCH (n:T) RETURN n.m AS x ORDER BY n.m',
   /*
-   * 🔑 THE CONTROL THAT ISOLATES THE ROUTE, and `numProj` is NOT it. `numOther` reads TWO
+   * THE CONTROL THAT ISOLATES THE ROUTE, and `numProj` is NOT it. `numOther` reads TWO
    * properties per row (`n.n` to project, `n.m` for the key) where `numProj` reads one, so their
    * gap is the route PLUS an extra `propOf` — and `propOf` is 30% of `numOther`'s profile, so that
    * is not a rounding error. This arm reads the same two properties and projects BOTH, so `aliasOf`
@@ -99,7 +99,7 @@ const SHAPES = {
   // The floor: the same projection with no ordering at all.
   none: 'MATCH (n:T) RETURN n.n AS x',
   /*
-   * 🔑 THE CEILING FOR THE SAFE REWRITE. The row ALREADY holds `x = n.n`, so a sort key spelled
+   * THE CEILING FOR THE SAFE REWRITE. The row ALREADY holds `x = n.n`, so a sort key spelled
    * `n.n + 1` could read the projected COLUMN instead of re-reading the vertex — same property,
    * same value, same faults, so answer-identical by construction and needing no monotonicity
    * assumption (which `n.n + 1` could not support anyway: on a string column `+` may fault, and
@@ -111,14 +111,14 @@ const SHAPES = {
   aliasExpr: 'MATCH (n:T) RETURN n.n AS x ORDER BY x + 1',
   aliasExpr2: 'MATCH (n:T) RETURN n.n AS x ORDER BY x + 1, x',
   /*
-   * ⚠️ THE HOP TWIN, where the absolute numbers are largest. `hopAliasEx` reaches NO RUNG either
+   * THE HOP TWIN, where the absolute numbers are largest. `hopAliasEx` reaches NO RUNG either
    * (`sortroute-1929.ts`), so this is the same gap on the most common shape in the language.
    */
   hopAlias: 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY x',
   hopExpr: 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY b.n + 1',
   hopAliasEx: 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY x + 1',
   /*
-   * 🔑 IS THE REMAINING ~1.65x THE ARITHMETIC OR THE KEY MACHINERY? `hopProp` sorts by the bare
+   * IS THE REMAINING ~1.65x THE ARITHMETIC OR THE KEY MACHINERY? `hopProp` sorts by the bare
    * PROPERTY that the projection already emits, so `aliasOf` maps it to the alias and it should
    * reach the column-sort arm. If it lands at `hopAlias`, the whole residual is the compiled-key
    * route and the arithmetic is incidental; if it lands at `hopExpr`, the arithmetic is the cost.

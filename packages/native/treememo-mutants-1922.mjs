@@ -1,12 +1,12 @@
 /**
  * DOES `tree-key-memo.test.ts` HAVE TEETH? (item 1922)
  *
- * ⚠️ THE DANGEROUS MUTANT IS THE GATE, NOT THE MEMO. Turning the memo ON for a plan that mutates is
+ * THE DANGEROUS MUTANT IS THE GATE, NOT THE MEMO. Turning the memo ON for a plan that mutates is
  * a silent wrong answer: the stream is pulled lazily, so a mutation step upstream of `tree()` runs
  * interleaved with the tree insertion, and an element keyed on both sides of its own mutation gets
  * TWO legitimately different keys. A memo answers from the stale side. That is the mutant to catch.
  *
- * ⚠️ WRITTEN DIRECTLY, not templated (item 1907); test paths listed from the directory (item 1915).
+ * WRITTEN DIRECTLY, not templated (item 1907); test paths listed from the directory (item 1915).
  *
  *     bun treememo-mutants-1922.mjs
  */
@@ -33,14 +33,14 @@ const TESTS = [
 const MUTANTS = [
   // ---- the gate, which is the correctness half ----
   [
-    '⚠️ the memo is ON unconditionally, ignoring mutations',
+    'the memo is ON unconditionally, ignoring mutations',
     'proj',
     '  const memo = ctx.keysStable === true ? new Map<unknown, string>() : undefined;',
     '  const memo = new Map<unknown, string>();',
     1,
   ],
   [
-    '⚠️ keysStable is passed as TRUE for every plan',
+    'keysStable is passed as TRUE for every plan',
     'idx',
     '  const ctx = newContext(planReadsPath(planned), !planMutates(planned));',
     '  const ctx = newContext(planReadsPath(planned), true);',
@@ -115,19 +115,19 @@ const MUTANTS = [
 /** Names that MUST survive, each with its reason. */
 const EXPECTED_SURVIVORS = new Set([
   /*
-   * ⚠️ ROUTE-ONLY IN THE *ANSWER* SENSE: never populating the memo answers identically, just at the
+   * ROUTE-ONLY IN THE *ANSWER* SENSE: never populating the memo answers identically, just at the
    * pre-1922 cost plus a pointless `Map` lookup per element. Its gate is `tree-prof-1922.mjs`
    * (1013.61 -> 547.01 ms with `tree().by(k)` flat at 267.90 as the control).
    */
   'the memo is never populated, so it only costs',
   /*
-   * ⚠️ ALSO ANSWER-EQUIVALENT: memoizing a scalar is correct, merely wasteful — a `Map` entry per
+   * ALSO ANSWER-EQUIVALENT: memoizing a scalar is correct, merely wasteful — a `Map` entry per
    * distinct scalar where `String(node)` is one operation. Declined on cost, so no answer test can
    * see it. The note in `memoizedTreeKey` records the reasoning.
    */
   'a SCALAR path position is memoized too, by identity',
   /*
-   * ⚠️ ANSWER-EQUIVALENT WITHIN CONTRACT, and the reason is worth stating because it looks like a
+   * ANSWER-EQUIVALENT WITHIN CONTRACT, and the reason is worth stating because it looks like a
    * real bug. Keying the memo by `node.id` instead of by the element itself would collide only if
    * two DIFFERENT elements in one tree build shared an id — i.e. a vertex and an edge, since a path
    * can hold both (`outE(T).inV().path()` is `[v, edge, v]`). A vertex and an edge sharing an id is
@@ -143,10 +143,10 @@ const EXPECTED_SURVIVORS = new Set([
 
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
 const HOW_DIED = new Map([
@@ -166,7 +166,7 @@ const verdictOf = (code) => {
   return code !== 0;
 };
 
-/** ⚠️ BOTH STREAMS CONCATENATED, THEN the exit code: `bun test` reports to STDERR (item 767). */
+/** BOTH STREAMS CONCATENATED, THEN the exit code: `bun test` reports to STDERR (item 767). */
 const runTests = () => {
   const r = spawnSync(
     'timeout',
@@ -230,7 +230,7 @@ try {
     const ran = /\d+ pass/.test(r.text) || /\d+ fail/.test(r.text);
 
     if (!ran && r.code !== 124 && r.code !== 137) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-500)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-500)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -258,12 +258,12 @@ try {
 
 if (anchorProblems.length > 0) {
   console.log(
-    `\n⚠️ ${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
+    `\n${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
   );
   process.exitCode = 1;
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

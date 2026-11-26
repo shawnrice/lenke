@@ -1,23 +1,23 @@
 #!/bin/zsh
 # Item 2031 — is the two-hop rung's 20.9% label share REAL COST or ATTRIBUTION?
 #
-# ⚠️⚠️ THIS IS A DELETION TEST, NOT A CANDIDATE CHANGE. [[frame-attribution-trap]]: a GETTER frame is
+# THIS IS A DELETION TEST, NOT A CANDIDATE CHANGE. [[frame-attribution-trap]]: a GETTER frame is
 # attribution until a deletion test with a CONTROL says otherwise, and `get labels` (5.0% of the
 # profile) is exactly that. [[label-vacuity-gates-fast-paths]] goes further and says the per-edge
 # `matchesLabel` dispatch was MEASURED FREE on the edge-driven arm — "a hand arm WITH the dispatch
 # measured faster than one without". So the profile's 20.9% is a hypothesis, and this is its oracle.
 #
-# 🔑 WHY THE ABLATION IS ANSWER-EQUIVALENT HERE, which is what makes it a valid upper bound: the
+# WHY THE ABLATION IS ANSWER-EQUIVALENT HERE, which is what makes it a valid upper bound: the
 # probe's fixture gives EVERY vertex label `P`, so `aLabel`/`midEff` are VACUOUS and no vertex is
 # excluded by either test. Deleting them cannot change a row. The probe asserts its own answer against
 # an independent oracle (item 2030), so a non-equivalent ablation fails loudly instead of measuring
 # a different query.
 #
-# ⚠️ IT IS NOT SHIPPABLE AND MUST NOT BE SHIPPED: on a MIXED graph these tests are necessary work.
+# IT IS NOT SHIPPABLE AND MUST NOT BE SHIPPED: on a MIXED graph these tests are necessary work.
 # The ABLATE arm is the ceiling any vacuity elision could reach, nothing more.
 #
-# ⚠️ ARMS NAMED FOR WHAT THEY ARE (LIVE/ABLATE), never PRE/POST (item 2023).
-# ⚠️ RESTORE ON ANY EXIT — a kill between the swap and the swap back leaves the tree ablated, which
+# ARMS NAMED FOR WHAT THEY ARE (LIVE/ABLATE), never PRE/POST (item 2023).
+# RESTORE ON ANY EXIT — a kill between the swap and the swap back leaves the tree ablated, which
 # still compiles and still passes the homogeneous tests (item 2022's trap).
 set -u
 
@@ -32,7 +32,7 @@ SHAPES=(join hopfilter hopall point)
 restore_live() { cp "$PRISTINE" "$SRC" || print -- "[trap] COULD NOT RESTORE"; }
 trap restore_live EXIT INT TERM
 
-# ⚠️ START-OF-RUN LIVE CHECK: if a previous kill left the tree ablated, the "LIVE" arm would silently
+# START-OF-RUN LIVE CHECK: if a previous kill left the tree ablated, the "LIVE" arm would silently
 # be the experiment (item 2023's near-inversion).
 cmp -s "$SRC" "$PRISTINE" || { print -- "TREE IS NOT PRISTINE at start — refusing"; exit 1; }
 

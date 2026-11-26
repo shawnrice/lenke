@@ -17,7 +17,7 @@ import { query } from './index.js';
  *   MATCH (a:P)-[:E]->(b) RETURN count(DISTINCT a)   11.381 ->  5.126      2.22x
  * ```
  *
- * ⚠️ WHAT HAS TO BE PINNED, and it is not the speed. Dropping the tag means the container is now
+ * WHAT HAS TO BE PINNED, and it is not the speed. Dropping the tag means the container is now
  * the only thing keeping these values apart from other kinds, exactly as the `LocalDate` and zoned
  * containers above it are — so the EQUIVALENCE must be unchanged:
  *
@@ -81,7 +81,7 @@ describe('an element dedups on its id, as it always did', () => {
 });
 
 describe("WHAT ACTUALLY REACHES the `'id' in v` branch: elements, and nothing else", () => {
-  // ⚠️ I GOT THIS WRONG AND THESE TESTS CAUGHT IT. The container is gated on `'id' in v`, and I
+  // I GOT THIS WRONG AND THESE TESTS CAUGHT IT. The container is gated on `'id' in v`, and I
   // assumed a map literal `{id: 'x'}` passed that test — so I wrote two assertions saying a map
   // and a vertex sharing an id collapse into one dedup value. Both failed.
   //
@@ -147,12 +147,12 @@ describe("WHAT ACTUALLY REACHES the `'id' in v` branch: elements, and nothing el
   });
 });
 
-describe('⚠️ the String(v.id) coercion is LOAD-BEARING, and it preserves a TS BUG', () => {
+describe('the String(v.id) coercion is LOAD-BEARING, and it preserves a TS BUG', () => {
   // MUTATION FOUND THIS GAP. Replacing `String(v.id)` with a bare cast survived the whole suite,
   // and the reason was not that the coercion is dead — it is that nothing covered it. A vertex id
   // may be a NUMBER: `addVertex({ id: 5 })` stores `5`, not `'5'`.
   //
-  // ⚠️⚠️ AND THE BEHAVIOUR IT PRESERVES IS WRONG. `valueKey` keys an element as
+  // AND THE BEHAVIOUR IT PRESERVES IS WRONG. `valueKey` keys an element as
   // `'@' + String(v.id)`, so a vertex with id `5` and a DIFFERENT vertex with id `'5'` are one
   // value — `count(*)` is 2 while `count(DISTINCT n)` is 1, for two genuinely distinct vertices.
   // Native answers 2, which is correct. That is a PRE-EXISTING TS bug, not item 1584's: item 1584
@@ -166,10 +166,10 @@ describe('⚠️ the String(v.id) coercion is LOAD-BEARING, and it preserves a T
   const mixed = (): Graph => {
     const graph = new Graph();
 
-    // ⚠️ The TYPE says `id: string`, so this needs a cast — which narrows how the bug is reached:
+    // The TYPE says `id: string`, so this needs a cast — which narrows how the bug is reached:
     // from untyped JS, and ONLY from there.
     //
-    // ⚠️ AN EARLIER VERSION OF THIS COMMENT ALSO CLAIMED DESERIALIZATION, and item 1588 measured
+    // AN EARLIER VERSION OF THIS COMMENT ALSO CLAIMED DESERIALIZATION, and item 1588 measured
     // that wrong. Through NDJSON, `count(*)` ALSO diverges (ts 1 against native's 2) — TS's graph
     // holds only ONE vertex, because ingest coerces the numeric id to a string and the second node
     // overwrites the first. That is an INGEST defect, not this dedup one, and the giveaway was

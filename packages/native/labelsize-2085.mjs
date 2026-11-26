@@ -1,6 +1,6 @@
 /*
  * Item 2085 — item 1599 priced `v.labels.has(name)` at 5.5 ns a candidate over 400 candidates and
- * refuted two levers against it. This item measured 15.8 ns over 200,000. ⚠️ BOTH CAN BE RIGHT:
+ * refuted two levers against it. This item measured 15.8 ns over 200,000. BOTH CAN BE RIGHT:
  * CLAUDE.md's first rule is "sweep the size — cache-resident and not are different questions; the
  * transition is between 200k and 1M elements". 400 vertices and their label boxes fit in cache; the
  * whole graph does not, and the test is a POINTER CHASE (vertex -> #lbox -> .set -> hash bucket).
@@ -23,7 +23,7 @@ for (let i = 0; i < N; i++) {
 const all = [...g.verticesById.values()];
 
 /*
- * ⚠️ THE CANDIDATES ARE SPREAD ACROSS THE WHOLE GRAPH, not the first CANDS vertices. A seeded scan's
+ * THE CANDIDATES ARE SPREAD ACROSS THE WHOLE GRAPH, not the first CANDS vertices. A seeded scan's
  * hits are scattered by the index, so taking a contiguous prefix would be cache-friendlier than the
  * engine's real access pattern and would understate exactly the term under test.
  */
@@ -35,7 +35,7 @@ for (let i = 0; i < N && cands.length < CANDS; i += stride) {
 }
 
 /*
- * A parallel sole-label map, standing in for a `sole` field on the box. ⚠️ A `Map.get(object)` is
+ * A parallel sole-label map, standing in for a `sole` field on the box. A `Map.get(object)` is
  * STRICTLY MORE work than a field read, so this arm UNDERSTATES the real lever — which makes it a
  * conservative floor rather than an optimistic one.
  */
@@ -70,13 +70,13 @@ const arms = {
     return kept;
   },
   /*
-   * ⚠️ THE LEVER ITEM 1599 DID NOT TRY. Its two refuted levers were the DISPATCH (compiling the test
+   * THE LEVER ITEM 1599 DID NOT TRY. Its two refuted levers were the DISPATCH (compiling the test
    * per query — flat) and the BUCKET (`verticesByLabel.get(n).has(v)` — slower, and blocked by a
    * stale index). This is a third: `LabelBox` carries `{ set }` only, so the test is a pointer chase
    * **vertex -> #lbox -> .set -> hash bucket**. A `sole` field on the box makes the single-label case
    * **vertex -> #lbox -> .sole -> compare** — one fewer object dereference and no string hash.
    *
-   * 🔑 Simulated here on a PARALLEL structure, because the real one needs a core change. The parallel
+   * Simulated here on a PARALLEL structure, because the real one needs a core change. The parallel
    * objects are built in the same order and read through the same indirection depth as the engine's,
    * so the DIFFERENCE is the lever; the absolute is not the engine's.
    */
@@ -93,7 +93,7 @@ const arms = {
 
     return kept;
   },
-  // ⚠️ THE NULL CONTROL: the same loop, no test. Item 1599 reported 0.34 ns for this.
+  // THE NULL CONTROL: the same loop, no test. Item 1599 reported 0.34 ns for this.
   'no-test': () => {
     let kept = 0;
 

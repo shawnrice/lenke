@@ -1,15 +1,15 @@
 /**
  * Is `traverse 1-hop project + order by` a regression, and did MY ships cause it? (item 2308)
  *
- * 🔑 `bun run bench` reads this row at **826.3 ms** where the audit records 221.2 (after a 5.14x ship),
+ * `bun run bench` reads this row at **826.3 ms** where the audit records 221.2 (after a 5.14x ship),
  * 226.6, and 300.9 — the last with the note *"barely examined (2 mentions, no entry)"*.
  *
- * ⚠️⚠️ **AND THE ROW'S OWN COMMENT NAMES THE WALK I JUST CHANGED**: *"Sorting also forces the
+ * **AND THE ROW'S OWN COMMENT NAMES THE WALK I JUST CHANGED**: *"Sorting also forces the
  * START-DRIVEN walk, because the far-driven one reorders rows deliberately and tie order under ORDER BY is
  * observable between the engines."* Items 2297/2298 admitted more shapes to the far-driven walk, so ruling
  * my own ships out comes before anything else — via the env switch inside ONE binary (item 2294).
  *
- * ✅ The UNORDERED twin is the control the bench itself designates: *"a change admitting the sort must move
+ * The UNORDERED twin is the control the bench itself designates: *"a change admitting the sort must move
  * this row and leave that one alone."*
  */
 import { Graph } from '@lenke/core';

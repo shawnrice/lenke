@@ -83,7 +83,7 @@ export const evalBound = (bound: CRangeBound, env: EvalEnv): RangeBound | null =
  * A seekable predicate: its estimated cardinality, a thunk for the set, and — for an EQUALITY seek
  * — the key it sought on.
  *
- * ⚠️ `eqKey` IS NOT AN EXACTNESS FLAG, and the distinction is the whole design (item 1607). Item
+ * `eqKey` IS NOT AN EXACTNESS FLAG, and the distinction is the whole design (item 1607). Item
  * 1597 proposed marking candidates `exact` here, and that would put the judgement in the wrong
  * place: this function knows what it SOUGHT, not what the caller is about to SKIP. The two are
  * different objects — `indexCandidates` reads a `CNode`'s `pred`, while `buildNodeCount` skips a
@@ -165,7 +165,7 @@ const idSetFrom = (graph: Graph, list: readonly unknown[]): ReadonlySet<Vertex> 
  * `seedVertices` takes the SMALLEST count among the candidates. So above that fraction the exact
  * count is dead information: whichever over-cap candidate wins the ranking is declined anyway.
  *
- * ⚠️ NO CAP BELOW THE FLOOR, and that is what makes this provably behaviour-identical rather than
+ * NO CAP BELOW THE FLOOR, and that is what makes this provably behaviour-identical rather than
  * merely harmless. Below `SEEK_FLOOR_VERTICES` the gate admits a seek at ANY count, so there the
  * ranking between two over-cap candidates WOULD decide which seed is used — and a capped count
  * cannot order them. Returning `Infinity` keeps those graphs on the exact count. Above the floor,
@@ -199,7 +199,7 @@ export const indexCandidates = function* (
       const v = value(env);
 
       /**
-       * ⚠️ A NULL VALUE MUST NOT SEED FROM THIS LOOP — item 1605, a WRONG ANSWER, not a slow path.
+       * A NULL VALUE MUST NOT SEED FROM THIS LOOP — item 1605, a WRONG ANSWER, not a slow path.
        *
        * `isScalar` admits `null` (the property index does store null-valued keys), and for a
        * `WHERE k = $v` hint that is harmless. It is NOT harmless here, because this loop reads
@@ -227,7 +227,7 @@ export const indexCandidates = function* (
        * not a value bucket. `{k: null}` is also the spelling `IS NULL` canonicalizes to, and that
        * route already scans.
        *
-       * ⚠️ THE `eq` SEED HINT BELOW IS LEFT ALONE, and that is deliberate: it carries the
+       * THE `eq` SEED HINT BELOW IS LEFT ALONE, and that is deliberate: it carries the
        * EXPRESSION reading, which rejects a null right-hand side, so re-validation reduces the null
        * bucket to nothing and the answer is right today. It would become unsound the moment a seed
        * is allowed to skip re-validation — the exactness work item 1597 priced — so that item has to
@@ -342,7 +342,7 @@ export const indexCandidates = function* (
       const v = hint.value(env);
 
       /**
-       * ⚠️ ANSWER-NEUTRAL TODAY AND LOAD-BEARING TOMORROW, and the mutation pass is what says so.
+       * ANSWER-NEUTRAL TODAY AND LOAD-BEARING TOMORROW, and the mutation pass is what says so.
        * This hint carries the EXPRESSION reading, which rejects a null right-hand side, so a null
        * bucket seeded here is emptied by re-validation and the answer is right either way —
        * ADDING this guard was run as a mutant and SURVIVED, 0 failures across 4,094 tests, which is
@@ -419,7 +419,7 @@ export const indexCandidates = function* (
  * choice since item 173, records its own crossover "near 3,250 of 20,000" = 16.25%, reached
  * after a plain guard measured a **3.1x REGRESSION** on an indexed-but-unselective filter.
  *
- * ~~The value is `SEEK_MARGIN`'s 1/8 rather than this item's 0.18~~ — ⚠️ **RAISED TO 0.25 AT ITEM 2108,
+ * ~~The value is `SEEK_MARGIN`'s 1/8 rather than this item's 0.18~~ — **RAISED TO 0.25 AT ITEM 2108,
  * DERIVED RATHER THAN FITTED.** The reasoning above stands as written; what it lacked was this engine's
  * own per-unit costs, which is how the NATIVE twin sets its number (`opt.rs`: "a scan costs 1.88 ns per
  * node scanned and a seek 12.2 ns per row returned ... so a seek stops being worth it at 1.88/12.2 =
@@ -433,13 +433,13 @@ export const indexCandidates = function* (
  *     break-even      26.4%          15.4%
  * ```
  *
- * 🔑 **THE TWO ENGINES SHOULD NOT SHARE THIS NUMBER, AND THE RATIO SAYS WHY**: the TS scan is 18x more
+ * **THE TWO ENGINES SHOULD NOT SHARE THIS NUMBER, AND THE RATIO SAYS WHY**: the TS scan is 18x more
  * expensive per node while its seek is only 10x more expensive per row, so its break-even is
  * proportionally HIGHER. Native's own file already carries FOUR such constants (`_CHEAP_SCAN` 0.031,
  * `_BOOL` 0.05, an interval one at 0.05) because a dictionary column and a bool column scan at different
  * rates — the same discipline, applied here, gives a different number rather than the same one.
  *
- * ⚠️ AND A CURVE SWEEP AGREES, INDEPENDENTLY. Five values of this constant against two shapes (a plain
+ * AND A CURVE SWEEP AGREES, INDEPENDENTLY. Five values of this constant against two shapes (a plain
  * node range — item 409's own shape — and a one-hop aggregate), 200,000 nodes, medians of 11:
  *
  * ```text
@@ -451,17 +451,17 @@ export const indexCandidates = function* (
  *       28.6-50        same route both arms    same route both arms
  * ```
  *
- * ⚠️ At 0.35 BOTH shapes REGRESS at 33% (0.84x and 0.79x), which is the asymmetry this file's original
+ * At 0.35 BOTH shapes REGRESS at 33% (0.84x and 0.79x), which is the asymmetry this file's original
  * note warns about and the reason the value is 0.25 and not the derived 26.4%: **it stays BELOW the
  * crossover**, so the residual error is a wrong DECLINE (bounded by the scan) rather than a wrong SEEK
  * (unbounded). That principle is unchanged; only the number it is applied to has moved.
  *
- * ⚠️ **ITEM 409's ~18% IS NOW STALE, not wrong when written.** It measured seek/scan RATIOS on this
+ * **ITEM 409's ~18% IS NOW STALE, not wrong when written.** It measured seek/scan RATIOS on this
  * engine as it then was; the unit costs above are today's, after items 2104-2107 changed what the
  * surrounding rungs do. A ratio measured against a moving arm dates; a rate does not, which is the
  * argument for deriving this rather than fitting it.
  *
- * 🔑 STILL OPEN: whether the TS engine needs native's per-COLUMN variants. It has no columnar or
+ * STILL OPEN: whether the TS engine needs native's per-COLUMN variants. It has no columnar or
  * dictionary store — properties are plain object reads — so there may be no cheap-scan case to separate,
  * but that is untested here rather than established.
  */
@@ -510,7 +510,7 @@ export const seekIsWorthIt = (
 /**
  * The seeded source list for `node`, or `undefined` when NO index serves it (item 1979).
  *
- * 🔑 **THE `undefined` IS THE POINT, and it exists because {@link seedVertices} cannot say "I did
+ * **THE `undefined` IS THE POINT, and it exists because {@link seedVertices} cannot say "I did
  * not seek".** That function always yields a usable source list, falling back to the label scan —
  * which is correct for a caller that was going to walk a generator anyway, and a REGRESSION for one
  * that already had a faster way to produce the same list. The var-length COUNT rung is the second
@@ -695,18 +695,18 @@ export const reversePath = (path: CPath): CPath => {
 /**
  * `reversePath`'s twin for a RAW (uncompiled) `PathPattern` — item 2106.
  *
- * ⚠️⚠️ **IT EXISTS BECAUSE `count(*)`'s THREE-SEGMENT ROUTE TAKES THE RAW PATH, NOT THE COMPILED ONE.**
+ * **IT EXISTS BECAUSE `count(*)`'s THREE-SEGMENT ROUTE TAKES THE RAW PATH, NOT THE COMPILED ONE.**
  * The compiled twin above serves the matcher; `patternCountOf` walks the AST path and receives compiled
  * NODES separately, so reversing its walk needs this. Measured: a three-hop `count(*)` with a selective
  * far predicate read **12.34 ms written forward against 0.46 reversed — 27x** for one question, because
  * the sweep can only seed its START.
  *
- * 🔑 THE TWO MUST AGREE, so this is a line-for-line mirror: same segment reversal, same `FLIP_DIRECTION`,
- * same carry-over of `pathVar`/`selector`/`mode`. ⚠️ A divergence between them would be a wrong answer in
+ * THE TWO MUST AGREE, so this is a line-for-line mirror: same segment reversal, same `FLIP_DIRECTION`,
+ * same carry-over of `pathVar`/`selector`/`mode`. A divergence between them would be a wrong answer in
  * one engine and not the other, so `reverse-raw-path.test.ts` asserts the two against each other on the
  * same shapes rather than testing each alone.
  *
- * ⚠️ `binds`/`reads` have no raw counterpart — they are computed during compilation — so there is nothing
+ * `binds`/`reads` have no raw counterpart — they are computed during compilation — so there is nothing
  * to carry here and nothing missing.
  */
 export const reverseRawPath = (path: PathPattern): PathPattern => {
@@ -735,14 +735,14 @@ export const reverseRawPath = (path: PathPattern): PathPattern => {
  * Would the far end of this path be reached by a GENUINE INDEX SEEK that is narrower than the start?
  * (item 2104)
  *
- * ⚠️⚠️ **THIS IS NARROWER THAN `orient` ON PURPOSE, AND THE FIRST VERSION OF ITEM 2104's GATE WAS NOT.**
+ * **THIS IS NARROWER THAN `orient` ON PURPOSE, AND THE FIRST VERSION OF ITEM 2104's GATE WAS NOT.**
  * `orient` also reverses on LABEL-BUCKET SIZE alone — 4 Docs against 40 Users reverses with no index
  * anywhere — which is right for the matcher, whose cost is the same either way. It is WRONG as a reason
  * for `hop2Projection` to hand a query back: that rung's fused walk can beat the generic matcher even
  * from the larger end (items 1821/1822 measured 13.8x on `hop2distinct`), so a bucket-size difference
  * must not cost it the query.
  *
- * 🔑 An INDEX SEEK is different in kind: `estimateSeedFrom` reports a REAL count for it rather than a
+ * An INDEX SEEK is different in kind: `estimateSeedFrom` reports a REAL count for it rather than a
  * bucket size, and item 2103 measured the rung losing **59x** (25.56 ms against 0.43) by scanning when
  * such a seek was available on the far node. So this returns true ONLY for that case.
  */
@@ -767,14 +767,14 @@ export const farEndSeeksNarrower = (
 
   if (!endEst.indexed) {
     /*
-     * ⚠️⚠️ **THE TINY-BUCKET PRE-CHECK EXISTS SO THE COMMON CASE PAYS NOTHING, AND ITS ABSENCE WAS
+     * **THE TINY-BUCKET PRE-CHECK EXISTS SO THE COMMON CASE PAYS NOTHING, AND ITS ABSENCE WAS
      * MEASURED.** A first version computed the START estimate unconditionally and the rows this rung
      * serves got worse for no gain — `hop2startwhere` 3.63 → 4.45 ms, `hop2rows` 1.06x, `hop3sel` 1.08x.
-     * 🔑 `orient`'s own comment predicts exactly that: *"asking it after the estimates cost the
+     * `orient`'s own comment predicts exactly that: *"asking it after the estimates cost the
      * clause-`WHERE` shape item 172 had just fixed 2.00ms -> 2.33 … because where item 172
      * short-circuited this paid for two seed estimates."*
      *
-     * ✅ A far bucket that is not TINY cannot be 64x smaller than any start worth reversing for, so it
+     * A far bucket that is not TINY cannot be 64x smaller than any start worth reversing for, so it
      * returns here having asked nothing more. (With the pre-check, `hop2startwhere` measured 4.08 WITH
      * against 4.29 WITHOUT on an alternated round — the sign reversed, so it is noise.)
      */
@@ -795,18 +795,18 @@ export const farEndSeeksNarrower = (
  * The far end is not INDEXED, but is its label bucket so much smaller that walking from the written
  * start is wrong anyway? (item 2293)
  *
- * ⚠️⚠️ **ITEM 2104 CONSIDERED BUCKET SIZE AND REJECTED IT, FOR A REASON THAT DOES NOT COVER EVERY
+ * **ITEM 2104 CONSIDERED BUCKET SIZE AND REJECTED IT, FOR A REASON THAT DOES NOT COVER EVERY
  * RATIO.** Its words: *"`orient` also reverses on LABEL-BUCKET SIZE ALONE — 4 Docs against 40 Users, no
  * index anywhere — which is right for the matcher and wrong as a reason for this rung to give up its
- * fused walk"*, which items 1821/1822 measured at **13.8x on `hop2distinct`**. ✅ Sound at 4-against-40,
+ * fused walk"*, which items 1821/1822 measured at **13.8x on `hop2distinct`**. Sound at 4-against-40,
  * a 10x ratio.
  *
- * 🔑 **Not sound at 1-against-400,000.** Item 2289's authz list walked every user in a tenant whose far
+ * **Not sound at 1-against-400,000.** Item 2289's authz list walked every user in a tenant whose far
  * end is a single document: **9.08 ms against 0.68 for the same 2,000 rows, growing without bound in the
  * population** — and a fused walk worth 13.8x cannot pay for an O(tenant) scan. So the bar is a RATIO:
  * far above item 2104's 10x case, far below the 400,000x this exists for.
  *
- * ⚠️ PURE FUNCTIONS because the choice is ANSWER-EQUIVALENT — both routes return the same rows in the
+ * PURE FUNCTIONS because the choice is ANSWER-EQUIVALENT — both routes return the same rows in the
  * same order — so a mutation of a condition inline in the gate survives every differential test and only
  * these unit tests can see it (`perf-gate-needs-its-own-test`, items 1038/1044).
  */
@@ -815,7 +815,7 @@ export const FAR_BUCKET_DECISIVE = 64;
 /**
  * Above this many far-end candidates the ratio question is not even asked (item 2293).
  *
- * 🔑 COST, not correctness: it keeps the unindexed path from paying for a second seed estimate in the
+ * COST, not correctness: it keeps the unindexed path from paying for a second seed estimate in the
  * common case where the far bucket is ordinary. A bucket larger than this would need a start of 64x it —
  * at least 65,536 candidates — before the ratio could fire.
  */
@@ -904,8 +904,8 @@ export const edgePasses = (
 /**
  * The typed adjacency bucket a BFS can walk DIRECTLY, or `undefined` when `expand` must run (item 2149).
  *
- * 🔑 The conditions are exactly `expand`'s own fast branch — a single-direction, `label`-kind
- * relationship — so a shape this declines is one that was already taking the generator. ⚠️ Used by BOTH
+ * The conditions are exactly `expand`'s own fast branch — a single-direction, `label`-kind
+ * relationship — so a shape this declines is one that was already taking the generator. Used by BOTH
  * BFS walks (`ANY SHORTEST` and the all-predecessors variant behind `ALL SHORTEST`), which is why the
  * tests exercise each selector.
  */
@@ -929,13 +929,13 @@ export const shortestWalk = function* (
   const [{ rel, node: endNode }] = pattern.segments;
   const { min, max } = rel.quantifier!;
   /*
-   * ⚠️ THE ENDPOINT LABEL WITH A VACUOUS ONE DROPPED, resolved ONCE PER CALL (item 1908). Both
+   * THE ENDPOINT LABEL WITH A VACUOUS ONE DROPPED, resolved ONCE PER CALL (item 1908). Both
    * shortest-path walks called `matchNode`, the convenience form that ALWAYS tests the label, where
    * `matchNodeLabelled` exists precisely so a caller that has already resolved the effective label
    * can skip it (items 1609/1623). Over a shape emitting one row per reachable PAIR that test runs
    * once per reached vertex per seed — 2,099,864 times on the 200,000-vertex fixture.
    *
-   * ⚠️ PER CALL, NOT PER COMPILE: universality is a property of the GRAPH (item 1551), so a cached
+   * PER CALL, NOT PER COMPILE: universality is a property of the GRAPH (item 1551), so a cached
    * plan cannot carry it. And hoisting matters as much as eliding — item 1609 measured
    * `effectiveLabel` called per ELEMENT at 1.32x WORSE on a graph where it can never elide.
    */
@@ -963,12 +963,12 @@ export const shortestWalk = function* (
     /*
      * ITEM-2149-BFS-BUCKET: the typed bucket read DIRECTLY, with no `{ edge, node }` wrapper per edge.
      *
-     * 🔑 `expand` already reads this exact bucket (`(fwd ? v.adjFrom : v.adjTo)?.get(label.name)`), so
+     * `expand` already reads this exact bucket (`(fwd ? v.adjFrom : v.adjTo)?.get(label.name)`), so
      * the saving is NOT a better adjacency lookup — it is the **object it yields**. A profile of
      * `ANY SHORTEST …{1,10}` put `expand` at **38.0% self** with the garbage collector at 2.9% beside
      * it, against `flatAdj`'s 17.3% on the all-paths arm, which walks a flat array instead.
      *
-     * ⚠️ `bucket` is `undefined` for every shape `expand`'s fast branch declines (`direction: 'both'`,
+     * `bucket` is `undefined` for every shape `expand`'s fast branch declines (`direction: 'both'`,
      * a non-`label` relationship kind, a vertex with no edge of that type) and the generator runs as
      * before — so this adds a route, it does not replace one.
      */
@@ -976,8 +976,8 @@ export const shortestWalk = function* (
 
     for (const step of bucket ?? expand(graph, v, rel)) {
       /*
-       * ⚠️ A PLAIN `if`, NOT a ternary pair: the generator hands over a `{ edge, node }` while the direct
-       * bucket hands over the `Edge` alone, so the neighbour has to be DERIVED from the direction. 🔑
+       * A PLAIN `if`, NOT a ternary pair: the generator hands over a `{ edge, node }` while the direct
+       * bucket hands over the `Edge` alone, so the neighbour has to be DERIVED from the direction.
        * Nothing is allocated on either arm, which is the whole point of the route.
        */
       let edge: Edge;
@@ -1011,7 +1011,7 @@ export const shortestWalk = function* (
   // `min ≤ 1` is guaranteed, so this never double-emits a seed already at dist 0.
   const seedCycleEnd = min >= 1 && seedCycle !== null && (max === null || seedCycle.dist <= max);
 
-  // ⚠️ THE DISCOVERED SET, NOT THE WHOLE GRAPH (item 1462). This loop used to be
+  // THE DISCOVERED SET, NOT THE WHOLE GRAPH (item 1462). This loop used to be
   // `for (const end of graph.vertices)`, scanning EVERY vertex per seed to find the endpoints the
   // BFS had already found — so an all-sources `ANY SHORTEST` was O(V²). A depth-3 BFS at out-degree
   // 1 discovers ~3 vertices and then scanned 10,000, which is 10^8 iterations for the query and
@@ -1023,7 +1023,7 @@ export const shortestWalk = function* (
   // `getVertexById` per endpoint. The seed is in it at distance 0, so the `isSeedCycle` / `d < min`
   // logic below applies to it unchanged.
   //
-  // ⚠️ THIS CHANGES ROW ORDER, and that is legal — checked rather than assumed. The old comment said
+  // THIS CHANGES ROW ORDER, and that is legal — checked rather than assumed. The old comment said
   // "endpoints in insertion order (= native's dense-id order)" for determinism against native, which
   // is STRICTER than the contract: GQL row order without `ORDER BY` is unspecified, and
   // `differential-fuzz` compares rows as a MULTISET unless `totallyOrdered(q)` admits the query. What
@@ -1088,13 +1088,13 @@ export const allShortestWalk = function* (
   const [{ rel, node: endNode }] = pattern.segments;
   const { min, max } = rel.quantifier!;
   /*
-   * ⚠️ THE ENDPOINT LABEL WITH A VACUOUS ONE DROPPED, resolved ONCE PER CALL (item 1908). Both
+   * THE ENDPOINT LABEL WITH A VACUOUS ONE DROPPED, resolved ONCE PER CALL (item 1908). Both
    * shortest-path walks called `matchNode`, the convenience form that ALWAYS tests the label, where
    * `matchNodeLabelled` exists precisely so a caller that has already resolved the effective label
    * can skip it (items 1609/1623). Over a shape emitting one row per reachable PAIR that test runs
    * once per reached vertex per seed — 2,099,864 times on the 200,000-vertex fixture.
    *
-   * ⚠️ PER CALL, NOT PER COMPILE: universality is a property of the GRAPH (item 1551), so a cached
+   * PER CALL, NOT PER COMPILE: universality is a property of the GRAPH (item 1551), so a cached
    * plan cannot carry it. And hoisting matters as much as eliding — item 1609 measured
    * `effectiveLabel` called per ELEMENT at 1.32x WORSE on a graph where it can never elide.
    */
@@ -1116,12 +1116,12 @@ export const allShortestWalk = function* (
     /*
      * ITEM-2149-BFS-BUCKET: the typed bucket read DIRECTLY, with no `{ edge, node }` wrapper per edge.
      *
-     * 🔑 `expand` already reads this exact bucket (`(fwd ? v.adjFrom : v.adjTo)?.get(label.name)`), so
+     * `expand` already reads this exact bucket (`(fwd ? v.adjFrom : v.adjTo)?.get(label.name)`), so
      * the saving is NOT a better adjacency lookup — it is the **object it yields**. A profile of
      * `ANY SHORTEST …{1,10}` put `expand` at **38.0% self** with the garbage collector at 2.9% beside
      * it, against `flatAdj`'s 17.3% on the all-paths arm, which walks a flat array instead.
      *
-     * ⚠️ `bucket` is `undefined` for every shape `expand`'s fast branch declines (`direction: 'both'`,
+     * `bucket` is `undefined` for every shape `expand`'s fast branch declines (`direction: 'both'`,
      * a non-`label` relationship kind, a vertex with no edge of that type) and the generator runs as
      * before — so this adds a route, it does not replace one.
      */
@@ -1129,8 +1129,8 @@ export const allShortestWalk = function* (
 
     for (const step of bucket ?? expand(graph, v, rel)) {
       /*
-       * ⚠️ A PLAIN `if`, NOT a ternary pair: the generator hands over a `{ edge, node }` while the direct
-       * bucket hands over the `Edge` alone, so the neighbour has to be DERIVED from the direction. 🔑
+       * A PLAIN `if`, NOT a ternary pair: the generator hands over a `{ edge, node }` while the direct
+       * bucket hands over the `Edge` alone, so the neighbour has to be DERIVED from the direction.
        * Nothing is allocated on either arm, which is the whole point of the route.
        */
       let edge: Edge;
@@ -1432,7 +1432,7 @@ export const matchPattern = function* (
       // Path (`allWalk`); over a fixed-length pattern the walk itself is the path, so
       // `walkSegments` accumulates its steps (`pathAcc`) and binds the Path at the end.
       // Otherwise the plain endpoint walk.
-      // ⚠️ A SINGLE QUANTIFIED SEGMENT IS NOT THE SAME AS A SINGLE-HOP ONE (item 1240).
+      // A SINGLE QUANTIFIED SEGMENT IS NOT THE SAME AS A SINGLE-HOP ONE (item 1240).
       // `allWalk` walks ONE hop per repetition, so it is right only for `(a)-[:R]->{m,n}(b)`.
       // A multi-element unit — `((x)-[:R]->(m)<-[:R]-(y)){1,2}` — is ALSO one segment, with
       // `unitRest` carrying the hops beyond the first, and a nested subpath is one segment too
@@ -1519,7 +1519,7 @@ export const allWalk = function* (
     params,
     wantPath: true,
   })) {
-    // ⚠️ THE UNIT'S GROUP VARIABLES, which this walker used to drop (item 1241).
+    // THE UNIT'S GROUP VARIABLES, which this walker used to drop (item 1241).
     // `bindEndAndPath` binds the endpoint and the Path and nothing else, so
     // `MATCH p = ((x)-[:KNOWS]->(m)){1,2} RETURN size(x)` answered NULL where native answered 1 —
     // a silent wrong answer on a FLAT group, which item 1240's fix did not reach because a flat
@@ -2131,16 +2131,16 @@ export const relHasInlinePred = (rel: CRel): boolean => hasPredicate(rel.pred);
  *  is observable and the differential fuzzers compare it. The shape is kept monomorphic (all three
  *  fields always present) because this frame is the hot object.
  *
- *  🛑 NOT a per-frame adjacency CACHE — that was measured and REJECTED at item 172. Nothing is
+ *  NOT a per-frame adjacency CACHE — that was measured and REJECTED at item 172. Nothing is
  *  memoized across frames here; a frame still builds its own list and drops it when it pops.
  *
- *  🛑 AND IT IS WORTH ONLY ~10%, WHICH REFUTES WHAT IT WAS BUILT TO TEST (item 733). The
+ *  AND IT IS WORTH ONLY ~10%, WHICH REFUTED WHAT IT WAS BUILT TO TEST (item 733). The
  *  hypothesis was that the wrapper objects explain TS's 40x gap to native on enumerated
  *  var-length counting (ts 8124.7 ms against ffi 196.9 at depth 5, 10,000 vertices). Removing
  *  them measured 1.11x — 8124.7/8173.8/8537.0 before against 7346.1/7563.3/7629.9 after, three
  *  alternated rounds, disjoint, ffi flat at 196.9/199.2 as the control a TS change cannot reach.
  *  So ~90% of the gap is NOT allocation and this is kept for the 11%, not as the answer.
- *  ⚠️ AND THAT NEUTRALITY WAS WORTHLESS AS EVIDENCE (corrected at item 736). The three shallow
+ *  AND THAT NEUTRALITY WAS WORTHLESS AS EVIDENCE (corrected at item 736). The three shallow
  *  rows it was read off — `count var-length 1-2 hops`, `+ end filter`, `1-3 hops [WALK]` — are
  *  all `count(*)`, and EVERY var-length count takes a shortcut that never enters this walk,
  *  verified by throwing here. So those rows could not move whatever this code did: the
@@ -2164,7 +2164,7 @@ export const relHasInlinePred = (rel: CRel): boolean => hasPredicate(rel.pred);
  *
  *  For scale: TS's bare walk alone (1462.2) is still 7.3x native's WHOLE pipeline (199.2). */
 /**
- * ⚠️⚠️ REFUTED, WITH ITS NUMBERS (item 1916): replacing the `Array.from(bucket)` below with a `Set`
+ * REFUTED, WITH ITS NUMBERS (item 1916): replacing the `Array.from(bucket)` below with a `Set`
  * ITERATOR held in the DFS frame — so the walk needs no indexed access and no copy — is worth
  * **2.099 ms of a 513.78 ms row, 0.4%.** Do not build it.
  *
@@ -2175,8 +2175,8 @@ export const relHasInlinePred = (rel: CRel): boolean => hasPredicate(rel.pred);
  * substitution directly over the REAL visit list (125,000 visits, 500,000 edges, mean degree 4.00):
  *
  *     copy    Array.from(bucket) then index it     31.527 ms
- *     iter    hold the Set iterator, call next()   29.428      ⬅ 1.07x, the whole available win
- *     forof   for…of over the Set                  22.418      ⬅ NOT usable: the frame must resume
+ *     iter    hold the Set iterator, call next()   29.428      <- 1.07x, the whole available win
+ *     forof   for…of over the Set                  22.418      <- NOT usable: the frame must resume
  *
  * Both arms pay the Set traversal; only the array ALLOCATION is removed, and that is 7% of this
  * slice and 0.4% of the row. [[frame-attribution-trap]], and CLAUDE.md's "a self-time share is a
@@ -2196,13 +2196,13 @@ const flatAdj = (graph: Graph, v: Vertex, rel: CRel, binding: Binding, params: P
     /*
      * ITEM-2139-OWN-BOX: the VERTEX'S OWN cached adjacency, not a hash of its id into the graph's index.
      *
-     * ⚠️⚠️ **THIS IS ITEM 591's LESSON, UNLEARNED IN THIS RUNG.** `count-shortcut.ts` records it with
+     * **THIS IS ITEM 591's LESSON, UNLEARNED IN THIS RUNG.** `count-shortcut.ts` records it with
      * numbers at 200,000 vertices / 1,000,000 edges — `edgesToByLabel.get(v.id)` + predicate **32.86 ms**
      * against `v.adjTo` + predicate **18.29**, 1.80x — and its own note says *"one rung in this file
-     * learned the lesson and its neighbour did not"*. 🔑 A string-keyed `Map.get` is ~190 ns (item 194)
+     * learned the lesson and its neighbour did not"*. A string-keyed `Map.get` is ~190 ns (item 194)
      * against ~30 ns for the vertex's box (item 321), and the getter caches per vertex.
      *
-     * 🔑 WHY IT MATTERS HERE: a quantified `->{1,3}` calls this once per VISITED VERTEX, so the id hash
+     * WHY IT MATTERS HERE: a quantified `->{1,3}` calls this once per VISITED VERTEX, so the id hash
      * is paid per step of the expansion, not once per query. The serving bench's `analytic: fan-out
      * spread 1-3 hops` row is TS's largest shortfall against native in the indexed column (216.4k ops/s
      * against 310.7k), and a windowed profile puts 19.8% of it in this function.
@@ -2499,7 +2499,7 @@ type WalkCursor = {
    * The per-node EFFECTIVE labels, resolved ONCE by the caller (item 1623) — `undefined` where the
    * pattern's label is carried by EVERY vertex and therefore constrains nothing.
    *
-   * ⚠️ IT RIDES THE CURSOR BECAUSE THE RESOLUTION POINT IS THE WHOLE DESIGN. `walkSegments` recurses
+   * IT RIDES THE CURSOR BECAUSE THE RESOLUTION POINT IS THE WHOLE DESIGN. `walkSegments` recurses
    * once per matched edge, so resolving inside it would be PER ELEMENT — and item 1609 measured
    * exactly that mistake at **1.32x WORSE** on its control. The cursor is built once per
    * `matchPattern` invocation and threaded unchanged through the recursion, so the bucket-size reads
@@ -2514,7 +2514,7 @@ type WalkCursor = {
 /**
  * The pattern's per-node effective labels: `undefined` wherever the label is VACUOUS.
  *
- * ⚠️ WHY THIS IS WORTH THREADING, measured by ABLATION before anything was built — item 1599's own
+ * WHY THIS IS WORTH THREADING, measured by ABLATION before anything was built — item 1599's own
  * method, and its own warning that a share is a share OF something. Replacing `matchesLabel` with
  * `() => true` in the generic matcher (a wrong answer, measured only to price the right one):
  *
@@ -2526,13 +2526,13 @@ type WalkCursor = {
  *
  * The profile agrees: `evalLabelExpr` 7.8% + `get labels` 3.6% = **11.4%** of that shape.
  *
- * ⚠️ AND IT DOES NOT MAKE THE TEST CHEAPER, which is the lever item 1599 refuted twice — compiling
+ * AND IT DOES NOT MAKE THE TEST CHEAPER, which is the lever item 1599 refuted twice — compiling
  * the test to a closure measured FLAT and testing by bucket identity measured SLOWER than the
  * getter. This removes the test instead, where the label cannot reject anything, which is the
  * mechanism items 1551/1552/1609 built and measured at 5.58x on the seeded count.
  */
 /**
- * ⚠️ IMPORTED AT FUNCTION LEVEL, because `shortcuts.ts` imports `indexCandidates` from THIS module
+ * IMPORTED AT FUNCTION LEVEL, because `shortcuts.ts` imports `indexCandidates` from THIS module
  * and a top-level import back would be a cycle evaluated at module init. The same shape
  * `executor.ts` documents for its own back-edge to `shortcuts.ts`: the reference is only needed at
  * call time, so the lazy form is both safe and the one the file already uses.
@@ -2559,11 +2559,11 @@ export const effectiveLabels = (
  * 7.8% — [[executor-edits-perturb]]'s signature, a wobble in both directions on rows the change
  * cannot reach. A module-scope generator keeps `walkSegments` the size it was.
  *
- * ⚠️ IT ADDS ONE GENERATOR LAYER TO THE `both` PATH, which is the cost item 1622's refutation was
+ * IT ADDS ONE GENERATOR LAYER TO THE `both` PATH, which is the cost item 1622's refutation was
  * about — and it is still the right trade here, because `both` runs THREE layers today (`expand` →
  * `outSteps`/`inSteps` → `edgesMatching`). One is not three.
  *
- * ⚠️ OUT THEN IN, and the IN pass SKIPS A SELF-LOOP: it is indexed under both `adjFrom` and `adjTo`,
+ * OUT THEN IN, and the IN pass SKIPS A SELF-LOOP: it is indexed under both `adjFrom` and `adjTo`,
  * so `expand` emits it on the out-pass only ("the out-step already emitted it; skip the duplicate.
  * (Directed `in` keeps it.)"). I wrote the opposite first and 39 gql tests said so.
  */
@@ -2574,7 +2574,7 @@ const walkBothSegment = function* (
   binding: Binding,
   params: Params,
   /**
-   * ⚠️ THE CALLER'S OWN CURSOR, passed through rather than destructured into more parameters: a
+   * THE CALLER'S OWN CURSOR, passed through rather than destructured into more parameters: a
    * seventh positional argument trips `max-params`, and `sortByBys` records the same choice for the
    * same reason ("the rule is right"). Bundling into a NEW object would allocate once per visited
    * vertex on this path, which is the cost this item exists to remove.
@@ -2643,7 +2643,7 @@ export const walkSegments = function* (
   }
 
   const { rel, node, unit } = pattern.segments[index];
-  // 🛑 SKIPPING THE TERMINAL FRAME WAS BUILT AND REVERTED — measured NEUTRAL (item 737).
+  // SKIPPING THE TERMINAL FRAME WAS BUILT AND REVERTED — measured NEUTRAL (item 737).
   //
   // On the final segment `walkSegments(… index + 1 …)` does one thing: construct a generator, take
   // the `index >= segments.length` branch, yield one binding, return. That is a `yield*` plus a
@@ -2663,7 +2663,7 @@ export const walkSegments = function* (
   // against controls moving 1.06-1.18x; item 704 refuted at 1.02x) that is not a win, and it cost
   // the base case being duplicated into two call sites.
   //
-  // ⚠️ AND A FULL-SWEEP A/B SAID 1.66x REGRESSION ON `project the element + materialize` — a
+  // AND A FULL-SWEEP A/B SAID 1.66x REGRESSION ON `project the element + materialize` — a
   // PHANTOM. In-sweep it read 27.0 then 44.8; isolated it does not move at all. A full sweep per
   // arm is the wrong instrument for a per-row question: its own ffi control drifts ~10% between
   // arms, rows interfere, and one arm took 15 minutes against another's 5. The isolated run that
@@ -2715,13 +2715,13 @@ export const walkSegments = function* (
     return;
   }
 
-  // ⚠️ `labels?.[index + 1]` IS THE SEGMENT'S NODE — index 0 of the array is the pattern's START,
+  // `labels?.[index + 1]` IS THE SEGMENT'S NODE — index 0 of the array is the pattern's START,
   // so a segment at `index` lands at `index + 1`. Off by one here applies the wrong node's label,
   // which the mutation pass covers.
   const nodeLabel = labels === undefined ? node.label : labels[index + 1];
 
   /**
-   * ⚠️ THE DIRECTED SINGLE-TYPE BUCKET, LOOPED DIRECTLY (item 1802) — and the reason this is not
+   * THE DIRECTED SINGLE-TYPE BUCKET, LOOPED DIRECTLY (item 1802) — and the reason this is not
    * item 1622's refuted lever is the shape of the fallback, not the shape of the win.
    *
    * Item 1622 built an EDGE-ONLY ADAPTER so one loop body could serve both cases: `+9%` on the
@@ -2731,7 +2731,7 @@ export const walkSegments = function* (
    * `label.kind` test. The win is item 1621's, measured at 1.83x "where the caller loops the `Set`
    * directly", at the call site item 1621 explicitly left open.
    *
-   * ⚠️ THE BODY IS DUPLICATED ON PURPOSE. Sharing it through a module-scope helper is item 159's
+   * THE BODY IS DUPLICATED ON PURPOSE. Sharing it through a module-scope helper is item 159's
    * measurement — 1.29x WORSE for a shared walk — and a closure per call is what
    * [[ts-closure-size-is-load-bearing]] warns about. Item 1681 duplicated a 122-line walk for the
    * same reason. The two bodies differ only in where `nextVertex` comes from, so a drift between
@@ -2740,12 +2740,12 @@ export const walkSegments = function* (
    */
   const bucket = directedBucket(from, rel);
   /**
-   * ⚠️ `both` GOES THROUGH THE SAME BODY (item 1803), not a third copy of it: the pair is walked
+   * `both` GOES THROUGH THE SAME BODY (item 1803), not a third copy of it: the pair is walked
    * OUT THEN IN, which is `expand`'s documented order and therefore the row order the Rust engine
    * is compared against. `forward` comes from which half is being walked, so the body reads the
    * right endpoint without re-deriving it.
    *
-   * ⚠️ AND THE IN-PASS SKIPS A SELF-LOOP, WHICH I GOT BACKWARDS FIRST. My comment here said a
+   * AND THE IN-PASS SKIPS A SELF-LOOP, WHICH I GOT BACKWARDS FIRST. My comment here said a
    * self-loop is yielded TWICE, once per direction; `expand` says the opposite in its own words —
    * "the out-step already emitted it; skip the duplicate. (Directed `in` keeps it.)" — because a
    * self-loop is indexed under both `adjFrom` and `adjTo`. 39 gql tests failed on the first build,

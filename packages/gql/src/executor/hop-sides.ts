@@ -1,7 +1,7 @@
 /**
  * HOP GEOMETRY: which end of an edge a traversal came from, and which end it is going to.
  *
- * ⚠️ THIS IS THE MODULE THAT BREAKS `core <-> shortcuts` (item 1666). `core.ts` needed exactly seven
+ * THIS IS THE MODULE THAT BREAKS `core <-> shortcuts` (item 1666). `core.ts` needed exactly seven
  * values from `shortcuts.ts` — `plainNode`, `plainRel`, `side`, `sideOfVertex`, `sideOfVertexGated`,
  * `threeHopSide`, `twoHopSide` — while `shortcuts.ts` needed twenty back, and that pair was the
  * largest import cycle in the package. The thin side was core's, so these came down rather than the
@@ -10,7 +10,7 @@
  *
  * `bucketSize` and `KEEP_ANY` came along because the seven need them and nothing else here does.
  *
- * ⚠️ `sideOfVertexGated` IS NOT A REDUNDANT `sideOfVertex`. The gated form refuses when the vertex
+ * `sideOfVertexGated` IS NOT A REDUNDANT `sideOfVertex`. The gated form refuses when the vertex
  * could match either end — a self-loop, or an undirected pattern where both endpoints satisfy the
  * label — and returning a side there would pick an arbitrary one and silently halve the answer. The
  * ungated form is for the positions where the caller has already established which end it holds.
@@ -155,7 +155,7 @@ export const side = (
 /**
  * How many edges `edgesOfTypes` would yield, without yielding them.
  *
- * ⚠️ IT PROFILES AT 72-77% OF A MULTI-HOP COUNT AND THAT IS MISATTRIBUTION. Item 1416 found it for
+ * IT PROFILES AT 72-77% OF A MULTI-HOP COUNT AND THAT IS MISATTRIBUTION. Item 1416 found it for
  * `chain3` (72.6%, "all 200,000 calls take the O(1) branch, proven by counting them") and item 1637
  * reproduced it for a THREE-HOP COUNT (76.7% of `count3`): instrumenting this function counted
  * **119,992 calls for 20,000 vertices and 99,992 edges — exactly |V| + |E|, one per vertex plus one
@@ -164,7 +164,7 @@ export const side = (
  * per-edge loop credited to a small hot callee. So there is no repeated-lookup lever here — a
  * per-vertex degree memo would save nothing, because no vertex's degree is read twice.
  *
- * ⚠️ THIRD CONFIRMATION, ON A THIRD SHAPE (item 1719). A windowed profile of
+ * THIRD CONFIRMATION, ON A THIRD SHAPE (item 1719). A windowed profile of
  * `COUNT { (n)-[:KNOWS]->(m)-[:KNOWS]->(f) }` nominated this function at **55% of the real work**,
  * and counting its calls says the same thing again: **322,190 calls, ALL 322,190 on the
  * single-named-type O(1) branch, zero fallbacks** — which would make that share **278 ns for one
@@ -298,7 +298,7 @@ export const threeHopSide = (graph: Graph, id: string, w: ThreeHopSide): number 
  * A hop whose edge types are an ALTERNATION (`-[:E|F]->`). `types` always holds at least one
  * member and never a duplicate — item 1846 for the two-segment rung, item 1847 for the chain.
  *
- * ⚠️ IT LIVES HERE RATHER THAN IN EITHER RUNG because both need it and item 1832's lesson is that
+ * IT LIVES HERE RATHER THAN IN EITHER RUNG because both need it and item 1832's lesson is that
  * a duplicated implementation needs duplicated tests and duplicated mutants: the two-hop and chain
  * rungs each carry their own `Hop` type and their own `hopOf`, and a second copy of the
  * de-duplication rule below is exactly the kind of near-twin that drifts.
@@ -350,7 +350,7 @@ export const unionHopOf = (rel: RelPattern): UnionHop | null => {
     return null;
   }
 
-  // ⚠️ DUPLICATE TYPES IN THE SPELLING (`[:E|E]`) would visit every `E` edge twice. The alternation
+  // DUPLICATE TYPES IN THE SPELLING (`[:E|E]`) would visit every `E` edge twice. The alternation
   // is a SET of types, so dedupe it here rather than relying on nobody writing it.
   return { types: [...new Set(types)], forward: rel.direction === 'out' };
 };
@@ -358,7 +358,7 @@ export const unionHopOf = (rel: RelPattern): UnionHop | null => {
 /**
  * Has an EARLIER type in this hop's alternation already claimed this edge?
  *
- * ⚠️ THIS IS THE DOUBLE-COUNT GUARD, and it is the whole correctness risk of a union walk.
+ * THIS IS THE DOUBLE-COUNT GUARD, and it is the whole correctness risk of a union walk.
  * Iterating the `E` bucket and then the `F` bucket visits an edge carrying BOTH labels twice, where
  * `[:E|F]` must yield it once. "The first of this hop's types that the edge carries wins" yields
  * each matching edge exactly once whatever its label set.

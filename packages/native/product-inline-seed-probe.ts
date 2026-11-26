@@ -63,7 +63,7 @@ if (process.env.IDX === '1') {
  * nothing. The spelling probe's fixture uses `i % 50`, so `k = 7` matches 4,000 of 200,000 and the
  * comma product yields ~16,000 rows — which is the work the two spellings disagree about.
  *
- * ⚠️ THE FIRST VERSION OF THIS PROBE USED A UNIQUE `k`. One match, eight rows, no per-row cost,
+ * THE FIRST VERSION OF THIS PROBE USED A UNIQUE `k`. One match, eight rows, no per-row cost,
  * and every arm read 0.042-0.055 ms with an index — from which the conclusion would have been
  * "there is no gap when indexed", the exact opposite of what the spelling probe measures on its
  * own fixture. An answer INVARIANT to the property under test cannot validate the fixture.

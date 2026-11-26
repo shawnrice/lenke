@@ -77,7 +77,7 @@ suite('dedup over elements: TS vs native', () => {
       expect(ts.length).toBe(nat.length);
     });
   }
-  // ⚠️⚠️ TWO PRE-EXISTING DIVERGENCES this file found, NEITHER caused by item 1584 — which changed
+  // TWO PRE-EXISTING DIVERGENCES this file found, NEITHER caused by item 1584 — which changed
   // only how TS keys an element in a dedup set. That they predate it is MEASURED: the probe
   // `edge-distinct-divergence-probe.mjs` produces byte-identical output against a build with the
   // change and one without.

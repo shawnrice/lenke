@@ -1,7 +1,7 @@
 /**
  * DOES `ACYCLIC` REJECT A 1-EDGE SELF-LOOP AT EVERY BOUND? (item 2001)
  *
- * ⚠️⚠️ **THIS STARTED AS PERF WORK AND TURNED INTO A CORRECTNESS QUESTION.**
+ * **THIS STARTED AS PERF WORK AND TURNED INTO A CORRECTNESS QUESTION.**
  * `acyclic-correction-2001.mjs` was proving the arithmetic for an ACYCLIC counting rung. Once its
  * inclusion-exclusion term was right (verified against brute force on six fixtures), the engine's
  * `{1,2}` answer was consistently **exactly `selfLoops` HIGHER** than "acyclic 1-paths + acyclic
@@ -13,7 +13,7 @@
  * `MATCH ACYCLIC (x)-[:R]->+(y)` is **0** — a self-loop repeats a node — while TRAIL and WALK answer
  * 1". If `{1,2}` answers 1 for the same graph, the two bounds disagree about the same path.
  *
- * ⚠️⚠️ **THIS PROBE IS TYPESCRIPT-ONLY, AND ITS FIRST VERSION CLAIMED OTHERWISE.** It advertised
+ * **THIS PROBE IS TYPESCRIPT-ONLY, AND ITS FIRST VERSION CLAIMED OTHERWISE.** It advertised
  * `LENKE_ENGINE=1` as routing the same text through the Rust engine over `bun:ffi`. It does not:
  * `LENKE_ENGINE` is read ONLY by `package.json`'s `test:engine` script, and `query` from
  * `@lenke/gql` never consults it — so the "Rust" run was TypeScript a second time and its identical
@@ -99,7 +99,7 @@ for (const [fixName, make] of [
 
 console.log(
   `\n# engine: TypeScript ONLY — see the header; a .mjs probe cannot reach the Rust side\n` +
-    `# ⚠️ ACYCLIC must be 0 at EVERY bound on the first fixture: the only path is a self-loop, which\n` +
+    `# ACYCLIC must be 0 at EVERY bound on the first fixture: the only path is a self-loop, which\n` +
     `#    repeats a node. A non-zero cell at a bound where another bound says 0 is the two bounds\n` +
     `#    disagreeing about one path.`,
 );

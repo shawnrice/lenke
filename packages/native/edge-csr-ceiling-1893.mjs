@@ -14,14 +14,14 @@
  *   V().outE(E).inV().values(n)                 43.04      800,000         54
  * ```
  *
- * ⚠️ AND THE UNFILTERED TWIN IS NOT THE FLOOR FOR THIS SHAPE, which is the trap this file avoids:
+ * AND THE UNFILTERED TWIN IS NOT THE FLOOR FOR THIS SHAPE, which is the trap this file avoids:
  * `outE(T).inV()` is REWRITTEN to `out(T)` before the planner sees it (the spelling probe's
  * "hop: out(T) vs outE(T).inV()" group is plan-identical, item 1812), so it rides item 1889's
  * vertex CSR and never touches an edge. The filtered spelling cannot be rewritten — the predicate
  * sits between the two halves — so it must visit EDGES, and the question is what visiting them
  * costs at best.
  *
- * ⚠️ THE PROFILE SAYS THE ITERATION IS NOT THE BILL. At 200,000 (query 50% of the process):
+ * THE PROFILE SAYS THE ITERATION IS NOT THE BILL. At 200,000 (query 50% of the process):
  *
  * ```text
  *   pick (the far vertex's property)      14.3%
@@ -173,7 +173,7 @@ const handArr = () => {
  * The same walk with BOTH property bags hoisted into parallel arrays — so the only per-row work is
  * two array reads, a comparison and a push.
  *
- * ⚠️ NO CSR CAN REACH THIS, and that is why it is here: it prices the two `properties` getters,
+ * NO CSR CAN REACH THIS, and that is why it is here: it prices the two `properties` getters,
  * which the profile puts at ~12% together. If `handArr` lands near `handArrB`, the getters are not
  * the bill; if it lands near `handSet`, the iteration is not.
  */

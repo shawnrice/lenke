@@ -12,12 +12,12 @@ import { runAlgorithmSync } from './run-sync.js';
  * **1.16x/1.24x on `labelPropagation` and 1.17x/1.47x on `peerPressure`**, eleven sibling algorithms
  * flat. The tie-break was 20% of `labelPropagation` by ablation.
  *
- * ⚠️ THE TIE-BREAK IS A CONTRACT, not an implementation detail: ISO-less though it is, both engines
+ * THE TIE-BREAK IS A CONTRACT, not an implementation detail: ISO-less though it is, both engines
  * agree on "tie → lexicographically smallest external id", so the rank's order has to BE that order.
  * The risk is not that ranking is slow — it is that `rank[a] < rank[b]` and `ids[a] < ids[b]` could
  * disagree. Every test here is about that.
  *
- * ⚠️ AND THE FIXTURE IDS ARE CHOSEN SO LEXICOGRAPHIC AND NUMERIC ORDER DIFFER. `'v10' < 'v9'`
+ * AND THE FIXTURE IDS ARE CHOSEN SO LEXICOGRAPHIC AND NUMERIC ORDER DIFFER. `'v10' < 'v9'`
  * lexicographically and `10 > 9` numerically, so an implementation that ranked by insertion index,
  * by a numeric parse, or by anything other than the string compare answers differently. A fixture of
  * `v0..v9` could not tell them apart.
@@ -43,7 +43,7 @@ const build = (ids: readonly string[], edges: readonly (readonly [string, string
 };
 
 describe('idRank orders by external id', () => {
-  test('⚠️ LEXICOGRAPHIC, not numeric and not insertion order', () => {
+  test('LEXICOGRAPHIC, not numeric and not insertion order', () => {
     // Inserted in numeric order; `'v10' < 'v2'` lexicographically, so the ranks are NOT 0,1,2,3.
     const g = build(['v1', 'v2', 'v10', 'v20'], []);
     const order = [...g.vertices];
@@ -89,7 +89,7 @@ describe('idRank orders by external id', () => {
 
 describe('the tie-break the rank replaces, end to end', () => {
   /**
-   * ⚠️ A FIXTURE WHERE THE TIE IS FORCED AND THE WINNER IS NOT THE FIRST-SEEN. `x` has exactly two
+   * A FIXTURE WHERE THE TIE IS FORCED AND THE WINNER IS NOT THE FIRST-SEEN. `x` has exactly two
    * neighbours, so after round one they carry two distinct labels each counted ONCE — a tie — and
    * the contract says `x` adopts the lexicographically smaller external id. The neighbours are
    * inserted so that the SMALLER id is seen SECOND, which is what makes the test discriminate: an
@@ -153,9 +153,9 @@ describe('the tie-break the rank replaces, end to end', () => {
     expect(got.x).toBe('v10');
   });
 
-  test('⚠️ the COUNT is the PRIMARY key — the tie-break only decides ties', () => {
+  test('the COUNT is the PRIMARY key — the tie-break only decides ties', () => {
     /**
-     * ⚠️ THIS TEST EXISTS BECAUSE THE MUTATION PASS FOUND THE GAP. `c > bestCount` dropped from the
+     * THIS TEST EXISTS BECAUSE THE MUTATION PASS FOUND THE GAP. `c > bestCount` dropped from the
      * condition SURVIVED the whole `core` suite, and it is a PRE-EXISTING gap — item 1625 did not
      * touch the count, only the tie-break beside it. (My first attempt at this test guessed a
      * fixture and oscillated; label propagation on a small graph is not predictable by eye, so this
@@ -180,7 +180,7 @@ describe('the tie-break the rank replaces, end to end', () => {
         ['a', 'p'],
         ['a', 'q'],
         ['A', 'r'],
-        // ⚠️ `x—r` FIRST, and the EDGE ORDER IS LOAD-BEARING. The dirty list is built in first-
+        // `x—r` FIRST, and the EDGE ORDER IS LOAD-BEARING. The dirty list is built in first-
         // sighting order, so the mutant that drops `c > bestCount` only differs when the MAJORITY
         // label is seen SECOND: with `x—p, x—q` first the best is already `a` and the condition is
         // never re-tested. My first version of this fixture had that order and the mutant SURVIVED
@@ -207,7 +207,7 @@ describe('the tie-break the rank replaces, end to end', () => {
     expect(labelOf(2).x).toBe('a');
   });
 
-  test('⚠️ peerPressure: ENERGY is the primary key, the same gap and the same shape', () => {
+  test('peerPressure: ENERGY is the primary key, the same gap and the same shape', () => {
     /**
      * `peerPressure` votes along IN-edges with each source contributing `1 / outdegree`, so the
      * primary key is summed energy rather than a count — and `e > bestE` dropped SURVIVED too.

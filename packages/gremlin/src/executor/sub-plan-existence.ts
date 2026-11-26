@@ -22,19 +22,19 @@
 // and 18.7% in `iterLabeled` — the delegation chain `outEdgesOf` -> `iterByLabel` -> `iterLabeled`,
 // a generator frame per level, per vertex.
 //
-// 🔑 WHY THE GATE CAN BE BROADER THAN `soleTypeBucket`'S, which is the whole reason this is a
+// WHY THE GATE CAN BE BROADER THAN `soleTypeBucket`'S, which is the whole reason this is a
 // separate helper rather than a call to it. That one refuses `both`, a multi-type hop and an untyped
 // one, because for an ANSWER it must not double-count a `T|S` edge, must drop a self-loop's
 // duplicate under `both`, and must read the correct END off the edge. **None of those is observable
 // in a yes/no.** Existence needs only "is any adjacency bucket non-empty", so `both`, multi-type and
 // untyped hops are all admitted here while staying refused there.
 //
-// ⚠️ IT READS THE SAME MAP `adjacentEdges` DOES, not a second structure. `Vertex.adjFrom` is a lazy
+// IT READS THE SAME MAP `adjacentEdges` DOES, not a second structure. `Vertex.adjFrom` is a lazy
 // memo of `graph.edgesFromByLabel.get(id)` — a live reference to the graph's own bucket map,
 // dropped on topology change (`adjacency-box.test.ts`) — which is exactly what `outEdgesOf` looks
 // up. So this is the same source read without the generators, not a new thing to keep in sync.
 //
-// ⚠️ THE TEST IS `size > 0` AND NOT PRESENCE, AND NO TEST CAN CURRENTLY TELL THE DIFFERENCE — stated
+// THE TEST IS `size > 0` AND NOT PRESENCE, AND NO TEST CAN CURRENTLY TELL THE DIFFERENCE — stated
 // plainly because the first draft of this comment claimed otherwise. It cited
 // `topology-version.test.ts`'s `a.adjFrom?.get('F')?.size ?? 0`, which is equally consistent with an
 // ABSENT bucket; `emptybucket-probe-1915.mjs` then asked the structure directly and found core
@@ -49,7 +49,7 @@
 // `adjacency-box.test.ts`'s "an emptied bucket is deleted, not left empty" — so a core change that
 // broke it fails there instead of turning into a wrong answer here.
 //
-// ⚠️ THE SAME INVARIANT MAKES THE UNTYPED LOOP REDUNDANT TOO, which the mutation run found rather
+// THE SAME INVARIANT MAKES THE UNTYPED LOOP REDUNDANT TOO, which the mutation run found rather
 // than this comment predicting it: with no empty buckets, "SOME bucket is non-empty", "the FIRST
 // bucket is non-empty" and `byLabel.size > 0` are one predicate. The loop is kept on the same
 // grounds. The honest cost of both choices is that TWO mutants here cannot be caught by any test
@@ -57,11 +57,11 @@
 // are declared in item 1915's `EXPECTED_SURVIVORS` with this as their reason, rather than quietly
 // absent from the battery.
 //
-// ⚠️ A NON-VERTEX TRAVERSER IS FILTERED OUT, which mirrors the general path rather than being a
+// A NON-VERTEX TRAVERSER IS FILTERED OUT, which mirrors the general path rather than being a
 // liberty: `traverseToVertex` / `traverseToEdge` both `continue` on a non-vertex, so the sub-plan
 // emits nothing and `hasAny` is false.
 //
-// ⚠️ EDGE-EMITTING STEPS COLLAPSE ONTO THE VERTEX-EMITTING ONES. `outE(T)` and `out(T)` walk the
+// EDGE-EMITTING STEPS COLLAPSE ONTO THE VERTEX-EMITTING ONES. `outE(T)` and `out(T)` walk the
 // identical adjacency and differ only in WHAT they yield — and a yes/no cannot see that — so `outE`
 // maps to `out`, `inE` to `in`, `bothE` to `both`.
 import { isVertexShaped } from '@lenke/core';
@@ -71,7 +71,7 @@ import type { Plan, Step } from '../ast.js';
 import type { Traverser } from './runtime.js';
 
 /**
- * ⚠️ A LEAF MODULE, which is why this is not `isVertex` imported from `runtime.ts`. That file
+ * A LEAF MODULE, which is why this is not `isVertex` imported from `runtime.ts`. That file
  * imports `applyPlanToStream` from `dispatch.ts`, and `dispatch.ts` imports THIS one, so a VALUE
  * import from `runtime` is a cycle and `import/no-cycle` is an error. Same shape as
  * `far-mask-drain.ts`, which declares its `Gate` locally for exactly this reason. `Traverser`
@@ -90,7 +90,7 @@ export type HopExistence = {
 /**
  * The single adjacency step this fusion answers, or `undefined` for every other sub-plan shape.
  *
- * ⚠️ THE GATE IS A SHAPE TEST, NOT A CAPABILITY CLAIM. A multi-step sub-plan, a filter, a barrier, a
+ * THE GATE IS A SHAPE TEST, NOT A CAPABILITY CLAIM. A multi-step sub-plan, a filter, a barrier, a
  * nested branch, a property step — all fall through to the general path untouched. Widening it is a
  * correctness question each time, because anything that can DROP a traverser breaks the equivalence
  * this rests on: `traverseToVertex` yields for EVERY adjacent edge unconditionally, which is why
@@ -153,7 +153,7 @@ const anyNonEmpty = (
   }
 
   /**
-   * ⚠️ REJECTED, WITH ITS NUMBERS: replacing this `for…of` with an indexed loop measured NEUTRAL —
+   * REJECTED, WITH ITS NUMBERS: replacing this `for…of` with an indexed loop measured NEUTRAL —
    * `where` 20.84-21.29 against 20.85-21.80, `where…count()` 11.78-12.16 against 11.88, `not`
    * 10.52-11.14 against 11.25, all inside the noise at 200,000 vertices. V8 handles a `for…of` over
    * a short readonly array in this position without allocating per call. Tried because the same
@@ -184,10 +184,10 @@ export const hasAdjacency = (v: Vertex, hop: HopExistence): boolean => {
 /**
  * Every plan's adjacency, or `undefined` if ANY of them is a shape this cannot answer.
  *
- * ⚠️ ALL-OR-NOTHING ON PURPOSE: a mixed `and(out(T), <something else>)` falls through whole rather
+ * ALL-OR-NOTHING ON PURPOSE: a mixed `and(out(T), <something else>)` falls through whole rather
  * than half-fusing, so there is one path to reason about instead of two interleaved ones.
  *
- * ⚠️ AN EMPTY PLAN LIST FALLS THROUGH, which is load-bearing rather than a don't-care: `and()` keeps
+ * AN EMPTY PLAN LIST FALLS THROUGH, which is load-bearing rather than a don't-care: `and()` keeps
  * EVERY traverser (`[].every` is true) and `or()` keeps NONE (`[].some` is false), and returning an
  * empty array here would send both to the same loop below.
  */
@@ -240,7 +240,7 @@ const combinedWalk = function* (
     let hit = every;
 
     /**
-     * ⚠️ THE INDEXED LOOP IS NOT WHAT MADE THIS FAST, and the first version of this comment said it
+     * THE INDEXED LOOP IS NOT WHAT MADE THIS FAST, and the first version of this comment said it
      * was. The first cut sent EVERY arity through here and measured `and(out(E))` at 36.70 ms
      * against the identical `where(out(E))`'s 20.87 — a 1.75x gap between two spellings of one
      * question. The guess was that `for…of` over `hops` allocated an iterator per vertex; swapping

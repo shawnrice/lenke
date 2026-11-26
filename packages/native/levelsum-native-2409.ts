@@ -2,13 +2,13 @@
  * Item 2409 — THE WEIGHTED FOLD AGAINST THE RUST ENGINE, bit for bit, on the one shape the
  * differential fuzzer generates to expose summation order.
  *
- * ⚠️ `bun run fuzz` passing is NOT evidence on its own. The fuzzer's `n` is a small integer and an
+ * `bun run fuzz` passing is NOT evidence on its own. The fuzzer's `n` is a small integer and an
  * integer sum in f64 is EXACT whatever the order or the weights, so almost every aggregate it
  * generates could not separate the two arms. The shapes that CAN are the ones item 1831 added for
  * exactly this reason — `sum(b.n * 0.1)` and `avg(c.n * 0.1)` — and this probe asks about them
  * directly instead of waiting for the generator to draw them.
  *
- * 🔑 WHAT A DIFFERENCE HERE WOULD AND WOULD NOT MEAN. Item 2401 (owner ruling) made `sum`/`avg`
+ * WHAT A DIFFERENCE HERE WOULD AND WOULD NOT MEAN. Item 2401 (owner ruling) made `sum`/`avg`
  * accurate to within `n·ε·Σ|xᵢ|` and explicitly NOT bit-identical across engines, so a last-ulp
  * disagreement is the CONTRACT rather than a defect. What this probe establishes is which it is: a
  * last-ulp difference is fine and worth knowing about; anything larger is a bug.
@@ -67,7 +67,7 @@ const HOP2 = 'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)';
 const HOP3 = 'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)-[:E]->(d:T)';
 
 const CASES: readonly string[] = [
-  // ⚠️ THE FUZZER'S OWN TWO, verbatim in shape — the inexact spellings item 1831 added.
+  // THE FUZZER'S OWN TWO, verbatim in shape — the inexact spellings item 1831 added.
   `MATCH (a:T)-[:E]->(b:T) RETURN sum(b.n * 0.1) AS x`,
   `${HOP2} RETURN avg(c.n * 0.1) AS x`,
   // The same question on a stored inexact column rather than a computed one.
@@ -105,7 +105,7 @@ for (const q of CASES) {
 
   const relative = Math.abs(ts - nat) / Math.max(Math.abs(ts), Math.abs(nat), Number.MIN_VALUE);
   /*
-   * ⚠️ 1e-9 IS THE REPO'S OWN TOLERANCE and the reason is in CLAUDE.md: it sits ~3 orders above
+   * 1e-9 IS THE REPO'S OWN TOLERANCE and the reason is in CLAUDE.md: it sits ~3 orders above
    * reassociation noise and ~4 below a dropped row, so it still catches a real defect.
    */
   const ok = !isControl && relative < 1e-9;

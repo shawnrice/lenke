@@ -8,7 +8,7 @@ import { describe, expect, test } from 'bun:test';
  * rewrite and all twenty-odd rungs see one chain: 49.4 ms to 5.4 ms, converging on the arrow
  * spelling's 5.2 ms.
  *
- * ⚠️ TWO KINDS OF ASSERTION HERE, AND BOTH ARE NEEDED.
+ * TWO KINDS OF ASSERTION HERE, AND BOTH ARE NEEDED.
  *
  *   - ANSWER tests: the spliced spelling must return exactly what the comma spelling returned
  *     BEFORE the rewrite existed. The arrow spelling is the oracle, since the whole claim is that
@@ -38,7 +38,7 @@ const routes = (src: string): string[] => {
 };
 
 /**
- * ⚠️ THE FIXTURE CARRIES A SELF-LOOP AND A 2-CYCLE ON PURPOSE. Splicing turns two patterns into
+ * THE FIXTURE CARRIES A SELF-LOOP AND A 2-CYCLE ON PURPOSE. Splicing turns two patterns into
  * one path, so the questions it can get wrong are all about repeated elements: does the merged
  * chain still allow an edge to be used twice (this engine's fixed-length segments do), and does a
  * repeated VARIABLE still constrain to the existing binding instead of rebinding over it?
@@ -112,7 +112,7 @@ describe('a comma pattern that continues the previous one', () => {
   });
 
   /**
-   * ⚠️ A REPEATED VARIABLE MUST STAY A CONSTRAINT. Splicing `(a)-[:E]->(b), (b)-[:E]->(a)` yields
+   * A REPEATED VARIABLE MUST STAY A CONSTRAINT. Splicing `(a)-[:E]->(b), (b)-[:E]->(a)` yields
    * `(a)-[:E]->(b)-[:E]->(a)`, whose final node names an already-bound variable. If the chain
    * matcher ever rebinds instead of constraining, this rewrite becomes a wrong answer with no
    * other symptom — so the equivalence is pinned here rather than assumed.
@@ -144,11 +144,11 @@ describe('a comma pattern that continues the previous one', () => {
 
 describe('the splice refuses what it cannot merge', () => {
   /**
-   * ⚠️ EACH REFUSAL IS A CORRECTNESS CONDITION, not conservatism, and each is checked by ANSWER —
+   * EACH REFUSAL IS A CORRECTNESS CONDITION, not conservatism, and each is checked by ANSWER —
    * a wrongly-admitted splice shows up as a changed answer, which is the only thing that matters.
    */
   /**
-   * ⚠️ THE SECOND PATTERN'S START IS A BARE VARIABLE HERE, AND THAT IS THE WHOLE POINT. The
+   * THE SECOND PATTERN'S START IS A BARE VARIABLE HERE, AND THAT IS THE WHOLE POINT. The
    * labelled version below cannot reach the join-variable check at all — `bareBackReference`
    * rejects it first — so it passed even with that check mutated away. A mutant that spliced ANY
    * bare-started pattern onto its predecessor turned this four-row product into ZERO rows, and
@@ -202,7 +202,7 @@ describe('the splice refuses what it cannot merge', () => {
   });
 
   /**
-   * ⚠️ A QUANTIFIED SEGMENT IS THE ONE REFUSAL THAT COULD CHANGE ROWS. The default path mode is
+   * A QUANTIFIED SEGMENT IS THE ONE REFUSAL THAT COULD CHANGE ROWS. The default path mode is
    * `trail` (no repeated edge within ONE path), so two patterns carry two restrictors and a merged
    * pattern would carry one across the whole walk.
    */
@@ -219,7 +219,7 @@ describe('the splice refuses what it cannot merge', () => {
   });
 
   /**
-   * ⚠️ THE LABEL ON THE JOINING NODE HAS TO BE SELECTIVE, or the refusal is untestable. The first
+   * THE LABEL ON THE JOINING NODE HAS TO BE SELECTIVE, or the refusal is untestable. The first
    * version of this case ran on an all-`:T` fixture and compared against the arrow spelling, so a
    * mutant that spliced the node and DROPPED its label returned the same rows and survived. Here
    * `m2` is a `:T` that is NOT a `:U`, so dropping `:U` admits a second path.
@@ -248,7 +248,7 @@ describe('the splice refuses what it cannot merge', () => {
       g.addEdge({ id, from: f, to: u, labels: ['E'] });
     }
 
-    // ⚠️ THE LABEL IS ON THE RIGHT PATTERN'S START ONLY. Writing `(b:U)` on BOTH patterns — the
+    // THE LABEL IS ON THE RIGHT PATTERN'S START ONLY. Writing `(b:U)` on BOTH patterns — the
     // first version of this case — leaves the left one carrying `:U`, so a splice that discards
     // the right start keeps the filter anyway and the mutant survives. Here `(b)` is bare on the
     // left, so `:U` exists nowhere else and dropping it is observable.
@@ -259,7 +259,7 @@ describe('the splice refuses what it cannot merge', () => {
   });
 
   /**
-   * ⚠️ THE PATH VARIABLE MUST BE OBSERVED, not merely present. Returning `a.n, c.n` cannot tell
+   * THE PATH VARIABLE MUST BE OBSERVED, not merely present. Returning `a.n, c.n` cannot tell
    * whether `p` bound the first pattern or a merged one — that version survived the mutant.
    * `size(edges(p))` reads the binding directly: unspliced it is 1, and a splice would make it 2.
    */

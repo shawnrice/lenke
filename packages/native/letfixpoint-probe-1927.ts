@@ -8,7 +8,7 @@
 //     chain2  LET a = n.n + 1 LET b = a * 2 RETURN b AS x      63.38 ms
 //     folded  RETURN (n.n + 1) * 2 AS x                        12.45      <- ~5x available
 //
-// ⚠️ THE HAZARD IS EXPRESSION BLOWUP, and the claim is that item 1926's once-read guard ALREADY
+// THE HAZARD IS EXPRESSION BLOWUP, and the claim is that item 1926's once-read guard ALREADY
 // prevents it: `LET b = a + a` folds to a projection reading `a` TWICE, which the guard then
 // refuses, so each surviving fold duplicates nothing. This measures that rather than asserting it:
 // it applies the pass REPEATEDLY by hand and prints, per round, the clause kinds and the SIZE of
@@ -27,7 +27,7 @@ const SHAPES: Record<string, string> = {
   chain3: 'MATCH (n:T) LET a = n.n + 1 LET b = a * 2 LET c = b + 3 RETURN c AS x',
   chain5:
     'MATCH (n:T) LET a = n.n + 1 LET b = a * 2 LET c = b + 3 LET d = c * 4 LET e = d + 5 RETURN e AS x',
-  // ⚠️ THE BLOWUP SHAPE. Each binding reads the previous one TWICE, so a fold that ignored the
+  // THE BLOWUP SHAPE. Each binding reads the previous one TWICE, so a fold that ignored the
   // once-read guard would double the expression every round: 2^k. The guard must refuse at round 1.
   doubling: 'MATCH (n:T) LET a = n.n + 1 LET b = a + a LET c = b + b LET d = c + c RETURN d AS x',
   // A chain whose LAST link is read twice — the fixpoint must stop there, not at the start.
@@ -49,12 +49,12 @@ const kindsOf = (text: string): string => {
 };
 
 /*
- * ⚠️ MY FIRST MODEL OF THIS WAS WRONG AND THE PROBE SAID SO IMMEDIATELY: `compileLinear` returns
+ * MY FIRST MODEL OF THIS WAS WRONG AND THE PROBE SAID SO IMMEDIATELY: `compileLinear` returns
  * COMPILED clauses (`CClause`), not AST clauses, so `compileLinear(compileLinear(x))` is not a
  * fixpoint — it threw inside `freePredicateVars` on a node with no `kind`. A fixpoint has to live
  * INSIDE `compileLinear`, around the AST rewrite chain.
  *
- * 🔑 So the question is asked a different way, and a better one: does the HAND-FOLDED INTERMEDIATE
+ * So the question is asked a different way, and a better one: does the HAND-FOLDED INTERMEDIATE
  * fold again? If `LET a = n.n + 1 RETURN (a * 2) AS x` compiles to `[match, return]`, then a second
  * application of the pass would have taken chain2 there too, and a fixpoint is worth building. If
  * it does not, the fixpoint is worthless and no code needs writing.
@@ -71,7 +71,7 @@ const ROUNDS: Record<string, readonly string[]> = {
     'MATCH (n:T) LET a = n.n + 1 RETURN ((a * 2) + 3) AS x',
     'MATCH (n:T) RETURN (((n.n + 1) * 2) + 3) AS x',
   ],
-  // ⚠️ THE BLOWUP SHAPE: each binding reads the previous one TWICE. The guard must refuse at the
+  // THE BLOWUP SHAPE: each binding reads the previous one TWICE. The guard must refuse at the
   // FIRST round, so the hand-folded intermediate should KEEP its LET.
   doubling: [
     'MATCH (n:T) LET a = n.n + 1 LET b = a + a RETURN b AS x',

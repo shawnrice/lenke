@@ -1,15 +1,15 @@
 /**
  * DOES `edge-filtered-hop-values.test.ts` HAVE TEETH? (item 1883)
  *
- * ⚠️ IT PASSED ON ITS FIRST RUN, AND SO DOES A TEST THAT CHECKS NOTHING. CLAUDE.md's rule:
+ * IT PASSED ON ITS FIRST RUN, AND SO DOES A TEST THAT CHECKS NOTHING. CLAUDE.md's rule:
  * "Mutate it and check the fuzzer catches it. A generative test whose teeth were never verified is
  * worse than no test, because it is believed."
  *
- * ⚠️ EACH MUTANT IS ANCHOR-ASSERTED. Items 1870 and 1873 both recorded a mutant whose anchor
+ * EACH MUTANT IS ANCHOR-ASSERTED. Items 1870 and 1873 both recorded a mutant whose anchor
  * matched 0 or 2 times, so the "pass" meant nothing — the patch had never applied. Every entry
  * below declares the occurrence count it expects and the run fails loudly otherwise.
  *
- * ⚠️ AND A VERDICT NEEDS EVIDENCE OF EXECUTION, NOT AN EXIT CODE. `bun test` writes `N pass` /
+ * AND A VERDICT NEEDS EVIDENCE OF EXECUTION, NOT AN EXIT CODE. `bun test` writes `N pass` /
  * `N fail` to **stderr**, so both streams are concatenated and a result line is required before
  * the exit code is read (items 767/772-773 got this wrong in both directions).
  *
@@ -102,7 +102,7 @@ const MUTANTS = [
 ];
 
 /**
- * ⚠️ BOTH STREAMS, ALWAYS, AND THAT IS WHY THIS IS `spawnSync`. `execFileSync` returns STDOUT on
+ * BOTH STREAMS, ALWAYS, AND THAT IS WHY THIS IS `spawnSync`. `execFileSync` returns STDOUT on
  * success and only exposes stderr on a throw — and `bun test` writes `N pass` to **stderr**, so the
  * first cut of this file read an empty result on the passing baseline and declared it broken. Item
  * 767 made the same mistake in the other direction.
@@ -145,7 +145,7 @@ try {
       );
     }
 
-    // ⚠️ WHICH OCCURRENCE — since item 1893 this module holds the walk TWICE (the lazy iterator and
+    // WHICH OCCURRENCE — since item 1893 this module holds the walk TWICE (the lazy iterator and
     // the eager `drain`), so an anchor that was unique is no longer. The facility is item 1888's.
     const parts = pristine.split(from);
 
@@ -159,7 +159,7 @@ try {
     const ran = /\d+ pass/.test(r.text);
 
     if (!ran && r.code !== 124) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -171,7 +171,7 @@ try {
     }
 
     console.log(
-      `  ${caught === false ? '❌ SURVIVED' : '✅ caught   '}  ${name.padEnd(30)} ` +
+      `  ${caught === false ? 'SURVIVED' : 'caught   '}  ${name.padEnd(30)} ` +
         `${result === null ? '' : `${result[2]} failing`}${r.code === 124 ? ' — timed out' : ''}`,
     );
   }
@@ -181,6 +181,6 @@ try {
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

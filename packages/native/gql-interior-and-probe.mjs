@@ -18,7 +18,7 @@
  *    WHERE b.age = 7 AND d.age > 60            2.7      count     9,290
  * ```
  *
- * ⚠️ ONLY THE b+c PAIR COLLAPSES, and only in the clause spelling — a START+interior or
+ * ONLY THE b+c PAIR COLLAPSES, and only in the clause spelling — a START+interior or
  * interior+END pair is fine. A route counter says why:
  *
  * ```text
@@ -33,7 +33,7 @@
  * and the three-segment path has no second route (the sweep is entered at `>= 4` segments, or via
  * `endGatedChainCount` when the END is constrained). So the query falls to the general row pipeline.
  *
- * ⚠️ THE MACHINERY TO ANSWER IT ALREADY EXISTS. The product carries `interior: { b, c }` — two
+ * THE MACHINERY TO ANSWER IT ALREADY EXISTS. The product carries `interior: { b, c }` — two
  * independent gate lists — and the INLINE spelling fills both, which is why it runs in 1.5 ms. Only
  * the CLAUSE reader refuses to produce two. `chainGatesOf` already splits a clause `WHERE` across
  * the positions it names (item 305) for the sweep, so the splitting logic exists too.
@@ -100,7 +100,7 @@ if (chosen.some((k) => ROWS[k] === undefined)) {
 console.log(`\n${N} vertices / ${g.edgeCount} edges, median of ${REPS}\n`);
 console.log('row              ms      count');
 
-/** ⚠️ The two spellings must AGREE, or the comparison is of two different questions. */
+/** The two spellings must AGREE, or the comparison is of two different questions. */
 let bAndCCount;
 let inlineCount;
 

@@ -1,13 +1,13 @@
 /**
  * MUTATION RUN for item 1863's keyedCountOf orientation widening.
  *
- * ⚠️ UNLIKE MOST ROUTE CHOICES IN THIS REPO, A RELAXATION HERE IS A WRONG ANSWER, not a slow one —
+ * UNLIKE MOST ROUTE CHOICES IN THIS REPO, A RELAXATION HERE IS A WRONG ANSWER, not a slow one —
  * this rung COMPUTES the count rather than choosing between two routes that agree. So the answer
  * tests have teeth against a loosened gate. What they cannot catch is a gate wrongly TIGHTENED,
  * which silently abandons the arm; the route assertions (`takesTheRung`) are what cover that, and
  * both kinds of mutant are below.
  *
- * ⚠️ EVIDENCE OF EXECUTION COMES FROM BOTH STREAMS. `bun test` writes its `N pass` / `N fail` line
+ * EVIDENCE OF EXECUTION COMES FROM BOTH STREAMS. `bun test` writes its `N pass` / `N fail` line
  * to STDERR, not stdout — items 767 and 772-773 each got this wrong in a different direction, once
  * reading an empty stdout as "never ran" and once printing DID-NOT-RUN for clean passes. This
  * concatenates the two, looks for a result line, and only then reads the exit code.
@@ -62,7 +62,7 @@ const TESTS = ['src/keyed-count-orientation.test.ts', 'src/routes-fired.test.ts'
 /** A timeout (124) or an OOM kill (137) IS the mutant being caught, not a harness failure. */
 const verdictOf = (r) => {
   if (!r.ran) {
-    return '⚠️ DID-NOT-RUN';
+    return 'DID-NOT-RUN';
   }
 
   if (r.status === 124 || r.status === 137) {
@@ -88,7 +88,7 @@ const runTests = () => {
 console.log('baseline:');
 const baseline = runTests();
 
-const warn = baseline.ran ? '' : '  ⚠️ NO RESULT LINE — the harness is not running tests';
+const warn = baseline.ran ? '' : '  NO RESULT LINE — the harness is not running tests';
 
 console.log(`  ran=${baseline.ran} failed=${baseline.failed} exit=${baseline.status}${warn}`);
 
@@ -108,7 +108,7 @@ for (const m of MUTANTS) {
   const occurrences = base.split(m.from).length - 1;
 
   if (occurrences !== 1) {
-    console.log(`${m.name.padEnd(42)} ⚠️ ANCHOR MATCHED ${occurrences} TIMES — not applied`);
+    console.log(`${m.name.padEnd(42)} ANCHOR MATCHED ${occurrences} TIMES — not applied`);
     continue;
   }
 

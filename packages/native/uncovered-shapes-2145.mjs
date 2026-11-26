@@ -1,7 +1,7 @@
 /**
  * THE SHAPES THE BENCH CORPUS DOES NOT COVER (item 2145).
  *
- * 🔑 Items 2140-2144 each CLOSED a benched row by measurement rather than opening one — the benched TS
+ * Items 2140-2144 each CLOSED a benched row by measurement rather than opening one — the benched TS
  * surface is largely at its documented floors. So this screen asks a different question: **what is not
  * benched at all?** Grepping the three bench files for feature keywords found five with NO row:
  *
@@ -13,13 +13,13 @@
  *     SKIP                    none
  * ```
  *
- * ⚠️⚠️ **AND `OPTIONAL MATCH` IS THE ONE THAT MATTERS MOST, BECAUSE THIS SESSION SHIPPED TWO RUNGS FOR IT
+ * **AND `OPTIONAL MATCH` IS THE ONE THAT MATTERS MOST, BECAUSE THIS SESSION SHIPPED TWO RUNGS FOR IT
  * AND NEITHER HAS A ROW**: item 2123 (`OPTIONAL MATCH` + `GROUP BY`, 307.8 → 29.0 ms, 10.6x) and item 2124
- * (the FAR-keyed variant, 358.3 → 111.3, 3.22x). 🔑 `bench.ts` itself quotes the rule this breaks — item
+ * (the FAR-keyed variant, 358.3 → 111.3, 3.22x). `bench.ts` itself quotes the rule this breaks — item
  * 1177's *"a win with no row is a win that quietly comes undone"* — and item 1184's rows exist precisely
  * because deleting a chain entry is ANSWER-EQUIVALENT and survives every test and fuzzer.
  *
- * 🔑 Each shape is paired with a REFERENCE it should be compared against, so a number here means something:
+ * Each shape is paired with a REFERENCE it should be compared against, so a number here means something:
  * the same question without the feature, or the cheapest thing that answers it.
  *
  *     cd packages/native && node uncovered-shapes-2145.mjs
@@ -46,12 +46,12 @@ for (let i = 0; i < N; i += 1) {
 let edges = 0;
 
 /*
- * ⚠️ HALF THE VERTICES GET NO OUT-EDGE (`i += 2`), which is load-bearing for the OPTIONAL rows: the whole
+ * HALF THE VERTICES GET NO OUT-EDGE (`i += 2`), which is load-bearing for the OPTIONAL rows: the whole
  * difference between `OPTIONAL MATCH` and a plain `MATCH` is the null-filled row an unmatched anchor
  * contributes, and a fixture where every anchor matches cannot tell the two apart (item 2123 learned this
  * the hard way — its first measurement fixture gave every vertex degree 3 and proved nothing).
  *
- * ⚠️ The repeat index `d` is the second term: `to = (a*k + b) % N` is invariant under `k -> k + N`, so a
+ * The repeat index `d` is the second term: `to = (a*k + b) % N` is invariant under `k -> k + N`, so a
  * flat loop sends one vertex's whole fan-out to the SAME target (items 1516/1518).
  */
 for (let d = 0; d < FANOUT; d += 1) {
@@ -156,10 +156,10 @@ for (const [name, q, ref] of ROWS) {
   const b = timeIt(ref);
   const ratio = a.ms / b.ms;
   /*
-   * ⚠️ A RATIO OVER ITS REFERENCE IS A NOMINATION, NOT A RESULT, and it needs a floor: two sub-millisecond
+   * A RATIO OVER ITS REFERENCE IS A NOMINATION, NOT A RESULT, and it needs a floor: two sub-millisecond
    * readings divide into nonsense (item 2132's `node count` flagged 2.3x on 0.00 against 0.01).
    */
-  const flag = ratio > 3 && a.ms > 1 ? `  ⚠️ ${ratio.toFixed(1)}x its reference` : '';
+  const flag = ratio > 3 && a.ms > 1 ? `  ${ratio.toFixed(1)}x its reference` : '';
 
   console.log(
     `  ${name.padEnd(36)} ${a.ms.toFixed(2).padStart(9)} ${b.ms.toFixed(2).padStart(10)} ${`${ratio.toFixed(1)}x`.padStart(8)}  ${a.rows}${flag}`,
@@ -167,6 +167,6 @@ for (const [name, q, ref] of ROWS) {
 }
 
 console.log(
-  `\n  ⚠️ A FLAGGED ROW IS A NOMINATION. Confirm with an A/B of the real rung — a micro-probe has\n` +
+  `\n  A FLAGGED ROW IS A NOMINATION. Confirm with an A/B of the real rung — a micro-probe has\n` +
     `  mispriced this engine four times (items 591, 2125, 2130's first half, 2128/2138).\n`,
 );

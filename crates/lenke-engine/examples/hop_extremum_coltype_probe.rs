@@ -208,7 +208,7 @@ fn main() {
     // inline numeric count cannot take — an OR, a mixed-key disjunction, a string search — and
     // destructures `Column::Num` alone.
     //
-    // ⚠️ IT IS THE SAME STRUCTURAL FAMILY AS ITEM 1189 (a FILTERED shape), where the filter's own
+    // IT IS THE SAME STRUCTURAL FAMILY AS ITEM 1189 (a FILTERED shape), where the filter's own
     // cost left only ~1.3-1.7x. So the floor is chosen FIRST this time, which is the lesson from
     // 1187 and 1189 both: `count(*)` over the IDENTICAL filtered hop — same walk, same mask, no
     // value read. `count(*)` reads no column at all, so unlike `count(<key>)` it cannot be

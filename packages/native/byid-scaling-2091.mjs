@@ -1,21 +1,21 @@
 /*
  * Item 2091 — IS `getVertexById` / `getEdgeById` ACTUALLY O(1)? A standing requirement, never measured.
  *
- * ⚠️ `getVertexById` appears in EVERY profile taken this session at 5-16%, and by-id access is the one
+ * `getVertexById` appears in EVERY profile taken this session at 5-16%, and by-id access is the one
  * complexity guarantee this work is held to. A `Map` lookup is O(1) amortized, but the engine wraps it
  * — and a degraded id read would be invisible to every screen here, because the fixture BUILD calls it
  * heavily and so it shows up as a hot frame either way.
  *
- * 🔑 THE INSTRUMENT: per-call cost at four sizes spanning the transition CLAUDE.md names ("cache-
+ * THE INSTRUMENT: per-call cost at four sizes spanning the transition CLAUDE.md names ("cache-
  * resident and not are different questions; the transition is between 200k and 1M elements"). O(1)
  * means the per-call figure is FLAT in N apart from cache effects; anything trending with N is a
  * different complexity class.
  *
- * ⚠️ THE IDS ARE DRAWN SCATTERED, not in insertion order. A sequential sweep is cache-friendly in a
+ * THE IDS ARE DRAWN SCATTERED, not in insertion order. A sequential sweep is cache-friendly in a
  * way no real id lookup is, and would hide exactly the regime that matters — the same reason item
  * 2085's label probe scattered its candidates.
  *
- * ⚠️ THE LOOKUP COUNT IS HELD CONSTANT across sizes, so only the working set varies. A probe doing N
+ * THE LOOKUP COUNT IS HELD CONSTANT across sizes, so only the working set varies. A probe doing N
  * lookups at each N measures N × (per-call cost) and cannot separate the two.
  */
 import { Graph } from '@lenke/core';
@@ -84,7 +84,7 @@ const measure = (n) => {
   };
 
   /*
-   * ⚠️⚠️ **THE CONTROL, AND WITHOUT IT THIS PROBE PROVES NOTHING.** A string-keyed `Map` is O(1) and
+   * **THE CONTROL, AND WITHOUT IT THIS PROBE PROVES NOTHING.** A string-keyed `Map` is O(1) and
    * STILL gets slower with N: more entries means more cache and TLB misses, and the ids themselves
    * grow longer (`v399999` hashes more than `v24999`). So a raw `Map.get` over the SAME keys at the
    * SAME sizes is the floor — if the engine tracks it, the growth is inherent to the data structure
@@ -136,7 +136,7 @@ const measure = (n) => {
       throw new Error(`n=${n}: the raw Map control missed ${LOOKUPS - gotR} keys`);
     }
 
-    // ⚠️ EVERY LOOKUP MUST HIT. A probe whose ids miss measures the MISS path, which is a different
+    // EVERY LOOKUP MUST HIT. A probe whose ids miss measures the MISS path, which is a different
     // question and is also faster — so a silent miss would read as a win.
     if (gotV !== LOOKUPS || gotE !== LOOKUPS) {
       throw new Error(

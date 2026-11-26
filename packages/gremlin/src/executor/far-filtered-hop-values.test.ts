@@ -28,13 +28,13 @@ import { startFilteredHopValues } from './start-filtered-hop-values.js';
  * count sibling (`filteredHopCount`) has answered the far-filtered shape in closed form for ages,
  * which is why the hole was invisible — the count spelling was fast and the yield spelling was not.
  *
- * ⚠️ ORDER IS PART OF THE CONTRACT HERE, unlike on the GQL side. Gremlin stream order is a
+ * ORDER IS PART OF THE CONTRACT HERE, unlike on the GQL side. Gremlin stream order is a
  * TinkerPop contract that the differential fuzzer compares ORDERED, so every expectation below is a
  * full ARRAY and not a count or a set. The admitted route therefore has to stay START-DRIVEN — the
  * far-driven shape `filteredHopCount` uses (one test per far vertex, contributing its degree) is
  * 3-4x faster and emits in the wrong order, so it is not available to a yielding walk.
  *
- * ⚠️ EVERY LITERAL IS FROM A HAND WALK OVER THE TABLE, derived by a script with no engine involved
+ * EVERY LITERAL IS FROM A HAND WALK OVER THE TABLE, derived by a script with no engine involved
  * before the file was written. Item 1602 wrote its literals by eye and SIX of fifteen were wrong
  * while the engine was right every time, so this one did it the other way round.
  *
@@ -133,7 +133,7 @@ const routed = (plan: Plan): boolean => startFilteredHopValues(plan, g) !== unde
 describe('a far-side filter before the projection', () => {
   test('no leading filter at all, which used to be an outright decline', () => {
     /**
-     * ⚠️ THE GUARD THAT MOVED. `at === 1` (no step between the source and the hop) was a decline,
+     * THE GUARD THAT MOVED. `at === 1` (no step between the source and the hop) was a decline,
      * on the stated grounds that "`hopValuesShortcut` already owns the plan" — true only when the
      * hop is immediately followed by the projection. With a far-side filter that shortcut declines
      * too, so the plan reached NEITHER. And this is the COMMON spelling, because `effectivePlan`'s
@@ -159,7 +159,7 @@ describe('a far-side filter before the projection', () => {
     expect(ran(plan)).toEqual([3, 3, 3, 3]);
   });
 
-  test('⚠️ the far filter KEEPS a vertex with nothing to project, and values drops it', () => {
+  test('the far filter KEEPS a vertex with nothing to project, and values drops it', () => {
     /**
      * THE CASE THE `drops` SENTINEL RESTS ON. `e` is `Admin`, so it passes the far filter, and it
      * has NO `score` — so `values(score)` must emit nothing for it while `id()` must emit it. The
@@ -258,7 +258,7 @@ describe('what the module still leaves alone', () => {
      * The far scan stops at the projection, so a trailing step lands in `rest` and the pipeline
      * runs it over the yielded SCALARS.
      *
-     * ⚠️ `id()` was the first spelling tried here and the engine REFUSED it statically:
+     * `id()` was the first spelling tried here and the engine REFUSED it statically:
      * `assertFrontierTypes` raises "id() reads from a graph element, but the frontier is a
      * projected scalar". That is the right behaviour and the wrong test, so this uses `dedupe`,
      * which legally follows a scalar and shows the residual actually running.

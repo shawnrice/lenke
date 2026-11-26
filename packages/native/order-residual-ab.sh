@@ -7,7 +7,7 @@
 # needs a `values()` step, so an `order` third step declined the whole thing and the row fell to the
 # generic traverser pipeline. The change is one named step kind admitted to the gate's bare-hop arm.
 #
-# ⚠️ THIS IS A CROSS-BUILD A/B, which item 737 is the warning about — a sweep comparing two builds
+# THIS IS A CROSS-BUILD A/B, which item 737 is the warning about — a sweep comparing two builds
 # reported a 1.66x regression that did not exist. The mitigations are the ones that item and item 439
 # settled on, and all three are here:
 #

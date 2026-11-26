@@ -11,11 +11,11 @@
  * closed the NATIVE twin by rewriting a correlated inline `CALL` into its equivalent `MATCH`
  * (`inlineCorrelatedCall`, 900-1005 ms to 0.0).
  *
- * ⚠️ A SHARE IS A NOMINATION; THIS PROBE IS THE PRICE. PROBES.md records four instances of a
+ * A SHARE IS A NOMINATION; THIS PROBE IS THE PRICE. PROBES.md records four instances of a
  * profile share overstating by ~2.5x, so the number that matters is this one: the same question
  * asked twice, once through `CALL` and once through the `MATCH` it is equivalent to.
  *
- * ⚠️ THE FLOOR MUST BE THE EQUIVALENT QUERY, NOT MERELY A SIMILAR ONE (item 1465's rule, and the
+ * THE FLOOR MUST BE THE EQUIVALENT QUERY, NOT MERELY A SIMILAR ONE (item 1465's rule, and the
  * reason each pair below carries an `equivalent` key). The two tails are equivalent for DIFFERENT
  * reasons and getting that backwards would price the wrong thing:
  *
@@ -49,7 +49,7 @@ const ROUNDS = Number(process.env.ROUNDS ?? 3);
 const ONLY = process.env.PAIRS;
 
 /**
- * ⚠️ The target stride is `(i * 7 + 3 + hop * 2654435761) % NODES`, which is the GQL profile
+ * The target stride is `(i * 7 + 3 + hop * 2654435761) % NODES`, which is the GQL profile
  * probe's own `sequential` arm — so a number here is comparable with that screen. It splits on the
  * REPEAT INDEX (`hop`), which is the fix CLAUDE.md records for the `(a*k+b) % N` degeneracy: without
  * it one vertex's FANOUT edges all land on the same target and every k-hop count is `F^k * N` by
@@ -165,7 +165,7 @@ for (const name of names) {
   let failed;
 
   for (let round = 0; round < ROUNDS; round += 1) {
-    // ⚠️ ORDER ALTERNATED between rounds, so neither arm is always the one that warms the other.
+    // ORDER ALTERNATED between rounds, so neither arm is always the one that warms the other.
     const callFirst = round % 2 === 0;
 
     let c;
@@ -202,11 +202,11 @@ for (const name of names) {
     continue;
   }
 
-  // ⚠️ THE EQUIVALENCE IS THE WHOLE CLAIM, so it is asserted and not assumed. A pair whose two
+  // THE EQUIVALENCE IS THE WHOLE CLAIM, so it is asserted and not assumed. A pair whose two
   // spellings disagree is a WRONG FLOOR; printing its ratio would price a different question.
   if (callAnswer !== floorAnswer) {
     console.log(
-      `   ⚠️ NOT EQUIVALENT — call ${callAnswer} vs floor ${floorAnswer}. ` +
+      `   NOT EQUIVALENT — call ${callAnswer} vs floor ${floorAnswer}. ` +
         `This pair prices nothing; fix the floor.`,
     );
     continue;

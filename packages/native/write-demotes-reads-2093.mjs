@@ -1,14 +1,14 @@
 /*
  * Item 2093 — AFTER ONE WRITE, HOW MANY LATER READS ARE SLOW? One, or all of them?
  *
- * ⚠️ The native engine's behaviour is documented and severe: "`rebuild_csr` runs only at LOAD, and
+ * The native engine's behaviour is documented and severe: "`rebuild_csr` runs only at LOAD, and
  * every adjacency write clears `csr_fresh` with nothing to re-arm it, so ONE `add_edge` demotes EVERY
  * later read for the rest of the session." The TS GQL engine has its OWN `csr-cache.ts`, keyed on
  * `graph.topologyVersion`, which "drops a single stale generation WHOLE rather than per shape" — the
  * same shape — but it also has `csrAskedBefore`, a SECOND-ASK arming so a one-shot query never pays
  * for a build. Whether those two combine into "one slow read" or "every read slow" is the question.
  *
- * 🔑 THE PER-READ SERIES IS THE INSTRUMENT, NOT A SUMMARY. A min- or median-of-N hides a second-ask
+ * THE PER-READ SERIES IS THE INSTRUMENT, NOT A SUMMARY. A min- or median-of-N hides a second-ask
  * arming completely: the arming shows up as a STEP in the series, and one slow read among twenty is
  * invisible to any estimator. [[floor-arm-must-take-same-route]] records that exact trap.
  */
@@ -66,7 +66,7 @@ for (let i = 0; i < READS; i += 1) {
 }
 
 /*
- * ⚠️ THE WRITE IS ONE EDGE, and it is a TOPOLOGY write on purpose: a property-only write does not
+ * THE WRITE IS ONE EDGE, and it is a TOPOLOGY write on purpose: a property-only write does not
  * bump `topologyVersion`, so it would answer a different (easier) question and read as "no effect".
  */
 let writeMs = 0;
@@ -107,7 +107,7 @@ for (let i = 0; i < READS; i += 1) {
 }
 
 /*
- * ⚠️⚠️ THE WORKLOAD QUESTION, which the phases above do not answer. Two demoted reads per write is
+ * THE WORKLOAD QUESTION, which the phases above do not answer. Two demoted reads per write is
  * cheap if writes are rare and ruinous if every read follows one. These two arms do the SAME NUMBER
  * of reads; only the write placement differs.
  */
@@ -146,7 +146,7 @@ const batched = () => {
 
   const t0 = performance.now();
 
-  // ⚠️ EVERY WRITE FIRST, then every read — the same writes and the same read COUNT, so the only
+  // EVERY WRITE FIRST, then every read — the same writes and the same read COUNT, so the only
   // difference is how many times the topology version moves between reads.
   for (let c = 0; c < CYCLES; c += 1) {
     h.addEdge({
@@ -166,7 +166,7 @@ const batched = () => {
 };
 
 /*
- * ⚠️⚠️ THE MECHANISM TEST, and it is what separates "writes are expensive" from "the ARMING declines
+ * THE MECHANISM TEST, and it is what separates "writes are expensive" from "the ARMING declines
  * to build for a single reader". `csrAskedBefore` builds on the SECOND ask of a topology version, so a
  * workload reading ONCE per write never builds at all and pays the non-CSR path every time. Reading
  * TWICE per write should recover the cached speed on the second read — if it does, the arming is the
@@ -240,7 +240,7 @@ console.log(
 );
 
 /*
- * ⚠️ THE ANSWER MUST MOVE EXACTLY ONCE PER WRITE, and the set is how that is checked: the two-hop
+ * THE ANSWER MUST MOVE EXACTLY ONCE PER WRITE, and the set is how that is checked: the two-hop
  * count changes when an edge is added, so a run where every answer is identical would mean the reads
  * are not seeing the write at all — and would make every timing above meaningless.
  */

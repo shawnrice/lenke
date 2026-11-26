@@ -1,12 +1,12 @@
 // Item 1942 — WHAT IS LEFT ON `MATCH (a:T)-[:E]->(b:T)` WITH BOTH LABELS NON-VACUOUS?
 //
-// ⚠️⚠️ FIRST, A CORRECTION TO MY OWN FOLLOW-UP NOTE AT ITEM 1941. It proposed "a single CSR arm
+// FIRST, A CORRECTION TO MY OWN FOLLOW-UP NOTE AT ITEM 1941. It proposed "a single CSR arm
 // testing whichever labels are broad — both ends, not one". That is NOT POSSIBLE, and item 1937
 // already established why: the CSR arm COUNTS adjacency (`off[slot + 1] - off[slot]`) and never
 // visits an edge, so it cannot test a START label at all. I conflated the counting arm with an
 // edge-iterating one for the second time.
 //
-// 🔑 SO THE ROUTE MAP IS ALREADY COMPLETE, and that is worth stating plainly:
+// SO THE ROUTE MAP IS ALREADY COMPLETE, and that is worth stating plainly:
 //
 //     start label        far label         arm
 //     vacuous/absent     vacuous/absent    CSR, counting                (fastest)
@@ -67,14 +67,14 @@ const handEdgeDriven = () => {
 };
 
 /*
- * 🔑 THE SPLIT. The arm calls `matchesLabel(v, labelExpr)` TWICE PER EDGE — a function call that
+ * THE SPLIT. The arm calls `matchesLabel(v, labelExpr)` TWICE PER EDGE — a function call that
  * switches on a `LabelExpr`'s `kind` — where the hand loop does `labels.has('T')` directly. These
  * two arms differ in ONLY that, so the gap between them is the dispatch and the rest of the
  * residual is `binding.set` + `projectRow`.
  */
 const asExpr = { kind: 'label', name: 'T' };
 /*
- * ⚠️ ONE CASE ONLY. A second (`or`) arm would make the switch more realistic, but every spelling of
+ * ONE CASE ONLY. A second (`or`) arm would make the switch more realistic, but every spelling of
  * it trips `prefer-nullish-coalescing` on a BOOLEAN disjunction, where `??` is semantically wrong.
  * What is being isolated is the CALL plus the switch on `kind` — the per-edge indirection the
  * engine pays and the direct `labels.has` arm does not — and one case measures that.

@@ -1,14 +1,14 @@
 // A START PREDICATE carried into the var-length COUNT rung (item 1907), against native.
 //
-// ⚠️⚠️ **THE ARITHMETIC IS THE RISK, NOT THE GATE.** This rung does not walk paths — it counts them
+// **THE ARITHMETIC IS THE RISK, NOT THE GATE.** This rung does not walk paths — it counts them
 // with degree arithmetic, a level recurrence, and closed-form trail corrections at depths 3 and 4.
 // Restricting the SOURCES is sound because every arm accumulates over the source list (the level
 // arrays span all vertices, as they must, but the answer is read off as `sum over sources`), and
-// `trailCorrectionAt` / `trailsAt4From` take a source index. ⚠️ That is an argument, so it is
+// `trailCorrectionAt` / `trailsAt4From` take a source index. That is an argument, so it is
 // checked against native — which has carried a seed mask since item 575 and is therefore the
 // reference implementation for exactly this question.
 //
-// ⚠️ THE FIXTURE IS ITEM 573'S, deliberately: a cycle (so the path MODES differ), a SELF-LOOP (the
+// THE FIXTURE IS ITEM 573'S, deliberately: a cycle (so the path MODES differ), a SELF-LOOP (the
 // depth-3 trail correction's only witness), a PARALLEL pair (what breaks a naive correction — two
 // parallel `a -> b` edges are two walks but the trail terms must not double-subtract), a
 // MULTI-LABEL edge (summing per-label bucket sizes counts it twice), a second edge type, and an
@@ -44,7 +44,7 @@ const NDJSON = [
 
 /** Every depth the rung has an arm for, times every path mode it admits. */
 /*
- * ⚠️⚠️ `{0,1}` IS LOAD-BEARING AND THE MUTATION RUN IS WHY. `takesTheLevelRecurrence` is
+ * `{0,1}` IS LOAD-BEARING AND THE MUTATION RUN IS WHY. `takesTheLevelRecurrence` is
  * `max >= 2 && (!isTrail || max <= 4)`, so only `max <= 1` reaches `varLengthDegreeCount`'s
  * per-source loop — and `{1,1}` does not reach this rung AT ALL (`countShortcut` takes it as a
  * vacuous quantifier). Without `{0,1}` every bound here went to the LEVEL arm, and both mutants of
@@ -58,7 +58,7 @@ describe.if(nativeReady)('a carried start predicate counts what native counts', 
   const ts = tsDeserialize(NDJSON, 'ndjson', new Graph());
 
   /**
-   * ⚠️ THE THREE SPELLINGS OF ONE SEEDED COUNT. Item 583 refused the start gate to keep them on the
+   * THE THREE SPELLINGS OF ONE SEEDED COUNT. Item 583 refused the start gate to keep them on the
    * walk TOGETHER rather than make a cliff; item 1907 carries all three for the same reason, so a
    * disagreement between them is this repo's named defect class and not a detail.
    */
@@ -82,7 +82,7 @@ describe.if(nativeReady)('a carried start predicate counts what native counts', 
             return a;
           });
 
-          // ⚠️ AND AGAINST EACH OTHER, which is the no-cliff claim item 583 made.
+          // AND AGAINST EACH OTHER, which is the no-cliff claim item 583 made.
           expect(answers[1]).toBe(answers[0]);
           expect(answers[2]).toBe(answers[0]);
         }
@@ -121,7 +121,7 @@ describe.if(nativeReady)('a carried start predicate counts what native counts', 
   });
 
   /**
-   * ⚠️ AND THE ANSWERS MUST NOT ALL BE ZERO — two engines agree trivially on nothing, and a seed
+   * AND THE ANSWERS MUST NOT ALL BE ZERO — two engines agree trivially on nothing, and a seed
    * gate that rejected every vertex would pass every test above.
    */
   test('the seeded counts are non-zero and DIFFER by seed', () => {

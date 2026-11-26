@@ -6,7 +6,7 @@
  * which every projection rung reads, so the literal path moving at all would be a regression that
  * the win could hide.
  *
- * ⚠️ ONE SHAPE PER PROCESS is not needed here (no A/B arm is being redistributed within a process:
+ * ONE SHAPE PER PROCESS is not needed here (no A/B arm is being redistributed within a process:
  * the PRE arm is a different BUILD), but each shape is timed independently and the literal control
  * is measured in the same run as its parameterized twin, so a machine-wide drift moves both.
  */

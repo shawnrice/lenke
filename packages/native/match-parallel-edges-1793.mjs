@@ -1,5 +1,5 @@
 /**
- * ⚠️ DOES `match()` DROP A SOLUTION WHEN TWO PARALLEL EDGES GIVE THE SAME BINDING PAIR?
+ * DOES `match()` DROP A SOLUTION WHEN TWO PARALLEL EDGES GIVE THE SAME BINDING PAIR?
  *
  * TinkerPop 3.7.3, asked directly (`podman run -i docker.io/tinkerpop/gremlin-console:3.7.3`), on a
  * graph with two `a -> b` edges, one `a -> c` and a `b -> b` self loop:

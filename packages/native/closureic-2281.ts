@@ -1,20 +1,20 @@
 /**
- * ⚠️⚠️ **DID MY OWN PROBE CREATE THE `getVertexById` GAP? (item 2281)** The growth sweep showed
+ * **DID MY OWN PROBE CREATE THE `getVertexById` GAP? (item 2281)** The growth sweep showed
  * `getVertexById` at 4.5x the SAME map accessed directly, growing with N while the map stayed flat — but the
  * function is one line, `this.verticesById.get(id) ?? null`, which cannot cost 237 ns.
  *
- * 🔑 **THE MECHANISM I SUSPECT IS MINE, NOT THE ENGINE'S.** `getVertexById` is a per-instance ARROW FIELD,
+ * **THE MECHANISM I SUSPECT IS MINE, NOT THE ENGINE'S.** `getVertexById` is a per-instance ARROW FIELD,
  * so every `new Graph()` mints a NEW function object. My sweep built one graph per rep, so a single call
  * site saw 9 different callees — **megamorphic**, which defeats inlining. A real application holds ONE
  * graph and that site stays monomorphic.
  *
- * ✅ So this probe asks the question three ways at ONE size, with one shape per measurement:
+ * So this probe asks the question three ways at ONE size, with one shape per measurement:
  *
  *   oneGraph    one Graph, one callee at the site    — what an application actually sees
  *   manyGraphs  9 Graphs round-robin at the site     — what my sweep accidentally measured
  *   direct      the same map, `.get` inline          — the floor
  *
- * ⚠️ If `oneGraph` matches `direct`, the gap was my instrument and there is nothing to fix. If `oneGraph`
+ * If `oneGraph` matches `direct`, the gap was my instrument and there is nothing to fix. If `oneGraph`
  * is still far above, the arrow field is a real per-call cost and a prototype method would fix it.
  */
 import { Graph } from '@lenke/core';

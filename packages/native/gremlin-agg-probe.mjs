@@ -8,7 +8,7 @@
  *
  * Both answer identically, so this is one question costing 1.6-2.5x more on one surface.
  *
- * ⚠️ ONE ARM PER PROCESS (`ARM=`). Items 1578/1579 each produced an IMPOSSIBLE in-process reading
+ * ONE ARM PER PROCESS (`ARM=`). Items 1578/1579 each produced an IMPOSSIBLE in-process reading
  * because several arms shared a call site and whichever ran first paid — and item 1578 additionally
  * found that the 32-shape Gremlin probe builds every plan ONCE and reuses it, so it has never
  * measured plan construction. This probe builds the plan outside the timed loop DELIBERATELY (the
@@ -47,7 +47,7 @@ const GREMLIN = {
   fold: G.traversal(G.V(), G.values('k'), G.fold()),
   // The element walk with no property read at all, for the other end of the floor.
   justv: G.traversal(G.V(), G.count()),
-  // ⚠️ THE SPELLING PAIR. `fuseValuesIsCount` rewrites `values(k).is(p).count()` to
+  // THE SPELLING PAIR. `fuseValuesIsCount` rewrites `values(k).is(p).count()` to
   // `has(k, p).count()` and argues the equivalence carefully: `values(k)` emits one value per
   // element when properties are single-valued, so the two agree on HOW MANY. With no `is` the
   // same argument gives `values(k).count()` == `has(k).count()` — but the rewrite requires an

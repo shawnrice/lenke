@@ -1,7 +1,7 @@
 /*
  * Item 2120 — the multi-column `RETURN DISTINCT` arm, against the one-column path it had to widen.
  *
- * ⚠️⚠️ **THE ONE-COLUMN ROW IS THE CONTROL THAT MATTERS.** Item 2119 shipped a one-column fast path at
+ * **THE ONE-COLUMN ROW IS THE CONTROL THAT MATTERS.** Item 2119 shipped a one-column fast path at
  * 25.8x; widening `distinctLevel` to N columns puts a per-column loop on that same path, and the
  * one-column spelling is the commoner of the two. A cross-run reading suggested 18.8 -> 25.2 (1.34x
  * WORSE), which is exactly the kind of number that must come from an alternated A/B rather than two runs.

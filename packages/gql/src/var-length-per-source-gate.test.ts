@@ -1,6 +1,6 @@
 // THE ROUTE CHOICE for a seeded var-length COUNT (item 1978), as arithmetic.
 //
-// ⚠️⚠️ **A ROUTE CHOICE IS ANSWER-EQUIVALENT, so the differential and parity tests cannot see it.**
+// **A ROUTE CHOICE IS ANSWER-EQUIVALENT, so the differential and parity tests cannot see it.**
 // Both routes return the same count — that is the whole point of having two — so a mutant that
 // inverts the gate, drops the seed requirement or zeroes the budget leaves every answer-comparing
 // test green. [[perf-gate-needs-its-own-test]] is the rule and this file is the instrument: the
@@ -70,7 +70,7 @@ describe('perSourceBudget', () => {
 });
 
 /*
- * ⚠️ AND THE ANSWERS, on a graph big enough for the gate to admit — because the gate being right
+ * AND THE ANSWERS, on a graph big enough for the gate to admit — because the gate being right
  * about WHEN is worthless if the route is wrong about WHAT. These are the shapes the route's own
  * arms differ on, kept here next to the gate rather than only in the native file, so a failure
  * points at the route rather than at the harness.
@@ -123,7 +123,7 @@ describe('the per-source route answers what the recurrence answers', () => {
    * test circular.
    */
   /*
-   * ⚠️⚠️ `{0,2}` AND `{0,3}` ARE LOAD-BEARING, and a SURVIVOR is why they are here. Dropping the
+   * `{0,2}` AND `{0,3}` ARE LOAD-BEARING, and a SURVIVOR is why they are here. Dropping the
    * `min === 0 && passes(s)` term from the WALK route survived the first mutation round: the only
    * min-0 test was `{0,0}`, and `takesTheLevelRecurrence` is `max >= 2`, so `{0,0}` never reaches
    * this route at all. Item 1907 recorded the identical trap one bound down ("`{0,1}` IS THE ONLY
@@ -175,7 +175,7 @@ describe('the per-source route answers what the recurrence answers', () => {
   });
 
   test('min 0 counts the source itself exactly once per source', () => {
-    // ⚠️ `{0,0}` IS NOT THIS ROUTE — `max >= 2` is the dispatch, so it is kept only as the control
+    // `{0,0}` IS NOT THIS ROUTE — `max >= 2` is the dispatch, so it is kept only as the control
     // that the shallow bound still answers 1. `{0,2}` is the one that reaches the per-source term.
     expect(count('MATCH (a:P)-[:T]->{0,0}(b:P) WHERE a.n = $p RETURN count(*) AS c', 1)).toBe(1);
 
@@ -189,7 +189,7 @@ describe('the per-source route answers what the recurrence answers', () => {
 });
 
 /*
- * ⚠️⚠️ `seekedSeeds` IS A ROUTE CHOICE TOO, and the costliest kind: returning `undefined` where a
+ * `seekedSeeds` IS A ROUTE CHOICE TOO, and the costliest kind: returning `undefined` where a
  * seek was available silently restores the O(|V|) scan (item 1979's 160x), and returning an array
  * where no index served it silently restores the 1.37-1.72x generator regression that made the
  * first attempt unshippable. Both answer identically, so only this file can see either.
@@ -231,7 +231,7 @@ describe('seekedSeeds', () => {
 
   g.createIndex({ on: 'vertex', kind: 'hash', keys: ['name'] });
   /*
-   * ⚠️⚠️ A SECOND INDEX, AND A SURVIVOR IS WHY. With only `name` indexed there is exactly ONE index
+   * A SECOND INDEX, AND A SURVIVOR IS WHY. With only `name` indexed there is exactly ONE index
    * candidate, so `candidate.count < best.count` never decides anything and a mutant inverting it
    * to `>` — picking the WORST candidate, i.e. the broadest seek — passed the whole file. Choosing
    * among candidates needs two of them with DIFFERENT selectivity to be observable at all.
@@ -243,7 +243,7 @@ describe('seekedSeeds', () => {
   const NOINDEX = 'MATCH (a:S)-[:T]->{1,3}(b:S) WHERE a.tag = $p RETURN count(*) AS c';
 
   test('seeks an indexed equality, in BOTH spellings', () => {
-    // 🔑 Both, because `compileLinear` attaches a clause `WHERE` to the node as `pred`/`seedHints`.
+    // Both, because `compileLinear` attaches a clause `WHERE` to the node as `pred`/`seedHints`.
     // If that ever stops being true the clause form silently returns to the scan, which is item
     // 583's cliff and this repo's first-named defect class.
     for (const q of [CLAUSE, INLINE]) {
@@ -256,14 +256,14 @@ describe('seekedSeeds', () => {
   });
 
   test('returns undefined when NO index serves the node', () => {
-    // ⚠️ THE REGRESSION GUARD. An array here sends every unindexed seed through this module's
+    // THE REGRESSION GUARD. An array here sends every unindexed seed through this module's
     // generator, which measured 1.37-1.72x worse than the label-extent spread the rung already had.
     expect(seekedSeeds(g, startNodeOf(NOINDEX), new Map(), { p: 't1' })).toBeUndefined();
   });
 
   test('AGREES WITH seedVertices about what is worth seeking', () => {
     /*
-     * ⚠️ THIS ASSERTS AGREEMENT, NOT A THRESHOLD, and the first draft got that wrong. I expected a
+     * THIS ASSERTS AGREEMENT, NOT A THRESHOLD, and the first draft got that wrong. I expected a
      * broad `name >= ''` to be refused by `seekIsWorthIt` (break-even ~18%) and asserted
      * `undefined`; it seeks, returning 301 of 400. That is `seekIsWorthIt`'s call to make and it is
      * SHARED with `seedVertices` — so pinning my own guess at the threshold here would duplicate

@@ -5,7 +5,7 @@
  * deliberately, so a hand walk that replaces it must reproduce the sequence, not just the multiset.
  * The GQL twin sorts largest-bucket-first (item 1384) and this one must not.
  *
- * ⚠️ THE OBVIOUS FIXTURE CANNOT SEE IT. One out-edge per vertex makes vertex iteration order
+ * THE OBVIOUS FIXTURE CANNOT SEE IT. One out-edge per vertex makes vertex iteration order
  * dominate, so `out('E','F')` and `out('F','E')` print the identical sequence whatever the bucket
  * order is — my first check was vacuous for exactly that reason. Here each vertex has THREE
  * out-edges whose label sets differ, so bucket order is observable.

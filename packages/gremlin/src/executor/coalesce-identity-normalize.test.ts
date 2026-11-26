@@ -1,17 +1,17 @@
 // `coalesce(X, identity())` normalized to `optional(X)` (item 1990).
 //
-// ⚠️⚠️ **THE REWRITE IS ANSWER-EQUIVALENT, so nothing else in this package can see a mutant of it.**
+// **THE REWRITE IS ANSWER-EQUIVALENT, so nothing else in this package can see a mutant of it.**
 // Both forms emit the same rows in the same order — that is the whole justification — so the 2,425
 // behavioural tests pass either way and only the ROUTE assertions below distinguish them
 // ([[perf-gate-needs-its-own-test]]).
 //
-// 🔑 WHY IT EXISTS: `optional` has dedicated fused rungs and `coalesce` has none, so the two
+// WHY IT EXISTS: `optional` has dedicated fused rungs and `coalesce` has none, so the two
 // spellings of one question cost 4.99x apart before this (218.23 ms against 43.72 for 800,001 rows).
 // Item 1480 priced the family and called the blocker structural — "the fused walks are
 // SOURCE-ANCHORED, so no sub-plan can reach them" — which was true of BOTH spellings when written;
 // `optional` was then given its own rungs and nothing re-checked the claim for `coalesce`.
 //
-// ⚠️ `coalesce(identity(), X)` IS NOT `optional(X)` AND MUST NOT BE REWRITTEN. Arm 0 always
+// `coalesce(identity(), X)` IS NOT `optional(X)` AND MUST NOT BE REWRITTEN. Arm 0 always
 // produces, so that form is just `identity()` — it never reaches X at all. The gate tests
 // `plans[1]`, and the route test below pins that asymmetry, because a gate reading `plans[0]` or
 // `plans.some(...)` would pass every answer test on a fixture where X is non-empty everywhere.
@@ -29,7 +29,7 @@ const routeOf = (plan: Parameters<typeof normalizeCoalesceIdentity>[0]): string 
     .join(',');
 
 /*
- * ⚠️ A VERTEX WITH NO `E` EDGES IS THE WHOLE FIXTURE REQUIREMENT. `optional` and
+ * A VERTEX WITH NO `E` EDGES IS THE WHOLE FIXTURE REQUIREMENT. `optional` and
  * `coalesce(X, identity())` differ from a bare hop ONLY on the rows X misses, so on a graph where
  * every vertex has an out-edge all three spellings agree for the wrong reason and a broken rewrite
  * passes. `e` is that vertex; `c` carries a SELF-LOOP and `a` a PARALLEL pair, so multiplicity is
@@ -64,7 +64,7 @@ const build = (): Graph => {
 };
 
 describe('normalizeCoalesceIdentity: the route', () => {
-  // ⚠️ `traversal(...)` IS the plan — there is no `.plan` property on it.
+  // `traversal(...)` IS the plan — there is no `.plan` property on it.
   const t = (...steps: Parameters<typeof traversal>): ReturnType<typeof traversal> =>
     traversal(...steps);
 

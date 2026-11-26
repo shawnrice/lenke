@@ -1,7 +1,7 @@
 // Item 2084 — WHERE IS aggsum's RESIDUE? Item 2083 priced the binding (4.2 ns), the push (5.5) and
 // the three passes (1.4) against a measured 38.8 ns a row, leaving ~70% unattributed.
 //
-// ⚠️ THIS IS A CONSTRUCTIVE DECOMPOSITION, NOT AN ABLATION. Item 2067: replacing a computed value
+// THIS IS A CONSTRUCTIVE DECOMPOSITION, NOT AN ABLATION. Item 2067: replacing a computed value
 // with a constant measures a different loop. So each arm ADDS one term the engine actually has, every
 // arm is asserted to the same sum, and the arm names say what was added.
 //
@@ -27,7 +27,7 @@ const numArg = (v) => (typeof v === 'number' ? v : Number(v));
 const matchesLabel = (v, l) => l === undefined || v.labels.has(l);
 const SV = 'n';
 
-// ⚠️ THE ACCUMULATOR SHAPE THE ENGINE BUILDS: an array of records, each with a `kind` and a compiled
+// THE ACCUMULATOR SHAPE THE ENGINE BUILDS: an array of records, each with a `kind` and a compiled
 // `argFn` closure that reads through the binding.
 const accs = [{ kind: 'values', argFn: (env) => propOf(env.binding.get(SV), 'n') }];
 
@@ -44,7 +44,7 @@ const arms = {
 
     return sum;
   },
-  // 2. ⚠️ THE SAME LOOP OVER A `Set` — which is what `verticesByLabel.get(name)` actually hands back.
+  // 2. THE SAME LOOP OVER A `Set` — which is what `verticesByLabel.get(name)` actually hands back.
   'b-set': () => {
     let sum = 0;
 
@@ -79,7 +79,7 @@ const arms = {
     return sum;
   },
   /*
-   * 5. ⚠️⚠️ **THE ENGINE'S ACTUAL ENVELOPE FOR THIS SHAPE — AND IT HAS NO LABEL TEST.** The dist reads
+   * 5. **THE ENGINE'S ACTUAL ENVELOPE FOR THIS SHAPE — AND IT HAS NO LABEL TEST.** The dist reads
    *    `if (seeded !== void 0 && !matchesLabel(v, labelEff)) continue;` and `aggsum` has no WHERE, so
    *    `seeded` is undefined and the test is SKIPPED. Arm `d` above adds a term this path does not
    *    pay — kept only because it prices the test for the SEEDED shapes that do.

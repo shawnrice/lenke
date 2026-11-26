@@ -2,7 +2,7 @@
  * How many times does `addEdge` actually call each by-id lookup, and what do the write path's
  * hot frames cost PER CALL? (item 1819)
  *
- * ⚠️ WHY A COUNT AND NOT A SHARE. `runtime-profile-write-probe.mjs addEdgeOnly` profiles
+ * WHY A COUNT AND NOT A SHARE. `runtime-profile-write-probe.mjs addEdgeOnly` profiles
  * `getEdgeById` at **16.8% self**, 187.4 ms over 600,000 edges — 312 ns a call if it is called once
  * per edge. But `getEdgeById` is one line, `this.edgesById.get(id) ?? null`, and the same probe's
  * `pointLookups` shape measures a by-id lookup at **4.5 ns**. A one-line `Map.get` cannot be both.
@@ -12,7 +12,7 @@
  * on record) or the function is called MANY times per edge. Those have opposite fixes, and only a
  * COUNT tells them apart. PROBES.md's own rule: a share is a nomination, an ablation is the price.
  *
- * ⚠️ THE WRAPPER WORKS ONLY BECAUSE THESE ARE CLASS-FIELD ARROWS, not prototype methods — they are
+ * THE WRAPPER WORKS ONLY BECAUSE THESE ARE CLASS-FIELD ARROWS, not prototype methods — they are
  * own properties of the instance (`getVertexById = (id) => …`), so assigning over them on one graph
  * replaces them for that graph alone and the captured original stays callable with its own `this`.
  * If they are ever moved onto the prototype this probe silently counts nothing, which is why it
@@ -83,7 +83,7 @@ const addEdges = (g, vs) => {
     );
   }
 
-  // ⚠️ A zero here is the probe failing, not a finding — see the class-field note above. The
+  // A zero here is the probe failing, not a finding — see the class-field note above. The
   // vertex lookup is the one guaranteed non-zero: `addEdge` is given vertex OBJECTS by this probe,
   // so if even that is zero the wrapper is not installed on the object under test.
   if (Object.values(counts).every((n) => n === 0)) {

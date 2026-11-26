@@ -8,17 +8,17 @@
  * `graph.vertices`, and read 9.22 ms for 66,667 rows against 8.32 for 200,000 unlabelled — more
  * cost, 3x fewer rows. **Evidence, not a measurement**: it compared two different questions.
  *
- * ⚠️ SO THIS IS A KILL SWITCH, ONE ARM PER BUILD. `LABEL_OFF=1` is the arm where
+ * SO THIS IS A KILL SWITCH, ONE ARM PER BUILD. `LABEL_OFF=1` is the arm where
  * `nodeValuesShortcut` refuses a label and the shape falls to the pipeline; the default arm is the
  * shipped rung. Same query, same fixture, two routes — which is what "net-negative" requires and
  * item 1869 did not have.
  *
- * ⚠️ AND THE AXIS IS SELECTIVITY, because the answer cannot be a single number. The rung's cost is
+ * AND THE AXIS IS SELECTIVITY, because the answer cannot be a single number. The rung's cost is
  * a FULL SCAN whatever the label matches; the pipeline's scales with the label's size. So the rung
  * must win when a label covers nearly everything and lose when it is selective, and the useful
  * output is WHERE that crosses — a rung that refuses every label would give back the case it wins.
  *
- * ⚠️ THE UNLABELLED SHAPE IS THE CONTROL and must not move between arms: the kill switch touches
+ * THE UNLABELLED SHAPE IS THE CONTROL and must not move between arms: the kill switch touches
  * only the labelled branch, so a bare `V().values(k)` reading differently would mean the arms
  * differ by something other than the thing under test.
  */
@@ -65,7 +65,7 @@ const median = (plan, g) => {
 };
 
 /**
- * ⚠️ `CONTROL_FIRST=1` RUNS THE UNLABELLED CONTROL BEFORE THE SWEEP, AND IT EXISTS BECAUSE THE
+ * `CONTROL_FIRST=1` RUNS THE UNLABELLED CONTROL BEFORE THE SWEEP, AND IT EXISTS BECAUSE THE
  * ORDER CHANGED THE ANSWER. With the control LAST, arm A read it at 12.01 ms and the post-change
  * arm at ~4.9 — which looked like a 2.5x win on `V().values(k)` and is not one. In arm A the six
  * labelled rows run the rung's generator with `labels` DEFINED and the control then inherits that

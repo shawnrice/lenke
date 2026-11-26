@@ -2,7 +2,7 @@
  * IS A `WeakMap<Plan, Plan>` MEMO ON `effectivePlan` WORTH IT? Both arms of the trade, in one
  * instrument (item 1646).
  *
- * ⚠️ WHY THIS EXISTS. Item 1645 found that `run` calls `effectivePlan` on EVERY invocation, so a
+ * WHY THIS EXISTS. Item 1645 found that `run` calls `effectivePlan` on EVERY invocation, so a
  * spelling needing normalisation pays for the normalisation every call — **117.5 ns of the 225.2 ns
  * gap** between `union(out(T), in(T)).count()` and `both(T).count()`. A memo would recover that for a
  * REUSED plan.
@@ -19,13 +19,13 @@
  *     ARM=reused-nomemo bun plan-memo-trade-probe.ts
  *     ARM=rebuilt-memo NODES=200000 REPS=12 bun plan-memo-trade-probe.ts
  *
- * ⚠️ THE MEMO HERE IS NOT A SHIPPABLE DESIGN AND IS NOT MEANT TO BE. `effectivePlan` takes the GRAPH
+ * THE MEMO HERE IS NOT A SHIPPABLE DESIGN AND IS NOT MEANT TO BE. `effectivePlan` takes the GRAPH
  * because `dropVacuousLabels` reads its label counts, so a plan-keyed memo goes stale when the
  * graph's labels change — the `csr_fresh` trap CLAUDE.md records going wrong natively. A sound key is
  * (plan, graph, mutation-epoch) and the graph has no epoch today. This probe measures the CEILING: if
  * even an unsound, maximally-cheap memo does not win, no sound one will.
  *
- * ⚠️⚠️ ITEM 1647 BUILT THIS AND FOUND THE DESIGN'S PREMISE FALSE. Two things to know before
+ * ITEM 1647 BUILT THIS AND FOUND THE DESIGN'S PREMISE FALSE. Two things to know before
  * reading any number out of this file again:
  *
  * - **`graph.version` IS NOT A SYNCHRONOUS MUTATION COUNTER**, so every arm below keyed on it is
@@ -138,12 +138,12 @@ const effectiveMemo = (plan: Plan): Plan => {
 };
 
 /**
- * ⚠️ THE THIRD DESIGN, AND THE ONE THAT MAY HAVE NO TRADE AT ALL. The `WeakMap` arms pay ~128 ns on a
+ * THE THIRD DESIGN, AND THE ONE THAT MAY HAVE NO TRADE AT ALL. The `WeakMap` arms pay ~128 ns on a
  * guaranteed MISS because a `set` allocates — that penalty is what item 1503's refusal rests on.
  * Caching ON THE PLAN OBJECT makes a miss a property write on an object the caller just allocated,
  * which should be a few ns rather than a hundred.
  *
- * ⚠️ AND IT IS KEYED ON `graph.version`, which EXISTS ALREADY — `Graph` carries a mutation counter
+ * AND IT IS KEYED ON `graph.version`, which EXISTS ALREADY — `Graph` carries a mutation counter
  * (plus per-token `epoch(name)`), so the staleness trap item 1645 worried about has a sound answer
  * today. `dropVacuousLabels` reads the graph's label counts, so any mutation must invalidate; the
  * version compare is conservative and correct. A tighter key would be `epoch(label)`.
@@ -154,7 +154,7 @@ const effectiveMemo = (plan: Plan): Plan => {
 type Cached = Plan & { __eff?: { version: number; plan: Plan } };
 
 /**
- * ⚠️ TWO SCALAR FIELDS, NO OBJECT. `effectiveField` below allocates `{ version, plan }` on every
+ * TWO SCALAR FIELDS, NO OBJECT. `effectiveField` below allocates `{ version, plan }` on every
  * MISS, and three rounds put that at +7 to +77 ns on the rebuilt arm — which is most of why the
  * on-plan cache did not remove the trade. Storing the version and the plan as two separate fields
  * allocates nothing on a miss, so a rebuilt plan should pay two property writes and nothing else.
@@ -162,7 +162,7 @@ type Cached = Plan & { __eff?: { version: number; plan: Plan } };
 type Cached2 = Plan & { __effV?: number; __effP?: Plan };
 
 /**
- * ⚠️⚠️ THE SOUND KEY NEEDS THE GRAPH'S IDENTITY, NOT JUST ITS VERSION — a hole in my own two-field
+ * THE SOUND KEY NEEDS THE GRAPH'S IDENTITY, NOT JUST ITS VERSION — a hole in my own two-field
  * design, caught before it was built. `effectivePlan(plan, graphA)` followed by
  * `effectivePlan(plan, graphB)` HITS WRONGLY whenever both graphs happen to share a version, and two
  * freshly built graphs both start at the same one. `dropVacuousLabels` reads the graph's label
@@ -189,7 +189,7 @@ const effectiveField3 = (plan: Plan): Plan => {
 };
 
 /**
- * ⚠️⚠️ THE FIELDS CANNOT BE PLAIN STRING KEYS, which `field3` above is — found by reading
+ * THE FIELDS CANNOT BE PLAIN STRING KEYS, which `field3` above is — found by reading
  * `serialize.ts`, not by measuring. `gremlin/src/serialize.ts` does `JSON.stringify(plan)` as a
  * PUBLIC API and `traversal.test.ts` round-trips a plan through JSON, so three enumerable own
  * properties change that output. Worse, two of the three values are unserializable: a `Graph`
@@ -223,7 +223,7 @@ const effectiveSym3 = (plan: Plan): Plan => {
 };
 
 /**
- * ⚠️ AND A GRAPH TOKEN RATHER THAN THE GRAPH, because a symbol-keyed `Graph` reference still PINS
+ * AND A GRAPH TOKEN RATHER THAN THE GRAPH, because a symbol-keyed `Graph` reference still PINS
  * that graph for as long as the user holds the plan. Bounded to one graph per plan rather than a
  * growing set, so it is not a leak — but `graph-pinned-until-microtask-drain` is already a recorded
  * hazard in this corpus and a cached reference is avoidable. A `WeakMap<Graph, number>` mints a
@@ -311,7 +311,7 @@ const reusedTok3Plan = buildUnion();
 const WORK: Record<string, () => unknown> = {
   'reused-nomemo': () => effectivePlan(reusedPlan, g, false),
   'reused-memo': () => effectiveMemo(reusedPlan),
-  // ⚠️ A FRESH PLAN EVERY CALL, which is item 1503's refusal case: the memo never hits and still pays
+  // A FRESH PLAN EVERY CALL, which is item 1503's refusal case: the memo never hits and still pays
   // the `set`. `buildUnion()` is inside the timed body on purpose — that IS the rebuilt case.
   'rebuilt-nomemo': () => effectivePlan(buildUnion(), g, false),
   'rebuilt-memo': () => effectiveMemo(buildUnion()),

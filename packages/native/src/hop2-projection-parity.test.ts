@@ -1,12 +1,12 @@
 // Byte-identity for the two-hop row projection — item 1619's rung.
 //
-// ⚠️ THE RUNG IS TS-ONLY: it is a route inside the TypeScript executor, and native answers the same
+// THE RUNG IS TS-ONLY: it is a route inside the TypeScript executor, and native answers the same
 // shape its own way. So the invariant is that the two still agree, which is the hard one in this
 // repo — a new TS fast path is exactly the kind of change that can drift from the Rust engine.
 //
 // Row order without an `ORDER BY` is unspecified (item 198) and the differential fuzzer compares GQL
 // results as MULTISETS for that reason, so every query here carries an `ORDER BY` and the comparison
-// is then a byte compare. ⚠️ Note what that costs: an `ORDER BY` makes the projection non-plain, so
+// is then a byte compare. Note what that costs: an `ORDER BY` makes the projection non-plain, so
 // `plainRowProjection` DECLINES and these queries do not take the rung at all. The ordered form is
 // the only way to compare bytes, and the unordered form is the one the rung serves — so both are
 // here, the ordered ones byte-compared and the unordered ones compared as multisets.
@@ -38,7 +38,7 @@ const NDJSON = (() => {
         type: 'node',
         id: `v${i}`,
         labels: labelsFor(i),
-        // ⚠️ `v5` has NO `k`, so a projection over it emits null rather than dropping the row —
+        // `v5` has NO `k`, so a projection over it emits null rather than dropping the row —
         // the asymmetry with Gremlin's `values(k)` and a place the two engines could differ.
         properties: i === 5 ? { id: `v${i}` } : { id: `v${i}`, k: i % 5, n: i },
       }),
@@ -96,7 +96,7 @@ suite('a two-segment row projection: TS vs native', () => {
     });
   }
 
-  test('⚠️ the UNORDERED forms, which are the ones the rung actually serves', () => {
+  test('the UNORDERED forms, which are the ones the rung actually serves', () => {
     /**
      * An `ORDER BY` makes the projection non-plain, so the queries above DECLINE the rung. These are
      * the shapes it answers, and for them row order is unspecified in both engines — so the

@@ -12,7 +12,7 @@
 // Item 1901's coverage sweep measured `chained LET` at **88.17 ms for 200,000 rows** against the
 // node projection's 9.67 — about 9x per row — and left it open.
 //
-// ⚠️ THE CEILING IS THE HAND-FOLDED SPELLING, not the plain projection: `(n.n + 1) * 2` still
+// THE CEILING IS THE HAND-FOLDED SPELLING, not the plain projection: `(n.n + 1) * 2` still
 // evaluates two operations per row where `n.n` evaluates none, so comparing the chain to
 // `RETURN n.n` would price the arithmetic as if it were overhead.
 //
@@ -40,7 +40,7 @@ const SHAPES = {
   chain2: 'MATCH (n:T) LET a = n.n + 1 LET b = a * 2 RETURN b AS x',
   // Three, to see whether the cost tracks the NUMBER of standing LETs or just "any standing LET".
   chain3: 'MATCH (n:T) LET a = n.n + 1 LET b = a * 2 LET c = b + 3 RETURN c AS x',
-  // ⚠️ THE CEILING: the same arithmetic with no LET at all — what a fixpoint fold would reach.
+  // THE CEILING: the same arithmetic with no LET at all — what a fixpoint fold would reach.
   folded: 'MATCH (n:T) RETURN (n.n + 1) * 2 AS x',
   // ONE binding, which `inlineTrailingLet` DOES fold — so this should already be at the ceiling.
   single: 'MATCH (n:T) LET a = n.n + 1 RETURN a AS x',
@@ -48,7 +48,7 @@ const SHAPES = {
   plain: 'MATCH (n:T) RETURN n.n AS x',
 
   /*
-   * ⚠️ ITEM 1927'S FAMILY. `letdeep-breadth-1927.ts` found 11 of 13 natural spellings stranded by
+   * ITEM 1927'S FAMILY. `letdeep-breadth-1927.ts` found 11 of 13 natural spellings stranded by
    * `subst`'s ONE-LEVEL restriction: a bound name nested inside an operator is refused, so these
    * keep a standing `LET` where their hand-written twins compile to `[match, return]`. Each pairs
    * with its `*Hand` twin, which is the ceiling.

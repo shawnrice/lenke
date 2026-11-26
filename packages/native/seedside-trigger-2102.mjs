@@ -1,12 +1,12 @@
 /*
  * Item 2102 (second half) — WHAT triggers the seed-side gap? Hop count alone does not explain it.
  *
- * ⚠️ The by-depth probe shows an all-`:P` `count(*)` chain seeding correctly at 1 and 2 hops (1.27x,
+ * The by-depth probe shows an all-`:P` `count(*)` chain seeding correctly at 1 and 2 hops (1.27x,
  * 1.54x) and falling off a cliff at 3 (31.32x). But item 2101's shape is only TWO segments and measured
  * 71.5x. So something OTHER than depth is involved, and the two differ in three ways: per-node LABELS
  * (User/Team/Doc vs all `:P`), `count(DISTINCT u.name)` vs `count(*)`, and the predicate's selectivity.
  *
- * 🔑 This varies them ONE AT A TIME over one fixture, with both spellings asserted equal in each pair.
+ * This varies them ONE AT A TIME over one fixture, with both spellings asserted equal in each pair.
  */
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';

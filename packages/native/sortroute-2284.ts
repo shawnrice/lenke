@@ -1,13 +1,13 @@
 // eslint-disable-next-line boundaries/no-cross-package-relative-import -- internal planner entry point, read pre-build
 import { compileLinear } from '../../packages/gql/src/executor/rewrites.ts';
 /**
- * ⚠️⚠️ **WHICH RUNG CLAIMS `ORDER BY … LIMIT k`, AND WHY DOESN'T IT REACH `topKPlan`? (item 2284)**
+ * **WHICH RUNG CLAIMS `ORDER BY … LIMIT k`, AND WHY DOESN'T IT REACH `topKPlan`? (item 2284)**
  *
- * 🔑 The decomposition is unambiguous: `LIMIT 100` costs 2.42 ms against 2.41 for sorting all 60,000 rows,
+ * The decomposition is unambiguous: `LIMIT 100` costs 2.42 ms against 2.41 for sorting all 60,000 rows,
  * so the top-K heap built at item 1064 is not engaging. The sort is 52% of that row, so a working heap is
  * worth ~2.1x.
  *
- * ⚠️ **Timing cannot tell "declined" from "more work"** — my own recorded rule — so this reads the route
+ * **Timing cannot tell "declined" from "more work"** — my own recorded rule — so this reads the route
  * directly off `compileLinear`, printing which fields are non-null for each spelling. `topKPlan` lives on
  * the node-scan rung, so if a broader projection rung claims these shapes first, that is
  * `rung-precedence-decides-speed`: a willing fast rung starved by one above it.

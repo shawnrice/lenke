@@ -9,7 +9,7 @@
 // that already exist (`hop2-projection.ts`, `chain-projection.ts`) — not the one item 1917 priced
 // and did not add.
 //
-// ⚠️ THE ORACLE IS THE SAME QUESTION ASKED SO THE ELISION CANNOT APPLY. `:U` is carried by exactly
+// THE ORACLE IS THE SAME QUESTION ASKED SO THE ELISION CANNOT APPLY. `:U` is carried by exactly
 // one vertex, so a pattern written against `U` can never be elided, and `hasLabel` on each vertex is
 // the ground truth either way. Both are printed beside the engine's answer.
 import { Graph } from '@lenke/core';
@@ -65,7 +65,7 @@ const Q = 'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T) RETURN a.n AS an, b.n AS bn, c.n 
 
   console.log(
     `removeLabelFromVertex('T', v3):  ${got.length} rows   hasLabel truth=${truth}   ` +
-      `T bucket=${g.verticesByLabel.get('T')?.size}  ${got.length === truth ? '✅ agrees' : '❌ DISAGREES'}`,
+      `T bucket=${g.verticesByLabel.get('T')?.size}  ${got.length === truth ? 'agrees' : 'DISAGREES'}`,
   );
 }
 
@@ -85,7 +85,7 @@ const Q = 'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T) RETURN a.n AS an, b.n AS bn, c.n 
 
   console.log(
     `v3.labels = ['U']:               ${got.length} rows   hasLabel truth=${truth}   ` +
-      `T bucket=${g.verticesByLabel.get('T')?.size}  ${got.length === truth ? '✅ agrees' : '❌ DISAGREES — WRONG ANSWER'}`,
+      `T bucket=${g.verticesByLabel.get('T')?.size}  ${got.length === truth ? 'agrees' : 'DISAGREES — WRONG ANSWER'}`,
   );
   console.log(
     `  v3.hasLabel('T') = ${String(v3.hasLabel('T'))}  v3.hasLabel('U') = ${String(v3.hasLabel('U'))}`,

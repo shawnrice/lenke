@@ -13,7 +13,7 @@
 //!     `canonical_num_conj` declines by design) reaching a loop that tests `bounds.is_empty()`
 //!     INSIDE the per-element closure. That is the shape item 1220 hoisted out of a sweep.
 //!
-//! ⚠️ TWO FIXTURES, AND THE SECOND IS THE WHOLE QUESTION. A column with NO stored present-nulls
+//! TWO FIXTURES, AND THE SECOND IS THE WHOLE QUESTION. A column with NO stored present-nulls
 //! takes the cheap arm (`has_nulls` false), so the invariant test is all there is to remove. A
 //! column WITH them pays the second bool read as well. Item 1206's lesson in a new place: the
 //! corpus fixture has no present-nulls, so measuring only it would price half the change.
@@ -44,7 +44,7 @@ fn store_of(nodes: u32, deg: u32, with_nulls: bool) -> Store {
     for i in 0..nodes {
         let age = vals.next(100);
 
-        // ⚠️ NEVER NODE 0, and that is a fixture bug this probe already made once. With the
+        // NEVER NODE 0, and that is a fixture bug this probe already made once. With the
         // FIRST value null the column has no kind to infer and is built as `Gen`, so every
         // numeric fast path declines — the bounded control read 759.5us against 28,162.9, and the
         // "37x cost of a present-null" that looked like was really "the column became Gen". A

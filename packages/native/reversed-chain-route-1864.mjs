@@ -6,7 +6,7 @@
  * Whether it is WORTH anything is a separate question: if the reversed spelling is just as slow,
  * the rewrite buys nothing and the fork needs its own rung after all.
  *
- * ⚠️ BOTH HALVES ARE ASKED — the route and the time — because either alone misleads. A rung that
+ * BOTH HALVES ARE ASKED — the route and the time — because either alone misleads. A rung that
  * fires but is no faster is not a win, and a time that improves without a route change is noise.
  */
 import { Graph } from '@lenke/core';

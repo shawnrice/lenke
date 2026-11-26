@@ -1,7 +1,7 @@
 /**
  * THE UNBENCHED-FEATURE SCREEN, WITH A NATIVE REFERENCE (item 2161).
  *
- * ⚠️⚠️ **ITEM 2160 IS WHY THIS EXISTS.** That item screened the same features with a TS-INTERNAL reference
+ * **ITEM 2160 IS WHY THIS EXISTS.** That item screened the same features with a TS-INTERNAL reference
  * ("feature X costs N times feature Y in TS") and flagged two at 24x and 8.2x. Both evaporated against the
  * cross-engine column:
  *
@@ -11,12 +11,12 @@
  *     labels(a)             11.3     14.6    0.77x   <- TS is FASTER; no gap at all
  * ```
  *
- * 🔑 A TS-internal ratio nominates only WHICH RUNG serves a shape, never how much headroom exists. This
+ * A TS-internal ratio nominates only WHICH RUNG serves a shape, never how much headroom exists. This
  * screen asks the question that matters instead: **for each shape with no bench row, what does native
  * charge?** Three instances of the old failure are recorded (items 234, 2160, and 2160's own two flags),
  * which is enough to change the instrument rather than remember the caveat.
  *
- * ⚠️ `bun` is required (it reads the FFI backend the same way `bench.ts` does), and `@lenke/*` resolve to
+ * `bun` is required (it reads the FFI backend the same way `bench.ts` does), and `@lenke/*` resolve to
  * BUILT DIST — a source edit reaches this only after `nx build`.
  *
  *     cd packages/native && bun run native-ref-screen-2161.ts
@@ -31,33 +31,33 @@ import { graphFromNdjson } from './src/graph.js';
 
 const N = Number(process.env.SCREEN_N ?? 200_000);
 /*
- * ⚠️⚠️ **`MIXED=1`: THE REALISTIC-SCHEMA MODE, and without it every row measures an arm a real schema
+ * **`MIXED=1`: THE REALISTIC-SCHEMA MODE, and without it every row measures an arm a real schema
  * cannot reach** (item 1943's design, applied to this screen at item 2188). The GQL fast-path layer gates
  * 43 elisions on a VACUOUS label — one that matches every vertex — and a homogeneous fixture makes that
  * vacuous by construction.
  *
- * 🔑 The flag appends ONE ISOLATED off-label vertex: no edges, a label nothing matches. So every shape's
+ * The flag appends ONE ISOLATED off-label vertex: no edges, a label nothing matches. So every shape's
  * ANSWER is unchanged and only `vertexCount` moves, which is exactly what the vacuity check compares
- * against. ⚠️ Item 1935's first attempt RELABELLED a vertex instead, which changed the match count AND the
+ * against. Item 1935's first attempt RELABELLED a vertex instead, which changed the match count AND the
  * edge set and produced 1221x ratios that were two different questions.
  *
- * ⚠️ **BOTH ARMS MUST RUN ON THE SAME BUILD** — item 1943's note, because diffing against a stale
+ * **BOTH ARMS MUST RUN ON THE SAME BUILD** — item 1943's note, because diffing against a stale
  * homogeneous baseline credits the flag with whatever shipped in between.
  */
 /*
- * ⚠️⚠️ **DEFAULT ON since item 2190, because item 2189 established the MIXED number is the one to price
+ * **DEFAULT ON since item 2190, because item 2189 established the MIXED number is the one to price
  * against.** A homogeneous fixture makes every label VACUOUS by construction, which unlocks 43+ GQL
  * elisions a real schema cannot reach: the two-hop count reads **0.19 ms homogeneous against 15.55 on a
  * genuinely mixed schema — 82x** — and the realistic number is the one item 2087 already optimized.
  *
- * 🔑 `MIXED=0` restores the old homogeneous arm, which is useful ONLY for measuring the gate's own cost.
+ * `MIXED=0` restores the old homogeneous arm, which is useful ONLY for measuring the gate's own cost.
  * **A nomination taken from it is a nomination against an arm no application reaches.**
  */
 const MIXED = process.env.MIXED !== '0';
 
 const FANOUT = Number(process.env.SCREEN_FANOUT ?? 3);
 /*
- * ⚠️⚠️⚠️ **13 REPS DROPPING 6, AND BOTH NUMBERS ARE MEASURED (item 2172).** This screen ran 5 reps
+ * **13 REPS DROPPING 6, AND BOTH NUMBERS ARE MEASURED (item 2172).** This screen ran 5 reps
  * dropping 2 and NOMINATED A PHANTOM: it put `ORDER BY two keys` at a 5.2x floor-subtracted gap, which
  * a per-rep series refuted outright.
  *
@@ -67,16 +67,16 @@ const FANOUT = Number(process.env.SCREEN_FANOUT ?? 3);
  *     2 col 2 key   33.0 18.3 16.8 16.5 17.2      | 11.4 10.3 10.7 10.9 10.8 ...      settles ~10.8
  * ```
  *
- * 🔑 **Warmup runs SIX reps deep, not two**, so a 5-rep window reported 6.22-16.00 ms for the SAME row
+ * **Warmup runs SIX reps deep, not two**, so a 5-rep window reported 6.22-16.00 ms for the SAME row
  * across three runs. Settled, the series is monotonic and the finding evaporates: a second COLUMN costs
- * +2.3 ms and a second KEY only +1.1 (native +0.95). ⚠️ There are also isolated GC spikes (56.6, 41.9)
+ * +2.3 ms and a second KEY only +1.1 (native +0.95). There are also isolated GC spikes (56.6, 41.9)
  * well past warmup, which is why the estimator is a MEDIAN of the kept window rather than a mean or a min.
  */
 const REPS = Number(process.env.SCREEN_REPS ?? 13);
 const WARMUP = Number(process.env.SCREEN_WARMUP ?? 6);
 
 /*
- * ⚠️⚠️⚠️ **PER-PROCESS MODE, AND IT IS THE DEFAULT BECAUSE IN-PROCESS TIMING NOMINATED THREE PHANTOMS**
+ * **PER-PROCESS MODE, AND IT IS THE DEFAULT BECAUSE IN-PROCESS TIMING NOMINATED THREE PHANTOMS**
  * (items 2172 and 2173). Raising the rep count was not enough: these shapes drift MONOTONICALLY for
  * dozens of reps inside one process, so no window separates them.
  *
@@ -86,22 +86,22 @@ const WARMUP = Number(process.env.SCREEN_WARMUP ?? 6);
  *     one shape per PROCESS        sum(a.k) 6.33    coalesce 7.29   +0.96, reproducible to the hundredth
  * ```
  *
- * 🔑 On that reading I refuted a lever that then shipped at **1.48x** (item 2173). Each child measures ITS
+ * On that reading I refuted a lever that then shipped at **1.48x** (item 2173). Each child measures ITS
  * OWN floor from its own process, which is stricter than sharing one across rows.
  *
- * ⚠️ `SCREEN_INPROC=1` keeps the old single-process sweep — it is ~10x faster and fine for a smoke check,
+ * `SCREEN_INPROC=1` keeps the old single-process sweep — it is ~10x faster and fine for a smoke check,
  * but a NOMINATION from it is not trustworthy. `SCREEN_ROW=<n>` is the child mode the driver spawns.
  */
 const ROW_REPS = Number(process.env.SCREEN_ROW_REPS ?? 40);
 const ROW_KEEP = Number(process.env.SCREEN_ROW_KEEP ?? 15);
 const ONE_ROW = process.env.SCREEN_ROW;
 /*
- * ⚠️⚠️ **TWO CHILDREN PER ROW, BECAUSE ONE ISOLATED RUN IS STILL ONE READING** — the rule the TS spelling
+ * **TWO CHILDREN PER ROW, BECAUSE ONE ISOLATED RUN IS STILL ONE READING** — the rule the TS spelling
  * probe prints for itself (item 1073), and this screen needed it too. Per-process timing fixed the DRIFT
  * but not the run-to-run spread: `COALESCE`'s marginal read **+2.36 then +3.37** on consecutive sweeps, so
  * a flag threshold of 2 ms sat inside the noise band and the row flagged on one run and not the other.
  *
- * 🔑 The estimator is the **MIN across rounds** of each side, which is what [[bench-methodology]] settled
+ * The estimator is the **MIN across rounds** of each side, which is what [[bench-methodology]] settled
  * on: a slow round can only be contamination, so the fastest is the closest to the real cost.
  */
 const ROUNDS = Number(process.env.SCREEN_ROUNDS ?? 2);
@@ -120,7 +120,7 @@ const doc = (() => {
   let id = 0;
 
   /*
-   * ⚠️ The repeat index `d` is load-bearing: `to = (a*k + b) % N` is invariant under `k -> k + N`, so a
+   * The repeat index `d` is load-bearing: `to = (a*k + b) % N` is invariant under `k -> k + N`, so a
    * flat loop sends one vertex's whole fan-out to the SAME target (items 1516/1518).
    */
   for (let d = 0; d < FANOUT; d += 1) {
@@ -143,10 +143,10 @@ const SUM_FLOOR = 'MATCH (a:Person) RETURN sum(a.k) AS c';
 const COUNT_FLOOR = 'MATCH (a:Person) RETURN count(a.k) AS c';
 
 /*
- * ⚠️⚠️⚠️ **A ROW'S FLOOR MUST MATCH ITS OUTER AGGREGATE, AND THIS IS THE FOURTH TIME A MISMATCHED FLOOR
+ * **A ROW'S FLOOR MUST MATCH ITS OUTER AGGREGATE, AND THIS IS THE FOURTH TIME A MISMATCHED FLOOR
  * PRODUCED A FALSE NOMINATION** (items 2168 twice, 2170, and `CASE` at item 2175).
  *
- * 🔑 `sum`/`avg` pay ~3 ms over `count` that native pays ~0.02 for — architectural, boxed vs columnar,
+ * `sum`/`avg` pay ~3 ms over `count` that native pays ~0.02 for — architectural, boxed vs columnar,
  * priced at item 2173 and NOT a target. So flooring a `sum(...)` row with `count(a.k)` charges it for that
  * gap and flags it. `CASE` read **+5.08 / +1.58 (3.2x)** that way:
  *
@@ -155,12 +155,12 @@ const COUNT_FLOOR = 'MATCH (a:Person) RETURN count(a.k) AS c';
  *     against sum(a.k)     8.04 - 6.31 = +1.73 ts   1.78 - 0.12 = +1.66 nat   1.04x <- PARITY
  * ```
  *
- * ⚠️ Both readings are reproducible across rounds; only the SUBTRAHEND differed. The third element of each
+ * Both readings are reproducible across rounds; only the SUBTRAHEND differed. The third element of each
  * row names its floor, defaulting to the `count` one.
  */
 const ROWS: ReadonlyArray<readonly [string, string, string?]> = [
   /*
-   * ⚠️⚠️⚠️ **THE FLOOR, AND WITHOUT IT THIS SCREEN NOMINATES PHANTOMS (item 2172).** Item 2167 measured TS
+   * **THE FLOOR, AND WITHOUT IT THIS SCREEN NOMINATES PHANTOMS (item 2172).** Item 2167 measured TS
    * reading 200,000 properties in 4.29 ms against native's 0.09 — **48x** — so a RAW ratio on any row that
    * touches a property is mostly that one floor. Subtracting it reorders the whole table:
    *
@@ -172,12 +172,12 @@ const ROWS: ReadonlyArray<readonly [string, string, string?]> = [
    *     DISTINCT 2 col 1.7x  +11.61 / +5.48     2.1x
    * ```
    *
-   * 🔑 The two loudest flags were artefacts of the scan, not gaps. The Gremlin screen
+   * The two loudest flags were artefacts of the scan, not gaps. The Gremlin screen
    * (`gremlin-floor-screen-2168.ts`) has flagged on the MARGINAL since it was written; this one did not,
    * and three items' worth of flags here were the floor talking.
    */
   /*
-   * ⚠️ `AS c` IS LOAD-BEARING, as it is on every row here. An UNALIASED column is named `expr` by TS and
+   * `AS c` IS LOAD-BEARING, as it is on every row here. An UNALIASED column is named `expr` by TS and
    * `col0` by native, so the screen's own answer-agreement check voids the row — the values match
    * (200000), only the key differs.
    */
@@ -216,15 +216,15 @@ const ROWS: ReadonlyArray<readonly [string, string, string?]> = [
   /*
    * ── ROWS ADDED AT ITEM 2176 ───────────────────────────────────────────────────────────────────
    *
-   * 🔑 The 16 rows above are at parity or better, which was starting to read as "the engine is fine"
+   * The 16 rows above are at parity or better, which was starting to read as "the engine is fine"
    * when it really meant **this screen measures a narrow surface well**. Three ticks of estimator work
    * (items 2172-2175) earned a trustworthy instrument; these rows point it somewhere new.
    *
-   * ⚠️ The gaps were structural: **not one WRITE row**, no OPTIONAL MATCH, no grouped aggregate, no
+   * The gaps were structural: **not one WRITE row**, no OPTIONAL MATCH, no grouped aggregate, no
    * variable-length path, no UNION, no multi-hop projection. Those are the shapes a people-graph
    * application actually runs.
    *
-   * ⚠️⚠️ **A WRITE ROW MUST BE IDEMPOTENT**, because the child times 40 reps against ONE fixture. `SET` to
+   * **A WRITE ROW MUST BE IDEMPOTENT**, because the child times 40 reps against ONE fixture. `SET` to
    * a CONSTANT is (the second write stores what the first did); an `INSERT` is not, and would measure a
    * graph growing 40x while the reads above it measure a fixed one. So inserts are not here — they need a
    * per-rep rebuild, which is a different instrument.
@@ -256,7 +256,7 @@ const ROWS: ReadonlyArray<readonly [string, string, string?]> = [
 ];
 
 /*
- * ⚠️ The FFI backend takes the cdylib's ABSOLUTE PATH, as `bench.ts` does. 🔑 And that artifact needs
+ * The FFI backend takes the cdylib's ABSOLUTE PATH, as `bench.ts` does. And that artifact needs
  * `--features capi`: a bare `cargo build --release` overwrites it with a copy that has no `lnk_*` symbols.
  */
 const LIB = new URL(
@@ -290,9 +290,9 @@ const median = (xs: number[]): number => {
 };
 
 /*
- * ⚠️⚠️ **THE ANSWER IS CAPTURED, NOT JUST THE TIME, AND THAT IS NOT OPTIONAL.** A prior EXISTS measurement
+ * **THE ANSWER IS CAPTURED, NOT JUST THE TIME, AND THAT IS NOT OPTIONAL.** A prior EXISTS measurement
  * in this repo was declared VOID because the two arms ran the subquery over DIFFERENT candidate counts —
- * 20,000 against 207 — so the ratio compared different work. 🔑 Its post-mortem records that the guard
+ * 20,000 against 207 — so the ratio compared different work. Its post-mortem records that the guard
  * there "catches EMPTY, not WRONG", because a `count(*)` query returns exactly one row whatever the count
  * is. **So a ratio on this screen is only reportable when both engines agree on the ANSWER.**
  */
@@ -318,7 +318,7 @@ const time = (fn: () => unknown): { ms: number | null; note: string; answer: str
     };
   }
 
-  // ⚠️ Drop the first two reps: they are the JIT tiering up, not the steady state.
+  // Drop the first two reps: they are the JIT tiering up, not the steady state.
   return { ms: median(series.slice(WARMUP)), note: '', answer };
 };
 
@@ -349,7 +349,7 @@ const timeLong = (fn: () => unknown): { ms: number | null; note: string; answer:
 /*
  * THE CHILD: measure the FLOOR and ONE row in this fresh process, print a parseable line, exit.
  *
- * 🔑 The floor is re-measured here rather than passed in, so the subtraction is between two readings from
+ * The floor is re-measured here rather than passed in, so the subtraction is between two readings from
  * the SAME process — the only pairing item 2173 found reproducible.
  */
 if (ONE_ROW !== undefined) {
@@ -364,13 +364,13 @@ if (ONE_ROW !== undefined) {
 
   const [name, q] = row;
   /*
-   * ⚠️⚠️ **EXACTLY ONE QUERY PER PROCESS, AND MEASURING THE FLOOR BESIDE THE ROW BROKE THAT** (item 2175).
+   * **EXACTLY ONE QUERY PER PROCESS, AND MEASURING THE FLOOR BESIDE THE ROW BROKE THAT** (item 2175).
    * The child used to time the floor and the row together. Once the floor became `sum(a.k)` for the
    * `sum(...)` rows, the two shared the aggregate dispatch and polluted each other's inline caches:
-   * `CASE` read **10.89 ms in-child against 8.04 measured alone**, twice. 🔑 That is item 762's rule —
+   * `CASE` read **10.89 ms in-child against 8.04 measured alone**, twice. That is item 762's rule —
    * one shape per PROCESS so no other shape pollutes the dispatch — and the floor is another shape.
    *
-   * 🔑 So the FLOOR ROWS ARE ORDINARY ROWS now (indices 0 and 1), each measured in its own child, and the
+   * So the FLOOR ROWS ARE ORDINARY ROWS now (indices 0 and 1), each measured in its own child, and the
    * driver does the subtraction.
    */
   const t = timeLong(() => tsQuery(tsGraph, q));
@@ -384,7 +384,7 @@ if (ONE_ROW !== undefined) {
 }
 
 /*
- * THE DRIVER: one child per row. ⚠️ It spawns THIS file with `SCREEN_ROW` set, so the rows, the fixture
+ * THE DRIVER: one child per row. It spawns THIS file with `SCREEN_ROW` set, so the rows, the fixture
  * and the queries cannot drift between the two modes — there is one definition of each.
  */
 if (!IN_PROC) {
@@ -428,7 +428,7 @@ if (!IN_PROC) {
     }
 
     /*
-     * 🔑 MIN across rounds, per field. ⚠️ An ERROR in any round keeps the error — a shape that errors does
+     * MIN across rounds, per field. An ERROR in any round keeps the error — a shape that errors does
      * not sometimes answer, so a numeric reading beside it would mean the parse differed, not that it got
      * faster.
      */
@@ -448,7 +448,7 @@ if (!IN_PROC) {
       floors[i] = { ts: Number(tsRaw), nat: Number(natRaw) };
     }
 
-    /* 🔑 The row's own floor — index 1 (`sum`) for a row that named `SUM_FLOOR`, else index 0. */
+    /* The row's own floor — index 1 (`sum`) for a row that named `SUM_FLOOR`, else index 0. */
     const useSum = ROWS[i][2] === SUM_FLOOR;
     const fTs = String(floors[useSum ? 1 : 0].ts);
     const fNat = String(floors[useSum ? 1 : 0].nat);
@@ -468,7 +468,7 @@ if (!IN_PROC) {
   }
 
   console.log(
-    `\n  ⚠️ ONE PROCESS PER ROW (items 2172/2173: in-process timing nominated three phantoms, and one\n` +
+    `\n  ONE PROCESS PER ROW (items 2172/2173: in-process timing nominated three phantoms, and one\n` +
       `  refutation it produced was itself wrong — the lever shipped at 1.48x). SCREEN_INPROC=1 for the\n` +
       `  fast single-process sweep, which is a smoke check and NOT a basis for nominating a target.\n`,
   );
@@ -485,12 +485,12 @@ for (const [name, q] of ROWS) {
   const n = time(() => nativeGraph.query(q));
   const ratio = t.ms !== null && n.ms !== null && n.ms > 0 ? t.ms / n.ms : null;
   /*
-   * ⚠️ A FLOOR ON BOTH SIDES. Two sub-millisecond readings divide into nonsense — item 2157's screen
+   * A FLOOR ON BOTH SIDES. Two sub-millisecond readings divide into nonsense — item 2157's screen
    * reported 71233x against a `count(*)` counter rung — so a ratio is only printed as a FLAG when the TS
    * side is over 5 ms and native's is over 0.5.
    */
   /*
-   * ⚠️ A DISAGREEMENT VOIDS THE ROW. The two engines render values differently in places, so this is a
+   * A DISAGREEMENT VOIDS THE ROW. The two engines render values differently in places, so this is a
    * loose comparison — but a count that differs is a count over different candidates, which is exactly
    * the failure that voided an earlier EXISTS measurement.
    */
@@ -501,7 +501,7 @@ for (const [name, q] of ROWS) {
   }
 
   /*
-   * ⚠️⚠️ **THE FLAG IS ON THE MARGINAL RATIO, NOT THE RAW ONE** (item 2172, following the Gremlin screen).
+   * **THE FLAG IS ON THE MARGINAL RATIO, NOT THE RAW ONE** (item 2172, following the Gremlin screen).
    * A row is nominated only when the work ABOVE the property scan is over 3x native's and over 2 ms in
    * absolute terms — that is what a change can actually reach.
    */
@@ -524,7 +524,7 @@ for (const [name, q] of ROWS) {
 
 nativeGraph.free();
 console.log(
-  `\n  ⚠️ A FLAG IS ON THE MARGINAL over the property-scan FLOOR, never the raw ratio (item 2172: the\n` +
+  `\n  A FLAG IS ON THE MARGINAL over the property-scan FLOOR, never the raw ratio (item 2172: the\n` +
     `  two loudest raw flags were 1.7-1.8x once the scan was subtracted). Item 2160 is why native is the\n` +
     `  reference at all, and item 2167 is why the floor has to come out.\n`,
 );

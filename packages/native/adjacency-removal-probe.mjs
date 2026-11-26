@@ -8,7 +8,7 @@
  * 1369-1372/1397: **removal.** `Set.delete` is O(1); an order-preserving array removal is
  * `indexOf` + `splice`, both O(degree).
  *
- * ⚠️ A MICRO ON `Set.delete` IS MEANINGLESS ON ITS OWN. "A micro's ratio is bounded by the profile
+ * A MICRO ON `Set.delete` IS MEANINGLESS ON ITS OWN. "A micro's ratio is bounded by the profile
  * share" is this corpus's most-repeated correction (items 1364, 1368, 1477), so this probe has two
  * halves: the data-structure micro by DEGREE, and the cost of a real `graph.removeEdge` today. The
  * second tells you what share the first can possibly move — if a removal costs 2 us and the
@@ -199,7 +199,7 @@ if (PART === undefined || PART === 'engine') {
 
       const t0 = performance.now();
 
-      // ⚠️ `removeEdge` takes the EDGE, not its id — passing a string reads `edge.labels.size` off
+      // `removeEdge` takes the EDGE, not its id — passing a string reads `edge.labels.size` off
       // `undefined` and throws inside the engine rather than at the call. Resolve first, OUTSIDE
       // the timed region, so the timing is the removal and not `getEdgeById`.
       for (const e of edges) {

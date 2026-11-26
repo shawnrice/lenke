@@ -14,7 +14,7 @@ import { query } from './index.js';
  * `hopstartonlyyield` spent **36.8%** there, two rows on one function where neither covered the
  * other. `detectOptionalHopProjection` is a separate detector entirely and had never had the drop.
  *
- * ⚠️ THE OPTIONAL HOP IS THE DELICATE ONE. Its far test decides `matched`, and `matched` decides
+ * THE OPTIONAL HOP IS THE DELICATE ONE. Its far test decides `matched`, and `matched` decides
  * whether a start with no qualifying edge gets a NULL row. So a mis-decided drop there does not just
  * add or remove rows — it changes which starts are padded with NULL, and **the row COUNT can stay
  * the same while the rows are wrong**. The fixtures below are built so that is exactly what a
@@ -24,7 +24,7 @@ import { query } from './index.js';
  * the flag still sets it — which is why the drop is sound. These tests are what makes that an
  * observation rather than an assertion.
  *
- * ⚠️ A FIXTURE TRAP, HIT WHILE WRITING THIS FILE. `MATCH (a:P)` filters the START set by the same
+ * A FIXTURE TRAP, HIT WHILE WRITING THIS FILE. `MATCH (a:P)` filters the START set by the same
  * label, so moving a vertex off `P` to make the far label meaningful also removes it as a start, and
  * the two fixtures then differ in two ways at once. My first version put the `Q` on a vertex that was
  * also the second edge's source, and five assertions failed for that reason rather than any defect.
@@ -134,7 +134,7 @@ describe('the OPTIONAL-MATCH hop and a vacuous far label (item 1410)', () => {
     );
   });
 
-  test('⚠️ a FILTERING label moves a start from MATCHED to NULL-padded, at a CONSTANT row count', () => {
+  test('a FILTERING label moves a start from MATCHED to NULL-padded, at a CONSTANT row count', () => {
     // THE TEST A ROW COUNT CANNOT DO. On the filtering graph the starts are a, b, c, d — `e` is a
     // `Q` and so not a start — giving FOUR rows. `a`->`b` still matches (2). `c`->`e` is rejected
     // by the far label, so `matched` stays false and `c` is padded.

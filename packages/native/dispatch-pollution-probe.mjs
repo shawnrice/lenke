@@ -6,7 +6,7 @@
  * The probe's own advice is to treat an in-sweep-only flag as the harness — and that advice is
  * right for a one-off reading, but a flag that reproduces to within 0.05x twice is not noise.
  *
- * ⚠️ AND THE USUAL READING MAY BE BACKWARDS HERE. "Isolated is the true number" assumes the
+ * AND THE USUAL READING MAY BE BACKWARDS HERE. "Isolated is the true number" assumes the
  * isolated state is the realistic one. A long-lived server is the POLLUTED state: it has already
  * compiled and run dozens of query shapes through the same closures and megamorphic call sites. If
  * a spelling is more sensitive to that pollution than its twin, the in-sweep gap is the honest one
@@ -51,7 +51,7 @@ for (let i = 0; i < NODES; i += 1) {
   });
 }
 
-// ⚠️ An INDEX on `k`, because the spelling probe's own fixture has one (item 579) and that is the
+// An INDEX on `k`, because the spelling probe's own fixture has one (item 579) and that is the
 // difference between both spellings SEEKING and both SCANNING. `INDEXED=0` removes it.
 if (process.env.INDEXED !== '0') {
   g.createIndex({ on: 'vertex', kind: 'hash', keys: ['k'] });
@@ -94,7 +94,7 @@ if (POLLUTE) {
 
 const out = [];
 
-// ⚠️ ONE SHAPE PER PROCESS is the only honest way to read this group, and item 1558 learned it the
+// ONE SHAPE PER PROCESS is the only honest way to read this group, and item 1558 learned it the
 // hard way: all three arms in one process reported the lifted build making the CLAUSE arm 1.39x
 // SLOWER (1.74 -> 2.42 ms), which is not a cost of lifting at all. It is item 762's redistribution
 // artifact — once the lift routes the inline spelling through the clause's route, the clause arm is

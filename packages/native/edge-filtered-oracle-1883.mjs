@@ -1,7 +1,7 @@
 /**
  * DOES THE FUSED EDGE-PREDICATE WALK ANSWER WHAT THE GENERIC PIPELINE ANSWERS? (item 1883)
  *
- * ⚠️ THE UNIT TEST'S ORACLE IS HAND-COMPUTED AND SMALL; THIS ONE IS THE OTHER ENGINE PATH. The rung
+ * THE UNIT TEST'S ORACLE IS HAND-COMPUTED AND SMALL; THIS ONE IS THE OTHER ENGINE PATH. The rung
  * displaces the generic traverser pipeline, so the only complete statement of its contract is "the
  * same queries, both routes, identical sequences". That cannot be written as a unit test, because
  * both arms are reached by the SAME traversal text — so this is a two-build differential, the
@@ -11,12 +11,12 @@
  *          query below runs the generic pipeline it ran before item 1883.
  *   POST — the shipped build.
  *
- * ⚠️ ORDER IS COMPARED, NOT JUST THE MULTISET. Gremlin stream order is a TinkerPop contract and the
+ * ORDER IS COMPARED, NOT JUST THE MULTISET. Gremlin stream order is a TinkerPop contract and the
  * differential fuzzer compares Gremlin results ORDERED (unlike GQL, where row order is
  * unspecified). A reordering here would be a cross-engine failure, so the comparison is
  * `JSON.stringify` of the sequence.
  *
- * ⚠️ AND IT ASSERTS ITS OWN ARMS. CLAUDE.md: "`cp` with one of the two files never written leaves
+ * AND IT ASSERTS ITS OWN ARMS. CLAUDE.md: "`cp` with one of the two files never written leaves
  * the previous arm in place, and the 'after' reading is then the 'before' code — a null that looks
  * like a result." The kill switch is verified present in the dist before the PRE arm runs and
  * absent before the POST arm, and the PRE arm must report that the rung claimed NOTHING while the
@@ -165,7 +165,7 @@ try {
     throw new Error('the rung call site is not in the dist exactly once — rebuild, then re-run');
   }
 
-  // PRE: the kill switch ALONE. ⚠️ The first cut wrote `${KILLED} ?? ${COUNTER}` so the arm could
+  // PRE: the kill switch ALONE. The first cut wrote `${KILLED} ?? ${COUNTER}` so the arm could
   // also COUNT its (expected zero) claims — and `??` on `void 0` falls straight through, so the
   // "killed" arm called the rung 51 times. The arm assertion caught it, which is the whole reason
   // it is there; the PRE arm's proof is the KILL_1883 marker plus a counter that is never set.
@@ -195,7 +195,7 @@ try {
   }
 } finally {
   copyFileSync(PRISTINE, DIST);
-  // ⚠️ THE GENERATED CHILD IS REMOVED HERE. It has to live in `packages/native` for `@lenke/*` to
+  // THE GENERATED CHILD IS REMOVED HERE. It has to live in `packages/native` for `@lenke/*` to
   // resolve, so it cannot go in the scratchpad — and left behind it is a lint target the gate
   // fails on (which is how this line came to exist).
   rmSync(CHILD, { force: true });
@@ -230,12 +230,10 @@ console.log(
 );
 
 for (const [name, a, b] of bad) {
-  console.log(`\n❌ ${name}\n   generic: ${a}\n   fused:   ${b}`);
+  console.log(`\n${name}\n   generic: ${a}\n   fused:   ${b}`);
 }
 
-console.log(
-  bad.length === 0 ? '\n✅ every pair identical' : `\n⚠️ ${String(bad.length)} DIVERGENCE(S)`,
-);
+console.log(bad.length === 0 ? '\nevery pair identical' : `\n${String(bad.length)} DIVERGENCE(S)`);
 
 if (bad.length > 0) {
   process.exitCode = 1;

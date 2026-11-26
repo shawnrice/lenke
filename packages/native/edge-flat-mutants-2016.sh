@@ -1,10 +1,10 @@
 #!/bin/zsh
 # Item 2016 — mutation round on the flat edge array and the rung's flat arm.
 #
-# ⚠️ ANSWER-EQUIVALENT ROUTE, so the whole gremlin suite passes with every mutant below. The filters
+# ANSWER-EQUIVALENT ROUTE, so the whole gremlin suite passes with every mutant below. The filters
 # are the two files' OWN tests ([[perf-gate-needs-its-own-test]]).
 #
-# ⚠️ TWO SOURCE FILES, so each mutant names which one it edits. `second-ask.ts` is mutated too,
+# TWO SOURCE FILES, so each mutant names which one it edits. `second-ask.ts` is mutated too,
 # because the `kind` namespace is a PERFORMANCE contract — a mutant dropping it changes no answer
 # anywhere, and only `edge-flat.test.ts`'s namespace test can see it.
 #
@@ -34,7 +34,7 @@ run_tests() {
     r=$?
     out="$out$o"
     ran=$((ran + $(print -- "$o" | grep -cE '^ *[0-9]+ (pass|fail)')))
-    # ⚠️ EACH SUITE'S STATUS READ SEPARATELY. Item 2002's harness read `$?` from the last command in
+    # EACH SUITE'S STATUS READ SEPARATELY. Item 2002's harness read `$?` from the last command in
     # a subshell and reported six phantom survivors.
     if [[ "$r" != "0" ]]; then
       rc=$r
@@ -96,7 +96,7 @@ for spec in "${MUTANTS[@]}"; do
   expr=${r2#*@@}
 
   if [[ "$expr" == "SKIP" ]]; then
-    # ⚠️ A MULTI-LINE ANCHOR CANNOT MATCH UNDER `grep -F`, so these are reported rather than run
+    # A MULTI-LINE ANCHOR CANNOT MATCH UNDER `grep -F`, so these are reported rather than run
     # silently. Item 2015's harness refused two of mine for exactly this and that was correct.
     print -- "${(r:32:: :)name} ${(r:31:: :)file} ${(l:7:: :)0}  ---  MULTILINE-ANCHOR (not run)"
     continue

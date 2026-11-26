@@ -4,19 +4,19 @@ import { order, out, toArray, traversal, V, values } from '@lenke/gremlin';
 /**
  * DO TS AND NATIVE AGREE, POSITIONALLY, ON `V().out(T).order().by(k)`? (item 1783)
  *
- * ⚠️ WRITTEN BECAUSE THE GREMLIN FUZZER CANNOT GENERATE THIS SHAPE AT ALL. Every `by()` modulator in
+ * WRITTEN BECAUSE THE GREMLIN FUZZER CANNOT GENERATE THIS SHAPE AT ALL. Every `by()` modulator in
  * `gremlin-fuzz.test.ts` is a COMPARATOR TOKEN — 8 × `.by(desc)` and 3 × `.by(Order.desc)`, and zero
  * with a property key. So `order().by('s')`, the shape item 1783 gave a new route, is outside its
  * corpus, and `bun run fuzz` green says nothing about it. Found by enumerating the generator's
  * `by()` calls rather than by trusting the suite.
  *
- * ⚠️ THIRD BLINDNESS FINDING IN THIS ARC, AND ALL THREE ARE DIFFERENT. Item 1776's unordered page was
+ * THIRD BLINDNESS FINDING IN THIS ARC, AND ALL THREE ARE DIFFERENT. Item 1776's unordered page was
  * ABSENT from the corpus; item 1781's filtered hop projection was PRESENT UNDER A COUNTER THAT NAMED
  * IT (`hopFilter`, which requires `count(*)`); this one's step is generated 59 times but only ever
  * with the wrong modulator kind. The generator's shape space has to be read on the axis the change
  * moves — here the `by()` argument, not the `order()` step.
  *
- * ⚠️ AND THE ORACLE IS POSITIONAL, WHICH IS THE OPPOSITE OF THE GQL ONE. Item 1781's
+ * AND THE ORACLE IS POSITIONAL, WHICH IS THE OPPOSITE OF THE GQL ONE. Item 1781's
  * `far-driven-predicated-parity.ts` compares MULTISETS, because an unordered GQL projection's row
  * order is unspecified. Here order IS the contract: Gremlin stream order is TinkerPop's and the
  * differential fuzzer compares it ordered, which is exactly why the GQL far-driven route is not
@@ -41,7 +41,7 @@ for (let i = 0; i < NODES; i++) {
       id: `v${i}`,
       labels: ['P'],
       properties: {
-        // ⚠️ THE KEY IS DESCENDING IN `i`, AND IT MUST NOT BE DERIVED FROM THE EDGE PERMUTATION.
+        // THE KEY IS DESCENDING IN `i`, AND IT MUST NOT BE DERIVED FROM THE EDGE PERMUTATION.
         // The first version of this probe used `(i * 7 + 3) % NODES` for BOTH the key and the edge
         // target, which made the walk order already equal the sorted order — so sorted and
         // UNSORTED output were byte-identical and every "IDENTICAL" verdict below was vacuous. A
@@ -182,7 +182,7 @@ for (const c of CASES) {
   console.log(
     `${c.name.padEnd(48)} rows ${String(rowCount).padStart(3)}  ${
       same ? 'IDENTICAL' : 'POSITIONAL MISMATCH'
-    }${empty ? '  ⚠️ EMPTY' : ''}${c.admitted ? '  [admitted]' : '  [control]'}`,
+    }${empty ? '  EMPTY' : ''}${c.admitted ? '  [admitted]' : '  [control]'}`,
   );
 
   if (!same) {
@@ -192,7 +192,7 @@ for (const c of CASES) {
 }
 
 /**
- * ⚠️ CAN THIS FIXTURE TELL A SORTED RESULT FROM AN UNSORTED ONE?
+ * CAN THIS FIXTURE TELL A SORTED RESULT FROM AN UNSORTED ONE?
  *
  * If the walk's own order already equals the sorted order, every verdict above holds for a reason
  * that has nothing to do with sorting, and a route that dropped the sort entirely would pass. The

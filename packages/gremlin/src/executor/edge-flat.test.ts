@@ -1,6 +1,6 @@
 // The flat edge array and its cache (item 2016).
 //
-// ⚠️⚠️ **A ROUTE CHOICE, SO ANSWER-EQUIVALENT — every mutant of the cache or the policy survives the
+// **A ROUTE CHOICE, SO ANSWER-EQUIVALENT — every mutant of the cache or the policy survives the
 // behavioural tests** ([[perf-gate-needs-its-own-test]]). So the structure gets its own unit tests:
 // the ORDER it is built in (which is the entire correctness argument for the walk that reads it),
 // the identity of a cached return, the invalidation on a topology write, and the `kind` namespacing
@@ -33,7 +33,7 @@ const build = (): Graph => {
   };
 
   /*
-   * ⚠️ SHAPED SO THE ORDER IS OBSERVABLE: `a` has three E edges added OUT of target order, an `F`
+   * SHAPED SO THE ORDER IS OBSERVABLE: `a` has three E edges added OUT of target order, an `F`
    * edge is interleaved so the build must filter by TYPE rather than by position, `c` is a
    * self-loop, `d` has only an F edge so its E bucket is ABSENT, and `e` has none at all.
    */
@@ -50,7 +50,7 @@ const build = (): Graph => {
 describe('edgeFlatFor: the structure', () => {
   test('is built in `graph.vertices` order, bucket by bucket, filtered by TYPE', () => {
     /*
-     * ⚠️⚠️ **THIS IS THE WHOLE CORRECTNESS ARGUMENT FOR THE FLAT WALK.** Position `i` must be the
+     * **THIS IS THE WHOLE CORRECTNESS ARGUMENT FOR THE FLAT WALK.** Position `i` must be the
      * `i`-th edge the bucket walk would have visited, because Gremlin rows are compared ORDERED
      * against the Rust engine for a single-type step. `a`'s three E edges come first in INSERTION
      * order (e1, e2, e4 — not e1, e2, e3, because e3 is the `F` edge), then `c`'s self-loop.
@@ -63,7 +63,7 @@ describe('edgeFlatFor: the structure', () => {
   });
 
   test('the INWARD array reads `adjTo` and has its own order', () => {
-    // ⚠️ A build that ignored `outward` would return the outward array here, and every other
+    // A build that ignored `outward` would return the outward array here, and every other
     // assertion in this file would still pass. Inbound E edges in vertex order: b<-a(e2),
     // c<-a(e1), c<-c(e5), e<-a(e4).
     const g = build();
@@ -81,7 +81,7 @@ describe('edgeFlatFor: the structure', () => {
 
   test('a topology write INVALIDATES it, and the new array reflects the write', () => {
     /*
-     * ⚠️ KEYED ON `topologyVersion`, NOT MERELY STAMPED WITH IT. A cache that compared nothing — or
+     * KEYED ON `topologyVersion`, NOT MERELY STAMPED WITH IT. A cache that compared nothing — or
      * that kept the stale generation alongside the new one — would return the four-edge array here.
      */
     const g = build();
@@ -117,7 +117,7 @@ describe('edgeFlatFor: the structure', () => {
 describe('seenBefore: the `kind` namespace', () => {
   test('a `kind` record does NOT arm the default namespace, or the reverse', () => {
     /*
-     * ⚠️⚠️ **THIS IS WHY THE PARAMETER EXISTS, AND A MUTANT DROPPING IT IS A PERFORMANCE BUG RATHER
+     * **THIS IS WHY THE PARAMETER EXISTS, AND A MUTANT DROPPING IT IS A PERFORMANCE BUG RATHER
      * THAN A WRONG ANSWER** — which is exactly the kind only a test like this can see. The nine
      * vertex-CSR callers share the default namespace deliberately, because they all build
      * `chainCsrFor` from that key. The edge-flat rung builds a different structure, so if it shared

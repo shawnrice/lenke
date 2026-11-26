@@ -1,7 +1,7 @@
 /**
  * DOES EVERY GREMLIN SHORTCUT STILL BEAT THE PIPELINE IT REPLACES? (item 1871)
  *
- * ⚠️⚠️ THE INSTRUMENT ITEM 1870 PROVED WAS MISSING. `nodeValuesShortcut` was shipped at item 1482
+ * THE INSTRUMENT ITEM 1870 PROVED WAS MISSING. `nodeValuesShortcut` was shipped at item 1482
  * on a measured **2.39x**, the pipeline later learned to seed a leading `hasLabel` from the label
  * index, and the rung silently became **up to 678x SLOWER than the route it displaced**. Nothing
  * caught it for ~390 items: the rung kept returning correct answers, and the whole gremlin suite
@@ -19,12 +19,12 @@
  * order against the SAME fixture, and the ratio is the question: a shape whose pipeline arm is
  * FASTER has a rung that no longer earns its place.
  *
- * ⚠️ IT IS A MUTATION RUN. A pristine copy goes under `target/`, the patched build is ASSERTED
+ * IT IS A MUTATION RUN. A pristine copy goes under `target/`, the patched build is ASSERTED
  * present in the dist before anything is measured (a silently-unpatched arm would report every
  * rung as winning and look like very good news), and the restore is in a `finally` — an interrupted
  * run must not leave a patched engine in the tree.
  *
- * ⚠️⚠️ **THIS IS A SCREEN, NOT A MEASUREMENT, AND THE HEADER USED TO CLAIM OTHERWISE.** It said
+ * **THIS IS A SCREEN, NOT A MEASUREMENT, AND THE HEADER USED TO CLAIM OTHERWISE.** It said
  * sharing one process was sound because the cross-row inline-cache pollution is "SYMMETRIC: every
  * shape occupies the same position in both arms". **That is wrong, and the instrument's own first
  * run disproved it.** The arms differ by more than the build: in arm A the rows before a given
@@ -69,7 +69,7 @@ const MARKER = 'LENKE_NO_SHORTCUTS_1871';
  */
 const SHAPES = {
   'scan: values': "traversal(V(), values('k'))",
-  // ⚠️ THE ITEM 1870 CLASS, kept as this census's own TEETH CHECK. The rung refuses a label now, so
+  // THE ITEM 1870 CLASS, kept as this census's own TEETH CHECK. The rung refuses a label now, so
   // both arms run the pipeline and it reads ~1.0x; re-admit the label and the census must flag it.
   // Verified by doing exactly that — see item 1871.
   'scan: hasLabel values': "traversal(V(), hasLabel('S'), values('k'))",
@@ -223,7 +223,7 @@ try {
     console.log(
       `${name.padEnd(26)} ${a.toFixed(3).padStart(8)} ${b.toFixed(3).padStart(13)} ${ratio
         .toFixed(2)
-        .padStart(11)}x  ${bad ? '⚠️ PIPELINE WINS' : ''}`,
+        .padStart(11)}x  ${bad ? 'PIPELINE WINS' : ''}`,
     );
   }
 
@@ -232,7 +232,7 @@ try {
   if (flagged.length === 0) {
     console.log('# every rung still beats its pipeline (within the 1.25x flag threshold).');
   } else {
-    console.log('# ⚠️ RUNGS WHOSE VERDICT MAY HAVE DECAYED — each needs its own isolated A/B:');
+    console.log('# RUNGS WHOSE VERDICT MAY HAVE DECAYED — each needs its own isolated A/B:');
 
     for (const [name, ratio] of flagged) {
       console.log(`#   ${name}  ${ratio.toFixed(2)}x slower than the pipeline`);

@@ -1,7 +1,7 @@
 /*
  * Item 2163 — `MATCH (a[:L]) WHERE [NOT] EXISTS { (a)-[:T]->() } RETURN count(*)` from the edge index.
  *
- * 🔑 `count(*)` over that shape is `|{vertices with ≥1 such edge}|`, and `edgesFromByLabel` is an index of
+ * `count(*)` over that shape is `|{vertices with ≥1 such edge}|`, and `edgesFromByLabel` is an index of
  * exactly that. `NOT EXISTS` is `vertexCount` minus it. Measured over 200,000 vertices:
  *
  * ```text
@@ -10,12 +10,12 @@
  *     EXISTS incoming      33    -> 2.22
  * ```
  *
- * ⚠️⚠️ **THE ORACLE HERE IS MUTATION-VERSUS-FRESH-LOAD, NOT AN APPENDED `ORDER BY`.** Item 2162 found a
+ * **THE ORACLE HERE IS MUTATION-VERSUS-FRESH-LOAD, NOT AN APPENDED `ORDER BY`.** Item 2162 found a
  * shipped WRONG ANSWER that sixteen tests missed because their `ORDER BY` oracle took the SAME rung, so
  * they compared a closed form against itself. `deserialize` and the mutating API reach the same graph
  * through different code, so a disagreement between them is a real bug.
  *
- * ⚠️ And the bug 2162 fixed is the reason this file checks `has(type)` rather than `index.size`: that
+ * And the bug 2162 fixed is the reason this file checks `has(type)` rather than `index.size`: that
  * index keeps a vertex's OUTER entry after its last edge is removed.
  */
 import { describe, expect, test } from 'bun:test';
@@ -54,7 +54,7 @@ const graphOf = (
 };
 
 describe('the EXISTS hop count (item 2163)', () => {
-  describe('🔑 the arithmetic', () => {
+  describe('the arithmetic', () => {
     test('counts the vertices HAVING an out-edge, not the edges', () => {
       // v0 has two out-edges and v1 has one, so three edges over TWO source vertices.
       const g = graphOf(4, [
@@ -65,13 +65,13 @@ describe('the EXISTS hop count (item 2163)', () => {
 
       expect(query(g, EXISTS)[0].c).toBe(2);
       expect(query(g, NOT_EXISTS)[0].c).toBe(2);
-      // ⚠️ And the two must sum to the vertex count, or one of them is wrong.
+      // And the two must sum to the vertex count, or one of them is wrong.
       expect(Number(query(g, EXISTS)[0].c) + Number(query(g, NOT_EXISTS)[0].c)).toBe(4);
     });
 
-    test('⚠️⚠️ the INCOMING direction counts TARGETS, on a fixture that can TELL', () => {
+    test('the INCOMING direction counts TARGETS, on a fixture that can TELL', () => {
       /*
-       * 🔑 SOURCES AND TARGETS MUST DIFFER IN COUNT, or the test cannot see the direction. ⚠️ My first
+       * SOURCES AND TARGETS MUST DIFFER IN COUNT, or the test cannot see the direction. My first
        * fixture had two of each (sources {v0,v1}, targets {v1,v2}) and a mutant hard-coding the OUT index
        * survived it — the same coincidence that broke item 2152's `$param` test.
        *
@@ -85,7 +85,7 @@ describe('the EXISTS hop count (item 2163)', () => {
 
       expect(query(g, EXISTS)[0].c).toBe(3);
       expect(query(g, INCOMING)[0].c).toBe(2);
-      // ⚠️ Disjoint, so neither index can stand in for the other.
+      // Disjoint, so neither index can stand in for the other.
       expect(query(g, EXISTS)[0].c).not.toBe(query(g, INCOMING)[0].c);
     });
 
@@ -97,7 +97,7 @@ describe('the EXISTS hop count (item 2163)', () => {
       expect(query(g, NOT_EXISTS)[0].c).toBe(2);
     });
 
-    test('⚠️ PARALLEL edges count their source ONCE', () => {
+    test('PARALLEL edges count their source ONCE', () => {
       const g = new Graph();
 
       g.addVertex({ id: 'a', labels: ['P'], properties: {} });
@@ -122,7 +122,7 @@ describe('the EXISTS hop count (item 2163)', () => {
       expect(query(graphOf(3, []), NOT_EXISTS)[0].c).toBe(3);
     });
 
-    test('⚠️ a DIFFERENT edge type is not counted', () => {
+    test('a DIFFERENT edge type is not counted', () => {
       const g = graphOf(3, [[0, 1]], 'OTHER');
 
       expect(query(g, EXISTS)[0].c).toBe(0);
@@ -130,12 +130,12 @@ describe('the EXISTS hop count (item 2163)', () => {
     });
   });
 
-  describe('⚠️⚠️ the independent oracle: MUTATION against a FRESH LOAD', () => {
+  describe('the independent oracle: MUTATION against a FRESH LOAD', () => {
     /**
      * The same final state two ways: built DIRECTLY, and reached BY A REMOVAL.
      *
-     * 🔑 THE ORACLE ITEM 2162 VALIDATED. An appended `ORDER BY` takes the same rung, so it proves only
-     * self-consistency; two different routes to one graph do not. ⚠️ A disagreement here is a real bug —
+     * THE ORACLE ITEM 2162 VALIDATED. An appended `ORDER BY` takes the same rung, so it proves only
+     * self-consistency; two different routes to one graph do not. A disagreement here is a real bug —
      * it is exactly how 2162's wrong answer surfaced.
      */
     const bothRoutes = (q: string): { byRemoval: unknown; direct: unknown } => {
@@ -146,9 +146,9 @@ describe('the EXISTS hop count (item 2163)', () => {
       return { byRemoval: query(removed, q)[0]?.c, direct: query(graphOf(3, []), q)[0]?.c };
     };
 
-    test("⚠️⚠️ removing a vertex's LAST edge makes it NOT-EXISTS again", () => {
+    test("removing a vertex's LAST edge makes it NOT-EXISTS again", () => {
       /*
-       * 🔑 THE ITEM 2162 CASE, which is why this form walks `has(type)` instead of reading `index.size`:
+       * THE ITEM 2162 CASE, which is why this form walks `has(type)` instead of reading `index.size`:
        * that index keeps the vertex's OUTER entry after its last edge goes, so `.size` would still count
        * it as having one.
        */
@@ -160,7 +160,7 @@ describe('the EXISTS hop count (item 2163)', () => {
       expect(query(g, EXISTS)[0].c).toBe(0);
       expect(query(g, NOT_EXISTS)[0].c).toBe(3);
 
-      // 🔑 And the two ROUTES to that state agree, which is the oracle rather than the literal.
+      // And the two ROUTES to that state agree, which is the oracle rather than the literal.
       const e = bothRoutes(EXISTS);
       const ne = bothRoutes(NOT_EXISTS);
 
@@ -168,7 +168,7 @@ describe('the EXISTS hop count (item 2163)', () => {
       expect(ne.byRemoval).toBe(ne.direct);
     });
 
-    test('⚠️ removing ONE of two edges leaves the vertex EXISTS', () => {
+    test('removing ONE of two edges leaves the vertex EXISTS', () => {
       const g = graphOf(3, [
         [0, 1],
         [0, 2],
@@ -204,11 +204,11 @@ describe('the EXISTS hop count (item 2163)', () => {
     });
   });
 
-  describe('⚠️ the declines, each of which must still ANSWER', () => {
+  describe('the declines, each of which must still ANSWER', () => {
     /**
-     * ⚠️⚠️ **A FIXTURE WHOSE DECLINE ANSWERS DIFFER FROM 2, WHICH IS WHAT THE CLOSED FORM WOULD SAY.**
+     * **A FIXTURE WHOSE DECLINE ANSWERS DIFFER FROM 2, WHICH IS WHAT THE CLOSED FORM WOULD SAY.**
      * My first fixture gave every decline the answer 2 — the same number the form produces by ignoring
-     * the condition — so four mutants that wrongly ADMITTED a shape survived. 🔑 A decline test only has
+     * the condition — so four mutants that wrongly ADMITTED a shape survived. A decline test only has
      * teeth when the correct answer and the form's answer DISAGREE.
      *
      * 5 vertices, `k = 0..4`, `v2` additionally labelled `Q`. Edges: v0→v1, v1→v2, v3→v4.
@@ -242,14 +242,14 @@ describe('the EXISTS hop count (item 2163)', () => {
       return h;
     };
 
-    test('🔑 the form itself answers 3 on this fixture, so every decline below must differ', () => {
+    test('the form itself answers 3 on this fixture, so every decline below must differ', () => {
       expect(query(g(), EXISTS)[0].c).toBe(3);
     });
 
-    test('⚠️⚠️ a SELECTIVE anchor label falls back and stays correct', () => {
+    test('a SELECTIVE anchor label falls back and stays correct', () => {
       /*
-       * 🔑 THE SHARPEST DECLINE. The index is keyed by vertex id with NO label information, so a
-       * selective label would count non-anchors. ⚠️ Here only v0 and v1 are `Q`, and v1 is the only `Q`
+       * THE SHARPEST DECLINE. The index is keyed by vertex id with NO label information, so a
+       * selective label would count non-anchors. Here only v0 and v1 are `Q`, and v1 is the only `Q`
        * with an out-edge — a form that ignored the label would answer 2.
        */
       const h = new Graph();
@@ -275,7 +275,7 @@ describe('the EXISTS hop count (item 2163)', () => {
       expect(
         query(h, 'MATCH (a:Q) WHERE EXISTS { MATCH (a)-[:T]->(b) } RETURN count(*) AS c')[0].c,
       ).toBe(1);
-      // ⚠️ And the vacuous label over the same graph answers 2, so the label really is doing work.
+      // And the vacuous label over the same graph answers 2, so the label really is doing work.
       expect(query(h, EXISTS)[0].c).toBe(2);
     });
 
@@ -313,8 +313,8 @@ describe('the EXISTS hop count (item 2163)', () => {
         2,
       ],
       /*
-       * ⚠️ AN UNCORRELATED subquery is a CONSTANT: `(x)-[:T]->(y)` does not mention the candidate, so it
-       * is true for every one of the five. 🔑 A form that skipped its `start.variable === startVar` check
+       * AN UNCORRELATED subquery is a CONSTANT: `(x)-[:T]->(y)` does not mention the candidate, so it
+       * is true for every one of the five. A form that skipped its `start.variable === startVar` check
        * would answer 3 instead.
        */
       [
@@ -334,9 +334,9 @@ describe('the EXISTS hop count (item 2163)', () => {
       expect(query(g(), q)[0].c).toBe(want);
     });
 
-    test('⚠️ a QUANTIFIER reaches further than one hop, so its answer differs', () => {
+    test('a QUANTIFIER reaches further than one hop, so its answer differs', () => {
       /*
-       * 🔑 1-2 hops from v0 reaches v1 and v2; from v1 reaches v2; from v3 reaches v4. Sources are still
+       * 1-2 hops from v0 reaches v1 and v2; from v1 reaches v2; from v3 reaches v4. Sources are still
        * {v0, v1, v3} = 3 here, so the quantifier needs a fixture where TWO hops add a source — a chain
        * where the second hop is the only one of its type.
        */
@@ -371,13 +371,13 @@ describe('the EXISTS hop count (item 2163)', () => {
   /*
    * Item 2392 — the EMPTY inline map `{}`, which constrains nothing and so IS the bare spelling.
    *
-   * ⚠️⚠️ **THE ANSWER CANNOT SEE THIS CHANGE, WHICH IS WHY THE NON-EMPTY MAP IS HERE TOO.** All
+   * **THE ANSWER CANNOT SEE THIS CHANGE, WHICH IS WHY THE NON-EMPTY MAP IS HERE TOO.** All
    * three braced spellings already answered correctly before item 2392 — by the general path, 3.82x
    * slower (the spelling probe's `EMPTY inline map` group holds that measurement). So the equality
    * tests below pin the admission, and `{k: 2}` is what gives the group TEETH: a gate that widened
    * too far would ignore a REAL constraint and answer 3 where the correct answer is 1.
    */
-  describe('⚠️ an EMPTY inline map is a spelling of the bare element (item 2392)', () => {
+  describe('an EMPTY inline map is a spelling of the bare element (item 2392)', () => {
     /** v0->v1, v1->v2, v3->v4 over `k = 0..4`: sources {v0, v1, v3} = 3. */
     const g = (): Graph =>
       graphOf(5, [
@@ -386,7 +386,7 @@ describe('the EXISTS hop count (item 2163)', () => {
         [3, 4],
       ]);
 
-    test('🔑 the bare spelling answers 3, which every empty-map spelling must match', () => {
+    test('the bare spelling answers 3, which every empty-map spelling must match', () => {
       expect(query(g(), EXISTS)[0].c).toBe(3);
     });
 
@@ -409,7 +409,7 @@ describe('the EXISTS hop count (item 2163)', () => {
       ).toBe(3);
     });
 
-    test('⚠️⚠️ a NON-EMPTY map still constrains: 1, not the 3 an over-wide gate would answer', () => {
+    test('a NON-EMPTY map still constrains: 1, not the 3 an over-wide gate would answer', () => {
       // Only v1 -> v2 has a far endpoint with k = 2.
       expect(
         query(
@@ -419,7 +419,7 @@ describe('the EXISTS hop count (item 2163)', () => {
       ).toBe(1);
     });
 
-    test('⚠️ and on the NEAR side: k = 1 selects v1 alone, which does have an out-edge', () => {
+    test('and on the NEAR side: k = 1 selects v1 alone, which does have an out-edge', () => {
       expect(
         query(
           g(),
@@ -428,7 +428,7 @@ describe('the EXISTS hop count (item 2163)', () => {
       ).toBe(1);
     });
 
-    test('⚠️ a NOT over the braced spelling: 5 - 3 = 2', () => {
+    test('a NOT over the braced spelling: 5 - 3 = 2', () => {
       expect(
         query(
           g(),

@@ -1,17 +1,17 @@
 #!/bin/zsh
 # Item 1983 — mutation round on the two-hop dense route and its gate.
 #
-# ⚠️ RUN FROM THE REPO ROOT: `zsh packages/native/twohop-dense-mutants-1983.sh`.
+# RUN FROM THE REPO ROOT: `zsh packages/native/twohop-dense-mutants-1983.sh`.
 #
 # The route is ANSWER-EQUIVALENT, so the 2,419-test Gremlin suite and all seven byte-identity
 # fuzzers are blind to a gate mutant — both arms count the same walks. The gate test is what must
 # catch those; the route's own arithmetic is what the answer tests must catch. This runs each mutant
 # under both and reports which one caught it.
 #
-# ⚠️ EVERY MUTANT UNDER A TIMEOUT AND A MEMORY CAP. A mutant here can make a frontier loop
+# EVERY MUTANT UNDER A TIMEOUT AND A MEMORY CAP. A mutant here can make a frontier loop
 # non-terminating or allocate a Float64Array per pass without bound; 124 or 137 IS the catch.
 #
-# ⚠️ VERDICT READS STDOUT+STDERR, NOT THE EXIT CODE ALONE — `bun test` reports to STDERR.
+# VERDICT READS STDOUT+STDERR, NOT THE EXIT CODE ALONE — `bun test` reports to STDERR.
 set -u
 
 SRC=packages/gremlin/src/executor/count-shortcut.ts

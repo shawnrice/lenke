@@ -197,7 +197,7 @@ pub(super) fn reverse_seed_decide(
     // identical either way — this only picks the cheaper equivalent plan.
     if !loose {
         if let Some(ep) = hops.last() {
-            // ⚠️ `fwd` SILENTLY BECOMES 0 AFTER ANY ADJACENCY WRITE, and item 1119 deliberately
+            // `fwd` SILENTLY BECOMES 0 AFTER ANY ADJACENCY WRITE, and item 1119 deliberately
             // left it that way. `out_typed_flat` returns `None` once the CSR overlay is stale, so
             // `filter_map` drops every type, the sum is 0, and `fwd > 0` below skips the whole
             // decline — a route choice that stops working for the rest of the session.

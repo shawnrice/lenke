@@ -10,7 +10,7 @@
  *   - how often is a label WRITE on the hot path at all, and what does it cost now;
  *   - what does the elision buy on the two read sites.
  *
- * ⚠️ THE ARMS HERE ARE WRITE SHAPES ONLY. The read side is `two-conjunct-seek-probe.mjs` with
+ * THE ARMS HERE ARE WRITE SHAPES ONLY. The read side is `two-conjunct-seek-probe.mjs` with
  * `MULTI=1` as its control; this probe exists so the two halves of the trade are measured with the
  * same discipline rather than one measured and one assumed.
  *

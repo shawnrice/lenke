@@ -22,17 +22,17 @@ import {
  * (item 1629) — **1.26x** on `V().coalesce(out(T), identity()).values(k)`, the half item 1628 left
  * open because `coalesce` had no fused detector where `optional` did.
  *
- * ⚠️ ONLY THE FIRST ARM, and the reason is the semantics: `coalesce` emits the output of the first
+ * ONLY THE FIRST ARM, and the reason is the semantics: `coalesce` emits the output of the first
  * arm that produces anything, so arm 0 runs for EVERY incoming traverser and the rest run only for
  * the rows arm 0 missed. Fusing arm 0 reaches almost every row; fusing the others would reach almost
  * none.
  *
- * ⚠️ AND `from = 1` IS THE WHOLE CORRECTNESS QUESTION. When the fast arm's bucket is EMPTY the
+ * AND `from = 1` IS THE WHOLE CORRECTNESS QUESTION. When the fast arm's bucket is EMPTY the
  * remaining arms must run — and must start at arm 1, because the general loop would have moved past
  * arm 0 after it produced nothing. Re-running arm 0 would be answer-equivalent and wasteful;
  * SKIPPING arm 1 would drop rows. Every test below includes a vertex arm 0 misses.
  *
- * ⚠️ THE ORACLE IS A TWO-STEP FIRST ARM. `optionalSingleHop` admits exactly one step, so appending
+ * THE ORACLE IS A TWO-STEP FIRST ARM. `optionalSingleHop` admits exactly one step, so appending
  * `identity()` INSIDE arm 0 sends the identical question to the general loop. Gremlin stream order is
  * a TinkerPop contract compared ORDERED by the differential fuzzer, so the comparisons are element
  * for element.
@@ -113,7 +113,7 @@ describe('the fast first arm agrees with the general loop, ORDERED', () => {
     bothWays(out('E'), [pipe(identity())]);
   });
 
-  test('⚠️ arm 0 empty for FOUR of five rows, so arm 1 carries them', () => {
+  test('arm 0 empty for FOUR of five rows, so arm 1 carries them', () => {
     // Only `a` has an `F` edge (to d, k=4); the rest fall through to `identity()`.
     expect(
       toArray(traversal(V(), coalesce(pipe(out('F')), pipe(identity())), values('k')), g),
@@ -121,7 +121,7 @@ describe('the fast first arm agrees with the general loop, ORDERED', () => {
     bothWays(out('F'), [pipe(identity())]);
   });
 
-  test('⚠️ arm 0 empty for EVERY row — arm 1 must still run', () => {
+  test('arm 0 empty for EVERY row — arm 1 must still run', () => {
     // No `G` edge exists, so this is `identity()` for the whole stream.
     expect(
       toArray(traversal(V(), coalesce(pipe(out('G')), pipe(identity())), values('k')), g),
@@ -129,12 +129,12 @@ describe('the fast first arm agrees with the general loop, ORDERED', () => {
     bothWays(out('G'), [pipe(identity())]);
   });
 
-  test('⚠️ THREE arms — the fall-through must reach arm 1, not arm 2', () => {
+  test('THREE arms — the fall-through must reach arm 1, not arm 2', () => {
     /**
      * This is what a wrong `from` index looks like: with `from = 2` the `in(E)` arm is skipped and
      * `identity()` answers instead, so `d` and `e` would be the only rows.
      *
-     * ⚠️ DERIVED FROM THE TABLE, after I got it wrong by deriving from MEMORY of the table and
+     * DERIVED FROM THE TABLE, after I got it wrong by deriving from MEMORY of the table and
      * dropped `a`'s second `E` edge — the twenty-second eyeballed literal this session. The `E` edges
      * are a>b, a>c, b>c, c>c and d>a, so by in-neighbour:
      *
@@ -201,9 +201,9 @@ describe('the fast arm declines what it must', () => {
     ).toEqual(fast);
   });
 
-  test('⚠️ a single hop in a LATER arm must not be mistaken for arm 0', () => {
+  test('a single hop in a LATER arm must not be mistaken for arm 0', () => {
     /**
-     * ⚠️ THE MUTANT THAT FOUND THIS SURVIVED THE REST OF THE FILE. Reading
+     * THE MUTANT THAT FOUND THIS SURVIVED THE REST OF THE FILE. Reading
      * `optionalSingleHop(plans[plans.length - 1])` instead of `plans[0]` is answer-equivalent for
      * every shape above, because in all of them the LAST arm is `identity()` — which
      * `optionalSingleHop` refuses — so the fast arm simply never engaged.

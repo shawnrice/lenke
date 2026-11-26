@@ -1,4 +1,4 @@
-//! ⚠️ Did item 1190 divert the LABELLED-but-unfiltered hop extremum off the cheap frontier
+//! Did item 1190 divert the LABELLED-but-unfiltered hop extremum off the cheap frontier
 //! collapse and onto the expensive fused mask? Neither existing probe covers this shape.
 #[path = "support/harness.rs"]
 #[allow(dead_code)]

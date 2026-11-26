@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2018 — a REDUCED control sweep for the sorted fast path.
 #
-# ⚠️⚠️ **THIS IS NARROWER THAN ITEM 2017'S AND SAYS SO.** The full four-round whole-screen A/B
+# **THIS IS NARROWER THAN ITEM 2017'S AND SAYS SO.** The full four-round whole-screen A/B
 # (`sorted-direct-ab-2018.sh`) was KILLED mid-round by the system's low-memory reaper, which also
 # left the PRE arm in the tree — the reason every A/B script here now carries a `trap`. Rather than
 # re-run the thing that was killed, this runs the families that (a) contain `ORDER BY` shapes the
@@ -11,7 +11,7 @@
 # So: a regression check over five families and two rounds, not sixteen families over four. Read it
 # as "nothing nearby moved against the change", not as item 2017's sweep.
 #
-# ⚠️ ONE CHILD PER FAMILY is the screen's own design (a family that OOMs or hangs must not take the
+# ONE CHILD PER FAMILY is the screen's own design (a family that OOMs or hangs must not take the
 # run), and `FAMILY=` selects one.
 set -u
 
@@ -33,7 +33,7 @@ io.open(p, 'w', encoding='utf-8').write(s.replace(old, new))
 PY
 }
 
-# ⚠️ RESTORE ON ANY EXIT — see the note in `sorted-direct-ab-2018.sh`. A kill between the swap and
+# RESTORE ON ANY EXIT — see the note in `sorted-direct-ab-2018.sh`. A kill between the swap and
 # the swap back leaves the tree silently on the wrong arm.
 restore_live() {
   if ! grep -F -q -- "$LIVE" "$SRC"; then

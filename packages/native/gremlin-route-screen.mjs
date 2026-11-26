@@ -1,29 +1,29 @@
 /**
  * WHICH GREMLIN SHAPES FALL THROUGH EVERY SHORTCUT? (item 1855)
  *
- * ⚠️ THE GQL TWIN FOUND A 27.7x GAP AND THIS SURFACE HAS NO EQUIVALENT SCREEN. Item 1854 could ask
+ * THE GQL TWIN FOUND A 27.7x GAP AND THIS SURFACE HAS NO EQUIVALENT SCREEN. Item 1854 could ask
  * `compileLinear` directly which detectors claim a shape, because the GQL planner hands back a
  * `CLinear` whose fields ARE the routes. Gremlin has no such object: `run` is a ladder of
  * shortcuts, each returning early, and a plan that matches none of them simply falls through to
  * the generic traverser pipeline. So "which rung claimed this?" cannot be read off a value.
  *
- * ⚠️ SO THE SIGNAL IS `applyStep`, THE GENERIC PIPELINE'S SINGLE ENTRY. Every step the generic
+ * SO THE SIGNAL IS `applyStep`, THE GENERIC PIPELINE'S SINGLE ENTRY. Every step the generic
  * path executes goes through it; a whole-plan shortcut returns before the loop is reached. Patching
  * that ONE function to count its calls therefore separates "a shortcut answered this" from "the
  * traverser pipeline ran", which is exactly the route question — and it reports the STEP KINDS it
  * saw, so a plan that is partly fused reads differently from one that is wholly generic.
  *
- * ⚠️ IT IS A MUTATION RUN, so it keeps a pristine copy under `target/` and restores in a `finally`
+ * IT IS A MUTATION RUN, so it keeps a pristine copy under `target/` and restores in a `finally`
  * — an interrupted run must not leave an instrumented engine in the tree. The instrumented build is
  * asserted present before any shape is measured, because a silently-unpatched build would report
  * every shape as "shortcut" and look like very good news.
  *
- * ⚠️ AND A GENERIC ROUTE IS NOT AUTOMATICALLY A DEFECT. Most Gremlin steps have no shortcut and
+ * AND A GENERIC ROUTE IS NOT AUTOMATICALLY A DEFECT. Most Gremlin steps have no shortcut and
  * never will; the pipeline IS the implementation. What this screen is for is the shape whose
  * NEIGHBOUR is fused while it is not — `out().values()` fused but `out().out().values()` not, say.
  * So the output groups by base and marks the shapes whose siblings differ.
  *
- * ⚠️⚠️ **THE SCAN FAMILY'S DISAGREEMENTS ARE MOSTLY ALREADY ANSWERED — read this before pricing
+ * **THE SCAN FAMILY'S DISAGREEMENTS ARE MOSTLY ALREADY ANSWERED — read this before pricing
  * one again (item 1868).** At `hop1:` nearly everything is fused, so the depth-0 `scan:` rows look
  * like a cliff and the screen flags six of them. Five are settled:
  *
@@ -42,14 +42,14 @@
  * ~~The one still open is `scan: dedupe values`, priced at item 1868: **11.96 ms** producing 997
  * rows from 200,000 values, against the fused floor's 5.81 ms for emitting all 200,000. A fused
  * walk accumulating into a `Set` emits 200x fewer rows, so ~2.4x looks available.~~
- * ✅ **TAKEN AT ITEM 1869 — 2.20x, and this screen's own output has reported it `fused` ever since.
- * Struck at item 1970.** ⚠️ It was closed by the item IMMEDIATELY after the one that priced it,
+ * **TAKEN AT ITEM 1869 — 2.20x, and this screen's own output has reported it `fused` ever since.
+ * Struck at item 1970.** It was closed by the item IMMEDIATELY after the one that priced it,
  * which is CLAUDE.md's measured pattern (22 of 40 stale lines in one sweep were closed by the very
  * next item) — and a header that says "read this before pricing one again" pointing at a closed
  * target is the exact cost that rule exists to prevent. **So: all six `scan:` disagreements are now
  * settled, and none of them is open.**
  *
- * ⚠️ AND THE PARAMETER-AXIS GAP ITEM 1867 FIXED ON THE GQL SIDE HAS NO TWIN HERE. A Gremlin
+ * AND THE PARAMETER-AXIS GAP ITEM 1867 FIXED ON THE GQL SIDE HAS NO TWIN HERE. A Gremlin
  * traversal is an OBJECT with literal numbers — there is no `Params` type anywhere in
  * `packages/gremlin/src` — so "a literal page routes and a parameterized one does not" cannot
  * arise on this surface. Checked rather than assumed.
@@ -79,7 +79,7 @@ const SHAPES = {
   'scan: fold': "traversal(V(), values('k'), fold())",
   'scan: id': 'traversal(V(), id())',
   /*
-   * ⚠️ THE COMBINATIONS ITEMS 2021 AND 2025 CREATED. Each of those widened the scan-values gate from
+   * THE COMBINATIONS ITEMS 2021 AND 2025 CREATED. Each of those widened the scan-values gate from
    * one side — 2021 for a TRAILING residual, 2025 for a LEADING existence filter — so the rows that
    * matter now are the ones that need BOTH, which neither rung admits on its own. Added as a census
    * rather than assumed: the screen's job is to say which route answers a shape.
@@ -98,7 +98,7 @@ const SHAPES = {
   'hop1: order values': "traversal(V(), out('E'), values('k'), order())",
   'hop1: limit values': "traversal(V(), out('E'), values('k'), limit(10))",
   'hop1: min': "traversal(V(), out('E'), values('k'), min())",
-  // ⚠️ THE STRING-KEY TWIN (item 1919). `values('s').min()` measures 199.92 ms against the numeric
+  // THE STRING-KEY TWIN (item 1919). `values('s').min()` measures 199.92 ms against the numeric
   // twin's 78.50 and against its OWN floor (`values('s')`) at 76.74 — and the string comparison is
   // only ~11 ms of that, measured. A route difference is the remaining candidate, so the screen
   // needs the row.
@@ -131,7 +131,7 @@ const SHAPES = {
   'edge: E count': 'traversal(E(), count())',
   'edge: E values': "traversal(E(), values('w'))",
   'edge: outE count': "traversal(V(), outE('E'), count())",
-  // ⚠️ THE EDGE-PROPERTY FILTER FAMILY, added at item 1882 because the screen had no row for it and
+  // THE EDGE-PROPERTY FILTER FAMILY, added at item 1882 because the screen had no row for it and
   // item 1881 consequently nominated one of these shapes as "already fused" when it is not. An edge
   // predicate between a hop's two halves (`outE(L).has(w, …).inV()`) is an entirely ordinary
   // traversal and the single biggest absolute on the Gremlin workload screen.
@@ -143,19 +143,19 @@ const SHAPES = {
   'edgef: inE has outV values': "traversal(V(), inE('E'), has('w', gt(3)), outV(), values('k'))",
   'edgef: bothE has otherV count': "traversal(V(), bothE('E'), has('w', gt(3)), otherV(), count())",
   'edgef: outE inV values': "traversal(V(), outE('E'), inV(), values('k'))",
-  // ⚠️ THE LIST-SHAPED AND SIDE-EFFECT FAMILY, added at item 1909. Item 1898 added
+  // THE LIST-SHAPED AND SIDE-EFFECT FAMILY, added at item 1909. Item 1898 added
   // `aggregate`+`cap` to the WORKLOAD screen and it came out the largest shape that is NOT
   // path-gated (123 ms for ONE row of 800,000 elements) — but nothing asked which ROUTE it takes,
   // and the isolated split says the side effect is only 1.09x `fold`: the cost is collecting
   // 800,000 elements into one list, where the same hop with NO projection is 4.48 ms.
-  // ⚠️ `scan: fold` above is FLAT (item 1585, `values(k).fold()`); these fold ELEMENTS after a HOP,
+  // `scan: fold` above is FLAT (item 1585, `values(k).fold()`); these fold ELEMENTS after a HOP,
   // which is a different shape and was never screened.
   'list: hop fold': "traversal(V(), out('E'), fold())",
   'list: hop values fold': "traversal(V(), out('E'), values('k'), fold())",
   'list: hop aggregate cap': "traversal(V(), out('E'), aggregate('x'), cap('x'))",
   'list: hop store cap': "traversal(V(), out('E'), store('x'), cap('x'))",
   /*
-   * ⚠️ ADDED AT ITEM 2068 BECAUSE `aggregateStep` WAS NEVER ENTERED. `rung-coverage-2046.mjs` reports
+   * ADDED AT ITEM 2068 BECAUSE `aggregateStep` WAS NEVER ENTERED. `rung-coverage-2046.mjs` reports
    * 36 of 40 rungs reached; of the four misses, three are graph-algorithm steps with their own bench,
    * and this one is a TRAVERSAL step. The `+ cap` rows above do not reach it: item 1911's fused
    * residual claims that whole shape, so the generic step is dead in the census. These rows drop the
@@ -165,7 +165,7 @@ const SHAPES = {
   'list: hop store values': "traversal(V(), out('E'), store('x'), values('k'))",
   'list: scan aggregate values': "traversal(V(), aggregate('x'), values('k'))",
   /*
-   * ⚠️⚠️ ITEM 2080: TWELVE READ-STEP FAMILIES THE CENSUS HAD NEVER COVERED. Enumerating the AST's 103
+   * ITEM 2080: TWELVE READ-STEP FAMILIES THE CENSUS HAD NEVER COVERED. Enumerating the AST's 103
    * step kinds against this table found 65 with no row — most of them write steps, algorithm steps
    * with their own bench, or lambda forms that are user functions rather than engine routes. These
    * are the READ-PATH ones a real query reaches for, and the census's job is to say which route
@@ -185,10 +185,10 @@ const SHAPES = {
   'misc: simplePath': "traversal(V(), out('E'), simplePath(), values('k'))",
   'list: hop count': "traversal(V(), out('E'), count())",
 
-  // ⚠️ THE DEDUPED-VALUES FAMILY, added at item 1899, and the rows exist because that item's bug was
+  // THE DEDUPED-VALUES FAMILY, added at item 1899, and the rows exist because that item's bug was
   // INVISIBLE to a screen keyed on answers: `byKey` tested `typeof by === 'string'` where the AST
   // holds `{kind: 'key'}`, so the `by` spelling silently kept the generic pipeline at 4.4x the fused
-  // one while every test passed. ⚠️ BOTH SPELLINGS GET A ROW — they are one question and must route
+  // one while every test passed. BOTH SPELLINGS GET A ROW — they are one question and must route
   // alike — and the near misses are here beside them: a differing `by` key, a labelled dedupe and a
   // multi-key projection are each a DIFFERENT question and must stay generic.
   'ded: values then dedupe': "traversal(V(), out('E'), values('k'), dedupe())",
@@ -199,7 +199,7 @@ const SHAPES = {
   'ded: labelled dedupe': "traversal(V(), out('E'), dedupe('x'), values('k'))",
   'ded: multi key values': "traversal(V(), out('E'), values('k', 'w'), dedupe())",
 
-  // ⚠️ THE OPTIONAL FAMILY, added at item 1884 — the screen had no `optional` row either, and the
+  // THE OPTIONAL FAMILY, added at item 1884 — the screen had no `optional` row either, and the
   // left-join idiom was the workload screen's largest shape once item 1883 landed. `optional-hop.ts`
   // fuses the STEP (items 1480/1483/1628); these rows ask whether the PLAN is fused.
   'opt: optional values': "traversal(V(), optional(traversal(out('E'))), values('k'))",
@@ -208,7 +208,7 @@ const SHAPES = {
   'opt: optional count': "traversal(V(), optional(traversal(out('E'))), count())",
   'opt: optional two hops': "traversal(V(), optional(traversal(out('E'), out('E'))), values('k'))",
   /*
-   * ⚠️⚠️ **THE RECONVERGING FAMILIES HAD NO CENSUS ROWS AT ALL** until item 2028, despite gaining
+   * **THE RECONVERGING FAMILIES HAD NO CENSUS ROWS AT ALL** until item 2028, despite gaining
    * rungs at items 1998 (`coalesce`), 1999 and 2014 (`choose`) and 2015 (`branch`). A rung with no
    * route row cannot have its gaps seen — which is how item 2027's `count` gap sat unapplied in the
    * `optional` rung for ~70 items after the edge-filter rung closed it at 1956. The `count` column
@@ -232,7 +232,7 @@ const SHAPES = {
   'br: two options':
     "traversal(V(), branch(traversal(values('k'))).option(3, traversal(out('E'))).option(5, traversal(in_('E'))).none(traversal(identity())))",
   /*
-   * ⚠️⚠️ **THESE THREE RUNGS HAD NO ROW ANYWHERE UNTIL ITEM 2046**, which a V8-coverage audit found
+   * **THESE THREE RUNGS HAD NO ROW ANYWHERE UNTIL ITEM 2046**, which a V8-coverage audit found
    * mechanically: of 37 exported Gremlin rungs, 40 benchmark shapes entered only 30. `allHopExistence`
    * and `hopExistenceCombinedStep` (sub-plan-existence.ts, the and/or/not forms — the bare `where`
    * was covered) and `twoHopDenseShape` (count-shortcut.ts, reachable only via the COUNT form) were
@@ -273,13 +273,13 @@ const markerInDist = () =>
 
 const measure = (src) => {
   /*
-   * ⚠️⚠️ **MIXED=1 APPENDS ONE ISOLATED OFF-LABEL VERTEX** (item 2036). Gremlin's
+   * **MIXED=1 APPENDS ONE ISOLATED OFF-LABEL VERTEX** (item 2036). Gremlin's
    * `dropVacuousLabels` REMOVES a vacuous `hasLabel` step from the plan, so one vertex lacking the
    * label makes the step SURVIVE — and a rung whose gate expects an exact step shape may then
    * decline. That would be a ROUTE cliff, which only a census can see. NO Gremlin fixture in this
    * repo has ever been label-mixed; on the GQL side the same blindness hid 7.47x (item 2032).
    *
-   * ⚠️ THE PROSE LIVES OUT HERE, NOT IN THE GENERATED SOURCE: the fixture is a template literal, so
+   * THE PROSE LIVES OUT HERE, NOT IN THE GENERATED SOURCE: the fixture is a template literal, so
    * a backticked identifier inside it terminates the template. `node --check` caught that.
    */
   const MIXED = process.env.MIXED === '1';
@@ -384,7 +384,7 @@ try {
   }
 
   console.log(
-    '\n# ⚠️ A generic route is NOT a defect on its own — most steps have no shortcut and never ' +
+    '\n# A generic route is NOT a defect on its own — most steps have no shortcut and never ' +
       'will. The candidates are the DISAGREEMENTS above, and each still needs pricing against its ' +
       'own sibling before it is a finding (item 1854: a route difference is not always a cost one).',
   );

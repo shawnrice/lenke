@@ -820,7 +820,7 @@ fn normalize_pred(e: Expr, input: &Plan) -> Expr {
                 }
                 // NOT (x IS NULL) -> x IS NOT NULL, and the reverse (item 1262).
                 //
-                // ⚠️ SOUND BECAUSE `IS NULL` IS TOTAL, which is the whole of why this is safe
+                // SOUND BECAUSE `IS NULL` IS TOTAL, which is the whole of why this is safe
                 // where the ORDERING rewrite above is not. `ir.rs` states it: a null test is 2VL
                 // — "`NULL IS NULL` is TRUE, not NULL" — so the predicate never yields UNKNOWN
                 // and `NOT` of it is its exact complement. The NaN hazard that sank
@@ -2188,7 +2188,7 @@ fn seed_from_pinned_edge_id(plan: &Plan) -> Option<Plan> {
 ///
 /// # The edge twin
 ///
-/// ✅ **BOTH HALVES ARE BUILT, and item 619 is CLOSED (item 650).** This header, and matching
+/// **BOTH HALVES ARE BUILT, and item 619 is CLOSED (item 650).** This header, and matching
 /// comments in `exec.rs` and `exec::evaluator`, carried "PRICED AND NOT BUILT" / "NOT FIXED"
 /// long after the code existed. The warnings outlived what they described.
 ///

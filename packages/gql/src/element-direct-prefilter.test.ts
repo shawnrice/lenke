@@ -85,7 +85,7 @@ describe('the element-direct pre-filter', () => {
     });
   }
 
-  // 🛑 THE SUITE ABOVE PASSES WITH THE PRE-FILTER STUBBED TO "NEVER REJECT" — it would simply
+  // THE SUITE ABOVE PASSES WITH THE PRE-FILTER STUBBED TO "NEVER REJECT" — it would simply
   // be slower, and every row would still be right. Mutation proved exactly that: the stub
   // SURVIVED a first version of this test, which compared the time of a liftable predicate
   // against a non-liftable one. Those two differ in cost for reasons that have nothing to do

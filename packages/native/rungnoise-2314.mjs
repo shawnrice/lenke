@@ -1,15 +1,15 @@
 /**
- * ⚠️⚠️ **CAN A 16% REGRESSION ON THE READ RUNGS EVEN BE DETECTED? (item 2314)**
+ * **CAN A 16% REGRESSION ON THE READ RUNGS EVEN BE DETECTED? (item 2314)**
  *
  * Item 2180 declined its target one because a new rung in that file risks **up to 16% on unrelated rows**
  * (`executor-edits-perturb`), and item 2313 re-priced the gain at **2.39x** — so the decision now turns on
  * an A/B over those rows.
  *
- * ⚠️ **But item 2299 measured `noderows` at 1.86x spread ON AN IDENTICAL BINARY**, and `hop3sel` at
+ * **But item 2299 measured `noderows` at 1.86x spread ON AN IDENTICAL BINARY**, and `hop3sel` at
  * 1.15x. A row that moves 86% by itself cannot adjudicate a 16% effect, so the A/B the decision needs may
  * not be possible with the harness that produced those numbers.
  *
- * 🔑 **THIS IS THE INSTRUMENT QUESTION, ASKED BEFORE THE CHANGE.** Items 2302/2303 cost two published
+ * **THIS IS THE INSTRUMENT QUESTION, ASKED BEFORE THE CHANGE.** Items 2302/2303 cost two published
  * numbers to a single-call timer; the fix — inner-iteration calibration — is what might make these rows
  * tight enough to judge. If it does, the A/B is possible. If it does not, item 2180's decline is permanent
  * for want of an instrument, which is worth knowing BEFORE writing a rung.

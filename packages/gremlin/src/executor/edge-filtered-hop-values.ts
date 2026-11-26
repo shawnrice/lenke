@@ -10,7 +10,7 @@ import { seenBefore } from './second-ask.js';
  * `V().outE(T).has(k, pred).inV().values(j)` — a hop with a predicate on the EDGE, which every
  * existing rung declines (item 1882).
  *
- * ⚠️ THE WHOLE FAMILY WAS GENERIC, AND THE UNFILTERED TWIN WAS NOT. `gremlin-route-screen.mjs`'s
+ * THE WHOLE FAMILY WAS GENERIC, AND THE UNFILTERED TWIN WAS NOT. `gremlin-route-screen.mjs`'s
  * `edgef:` family (added at item 1882, when the screen turned out to have no edge-PREDICATE row at
  * all):
  *
@@ -22,7 +22,7 @@ import { seenBefore } from './second-ask.js';
  *   generic   edgef: outE eq inV values        4
  *   generic   edgef: inE has outV values       4
  *   generic   edgef: bothE has otherV count    4
- *   SHORTCUT  edgef: outE inV values           0   ⬅ the SAME walk without the predicate
+ *   SHORTCUT  edgef: outE inV values           0   <- the SAME walk without the predicate
  * ```
  *
  * The predicate is the entire difference — not the direction, not the projection, not the terminal.
@@ -30,7 +30,7 @@ import { seenBefore } from './second-ask.js';
  * `out`/`in`/`both`; `startFilteredHopValues` admits filters on the hop's two VERTEX ends and
  * nothing between them. An edge predicate sits exactly in the gap.
  *
- * ⚠️ PRICED ONE SHAPE PER PROCESS BEFORE IT WAS BUILT, with the 80,000 `E` edges all three shapes
+ * PRICED ONE SHAPE PER PROCESS BEFORE IT WAS BUILT, with the 80,000 `E` edges all three shapes
  * visit as the denominator — the filtered shape emits 46% of the rows, so a per-ROW ratio flatters
  * it, which is why item 1858 declined a target (`edge-filter-floor-1882.mjs`, 20,000 vertices,
  * fanout 5, median of 9, both orders):
@@ -47,12 +47,12 @@ import { seenBefore } from './second-ask.js';
  * delegation chain this walk skips, and the rest the traverser machinery behind
  * `isVertexShaped`/`filterStream`/`projectValues`.
  *
- * ⚠️ A NEW MODULE RATHER THAN A GUARD RELAXED IN `hop-values.ts`, for `start-filtered-hop-values.ts`'s
+ * A NEW MODULE RATHER THAN A GUARD RELAXED IN `hop-values.ts`, for `start-filtered-hop-values.ts`'s
  * stated reason: items 1441 and 1466 measured an edit to that file at up to 16% on UNRELATED rows,
  * arbitrarily signed, and item 1466 declined a 3.3x win on exactly that basis. The two existing
  * values walks stay byte-identical and this one is consulted only where they already declined.
  *
- * ⚠️ AND THE SCOPE IS NARROW ON PURPOSE, which is item 1527's rule against forking a walk per
+ * AND THE SCOPE IS NARROW ON PURPOSE, which is item 1527's rule against forking a walk per
  * spelling. This takes ONE named edge type on `outE`/`inE`, one or more `has` steps, and the
  * matching `inV`/`outV`. `bothE`/`otherV` is declined: its two buckets make "the other end" depend
  * on which bucket the edge came from, a self-loop appears in both, and it is one row of the census
@@ -99,7 +99,7 @@ export const edgeFilteredHopValues = (plan: Plan, graph: Graph): HopValues | und
   // the vertex the traversal came from — a different question, and not this walk.
   const wanted = hop.kind === 'outE' ? 'inV' : 'outV';
   /*
-   * 🔑 THE MOVE IS OPTIONAL (item 1957). Without it the stream STAYS ON THE EDGE, which this rung
+   * THE MOVE IS OPTIONAL (item 1957). Without it the stream STAYS ON THE EDGE, which this rung
    * used to decline outright — so `V().outE(E).has(w, gt 3).values(w)` and the same plan with
    * `.count()` ran the generic chain at three `applyStep` calls each, while their MOVED sibling was
    * fused. Measured at 200,000 vertices / 1,000,000 edges, ns per EDGE VISITED (item 1955):
@@ -134,7 +134,7 @@ export const edgeFilteredHopValues = (plan: Plan, graph: Graph): HopValues | und
   const { pick, drops } = picked;
 
   /*
-   * ⚠️⚠️ **THE FLAT ARM IS BEHIND THE SECOND-ASK POLICY IN ITS OWN NAMESPACE** (item 2016). Item
+   * **THE FLAT ARM IS BEHIND THE SECOND-ASK POLICY IN ITS OWN NAMESPACE** (item 2016). Item
    * 1889's policy, for its reasons verbatim — a one-shot query never builds, a write-every-read
    * workload never reaches a second ask on one topology version so it never builds either, and a
    * repeated read pays the build once. The `'e'` namespace matters: the nine vertex-CSR callers
@@ -152,7 +152,7 @@ export const edgeFilteredHopValues = (plan: Plan, graph: Graph): HopValues | und
 };
 
 /*
- * ⚠️ `pick` TAKES THE EDGE, NOT THE FAR VERTEX (item 1957). It used to take the far end, with the
+ * `pick` TAKES THE EDGE, NOT THE FAR VERTEX (item 1957). It used to take the far end, with the
  * walk doing `pick(outward ? edge.to : edge.from)` — which hard-wired the assumption that every
  * served shape projects the FAR side. The edge-valued shapes do not, so the endpoint deref moved
  * into the far-reading picks themselves. The hot loop got SIMPLER (`pick(edge)`) and the `outward`
@@ -179,7 +179,7 @@ type Picked = {
  * sentinel cannot swallow a real value.
  */
 /*
- * ⚠️ THE DIRECTION AND THE SUBJECT ARE FOLDED IN AT COMPILE TIME, NOT COMPOSED — and item 1957
+ * THE DIRECTION AND THE SUBJECT ARE FOLDED IN AT COMPILE TIME, NOT COMPOSED — and item 1957
  * measured the difference. The first cut built one `subject` closure and wrapped it
  * (`(edge) => subject(edge).properties[key]`), which is TWO closure calls per edge where the code
  * before the item had one. On the already-fused `inV().values(k)` row that cost **+10% in the
@@ -234,7 +234,7 @@ const pickFor = (
   }
 
   /*
-   * 🔑 A TERMINAL THIS WALK DOES NOT PROJECT STILL GETS THE WALK (item 1956). `count()` after the
+   * A TERMINAL THIS WALK DOES NOT PROJECT STILL GETS THE WALK (item 1956). `count()` after the
    * vertex move used to decline the ENTIRE plan here, so
    * `V().outE(E).has(w, gt 3).inV().count()` ran the four-call generic generator chain while its
    * `values(n)` sibling — strictly MORE work, since a count needs no cell, no row and no result
@@ -248,7 +248,7 @@ const pickFor = (
    * Measured at 200,000 vertices / 1,000,000 edges, ns per EDGE VISITED (item 1955): the generic
    * count 188 against a hand count's 39, a 4.83x gap, while the fused values row sat at 84.
    *
-   * ⚠️ IT IS NOT CONSUMED, deliberately. This walk has nothing to contribute to a count beyond
+   * IT IS NOT CONSUMED, deliberately. This walk has nothing to contribute to a count beyond
    * yielding the surviving far vertices, so `count` stays in `rest` and runs over this stream
    * instead of over the generic chain. Admitting the plan is the whole change; the step still
    * executes where it did.
@@ -261,12 +261,12 @@ const pickFor = (
 /**
  * The edge predicates, compiled ONCE PER QUERY into one closure.
  *
- * ⚠️ THE SINGLE-`has` ARM IS A SEPARATE CLOSURE, not a one-element loop, and this is the call site
+ * THE SINGLE-`has` ARM IS A SEPARATE CLOSURE, not a one-element loop, and this is the call site
  * where that matters most: a filter on the EDGE runs once per EDGE, so at fanout 5 it is hit
  * 1,000,000 times against a start filter's 200,000. Item 1631 priced exactly that asymmetry on the
  * far-vertex side.
  *
- * ⚠️ AND `fast === undefined ? matches(...) : fast(x)` IS `dispatch.ts`'s has arm VERBATIM, because
+ * AND `fast === undefined ? matches(...) : fast(x)` IS `dispatch.ts`'s has arm VERBATIM, because
  * the admitted route must agree with the declined one about every predicate, including the ones
  * `specializePredicate` has no specialization for. Item 1492 hoisted that call out of the
  * per-element closure for the same megamorphism reason this closure exists.
@@ -304,7 +304,7 @@ type WalkSpec = {
   readonly pick: (edge: Edge) => unknown;
   readonly drops: boolean;
   /**
-   * ⚠️ TAKE THE FLAT EDGE ARRAY? Decided ONCE per plan by the second-ask policy, so the walk never
+   * TAKE THE FLAT EDGE ARRAY? Decided ONCE per plan by the second-ask policy, so the walk never
    * re-asks and a one-shot query never pays a build. `run`'s lazy iterator ignores it: only `drain`
    * reads it, which is why there is no generator twin of the flat pass.
    */
@@ -312,21 +312,21 @@ type WalkSpec = {
 };
 
 /**
- * ⚠️ WALK `graph.vertices` AND READ THE PER-VERTEX BUCKET, which is `startFilteredHopValues`'s
+ * WALK `graph.vertices` AND READ THE PER-VERTEX BUCKET, which is `startFilteredHopValues`'s
  * shape and its reasoning applies unchanged. `v.adjFrom` is the memoized
  * `graph.edgesFromByLabel.get(v.id)` the generic `outEdgesOf` reads, so a single named type is
  * `byLabel.get(type)` — literally what `iterLabeled` yields for one label. Gremlin stream order is
  * a TinkerPop contract and the differential fuzzer compares ORDERED, so emitting in global vertex
  * order with each bucket in its own order is the requirement, not a liberty.
  *
- * ⚠️ ONE LOOP, PARAMETERIZED, AT MODULE SCOPE. `ts-closure-size-is-load-bearing`: a walk defined
+ * ONE LOOP, PARAMETERIZED, AT MODULE SCOPE. `ts-closure-size-is-load-bearing`: a walk defined
  * INSIDE the returned closure gave unrelated queries a new slow mode at 4x (item 1413's family), so
  * the body lives here and takes its spec as an argument.
  */
 /**
  * THE SAME WALK OVER A FLAT EDGE ARRAY — one linear pass, no per-vertex loop (item 2016).
  *
- * 🔑 **THE PER-VERTEX LOOP WAS DOING NOTHING BUT FINDING THE NEXT BUCKET.** This shape reads the
+ * **THE PER-VERTEX LOOP WAS DOING NOTHING BUT FINDING THE NEXT BUCKET.** This shape reads the
  * predicate off the edge's own bag and the projection off `edge.to`, so the vertex is never used —
  * which means 200,000 `adjFrom.get(type)` lookups and 200,000 `Set` iterators exist purely to
  * enumerate edges that a flat array enumerates with an index. Over 1,000,000 edges, one shape per
@@ -336,23 +336,23 @@ type WalkSpec = {
  *     the bucket walk above (shipped since item 1883)   122 ns/edge-visit
  *     THIS — the flat array, linear                       101             1.28x  (medians)
  *     the same walk BY HAND over the same Sets             86
- *     a flat edge array, two closures, DYNAMIC key         79   ⬅ the reachable floor
- *     the same, LITERAL property key                       56   ⬅ 1.41x is the KEYED LOAD
+ *     a flat edge array, two closures, DYNAMIC key         79   <- the reachable floor
+ *     the same, LITERAL property key                       56   <- 1.41x is the KEYED LOAD
  * ```
  *
- * ⚠️ THE 1.41x KEYED-LOAD TERM IS UNREACHABLE RATHER THAN PENDING: the key is plan data, so
+ * THE 1.41x KEYED-LOAD TERM IS UNREACHABLE RATHER THAN PENDING: the key is plan data, so
  * `edge.properties[key]` cannot become a literal access without runtime codegen, and
  * [[no-runtime-codegen]] is FIRM. Closure dispatch — the obvious suspect — measured ~3 ns. See
  * `edge-flat.ts` for the full decomposition.
  *
- * ⚠️⚠️ **THE ROW ORDER IS IDENTICAL BY CONSTRUCTION, NOT BY COINCIDENCE, and that is the whole
+ * **THE ROW ORDER IS IDENTICAL BY CONSTRUCTION, NOT BY COINCIDENCE, and that is the whole
  * correctness argument.** `edgeFlatFor` appends each bucket in `graph.vertices` order, so position
  * `i` of the flat array is the `i`-th edge the nested loop would have visited. Gremlin rows are
  * compared ORDERED against the Rust engine for a single-type step, so a reordering here is a
  * cross-engine failure rather than an unspecified-order liberty — and a checksum cannot see it
  * (item 1955), which is why `edge-flat-order-2016.mjs` compares the two arms POSITIONALLY.
  *
- * ⚠️ NO GENERATOR TWIN. The bucket walk above offers both an iterator and a `drain` because it is
+ * NO GENERATOR TWIN. The bucket walk above offers both an iterator and a `drain` because it is
  * the only arm; this one is reached only from `drain`, so `run` keeps the lazy bucket walk and a
  * caller that `break`s out is unaffected — `hop-values.ts`'s rule. See the gate for why.
  */
@@ -362,7 +362,7 @@ const flatDrain = (graph: Graph, spec: WalkSpec): unknown[] => {
   const out: unknown[] = [];
 
   /*
-   * ⚠️ `for...of` OVER THE ARRAY, AND IT IS NOT A CONCESSION TO THE LINT — it was MEASURED against
+   * `for...of` OVER THE ARRAY, AND IT IS NOT A CONCESSION TO THE LINT — it was MEASURED against
    * the indexed form and the two are indistinguishable: for-of 86.7/90.0 best and 102.9/100.2
    * median across two rounds, indexed 88.9/98.7 and 95.8/105.7, each winning one metric in each
    * round. V8 lowers a for-of over a plain array to an indexed walk, so there is no iterator to
@@ -387,7 +387,7 @@ const flatDrain = (graph: Graph, spec: WalkSpec): unknown[] => {
 /**
  * The ROW COUNT of {@link walk}, without the array and without the projection (item 2063).
  *
- * ⚠️⚠️ **PRICED BEFORE IT WAS BUILT, AND THE FIRST FLOOR WAS WRONG.** A hand walk over the per-vertex
+ * **PRICED BEFORE IT WAS BUILT, AND THE FIRST FLOOR WAS WRONG.** A hand walk over the per-vertex
  * `Set`s reads 40.38 ms against the engine's 25.00 — **the engine is 1.61x FASTER than that "floor"**,
  * because `flatDrain` walks a contiguous array and loses 200,000 `adjFrom.get(type)` lookups and
  * 200,000 `Set` iterators. A floor that the subject beats is not a floor (see
@@ -396,19 +396,19 @@ const flatDrain = (graph: Graph, spec: WalkSpec): unknown[] => {
  *
  * ```text
  *     flat drain + length   17.74 ms
- *     flat COUNT            14.19      ⬅ 1.25x, and that is the whole opportunity
+ *     flat COUNT            14.19      <- 1.25x, and that is the whole opportunity
  * ```
  *
- * 🔑 **TWO THINGS ARE SAVED, both of which the drain cannot avoid:** the output array and its ~1,000,000
+ * **TWO THINGS ARE SAVED, both of which the drain cannot avoid:** the output array and its ~1,000,000
  * pushes, and `pick(edge)` — which a count may skip ONLY when the spec does not `drop`.
  *
- * ⚠️ **`drops` IS THE CORRECTNESS HINGE.** `valuePick` (a `values(k)` projection) sets `drops: true`,
+ * **`drops` IS THE CORRECTNESS HINGE.** `valuePick` (a `values(k)` projection) sets `drops: true`,
  * and such a walk omits a row whose value is `undefined` — so the count MUST call `pick` and repeat
  * that test. `elementPick` and `idPick` set `drops: false` and always yield, which is why the two
  * counting rows this serves can skip the projection entirely. A count that skipped it unconditionally
  * would over-count exactly the rows a `values()` walk drops.
  *
- * ⚠️ IT MIRRORS THE DRAIN'S FLAT/BUCKET SPLIT rather than picking one: `spec.flat` was decided by the
+ * IT MIRRORS THE DRAIN'S FLAT/BUCKET SPLIT rather than picking one: `spec.flat` was decided by the
  * second-ask policy when the plan was admitted, and counting over buckets when the flat array exists
  * would throw away the 1.61x above.
  */
@@ -468,28 +468,28 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
     }
   },
   /**
-   * ⚠️ THE EAGER FILL, AND IT IS HALF THIS SHAPE'S COST (item 1893). `toArray` prefers `drain` when
+   * THE EAGER FILL, AND IT IS HALF THIS SHAPE'S COST (item 1893). `toArray` prefers `drain` when
    * the walk offers one (item 1412) and every arm of `hopValuesShortcut` offers one — so this rung
    * was spreading a GENERATOR over 457,142 rows where its neighbours fill an array. Priced against a
    * hand-written walk over the same `Set`s at 200,000 vertices / 1,000,000 edges:
    *
    * ```text
    *   the engine's rung, generator only   129.40 ms
-   *   the same walk BY HAND               62.23      ⬅ 2.08x, all of it delegation
-   *   the same walk over a flat array     34.69      ⬅ what an edge-indexed CSR could add
+   *   the same walk BY HAND               62.23      <- 2.08x, all of it delegation
+   *   the same walk over a flat array     34.69      <- what an edge-indexed CSR could add
    * ```
    *
-   * ⚠️ IT NEVER REPLACES THE ITERABLE, which is `hop-values.ts`'s rule: `run` stays as lazy as it
+   * IT NEVER REPLACES THE ITERABLE, which is `hop-values.ts`'s rule: `run` stays as lazy as it
    * was for a caller that `break`s out, and `drain` is read only where the shortcut consumed the
    * whole plan. And it is the SAME loop written twice (item 169), because Gremlin results are
    * compared ORDERED.
    */
-  // ⚠️ THE COUNTING FAST PATH (item 2063), read by `countProjectedWalk` when a residual is only a
+  // THE COUNTING FAST PATH (item 2063), read by `countProjectedWalk` when a residual is only a
   // `count()`. It never replaces the iterable or the drain — `hop-values.ts`'s rule.
   count: () => walkCount(graph, spec),
   drain() {
     /*
-     * ⚠️ THE ROUTE CHOICE IS MADE ONCE, HERE, OUTSIDE THE LOOP — not per vertex and not per edge.
+     * THE ROUTE CHOICE IS MADE ONCE, HERE, OUTSIDE THE LOOP — not per vertex and not per edge.
      * `spec.flat` was decided by the second-ask policy when the plan was admitted.
      */
     if (spec.flat) {

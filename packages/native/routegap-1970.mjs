@@ -1,7 +1,7 @@
 // Item 1970 — PRICING THE GREMLIN ROUTE DISAGREEMENTS. `gremlin-route-screen.mjs` lists 23 generic
 // routes and then says the useful part itself:
 //
-//     "⚠️ A generic route is NOT a defect on its own — most steps have no shortcut and never will.
+//     "A generic route is NOT a defect on its own — most steps have no shortcut and never will.
 //      The candidates are the DISAGREEMENTS above, and each still needs pricing against its own
 //      sibling before it is a finding (item 1854: a route difference is not always a cost one)."
 //
@@ -9,7 +9,7 @@
 // scale, in one process per pair. A pair whose two arms cost the same is a route difference with no
 // cost — exactly what item 1854 recorded, and exactly what a list of generic routes cannot tell you.
 //
-// 🔑 THE PAIRS ARE CHOSEN SO THE TWO ARMS ANSWER COMPARABLE QUESTIONS. Where a terminal differs the
+// THE PAIRS ARE CHOSEN SO THE TWO ARMS ANSWER COMPARABLE QUESTIONS. Where a terminal differs the
 // row counts differ too (a `count()` returns one row), so the figure reported is **ns per ELEMENT
 // VISITED** — the scan or hop both arms perform — never per row. Item 1858 declined a target for
 // reading a per-row ratio on exactly this kind of pair.
@@ -56,12 +56,12 @@ const HOP = NODES * FANOUT;
  * the one step that differs.
  */
 /*
- * ⚠️ ONLY THE DISAGREEMENTS THAT ARE NOT ALREADY PRICED, AND ONLY WHERE THE TWO ARMS ARE
+ * ONLY THE DISAGREEMENTS THAT ARE NOT ALREADY PRICED, AND ONLY WHERE THE TWO ARMS ARE
  * COMPARABLE. The route screen's header settles the whole `scan:` family — `order values` NOT a gap
  * (1574/1576), `fold` FLAT (1585), `limit values` TINY (1660), `has values` and `id` DECLINED (1858),
  * `dedupe values` TAKEN (1869) — so measuring those is re-deriving five closed results.
  *
- * ⚠️⚠️ AND MY FIRST CUT PAIRED SHAPES THAT ASK DIFFERENT QUESTIONS, which the control caught: `both`
+ * AND MY FIRST CUT PAIRED SHAPES THAT ASK DIFFERENT QUESTIONS, which the control caught: `both`
  * against `out` read 5.00x where both are fused, because `both` visits 2,000,000 elements and `out`
  * 1,000,000. Three of the five `ded:` rows have the same defect by construction — `values('k','w')`
  * emits two values per element, `dedupe()` over elements yields 200,000 rows where `dedupe()` over
@@ -70,7 +70,7 @@ const HOP = NODES * FANOUT;
  */
 const PAIRS = {
   /*
-   * 🔑 THE ONE CLEAN SINGLE-VARIABLE PAIR on this surface. Both arms hop, both `dedupe().by('k')`,
+   * THE ONE CLEAN SINGLE-VARIABLE PAIR on this surface. Both arms hop, both `dedupe().by('k')`,
    * both emit one value per surviving element — the ONLY difference is whether the projected key is
    * the DEDUPE KEY or a different one, and the route screen reports the first fused and the second
    * generic.

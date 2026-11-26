@@ -5,12 +5,12 @@
  * two-hop beating its own prefix, on a fixture where the second hop multiplies the rows. That is
  * either a missing fusion on the one-hop arm or an artefact of the sweep.
  *
- * ⚠️ ONE SHAPE PER PROCESS, which is item 1640's lesson (it found "1.9-2.0x engine-vs-floor gaps"
+ * ONE SHAPE PER PROCESS, which is item 1640's lesson (it found "1.9-2.0x engine-vs-floor gaps"
  * to be SUBSTANTIALLY the instrument) and item 737's before it. A sweep NOMINATES; it does not
  * price, because rows interfere and arms that run minutes apart are compared across whatever the
  * machine did in between.
  *
- * ⚠️ AND THE ROWS ARE COUNTED AND ASSERTED, per CLAUDE.md's fixture rule. A per-row conclusion
+ * AND THE ROWS ARE COUNTED AND ASSERTED, per CLAUDE.md's fixture rule. A per-row conclusion
  * drawn from two shapes whose row counts were assumed rather than measured is worthless — and the
  * whole question here IS per-row cost.
  *
@@ -35,7 +35,7 @@ for (let i = 0; i < NODES; i += 1) {
 }
 
 /**
- * ⚠️ THE REPEAT INDEX IS IN THE TARGET, not just `k`. CLAUDE.md records this as the defect that
+ * THE REPEAT INDEX IS IN THE TARGET, not just `k`. CLAUDE.md records this as the defect that
  * survived 800 audit items: `to = (a * k + b) % N` is INVARIANT under `k -> k + N`, so a loop over
  * `k < NODES * FANOUT` gives one vertex's whole fan-out the SAME target. Out-degree looks perfect
  * and the graph is FUNCTIONAL, so any k-hop count is `F^k * N` by construction.

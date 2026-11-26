@@ -3,7 +3,7 @@
  *
  * Input: lines of `R<round> <arm> {"shape":…,"ms":…}` on stdin or a file path argv[2].
  *
- * ⚠️ IT REPORTS DISJOINTNESS, NOT A RATIO. A ratio of medians over 2-3 rounds is what produced
+ * IT REPORTS DISJOINTNESS, NOT A RATIO. A ratio of medians over 2-3 rounds is what produced
  * item 1746's phantom 5% regression (the isolated per-row run refuted it at 1.2%), so a row whose
  * arm ranges OVERLAP is printed as `flat` whatever its medians say. Only rows whose ranges are
  * fully separated get a direction, and those are the only ones worth acting on from a sweep this

@@ -1,31 +1,31 @@
 /**
  * WHAT DOES THE ENGINE COST WHEN THE QUERY TEXT IS NEVER THE SAME TWICE? (item 1839)
  *
- * ⚠️ EVERY PROBE IN THIS DIRECTORY RUNS ONE TEXT IN A LOOP, so the parse+plan caches (items
+ * EVERY PROBE IN THIS DIRECTORY RUNS ONE TEXT IN A LOOP, so the parse+plan caches (items
  * 228/229) hit on every rep after the first and their cost is divided away by the rep count. A real
  * application issues hundreds of DISTINCT texts; if those caches are small, or keyed in a way a
  * diverse workload defeats, the compile cost is paid per query and no instrument here would show
  * it. That is a hole in the screen rather than a known-good result.
  *
- * ⚠️ THE COMPARISON IS THE SAME TEXTS TWICE, NOT TWO DIFFERENT WORKLOADS. Comparing "500 distinct
+ * THE COMPARISON IS THE SAME TEXTS TWICE, NOT TWO DIFFERENT WORKLOADS. Comparing "500 distinct
  * queries" against "one query 500 times" would compare different WORK — the texts do different
  * things — and the difference would be mostly execution. Running the identical list twice holds the
  * work exactly fixed and varies only the cache state, so the gap between pass 1 and pass 2 IS the
  * compile cost (plus whatever else is cold on first sight of a text).
  *
- * ⚠️ THE CORPUS IS ITEM 1817's WORKLOAD GENERATOR, for the reason that item exists: it is the one
+ * THE CORPUS IS ITEM 1817's WORKLOAD GENERATOR, for the reason that item exists: it is the one
  * list here of queries a user would plausibly write that was NOT assembled by someone hunting a
  * particular lever. Hand-writing 500 texts would bias the diversity toward whatever I happened to
  * think of.
  *
- * ⚠️⚠️ **ITS RESOLUTION, STATED BEFORE ITS NUMBERS — THIS PROBE CANNOT ANSWER ITS OWN QUESTION BY
+ * **ITS RESOLUTION, STATED BEFORE ITS NUMBERS — THIS PROBE CANNOT ANSWER ITS OWN QUESTION BY
  * SUBTRACTION, AND ITS FIRST RUN PROVED IT.** The cold/warm delta on 500 texts read 244.2 ms, which
  * looks like 488 us a text — but the later warm/warm rounds, which by construction should be
  * EQUAL, read deltas of 48.9, 87.5, **-178.6** and 13.2 ms. A noise band of +-180 ms cannot resolve
  * a 244 ms signal. The guard line at the bottom of the output says exactly this, and it is there
  * because the number above it is otherwise quotable.
  *
- * ⚠️ SO THE DIRECT COUNTERS ARE THE INSTRUMENT, NOT THIS SUBTRACTION. `parseCacheStats()` reports
+ * SO THE DIRECT COUNTERS ARE THE INSTRUMENT, NOT THIS SUBTRACTION. `parseCacheStats()` reports
  * `size`, `seen`, `cap`, `liftHits` and `liftStores` — what the cache actually did, with no timing
  * involved. This probe is kept for the CORPUS it drives (item 1817's generator is the only
  * non-circular source of realistic query texts here) and for the resolution lesson above; read the
@@ -40,7 +40,7 @@ import { query } from '@lenke/gql';
 import { WORKLOAD_FAMILIES } from './src/workload-queries.js';
 
 /**
- * ⚠️ A SMALL GRAPH ON PURPOSE, AND THE FIRST RUN PROVED BOTH HALVES OF WHY. At 5,000 vertices this
+ * A SMALL GRAPH ON PURPOSE, AND THE FIRST RUN PROVED BOTH HALVES OF WHY. At 5,000 vertices this
  * probe died to the cgroup OOM killer (exit 137): the corpus includes the comma-join family, whose
  * `MATCH (a:T), (b:T)` is 25,000,000 rows there — item 1820 hit exactly this and solved it with one
  * child process per family.
@@ -125,7 +125,7 @@ const workloads = [];
 const seen = new Set();
 
 /**
- * ⚠️ DISTINCT TEXTS, ASSERTED. The generator draws from a finite set of templates, so asking for
+ * DISTINCT TEXTS, ASSERTED. The generator draws from a finite set of templates, so asking for
  * more texts than it can produce would silently give a list with repeats — and repeats are exactly
  * what this probe is measuring the absence of. It collects until it has `TEXTS` distinct ones or
  * runs out of patience, then reports what it actually got.
@@ -169,7 +169,7 @@ const warm = [];
 let digest = -1;
 
 for (let round = 0; round < ROUNDS; round += 1) {
-  // ⚠️ A FRESH PROCESS IS THE ONLY TRUE COLD, and this is not one — the caches persist across
+  // A FRESH PROCESS IS THE ONLY TRUE COLD, and this is not one — the caches persist across
   // rounds, so only ROUND 0's first pass is genuinely cold. Later rounds measure a WARM/WARM pair
   // and are reported separately rather than averaged in, because averaging them would dilute the
   // one measurement that answers the question.

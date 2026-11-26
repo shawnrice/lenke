@@ -15,7 +15,7 @@
  *
  *     LIVE=2000 CHURN=200000 node ordinal-churn-probe.mjs
  *
- * ⚠️ LIVE must stay above 1024, or `slotChainCount` is declined (the seed-width cut is
+ * LIVE must stay above 1024, or `slotChainCount` is declined (the seed-width cut is
  * `max(vertexCount >> 4, 1024)`) and the probe measures the generic route in both arms — green,
  * identical, and meaningless. Asserted below rather than assumed, which is item 1371's lesson.
  */
@@ -35,7 +35,7 @@ if (LIVE <= 1024) {
 }
 
 /**
- * ⚠️ INTERLEAVE IS THE DEFAULT, and the first version of this probe got it wrong in the flattering
+ * INTERLEAVE IS THE DEFAULT, and the first version of this probe got it wrong in the flattering
  * direction. It added every live vertex FIRST and then churned, so the live slots were 0..LIVE-1 —
  * contiguous at the very start of the ordinal space. The walk then touched LIVE adjacent cache lines
  * however big the arrays were, and churn measured free. A real churning graph has its live vertices

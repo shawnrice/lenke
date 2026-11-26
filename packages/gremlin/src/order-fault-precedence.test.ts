@@ -17,7 +17,7 @@ import {
 } from './index.js';
 
 /**
- * ⚠️ THE TWO-PHASE ORDER OF `sortByBys`, WHICH ITEM 890 RECORDED AS GUARDED BY CONSTRUCTION ONLY.
+ * THE TWO-PHASE ORDER OF `sortByBys`, WHICH ITEM 890 RECORDED AS GUARDED BY CONSTRUCTION ONLY.
  *
  * Its own comment states the invariant — *"every key is evaluated BEFORE the element check, so an
  * `evalBy` that throws still wins over the element fault"* — and item 890's method note says in so
@@ -61,7 +61,7 @@ describe('an evalBy throw wins over the element fault', () => {
     );
   });
 
-  test('⚠️ and the precedence holds under a CAP, where only one item would be kept', () => {
+  test('and the precedence holds under a CAP, where only one item would be kept', () => {
     // Item 1574's top-k must not let the cap decide which fault wins: both items' keys are still
     // evaluated, so the throw still beats the element even when the heap would fill after one.
     expect(() => toArray(traversal(V(), order().by(elementOrThrow()), limit(1)), mixed())).toThrow(
@@ -69,8 +69,8 @@ describe('an evalBy throw wins over the element fault', () => {
     );
   });
 
-  test('⚠️ a cap of ZERO still drains and still faults — via a BY, not a bare order()', () => {
-    // ⚠️ THIS TEST FIRST PASSED FOR THE WRONG REASON. Written as `order().limit(0)` it caught a
+  test('a cap of ZERO still drains and still faults — via a BY, not a bare order()', () => {
+    // THIS TEST FIRST PASSED FOR THE WRONG REASON. Written as `order().limit(0)` it caught a
     // PARSE-TIME rejection (`checkStep` refuses a pure-element `order()`), not the runtime drain —
     // so the `early-zero-cap` mutant survived it. The runtime element check is only reachable when
     // a `by` YIELDS an element, which is what this uses.

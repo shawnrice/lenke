@@ -89,7 +89,7 @@ describe('fused hop projection', () => {
     const [fast, slow] = bothWays(g, 'MATCH (a:P)-[:T]->(x) RETURN x.name AS n');
 
     // v0→v1, v0→v2, v0→v1 (parallel), then v1→v1 (self-loop), v1→v3, then v2→v5.
-    // This one still pins the exact ORDER after item 167. ⚠️ ITS ORIGINAL REASON IS NOW WRONG,
+    // This one still pins the exact ORDER after item 167. ITS ORIGINAL REASON IS NOW WRONG,
     // and item 1950 measured it: the comment used to say that because `P` is NOT vacuous here
     // (v5 is not a `P`) the START-driven walk takes this shape. It does not. `P` covers 5 of 6
     // vertices — coverage 0.833, over `EDGE_DRIVEN_MIN_COVERAGE` — so item 1940's EDGE-driven
@@ -153,13 +153,13 @@ describe('fused hop projection', () => {
     const [fast, slow] = bothWays(g, 'MATCH (a:P)<-[:T]-(x) RETURN x.name AS n');
 
     /*
-     * ⚠️ A MULTISET, like the other AGREEMENT tests in this file — converted at item 1940, which is
+     * A MULTISET, like the other AGREEMENT tests in this file — converted at item 1940, which is
      * when it first mattered. `P` is not vacuous in this fixture, so an in-hop now takes the
      * EDGE-DRIVEN arm and emits in edge-bucket order where the previous walk emitted in
      * target-vertex order. That is the reordering `asMultiset`'s own note already describes for
      * item 167's far-driven arm ("reorders rows and changes nothing else"), one arm later.
      *
-     * 🔑 Multiset is the CONTRACT and not a convenience: `differential-fuzz.test.ts` states its
+     * Multiset is the CONTRACT and not a convenience: `differential-fuzz.test.ts` states its
      * "comparison is structural (row multiset)" and gives every `ORDER BY` query a final sort key
      * because "row order is otherwise unspecified". The LENGTH assertion below is the real content
      * of this test and is unchanged.

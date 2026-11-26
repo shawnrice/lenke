@@ -7,12 +7,12 @@ import { describe, expect, test } from 'bun:test';
  * to the traverser pipeline, a **398x** cliff (0.64 ms against 254.62) for four times the paths.
  * The new rung expands a SET per level instead of enumerating paths.
  *
- * ⚠️ THE ORACLE IS ENUMERATE-THEN-DEDUPE-IN-JS, not another engine route. `toArray` of the same
+ * THE ORACLE IS ENUMERATE-THEN-DEDUPE-IN-JS, not another engine route. `toArray` of the same
  * hops without the `dedupe`/`count` gives every endpoint the traverser would emit; putting those
  * in a `Set` and taking its size is the definition of the answer, computed outside the engine. A
  * second engine route could share a mistake with the first; this cannot.
  *
- * ⚠️ THE FIXTURES ARE CHOSEN FOR WHERE A LEVEL-BY-LEVEL SET CAN GO WRONG: a self-loop (a vertex
+ * THE FIXTURES ARE CHOSEN FOR WHERE A LEVEL-BY-LEVEL SET CAN GO WRONG: a self-loop (a vertex
  * reaching itself, so the frontier must not grow or shrink wrongly), two disjoint cycles (a
  * frontier that revisits), a chain longer than the hop count (where the answer SHRINKS with
  * depth), a star (many sources, one target) and a mixed-type graph (where only some edges count).
@@ -98,7 +98,7 @@ const hops = (k: number, step: () => ReturnType<typeof out>): ReturnType<typeof 
 
 describe('a deduped K-hop count', () => {
   /**
-   * ⚠️ EVERY STEP VARIANT ACROSS EVERY FIXTURE, and the cross product is the point rather than
+   * EVERY STEP VARIANT ACROSS EVERY FIXTURE, and the cross product is the point rather than
    * thoroughness for its own sake. The walk branches on DIRECTION (which adjacency box, which edge
    * endpoint) and on TYPED-vs-UNTYPED (one bucket or all), so there are four cells — and a mutant
    * that always took `e.to` inside the UNTYPED branch survived a version of this file that
@@ -144,7 +144,7 @@ describe('a deduped K-hop count', () => {
       expect(typedRung[0]).toBe(typedOracle);
 
       /**
-       * ⚠️ UNTYPED *AND* INCOMING, which is a FOURTH combination and not a flourish: the walk has
+       * UNTYPED *AND* INCOMING, which is a FOURTH combination and not a flourish: the walk has
        * a separate branch for "no labels" and a separate endpoint choice for `in`, so untyped-out,
        * typed-out and typed-in between them leave one cell untested. A mutant that always took
        * `e.to` inside the untyped branch survived until this case existed.
@@ -157,7 +157,7 @@ describe('a deduped K-hop count', () => {
   });
 
   /**
-   * ⚠️ A WALK THAT DIES OUT MUST ANSWER ZERO, not fall back to something non-empty. The chain
+   * A WALK THAT DIES OUT MUST ANSWER ZERO, not fall back to something non-empty. The chain
    * fixture has no path of length 4, so the frontier empties and the early return is exercised.
    */
   test('a walk with no paths of that length answers zero', () => {
@@ -168,7 +168,7 @@ describe('a deduped K-hop count', () => {
   });
 
   /**
-   * ⚠️ THE `in` DIRECTION READS THE OTHER ADJACENCY BOX AND THE OTHER EDGE ENDPOINT, so it needs
+   * THE `in` DIRECTION READS THE OTHER ADJACENCY BOX AND THE OTHER EDGE ENDPOINT, so it needs
    * its own check — and the FIRST version of this test did not give it one: it called `out('E')`
    * in both arms while claiming to test `in`. A mutant that always took `e.to`, which is wrong for
    * every `in` hop, SURVIVED it. The fixtures are directed and asymmetric, so `in` and `out`
@@ -201,11 +201,11 @@ describe('a deduped K-hop count', () => {
 
 describe('the deduped K-hop count declines what it must', () => {
   /**
-   * ⚠️ THE REFUSALS ARE ASSERTED BY ROUTE, through `countShortcut` directly, because declining is
+   * THE REFUSALS ARE ASSERTED BY ROUTE, through `countShortcut` directly, because declining is
    * ANSWER-EQUIVALENT: the pipeline answers the same thing more slowly, so no value test can tell
    * a refusal from an acceptance. The sibling file makes the same move for the same reason.
    *
-   * ⚠️ AND THE ANSWER IS CHECKED TOO, against the enumerate-then-dedupe oracle where the shape has
+   * AND THE ANSWER IS CHECKED TOO, against the enumerate-then-dedupe oracle where the shape has
    * one — except for `dedupe().by(…)`, whose partitioning is its own question and is deliberately
    * NOT asserted here: a guess about it (that keying on `id` matches the element-wise dedupe) was
    * written first and was simply wrong, which is why the refusal is what this file pins.

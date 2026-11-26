@@ -12,12 +12,12 @@
 // [[gremlin-values-is-the-floor]] records the mechanism: "the reduce is free; the cost is the
 // generator chain". So the question that moves the most is whether 87 ns a row IS the floor.
 //
-// ⚠️ THE HAND ARM USES THE CSR, WHICH IS ITEM 1920'S MISTAKE NOT REPEATED. That item priced a
+// THE HAND ARM USES THE CSR, WHICH IS ITEM 1920'S MISTAKE NOT REPEATED. That item priced a
 // fusion against a hand walk over the adjacency `Set`s — the BUCKET arm — while the engine takes
 // the CSR arm on the second ask, so its "ceiling" came out 3x BELOW what the engine then achieved.
 // Item 1925 measured the same size at 0.36 ms on the CSR against 15.78 on the buckets.
 //
-// ⚠️ AND THE CSR IS BUILT OUTSIDE THE TIMED LOOP, because the engine memoizes it per
+// AND THE CSR IS BUILT OUTSIDE THE TIMED LOOP, because the engine memoizes it per
 // (graph, topology, shape) and amortizes it across calls — item 1889's second-ask policy.
 //
 //     bun walkfloor-ceiling-1931.mjs
@@ -35,7 +35,7 @@ for (let i = 0; i < N; i += 1) {
 }
 
 /*
- * ⚠️ SPLIT ON THE REPEAT INDEX, not on `k` alone. CLAUDE.md's rule: `to = (a*k + b) % N` is
+ * SPLIT ON THE REPEAT INDEX, not on `k` alone. CLAUDE.md's rule: `to = (a*k + b) % N` is
  * INVARIANT under `k -> k + N`, so a loop over `k < N * FANOUT` sends one vertex's whole fanout to
  * the SAME target and the graph comes out FUNCTIONAL while every degree count looks perfect.
  */
@@ -58,7 +58,7 @@ for (let i = 0; i < N; i += 1) {
   verts.push(g.getVertexById(String(i + 1)));
 }
 
-// ⚠️ COUNT THE DISTINCT ENDPOINTS BEFORE TRUSTING ANY NUMBER FROM THIS FIXTURE — CLAUDE.md's rule,
+// COUNT THE DISTINCT ENDPOINTS BEFORE TRUSTING ANY NUMBER FROM THIS FIXTURE — CLAUDE.md's rule,
 // and the one that caught items 1516/1518 after 800 items of nobody re-checking.
 const distinctTargets = new Set();
 let eCount = 0;
@@ -103,7 +103,7 @@ for (let i = 0; i < N; i += 1) {
 
 const ARMS = {
   /*
-   * ⚠️ THE ENGINE ON THE SAME FIXTURE, which is the whole point of putting it here. My first run
+   * THE ENGINE ON THE SAME FIXTURE, which is the whole point of putting it here. My first run
    * compared the hand arms against the SCREEN's 52.02 ms — a different fixture (FANOUT 4, a
    * different label mix, 600,000 E-edges against this one's 400,000) — and reported 4.67x where
    * the per-row truth was 3.1x. A ceiling is only a ceiling against the same graph.
@@ -136,7 +136,7 @@ const ARMS = {
 
     return n;
   },
-  // ⚠️ THE CEILING: + pushing into the output array, which is what `values()` must actually produce.
+  // THE CEILING: + pushing into the output array, which is what `values()` must actually produce.
   // This is the most a fused rung could achieve on this shape.
   emit: () => {
     // `vals`, not `out` — `out` is the imported Gremlin STEP in this file.
@@ -192,7 +192,7 @@ for (const [name, fn] of Object.entries(ARMS)) {
 }
 
 /*
- * ⚠️⚠️ THE RATIO IS AGAINST THE `engine` ARM ABOVE, NOT AGAINST THE SCREEN'S NUMBER, and that is a
+ * THE RATIO IS AGAINST THE `engine` ARM ABOVE, NOT AGAINST THE SCREEN'S NUMBER, and that is a
  * correction to this probe's own first version. It defaulted to the screen's 52.02 ms and reported
  * 4.93x — but the screen's fixture is FANOUT 4 with a different label mix, 600,000 E-edges where
  * this one has 400,000, i.e. 87 ns a row against 48. CLAUDE.md's "match the fixture to the claim",
@@ -204,7 +204,7 @@ console.log(
     `EMITTING adds ${(results.emit - results.read).toFixed(2)} ms on top`,
 );
 console.log(
-  '⚠️ CEILING, NOT A PREDICTION — a real rung also pays its gate and its walk wrapper.\n' +
+  'CEILING, NOT A PREDICTION — a real rung also pays its gate and its walk wrapper.\n' +
     `   Engine ${results.engine.toFixed(2)} ms against the hand emit's ${results.emit.toFixed(2)}: ` +
     `${(results.engine / results.emit).toFixed(2)}x, so at most ` +
     `${(results.engine - results.emit).toFixed(2)} ms (` +

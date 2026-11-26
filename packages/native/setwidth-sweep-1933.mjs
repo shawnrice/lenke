@@ -1,17 +1,17 @@
 // Item 1933 — DOES GQL `SET` COST SCALE WITH ROW WIDTH, as [[ts-set-is-o-width]] says?
 //
 // GQL `SET` costs 639 ns a row against Gremlin `property`'s 119 and a host-side floor of 69 — 5.38x
-// and 9.3x. ⚠️ THE PROFILE'S TOP FRAMES ARE NOT THE CAUSE: it puts 22.6% in `deferConstraint` +
+// and 9.3x. THE PROFILE'S TOP FRAMES ARE NOT THE CAUSE: it puts 22.6% in `deferConstraint` +
 // `runDeferredChecks`, but wrapping 20,000 host-side property writes in an explicit transaction
 // (which is what makes those fire) costs 77 ns a row against 69 without — 8 ns, not 140.
 // [[frame-attribution-trap]], caught by a control rather than by reading the profile harder.
 //
-// 🔑 SO TEST THE DOCUMENTED MECHANISM INSTEAD. `ts-set-is-o-width` records that TS `SET` makes
+// SO TEST THE DOCUMENTED MECHANISM INSTEAD. `ts-set-is-o-width` records that TS `SET` makes
 // three O(K) passes a write where K is the ROW WIDTH, against native's O(1) columnar. If that is
 // what 639 ns is, the per-row cost RISES WITH THE NUMBER OF PROPERTIES THE VERTEX ALREADY HAS —
 // and Gremlin's `property` should not, or the two would not differ.
 //
-// ⚠️ THE CONTROL IS THE GREMLIN ARM AT EVERY WIDTH, not just at one. A cost that rises on both is
+// THE CONTROL IS THE GREMLIN ARM AT EVERY WIDTH, not just at one. A cost that rises on both is
 // the data layout; one that rises only on GQL is the SET path.
 //
 //     bun setwidth-sweep-1933.mjs

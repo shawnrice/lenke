@@ -1,12 +1,12 @@
 /*
  * Item 2106 — `reverseRawPath` against `reversePath`, its compiled twin.
  *
- * ⚠️⚠️ **TWO REVERSERS THAT DISAGREE WOULD BE A WRONG ANSWER, so neither is tested alone.** The
+ * **TWO REVERSERS THAT DISAGREE WOULD BE A WRONG ANSWER, so neither is tested alone.** The
  * compiled one has served `orient` since long before this item; the raw one is new, exists because
  * `patternCountOf` walks the AST path rather than the compiled one, and is a line-for-line mirror. The
  * risk is not that the mirror is wrong today — it is that one of them is later changed alone.
  *
- * 🔑 SO EVERY CASE REVERSES THE SAME PATTERN BOTH WAYS AND COMPARES THE STRUCTURES: segment order,
+ * SO EVERY CASE REVERSES THE SAME PATTERN BOTH WAYS AND COMPARES THE STRUCTURES: segment order,
  * each direction flip, the endpoints, and the carried fields. A mirror checked against its original
  * cannot drift silently.
  */
@@ -60,27 +60,27 @@ const CASES = {
 
 describe('reverseRawPath mirrors reversePath (item 2106)', () => {
   for (const [name, src] of Object.entries(CASES)) {
-    test(`🔑 ${name} — the two reversers agree`, () => {
+    test(`${name} — the two reversers agree`, () => {
       const { raw, compiled } = bothFormsOf(src);
 
       expect(shapeOf(reverseRawPath(raw) as never)).toBe(shapeOf(reversePath(compiled) as never));
     });
   }
 
-  test('⚠️ reversing TWICE is the identity, both forms', () => {
+  test('reversing TWICE is the identity, both forms', () => {
     const { raw, compiled } = bothFormsOf(CASES['three segments']);
 
     expect(shapeOf(reverseRawPath(reverseRawPath(raw)) as never)).toBe(shapeOf(raw as never));
     expect(shapeOf(reversePath(reversePath(compiled)) as never)).toBe(shapeOf(compiled as never));
   });
 
-  test('⚠️ the carried fields survive — pathVar, selector, mode', () => {
+  test('the carried fields survive — pathVar, selector, mode', () => {
     /*
-     * 🔑 THESE ARE THE FIELDS A MIRROR MOST EASILY DROPS, and dropping one is silent: a lost `mode`
+     * THESE ARE THE FIELDS A MIRROR MOST EASILY DROPS, and dropping one is silent: a lost `mode`
      * turns a `trail` walk into the `walk` default, which changes the ANSWER on a cyclic graph rather
      * than erroring.
      *
-     * ⚠️ THE PATTERN IS HAND-BUILT, not parsed, and deliberately so. Every surface spelling that sets a
+     * THE PATTERN IS HAND-BUILT, not parsed, and deliberately so. Every surface spelling that sets a
      * `selector` requires a QUANTIFIED segment (`ANY SHORTEST` refuses a fixed-length path outright),
      * and neither reverser accepts a quantifier — so no parseable query can carry a selector INTO a
      * reversal. Constructing the record directly tests the carry itself rather than a spelling.
@@ -99,9 +99,9 @@ describe('reverseRawPath mirrors reversePath (item 2106)', () => {
     expect(back.mode).toBe('trail');
   });
 
-  test('⚠️ an ABSENT optional field stays absent rather than becoming undefined', () => {
+  test('an ABSENT optional field stays absent rather than becoming undefined', () => {
     /*
-     * 🔑 `pathVar: undefined` and no `pathVar` are different to `Object.keys`, and the compiled twin
+     * `pathVar: undefined` and no `pathVar` are different to `Object.keys`, and the compiled twin
      * spreads conditionally for exactly that reason. A route that compares patterns structurally would
      * see the two as unequal.
      */
@@ -113,13 +113,13 @@ describe('reverseRawPath mirrors reversePath (item 2106)', () => {
     expect('mode' in back).toBe('mode' in raw);
   });
 
-  test('⚠️ TWO segments are NOT re-routed by item 2106 — item 220 already seeds them', () => {
+  test('TWO segments are NOT re-routed by item 2106 — item 220 already seeds them', () => {
     /*
-     * 🔑 THIS TEST EXISTS BECAUSE A MUTANT SURVIVED (`segments.length < 3` -> `< 2`). The two-segment
+     * THIS TEST EXISTS BECAUSE A MUTANT SURVIVED (`segments.length < 3` -> `< 2`). The two-segment
      * end is ALREADY passed as `cend` (item 220), so re-routing it would duplicate an existing seek for
      * nothing — and admitting it is invisible to an answer test, since both orientations are correct.
      *
-     * ⚠️ SO IT ASSERTS THE ANSWERS ACROSS BOTH BOUNDARIES — one, two and three segments, each indexed
+     * SO IT ASSERTS THE ANSWERS ACROSS BOTH BOUNDARIES — one, two and three segments, each indexed
      * against unindexed. A gate that admitted the wrong lengths would have to return a wrong count to be
      * caught here, which is the honest limit of a route test; the length itself is asserted by the
      * mutation round.
@@ -156,11 +156,11 @@ describe('reverseRawPath mirrors reversePath (item 2106)', () => {
     expect(shapes.map((q) => Number((query(g, q, {})[0] as { c: number }).c))).toStrictEqual(
       before,
     );
-    // ⚠️ A shape answering 0 would make every arm agree trivially.
+    // A shape answering 0 would make every arm agree trivially.
     expect(before.every((n) => n > 0)).toBe(true);
   });
 
-  test('⚠️⚠️ the ANSWER is identical whichever end a three-hop count seeds from', () => {
+  test('the ANSWER is identical whichever end a three-hop count seeds from', () => {
     /*
      * THE END-TO-END CHECK, and the one that would have caught a bad mirror. 14 end-gated shapes were
      * verified indexed-against-unindexed when this shipped; this keeps a sample of that in the suite.

@@ -9,7 +9,7 @@ import { shortestPath } from './shortest-path.js';
  * CSR built once. The existing twelve tests cover the routes and the negative-weight guard; these
  * cover what the CSR itself could get wrong.
  *
- * ⚠️ THE SHARPEST RISK IS A SIZE/FILL DISAGREEMENT. The CSR is sized by `countIncidentEdges` and
+ * THE SHARPEST RISK IS A SIZE/FILL DISAGREEMENT. The CSR is sized by `countIncidentEdges` and
  * filled by `incidentEdges`, and both dedupe an edge carrying several labels. If the sizing had used
  * the non-deduping flat count instead, a two-label edge would reserve two slots and only one would be
  * written — leaving a slot holding **0**, which reads as a spurious edge to vertex index 0 and
@@ -32,7 +32,7 @@ const addE = (g: Graph, from: string, to: string, labels: string[], w?: number):
 };
 
 /**
- * ⚠️ AN UNREACHABLE VERTEX GETS NO ROW AT ALL — `computeGen` filters on `Number.isFinite`, so the
+ * AN UNREACHABLE VERTEX GETS NO ROW AT ALL — `computeGen` filters on `Number.isFinite`, so the
  * absence of a key is how unreachability is expressed, not a stored `Infinity`. Asserting
  * `Infinity` fails with `undefined`, which is what seven of these tests did on their first run.
  */

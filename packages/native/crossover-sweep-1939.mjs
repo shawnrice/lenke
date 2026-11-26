@@ -2,7 +2,7 @@
 //
 // Item 1938 found the edge-driven arm beats the engine's start-driven walk above ~30% start-label
 // coverage and LOSES by up to 25x below ~20% — so the gate must be a cost test with a threshold.
-// ⚠️ That threshold came from ONE fixture at ONE size (50,000) and ONE fanout (2), and CLAUDE.md
+// That threshold came from ONE fixture at ONE size (50,000) and ONE fanout (2), and CLAUDE.md
 // requires both sweeps before a number like it can be believed:
 //
 //   - "Sweep the size. Cache-resident and not are different questions; the transition is between
@@ -10,7 +10,7 @@
 //   - "Match the fixture to the claim. Per-edge costs scale with the edge:node ratio, per-node
 //     costs do not."
 //
-// 🔑 THE CROSSOVER IS EXACTLY WHERE BOTH MATTER, because it is a ratio between an O(|E|) arm and an
+// THE CROSSOVER IS EXACTLY WHERE BOTH MATTER, because it is a ratio between an O(|E|) arm and an
 // O(tCount x degree) one — so changing the edge:node ratio moves the two sides by DIFFERENT amounts
 // and the crossing point must move with it. If it does not, that is itself the finding.
 //
@@ -18,7 +18,7 @@
 // wins. A threshold that is stable across cells can be a constant; one that moves has to be a
 // function of the edge:node ratio.
 //
-// ⚠️ RUN UNDER A CAP — a probe over generated input at these sizes is exactly what
+// RUN UNDER A CAP — a probe over generated input at these sizes is exactly what
 // [[dogfood-sim-resource-limits]] is about:
 //
 //     timeout 900 systemd-run --user --scope -q -p MemoryMax=16G -p MemorySwapMax=0 \
@@ -103,14 +103,14 @@ console.log('  nodes  fanout   E:V   crossover   ratio there   ratio at 0.6');
 console.log('-'.repeat(68));
 
 /*
- * ⚠️⚠️ `await` BETWEEN CELLS, AND IT IS NOT DECORATION. The first run of this sweep printed five of
+ * `await` BETWEEN CELLS, AND IT IS NOT DECORATION. The first run of this sweep printed five of
  * six cells and then died without its trailing note — and [[graph-pinned-until-microtask-drain]]
  * names the cause: a discarded Graph is retained IN FULL by its pending `drainMutations` microtask,
  * so a SYNCHRONOUS build/compute/discard loop OOMs. This sweep builds 42 graphs in one process,
  * which is precisely that shape. Yielding to the microtask queue lets each cell's graphs be
  * collected before the next builds more.
  *
- * ⚠️ And the exit code hid it: `timeout … | tail` reports TAIL's status, so the run looked like
+ * And the exit code hid it: `timeout … | tail` reports TAIL's status, so the run looked like
  * exit 0. CLAUDE.md warns about this for `clippy | grep`; it is the same trap through a different
  * command. The missing cell ran fine on its own.
  */
@@ -161,6 +161,6 @@ for (const nodes of SIZES) {
 }
 
 console.log(
-  '\n⚠️ A crossover that MOVES across cells cannot be a constant in the gate — it has to be a\n' +
+  '\nA crossover that MOVES across cells cannot be a constant in the gate — it has to be a\n' +
     '   function of the edge:node ratio. One that is stable can be.',
 );

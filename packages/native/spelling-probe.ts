@@ -115,7 +115,7 @@ const GROUPS: [string, readonly string[]][] = [
     // EMPTY ARRAY for `{}`, so the braced spelling declined a route the bare one takes. The gate
     // now calls `plainNode`/`plainRel`, whose test is `(properties?.length ?? 0) === 0`.
     //
-    // ⚠️ THE EMPTY MAP IS A SPELLING OF NOTHING AT ALL, which is why it belongs here rather than
+    // THE EMPTY MAP IS A SPELLING OF NOTHING AT ALL, which is why it belongs here rather than
     // in a correctness test: every arm always returned the same ANSWER, by the general path, so no
     // correctness test could see the gap. A/B'd on the old gate at 200,000 vertices / 600,000
     // edges, median of 6 post-warmup reps, `exists-brace-2392.mjs`:
@@ -125,12 +125,12 @@ const GROUPS: [string, readonly string[]][] = [
     //     old gate             17.86       64.55 / 64.36 / 64.29      3.61x
     //     fixed                19.26       17.09 / 19.51 / 17.22      1.14x
     //
-    // 🔑 THE 3.61x IS THE WHOLE ARM, confirmed by a null control rather than inferred from the
+    // THE 3.61x IS THE WHOLE ARM, confirmed by a null control rather than inferred from the
     // ratio: with `existsHopNodeCount` forced to decline the BARE spelling reads 63.72, and the
     // old gate's braced arms sit ON that number. They were not taking a slower route; they were
     // not taking it.
     //
-    // ⚠️ `:P`, NOT `:Univ`. `:Univ` is this fixture's universal label and its 202,000-vertex bucket
+    // `:P`, NOT `:Univ`. `:Univ` is this fixture's universal label and its 202,000-vertex bucket
     // takes a different and much slower route (86-143 ms, spread 1.3-1.6x), which measures
     // something else and would read as noise here.
     'an EXISTS one-hop count: a bare element vs an EMPTY inline map',
@@ -363,7 +363,7 @@ const GROUPS: [string, readonly string[]][] = [
       'MATCH (n:P) WHERE n.k <> 2 RETURN count(*) AS c',
     ],
   ],
-  // ⚠️ MEASURED UNDER-POWERED AT THIS FIXTURE (item 1385). This group is the RIGHT group — it is the
+  // MEASURED UNDER-POWERED AT THIS FIXTURE (item 1385). This group is the RIGHT group — it is the
   // one that would catch a union walk whose cost depends on the order the query names types, which
   // items 1382 and 1384 both shipped and then fixed. But measured against the pre-fix engine on THIS
   // fixture it reads **1.22x / 1.23x**, reproducibly, where the post-fix engine reads 1.00x / 1.02x.
@@ -405,7 +405,7 @@ const GROUPS: [string, readonly string[]][] = [
     // DISTINCT-via-LET to the walk and item 188 did the same for a `GROUP BY` with no
     // aggregate, which closed the group — 1.36 / 1.37 / 1.44ms, within 6%.
     /*
-     * ⚠️⚠️⚠️ **THE GROUP THAT WOULD HAVE CAUGHT A 62x GAP, ADDED AT ITEM 2178 AFTER IT WAS FOUND BY
+     * **THE GROUP THAT WOULD HAVE CAUGHT A 62x GAP, ADDED AT ITEM 2178 AFTER IT WAS FOUND BY
      * HAND.** Every count rung gates on a STAR projection, so naming the variable instead of `*` fell
      * off ALL of them onto the general matcher:
      *
@@ -415,11 +415,11 @@ const GROUPS: [string, readonly string[]][] = [
      *     two hops                                   count(*)/count(c) 0.20 / 17.08       85x
      * ```
      *
-     * 🔑 `count(x)` counts rows where `x` is non-null and `count(*)` counts rows; under a plain `MATCH`
+     * `count(x)` counts rows where `x` is non-null and `count(*)` counts rows; under a plain `MATCH`
      * a pattern variable is always bound, so **these must answer identically** — and they did, which is
      * exactly why no correctness test could find it. Item 2177 rewrote the named form to the star form.
      *
-     * ⚠️ The OPTIONAL spelling is deliberately NOT here: under `OPTIONAL MATCH` the two genuinely differ
+     * The OPTIONAL spelling is deliberately NOT here: under `OPTIONAL MATCH` the two genuinely differ
      * (a null-padded row is counted by `count(*)` and not by `count(b)`), so it belongs in a correctness
      * test — `count-of-bound-var.test.ts` has it — and not in an equivalence group.
      */
@@ -440,18 +440,18 @@ const GROUPS: [string, readonly string[]][] = [
   ],
   [
     /*
-     * ⚠️⚠️ **THIS GROUP'S ARMS ALL READ ~97 ms HERE AND ~0.00 ms IN EVERY FIXTURE I BUILT BY HAND, AND I
+     * **THIS GROUP'S ARMS ALL READ ~97 ms HERE AND ~0.00 ms IN EVERY FIXTURE I BUILT BY HAND, AND I
      * DID NOT FIND WHY** (item 2178). The RATIO is what this probe exists for and it converges (97.13 /
      * 96.35 / 97.88), so the group does its job; the ABSOLUTE is the open question.
      *
-     * 🔑 Ruled out, each by measurement, so nobody repeats them:
+     * Ruled out, each by measurement, so nobody repeats them:
      *   - **in-process pollution** from the 60+ groups before it — `SPELL_ONLY` on this group alone in a
      *     fresh process still reads 97 ms;
      *   - **mixed NODE labels** (`["P","Q","Univ"]` vs a bare `["P"]`) — 0.00 vs 0.01, no effect;
      *   - **two-label EDGES** (`e % 11 === 0 ? ["E","F"] : ["E"]`, which could disqualify bucket-summing)
      *     — 0.00 vs 0.02, no effect.
      *
-     * ⚠️ What remains untested is this fixture's PROPERTY set (a `@date`, a nested `meta` map, `s`/`flag`)
+     * What remains untested is this fixture's PROPERTY set (a `@date`, a nested `meta` map, `s`/`flag`)
      * and its seek INDEX. A `count(*)` over a hop should read no property at all, which is what makes the
      * 97 ms interesting rather than obviously explicable.
      */
@@ -519,20 +519,20 @@ const GROUPS: [string, readonly string[]][] = [
     ],
   ],
   [
-    // ⚠️⚠️ THE SEEDED VAR-LENGTH PAIR (item 1906), and its absence is why an 8.75x survived: the
+    // THE SEEDED VAR-LENGTH PAIR (item 1906), and its absence is why an 8.75x survived: the
     // probe has clause-vs-inline groups for the node and hop shapes and none for a QUANTIFIED one.
     // `reachShortcut` refused any clause `WHERE` outright, so the inline spelling took the rung and
     // the clause spelling reached none — 2996.17 ms against 342.45 over 200,000 vertices, for the
     // same 8 rows, and the clause form was 7.4x slower than not seeding at all.
     //
-    // ⚠️ A LITERAL, not a `$param`: this probe's main groups take no params (the seek section has
+    // A LITERAL, not a `$param`: this probe's main groups take no params (the seek section has
     // its own). The routing under test is clause-vs-inline, which a literal exercises identically.
     //
-    // ⚠️ AND A NON-NULL OPERAND MATTERS. With null the two spellings are NOT the same question —
+    // AND A NON-NULL OPERAND MATTERS. With null the two spellings are NOT the same question —
     // `WHERE a.k = null` is three-valued and matches nothing, while `{k: null}` is a property-value
     // match and null is a PRESENT value here. Verified identical in both engines for the node, hop
     // and var-length shapes, so it is policy rather than a divergence.
-    // ⚠️ THE COUNT TWIN (item 1907). Item 583 refused a START gate on the COUNT rung, which kept all
+    // THE COUNT TWIN (item 1907). Item 583 refused a START gate on the COUNT rung, which kept all
     // three spellings on the walk TOGETHER — no cliff, but 129-138x slower than the unseeded count
     // that takes the rung (1978 / 1850 ms against 14.32 at 200,000 vertices). Carrying it for all
     // three keeps them together AND fast, which is what item 583's own reasoning asked for.
@@ -551,7 +551,7 @@ const GROUPS: [string, readonly string[]][] = [
     ],
   ],
   [
-    // ⚠️⚠️ THE UNWINDOWED TWIN OF THE GROUP ABOVE, AND ITS ABSENCE IS WHY THE GAP SURVIVED TO ITEM
+    // THE UNWINDOWED TWIN OF THE GROUP ABOVE, AND ITS ABSENCE IS WHY THE GAP SURVIVED TO ITEM
     // 1901. Every alias-vs-expression group in this file carried a `LIMIT 10`, because item 1062
     // built the deferred compiled-key arm for WINDOWED sorts — so the probe only ever asked the
     // question on the side that had been fixed. Without a window the expression key reached no
@@ -575,7 +575,7 @@ const GROUPS: [string, readonly string[]][] = [
   // deferring the projection brought both to ~12.5. They are in here because item 1062's first
   // cut made the single-node pair diverge 3.8x and THIS probe is what caught it.
   [
-    // ⚠️ THE UNWINDOWED HOP TWIN (item 1903), the exact counterpart of the node pair items
+    // THE UNWINDOWED HOP TWIN (item 1903), the exact counterpart of the node pair items
     // 1901/1902 added — and its absence is why the hop half went unmeasured for one more item.
     // Every hop group below carried a `LIMIT 10` for the same reason the node ones did: item 1063
     // fixed the windowed side and the groups were written against it.
@@ -697,7 +697,7 @@ const GROUPS: [string, readonly string[]][] = [
   // O(1) cannot converge, so no amount of further work closes this pair — it is here as a
   // REGRESSION guard on the 54ms, not as a target. Read the four-spelling group below for the
   // comparison that IS between equivalent plans.
-  // ⚠️ THE PREDICATE FORMS ITEMS 1286-1298 LIFTED, which should have been added with each one.
+  // THE PREDICATE FORMS ITEMS 1286-1298 LIFTED, which should have been added with each one.
   // CLAUDE.md is explicit — "When adding a predicate form to the planner, add its spellings there"
   // — and six forms shipped (items 1284, 1286, 1288, 1289, 1290, 1298) before item 1300 noticed
   // none of them had. Each pair below is LOGICALLY IDENTICAL regardless of null or type, so a
@@ -733,7 +733,7 @@ const GROUPS: [string, readonly string[]][] = [
   ],
   [
     // A label on the far node of a counted hop, written two ways. OPEN (item 1302, located and
-    // priced, NOT built) — but ⚠️ THE SIZE OF THE GAP IS FIXTURE-DEPENDENT AND THIS FIXTURE
+    // priced, NOT built) — but THE SIZE OF THE GAP IS FIXTURE-DEPENDENT AND THIS FIXTURE
     // COMPRESSES IT, so do not read a small spread here as the gap being small.
     //
     // On `gql-far-label-probe.ts` (200,000 nodes, 1 `T` edge each, all single-label):
@@ -746,7 +746,7 @@ const GROUPS: [string, readonly string[]][] = [
     // just 1.34x, because the PATTERN arm here is itself slow: 22x this probe's pattern arm at the
     // same node count.
     //
-    // ⚠️ THAT SUSPECT IS NOW REFUTED (item 1303). It read "the untested suspect is this fixture's
+    // THAT SUSPECT IS NOW REFUTED (item 1303). It read "the untested suspect is this fixture's
     // MULTI-LABEL edges (`F` on 1 in 11), which is what disables the analogous Gremlin fast path
     // via `multiTypeEdgeCount`". Tested by putting a second edge label on every 11th edge of the
     // single-label fixture and moving NOTHING else — same arms, same size, 3 alternated rounds:
@@ -774,7 +774,7 @@ const GROUPS: [string, readonly string[]][] = [
     ],
   ],
   [
-    // ⚠️ THIS GROUP ANCHORED ON THE WRONG LABEL, and read as a 1545x finding because of it
+    // THIS GROUP ANCHORED ON THE WRONG LABEL, and read as a 1545x finding because of it
     // (found and corrected at item 1304; item 1303 reported the bad number first).
     //
     // The group's claim is that a REDUNDANT start label costs the same as no label. `P` is not
@@ -954,7 +954,7 @@ const GROUPS: [string, readonly string[]][] = [
   // two-clause twin. Putting a known-divergent pair in a probe that flags divergence makes the
   // probe lie; it is recorded in CLOSED.md instead.
   //
-  // 🛑 THIS GROUP FLAGS AT ~2.3x AND THE OUTLIER IS THE INLINE `{k: 7}` MEMBER, WHICH IS
+  // THIS GROUP FLAGS AT ~2.3x AND THE OUTLIER IS THE INLINE `{k: 7}` MEMBER, WHICH IS
   // **CLOSED AT ITEM 644** — not outstanding, and not what the paragraphs above describe (they
   // explain the comma-vs-`MATCH MATCH` cause item 285 fixed, and predate this member). Only
   // `eqProps`/`cmpProps` reach `rejectedByElementDirect`, so the inline-props spelling evaluates
@@ -1551,7 +1551,7 @@ const SEEK_GROUPS: [string, readonly string[], Record<string, unknown>][] = [
      * AN EQUALITY PLUS AN ORDERING COMPARISON, BOTH SPELLINGS (item 2370).
      *
      * `specializeCmpPair` admits `props` + `cmpProps` and `eqProps` + `cmpProps`, so the clause and inline
-     * spellings of the same pair both reach it. ⚠️ That symmetry is deliberate and this group is what
+     * spellings of the same pair both reach it. That symmetry is deliberate and this group is what
      * keeps it honest: item 1604 shipped the EQUALITY pair over both carriers specifically because
      * specializing one spelling only "would open a 2.7x EQUIVALENT-SPELLING GAP, the defect class this
      * engine is named after", and the same argument applies one carrier along.
@@ -1621,7 +1621,7 @@ const SEEK_GROUPS: [string, readonly string[], Record<string, unknown>][] = [
     { s: 's1' },
   ],
   [
-    // ⚠️ NOT A SEEKED GROUP — `d` carries no index, and these scan. It lives in this family only
+    // NOT A SEEKED GROUP — `d` carries no index, and these scan. It lives in this family only
     // because this is the one that carries PARAMETERS, and the parameter spelling is half of the
     // question: the defect was that a temporal LITERAL and a temporal PARAM meaning the same thing
     // took different routes.
@@ -1637,7 +1637,7 @@ const SEEK_GROUPS: [string, readonly string[], Record<string, unknown>][] = [
     // the group's own floor: it is the one member that NEVER had a temporal in its AST, so if a
     // future change re-breaks the temporal route, the group's spread opens against a member that
     // cannot move.
-    // ⚠️ AND THESE ARE PROJECTIONS, NOT `count(*)`, BECAUSE THE FIRST VERSION OF THIS GROUP WAS
+    // AND THESE ARE PROJECTIONS, NOT `count(*)`, BECAUSE THE FIRST VERSION OF THIS GROUP WAS
     // BLIND. Written with `count(*)` like every group above it, it reported the five members
     // within 1.27x of each other on the BROKEN build — 3.96 / 4.10 / 4.53 / 4.25 / 3.85 ms — and
     // would have been committed as a guard that could never fire. A `count(*)` is claimed earlier
@@ -1680,7 +1680,7 @@ for (const [name, spellings, params] of SEEK_GROUPS.filter(([n]) => wanted(n))) 
 console.log(
   `\n${wrong.length} group(s) disagree on the ANSWER${wrong.length > 0 ? `: ${wrong.join('; ')}` : ''}`,
 );
-// 🛑 AND THE NULL CONTROL MEASURES A DIFFERENT VARIANCE FROM THE ONE A FLAG NEEDS (item 1073).
+// AND THE NULL CONTROL MEASURES A DIFFERENT VARIANCE FROM THE ONE A FLAG NEEDS (item 1073).
 // It runs one query REPS times in THIS process and keeps the min, so it reports within-run jitter
 // — 1.01x at 12.8ms on a typical run. The variance that matters for a flag is BETWEEN runs, and it
 // is far larger at the same cost: item 1073 measured one member of the product group at

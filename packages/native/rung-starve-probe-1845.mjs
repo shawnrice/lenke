@@ -7,11 +7,11 @@
  * INNER PRODUCT (item 590) that is one pass over vertices. So the fast rung exists and something
  * above it in the chain is answering first.
  *
- * ⚠️ TIMING CANNOT TELL "DECLINED" FROM "MORE WORK" (`rung-precedence-decides-speed`), so this
+ * TIMING CANNOT TELL "DECLINED" FROM "MORE WORK" (`rung-precedence-decides-speed`), so this
  * probe does not infer the culprit — it DISABLES each candidate in turn and re-measures. The rung
  * whose removal makes the two-hop count fast is the one starving the inner product.
  *
- * ⚠️ EACH ARM IS ITS OWN PROCESS and each build is asserted by a marker in the built dist, so an
+ * EACH ARM IS ITS OWN PROCESS and each build is asserted by a marker in the built dist, so an
  * arm that silently failed to apply cannot read as a null result.
  *
  *     bun rung-starve-probe-1845.mjs
@@ -91,11 +91,11 @@ try {
       const s = readFileSync(SRC, 'utf8');
 
       if (s.split(callSite).length - 1 !== 1) {
-        console.log(`${label.padEnd(32)} ⚠️ anchor not unique — skipped`);
+        console.log(`${label.padEnd(32)} anchor not unique — skipped`);
         continue;
       }
 
-      // ⚠️ NOT A COMMENT. The first version marked the arm with `/* MARKER */` and the bundler
+      // NOT A COMMENT. The first version marked the arm with `/* MARKER */` and the bundler
       // stripped it, so the arm assertion failed on the very first disabled arm — which is the
       // assertion doing its job. An assignment to a NAMED global survives minification.
       writeFileSync(

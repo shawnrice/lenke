@@ -25,12 +25,12 @@ import { taggedHopValues } from './tagged-hop-values.js';
 /**
  * The two TAGGED hop shapes that are tag-free computations (item 1912).
  *
- * ⚠️⚠️ **THIS RUNG RIDES PAST THE `tracksPath` GUARD, which no other fusion here does**, so the
+ * **THIS RUNG RIDES PAST THE `tracksPath` GUARD, which no other fusion here does**, so the
  * declines matter as much as the answers. Its warrant is that it claims the WHOLE plan — exactly
  * four steps — so no downstream step is left to ask for a path. Every test below that adds a fifth
  * step is checking that warrant, not padding.
  *
- * ⚠️ THE ORACLE IS `limit(huge)`, which needs no kill switch: a fifth step takes the plan to five
+ * THE ORACLE IS `limit(huge)`, which needs no kill switch: a fifth step takes the plan to five
  * steps, so the rung declines and the GENERIC path answers — while a limit above the row count
  * changes nothing. Each answer is therefore checked against the same query on the old route.
  */
@@ -52,7 +52,7 @@ const fixture = (): Graph => {
   for (const spec of [
     { id: 'e1', from: 'a', to: 'b', labels: ['E'] },
     { id: 'e2', from: 'a', to: 'c', labels: ['E'] },
-    // ⚠️ A SELF-LOOP — the ONLY thing the two shapes differ on, so a fixture without one cannot
+    // A SELF-LOOP — the ONLY thing the two shapes differ on, so a fixture without one cannot
     // tell `select` (which emits it) from `where(neq)` (which drops it).
     { id: 'e3', from: 'b', to: 'b', labels: ['E'] },
     { id: 'e4', from: 'c', to: 'd', labels: ['E'] },
@@ -74,7 +74,7 @@ const fixture = (): Graph => {
 const ids = (rows: unknown[]): unknown[] => rows.map((v) => (v as { id: string }).id);
 
 /**
- * ⚠️ TWICE, BECAUSE THE RUNG RIDES ITEM 1889'S SECOND-ASK POLICY and declines its own first call:
+ * TWICE, BECAUSE THE RUNG RIDES ITEM 1889'S SECOND-ASK POLICY and declines its own first call:
  * a single `toArray` measures the bucket walk and a repeat measures the CSR. Both must answer the
  * same — five mutants survived a single-`toArray` suite at item 1889 for exactly this reason.
  */
@@ -94,7 +94,7 @@ describe('taggedHopValues — the answer, on both walks', () => {
 
     // a has 2 E-edges, b has 1 (its self-loop), c has 1, d has 1 (the two-type edge), z none.
     expect(got).toStrictEqual(['a', 'a', 'b', 'c', 'd']);
-    // ⚠️ AGAINST THE GENERIC PATH: a fifth step declines the rung, and a limit above the row count
+    // AGAINST THE GENERIC PATH: a fifth step declines the rung, and a limit above the row count
     // changes nothing.
     expect(got).toStrictEqual(
       ids(toArray(traversal(V(), as_('x'), out('E'), select('x'), limit(1000)), g)),
@@ -114,7 +114,7 @@ describe('taggedHopValues — the answer, on both walks', () => {
   it('serves `in`, both shapes, against the generic path', () => {
     const g = fixture();
 
-    // ⚠️ Each pair is written out rather than derived from `.steps`: `traversal()` takes step
+    // Each pair is written out rather than derived from `.steps`: `traversal()` takes step
     // BUILDERS, not step objects, so a plan cannot be rebuilt from a compiled one.
     expect(ids(twice(() => traversal(V(), as_('x'), in_('E'), select('x')), g))).toStrictEqual(
       ids(toArray(traversal(V(), as_('x'), in_('E'), select('x'), limit(1000)), g)),
@@ -141,7 +141,7 @@ describe('taggedHopValues — the answer, on both walks', () => {
     ]);
   });
 
-  /** ⚠️ The lazy iterator is a second copy of the loop; only spreading `run` reaches it. */
+  /** The lazy iterator is a second copy of the loop; only spreading `run` reaches it. */
   it('the LAZY iterator agrees with the eager drain', () => {
     const g = fixture();
     const make = () => traversal(V(), as_('x'), out('E'), select('x'));
@@ -161,7 +161,7 @@ describe('taggedHopValues — the answer, on both walks', () => {
 /**
  * The FIVE-step spellings, with a trailing `values(k)` (item 1912).
  *
- * ⚠️⚠️ THESE ARE THE SHAPES THE WORKLOAD SCREEN MEASURES, and the four-step rung alone left them
+ * THESE ARE THE SHAPES THE WORKLOAD SCREEN MEASURES, and the four-step rung alone left them
  * untouched at 406 and 196 ms — a win that had not reached the shape anyone flagged. The screen's
  * own definitions are what showed it, which is why its spellings are mirrored here exactly.
  */
@@ -189,7 +189,7 @@ describe('taggedHopValues — a trailing values(k)', () => {
   });
 
   /**
-   * ⚠️ A MISSING KEY IS DROPPED, NOT EMITTED AS NULL — `projectValues`' rule (`k in props`), and a
+   * A MISSING KEY IS DROPPED, NOT EMITTED AS NULL — `projectValues`' rule (`k in props`), and a
    * STORED null is a present value that IS emitted. Both arms of that distinction are here.
    */
   it('drops an element lacking the key, and keeps a stored null', () => {
@@ -220,7 +220,7 @@ describe('taggedHopValues — a trailing values(k)', () => {
   });
 
   /**
-   * ⚠️⚠️ A SIXTH STEP MUST DECLINE, AND A MUTANT IS WHY THIS TEST EXISTS. Loosening the gate to
+   * A SIXTH STEP MUST DECLINE, AND A MUTANT IS WHY THIS TEST EXISTS. Loosening the gate to
    * `steps.length < 4` left every other assertion green: a five-step plan ending in `limit` still
    * declined (the fifth step is not a `values`), so nothing reached the case where the fifth step IS
    * a `values` and a SIXTH is dropped. `rest` is always `[]`, so an admitted residual is not run —
@@ -257,7 +257,7 @@ describe('taggedHopValues — a trailing values(k)', () => {
 /**
  * The TWO-TAG pair: `[V, as_(a), hop, as_(b), select(a, b)]` (item 1914).
  *
- * ⚠️⚠️ THE KEY ORDER IS PART OF THE ANSWER. `select('y','x')` answers `{y: …, x: …}`, and
+ * THE KEY ORDER IS PART OF THE ANSWER. `select('y','x')` answers `{y: …, x: …}`, and
  * [[column-order-is-observable]] makes that a contract — row ORDER is unspecified in places, column
  * order never is. Both orders are asserted, against the generic path and spelled out.
  */
@@ -340,7 +340,7 @@ describe('taggedHopValues — the two-tag pair', () => {
     }
   });
 
-  /** ⚠️ The two tags must DIFFER: `as_('x') … as_('x')` rebinds one label, a different question. */
+  /** The two tags must DIFFER: `as_('x') … as_('x')` rebinds one label, a different question. */
   it('declines when both tags share a label', () => {
     expect(
       taggedHopValues(traversal(V(), as_('x'), out('E'), as_('x'), select('x', 'x')), fixture()),
@@ -351,7 +351,7 @@ describe('taggedHopValues — the two-tag pair', () => {
 /**
  * The LAZY iterator on a FRESH graph — the BUCKET arm (item 1914).
  *
- * ⚠️⚠️ **EVERY OTHER `run` TEST IS PRECEDED BY A `toArray`, WHICH WARMS THE CSR**, so the iterator's
+ * **EVERY OTHER `run` TEST IS PRECEDED BY A `toArray`, WHICH WARMS THE CSR**, so the iterator's
  * bucket arm was never reached by anything: `toArray` takes the drain, and by the time `run` is
  * spread the second-ask policy has switched the walk to the CSR. Three mutants survived on that —
  * the iterator's self-loop drop and both of its missing-key drops — and all three live in the arm
@@ -361,7 +361,7 @@ describe('taggedHopValues — the lazy iterator on a COLD graph (bucket arm)', (
   const ids = (rows: unknown[]): unknown[] => rows.map((v) => (v as { id: string }).id);
 
   it('select, where(neq) and the pair, each on a graph asked ONCE', () => {
-    // ⚠️ A FRESH fixture per spread: `seenBefore` records per (graph, topology, shape), so reusing
+    // A FRESH fixture per spread: `seenBefore` records per (graph, topology, shape), so reusing
     // one graph would warm the CSR for the next assertion and defeat the point.
     expect(ids([...run(traversal(V(), as_('x'), out('E'), select('x')), fixture())])).toStrictEqual(
       ['a', 'a', 'b', 'c', 'd'],
@@ -378,7 +378,7 @@ describe('taggedHopValues — the lazy iterator on a COLD graph (bucket arm)', (
   });
 
   /**
-   * ⚠️ AND ON THE WARM PATH THROUGH THE ITERATOR, which is a third combination: `toArray` first (so
+   * AND ON THE WARM PATH THROUGH THE ITERATOR, which is a third combination: `toArray` first (so
    * the CSR is built), then spread `run`. A mutant removing the iterator's CSR-arm missing-key drop
    * survived everything else — the cold test above reaches the BUCKET arm and `twice()` reaches the
    * DRAIN, so the iterator's CSR arm needs its own assertion. Three paths, three tests.
@@ -434,7 +434,7 @@ describe('taggedHopValues — what it declines', () => {
   };
 
   /**
-   * ⚠️⚠️ THE WARRANT. A FIFTH STEP MUST DECLINE, because this rung rides past the `tracksPath`
+   * THE WARRANT. A FIFTH STEP MUST DECLINE, because this rung rides past the `tracksPath`
    * guard only by claiming the whole plan — a residual would be handed bare values whose traversers
    * never existed, and a path-reading step would have nothing to read.
    */
@@ -443,7 +443,7 @@ describe('taggedHopValues — what it declines', () => {
     expect(declines(traversal(V(), as_('x'), out('E'), where(neq('x')), limit(2))).length).toBe(2);
   });
 
-  /** ⚠️ AND A PATH-READING TAIL, which is the shape the guard exists for. */
+  /** AND A PATH-READING TAIL, which is the shape the guard exists for. */
   it('declines a `path` tail', () => {
     expect(declines(traversal(V(), as_('x'), out('E'), path())).length).toBe(5);
   });

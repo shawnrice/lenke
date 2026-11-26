@@ -25,14 +25,14 @@ import { compileLinear } from '../gql/src/executor/rewrites.ts';
  *     the FIRST non-null field, in declaration order, is the rung that FIRES
  *     every LATER non-null field is a rung that was WILLING and did not run
  *
- * ⚠️ THAT IDENTITY IS AN ASSUMPTION ABOUT TWO FILES AGREEING, so this probe ASSERTS IT rather than
+ * THAT IDENTITY IS AN ASSUMPTION ABOUT TWO FILES AGREEING, so this probe ASSERTS IT rather than
  * trusting it: `CHAIN` below is transcribed from `runLinear` and checked against the key order
  * `compileLinear` actually returns. If someone reorders one file and not the other, this probe fails
  * loudly instead of reporting a confident census of the wrong order. That is the whole reason the
  * two files are kept in sync, and `rewrites.ts` records that they once drifted in their first five
  * entries while matching in the last fourteen.
  *
- * ⚠️ AND A STARVED RUNG IS A CANDIDATE, NOT A FINDING. A broader rung firing first may genuinely be
+ * AND A STARVED RUNG IS A CANDIDATE, NOT A FINDING. A broader rung firing first may genuinely be
  * the better route — item 418 measured a branch moved ahead of a hot dispatch costing the shape it
  * does not claim 1.12x, and `rewrites.ts` says each position is for correctness, for cost, or only
  * for reading. What this probe produces is the LIST OF PRECEDENCE DECISIONS THAT ARE LOAD-BEARING,
@@ -53,7 +53,7 @@ import { compileLinear } from '../gql/src/executor/rewrites.ts';
 // rather than dist, because its job is to answer "which rung would answer this" while a rung change
 // is being iterated on, which is before a build has happened.
 //
-// ⚠️ The directive has to be ONE line. Written across several, `eslint-disable-next-line` applies to
+// The directive has to be ONE line. Written across several, `eslint-disable-next-line` applies to
 // the next COMMENT line instead of the import and the rule still fires.
 // eslint-disable-next-line boundaries/no-cross-package-relative-import -- internal planner entry point, read pre-build; see above
 import { parse } from '../gql/src/parser.ts';
@@ -66,22 +66,22 @@ import { parse } from '../gql/src/parser.ts';
 const NON_RUNG = new Set(['clauses', 'writes']);
 
 /*
- * ⚠️⚠️ **DERIVED FROM THE SOURCE, NOT TRANSCRIBED — item 2117, and that IS the fix item 1901 scoped.**
+ * **DERIVED FROM THE SOURCE, NOT TRANSCRIBED — item 2117, and that IS the fix item 1901 scoped.**
  * That item left this census dark with a precise prerequisite: *"the drift is not a stale transcription
  * to patch — ten compiled fields are consumed somewhere other than the single ladder, and
  * re-establishing the precedence oracle means finding where."*
  *
- * 🔑 THEY ARE CONSUMED IN FOUR HELPERS that `fastPath` calls at specific points — `scanAggregates`,
+ * THEY ARE CONSUMED IN FOUR HELPERS that `fastPath` calls at specific points — `scanAggregates`,
  * `pagedWidthProjections`, `chainStarCountOrCountShortcut` and `deepWidthReductions`. So the runtime
  * order is `fastPath`'s own sequence with each helper's rungs spliced in WHERE IT IS CALLED, which is
  * what `chainOrder` below reconstructs by reading `clauses.ts`.
  *
- * ⚠️ **AND THE DOCUMENTED INVARIANT IS VIOLATED, WHICH IS WHY TRANSCRIBING CANNOT WORK.** The header
+ * **AND THE DOCUMENTED INVARIANT IS VIOLATED, WHICH IS WHY TRANSCRIBING CANNOT WORK.** The header
  * above says `compileLinear`'s field order "is kept identical to that chain deliberately". It is not —
  * five rungs disagree, `chainStarCount` most sharply (15th as a field, 2nd at runtime). A transcription
  * has to be corrected whenever either file moves; a derivation cannot go stale.
  *
- * ⚠️ IT IS STILL ASSERTED, just differently: the derived chain must contain EXACTLY `compileLinear`'s
+ * IT IS STILL ASSERTED, just differently: the derived chain must contain EXACTLY `compileLinear`'s
  * rung keys, both directions. A derivation bug then fails loudly rather than reporting a confident
  * census of an order nobody runs.
  */
@@ -105,7 +105,7 @@ const bodyOf = (src, name) => {
   return src.slice(m.index, end === -1 ? undefined : end);
 };
 
-/* The helpers `fastPath` delegates to. ⚠️ Derived, not listed: any function it calls that reads rungs. */
+/* The helpers `fastPath` delegates to. Derived, not listed: any function it calls that reads rungs. */
 const helperNames = (src) => {
   const top = bodyOf(src, 'fastPath');
   const out = [];
@@ -133,7 +133,7 @@ const chainOrder = (src) => {
   const helpers = helperNames(src);
 
   /*
-   * ⚠️ AN EMPTY HELPER LIST IS A DERIVATION BUG, NOT A VALID STATE — `fastPath` delegates to four of
+   * AN EMPTY HELPER LIST IS A DERIVATION BUG, NOT A VALID STATE — `fastPath` delegates to four of
    * them. Without this the alternation below becomes `()`, which matches the empty string and the walk
    * goes wrong in a way whose stack trace says nothing about the cause (verified by mutating
    * `helperNames` to return `[]`).
@@ -179,20 +179,20 @@ const CHAIN = chainOrder(CLAUSES_SRC);
  * depth (node / 1-hop / 2-hop / var-length), tail kind (count / count(DISTINCT) / projection /
  * aggregate / DISTINCT rows), grouping, OPTIONAL, a WHERE, a page, and which END a tail reads.
  *
- * ⚠️ These are SHAPES, not a benchmark: `compileLinear` is purely syntactic and touches no graph, so
+ * These are SHAPES, not a benchmark: `compileLinear` is purely syntactic and touches no graph, so
  * no fixture is needed and no fixture defect can bias the census. What a shape must do is PARSE —
  * and a shape that fails to parse is reported rather than skipped, because a silently dropped row
  * would understate the census exactly where the grammar is least familiar.
  */
 /*
- * ⚠️⚠️ **THIS CENSUS IS CURRENTLY DARK, AND IT SAYS SO LOUDLY RATHER THAN REPORTING (item 1901).**
+ * **THIS CENSUS IS CURRENTLY DARK, AND IT SAYS SO LOUDLY RATHER THAN REPORTING (item 1901).**
  * Its load-bearing assertion fails: `compileLinear` now returns 32 rung fields while the `fastPath`
  * ladder in `clauses.ts` consumes 22, and `CHAIN` below transcribes the 20 that existed at item
  * 1775. So the drift is not a stale transcription to patch — ten compiled fields are consumed
  * somewhere other than the single ladder, and re-establishing the precedence oracle means finding
  * where. Until then every row below is a correct QUESTION whose answer this file refuses to print.
  *
- * ⚠️ The refusal is the probe working. What is worth noticing is that nobody ran it between items
+ * The refusal is the probe working. What is worth noticing is that nobody ran it between items
  * ~1885 and 1901, so a "start here" instrument went dark for fifteen items — which is the same
  * failure mode `CLOSED.md`'s lagging-index rule exists to prevent, one directory over.
  */
@@ -209,7 +209,7 @@ const SHAPES = [
   ['node.minmax', 'MATCH (n:P) RETURN min(n.k) AS a, max(n.k) AS b'],
   ['node.avg', 'MATCH (n:P) RETURN avg(n.k) AS s'],
   ['node.distinctrows', 'MATCH (n:P) RETURN DISTINCT n.k'],
-  // ⚠️ THE FOUR SORT SPELLINGS, added at item 1901 because the GQL coverage screen measured the
+  // THE FOUR SORT SPELLINGS, added at item 1901 because the GQL coverage screen measured the
   // third at 8.9x the first over the same 200,000 rows IN THE SAME ORDER (adding 1 is monotone).
   // Item 642 fixed `ORDER BY <the projected prop>` and deliberately left a COMPUTED key on the
   // general path, measuring that choice at ~2x; these rows are what says whether that is still the
@@ -251,7 +251,7 @@ const SHAPES = [
   ['hop.inline.start.count', 'MATCH (a:P {k: 5})-[:E]->(b) RETURN count(*) AS c'],
   ['hop.inline.far.count', 'MATCH (a:P)-[:E]->(b:Q {k: 5}) RETURN count(*) AS c'],
   ['hop.labelled.far.count', 'MATCH (a:P)-[:E]->(b:Q) RETURN count(*) AS c'],
-  // ⚠️ `->`, NOT `-->`. The abbreviated edge pattern was first written here as `-->`, which is
+  // `->`, NOT `-->`. The abbreviated edge pattern was first written here as `-->`, which is
   // CYPHER, not ISO-GQL — CLAUDE.md's standing warning, arriving as a parse failure. ISO-GQL
   // spells an untyped edge `->` or `-[]->`, and both route identically to the typed form.
   ['hop.abbrev.count', 'MATCH (a:P)->(b) RETURN count(*) AS c'],
@@ -260,7 +260,7 @@ const SHAPES = [
   ['hop.group.far', 'MATCH (a:P)-[:E]->(b) RETURN b.k AS g, count(*) AS c'],
   ['hop.group.start', 'MATCH (a:P)-[:E]->(b) RETURN a.k AS g, count(*) AS c'],
   ['hop.group.sum.crossend', 'MATCH (a:P)-[:E]->(b) RETURN a.k AS g, sum(b.k) AS s'],
-  // ⚠️ THESE TWO EXIST BECAUSE THEIR ABSENCE FAKED A STARVATION. Without them
+  // THESE TWO EXIST BECAUSE THEIR ABSENCE FAKED A STARVATION. Without them
   // `groupedHopAggregate` was willing only on the grouped-COUNT shapes, where the count-specific
   // `groupHopShortcut` correctly beats it, so the census reported it as "willing somewhere but
   // ALWAYS starved" — item 1583's exact signature, and wrong. Its own shape is the key and the
@@ -311,12 +311,12 @@ const SHAPES = [
   ['filter.count', 'MATCH (a:P)-[:E]->(b) FILTER b.k > 5 RETURN count(*) AS c'],
   ['filter.node.count', 'MATCH (n:P) FILTER n.k > 5 RETURN count(*) AS c'],
   /*
-   * ⚠️⚠️ **TWELVE RUNGS HAD NO CORPUS SHAPE AT ALL (item 2121), so the census could say nothing about
+   * **TWELVE RUNGS HAD NO CORPUS SHAPE AT ALL (item 2121), so the census could say nothing about
    * them** — not whether they are starved, not whether they are dead. Its own caveat is "STARVED or a
    * CORPUS GAP, rule out the gap first", and for these the gap WAS the answer. Each shape below is taken
    * from the detector's own header rather than guessed.
    *
-   * 🔑 THEY ARE NOT RANDOM: ordered, paged, grouped and multi-column-DISTINCT chains are exactly the
+   * THEY ARE NOT RANDOM: ordered, paged, grouped and multi-column-DISTINCT chains are exactly the
    * shapes items 2119/2120's gates REFUSE, so this is the surface those items declined and nothing
    * reported on.
    */
@@ -362,9 +362,9 @@ const shapesOf = (q) => {
 const probeKeys = Object.keys(shapesOf(SHAPES[0][1])).filter((k) => !NON_RUNG.has(k));
 
 /*
- * ⚠️⚠️ **THE ASSERTION IS NOW SET EQUALITY, NOT ORDER EQUALITY — item 2117.** `compileLinear`'s FIELD
+ * **THE ASSERTION IS NOW SET EQUALITY, NOT ORDER EQUALITY — item 2117.** `compileLinear`'s FIELD
  * order and the runtime chain have DRIFTED in five places (`chainStarCount` is the 15th field and the
- * 2nd rung to run), so an order check can only fail. 🔑 What must hold is that the derived chain covers
+ * 2nd rung to run), so an order check can only fail. What must hold is that the derived chain covers
  * exactly the rungs `compileLinear` produces: a derivation that missed one would silently report that
  * rung as never firing, and one that invented a name would crash on the lookup.
  */
@@ -372,7 +372,7 @@ const missingFromChain = probeKeys.filter((k) => !CHAIN.includes(k));
 const notAField = CHAIN.filter((k) => !probeKeys.includes(k));
 
 if (missingFromChain.length > 0 || notAField.length > 0) {
-  console.error("⚠️  the DERIVED chain and `compileLinear`'s rung keys disagree.");
+  console.error(" the DERIVED chain and `compileLinear`'s rung keys disagree.");
   console.error(
     `    in compileLinear but not reached by the derived chain: ${missingFromChain.join(', ') || '(none)'}`,
   );
@@ -428,7 +428,7 @@ console.log(`  shapes with a CONTESTED choice  ${contested.length}  (>=2 willing
 
 // Each (fires, starved) pair is one precedence decision. Ranked by how many shapes it covers,
 // because a pair covering many shapes is a decision that was never deliberately made for most of
-// them. ⚠️ A pair is a CANDIDATE: the broader rung firing first may be correct. See the header.
+// them. A pair is a CANDIDATE: the broader rung firing first may be correct. See the header.
 const pairs = new Map();
 
 for (const r of contested) {
@@ -458,7 +458,7 @@ const never = CHAIN.filter((k) => !firedEver.has(k));
 
 console.log(`\n=== rungs that NEVER fire on this corpus (${never.length}/${CHAIN.length}) ===`);
 
-// ⚠️ "WILLING SOMEWHERE BUT NEVER FIRES" IS AMBIGUOUS, and reading it as starvation is a mistake
+// "WILLING SOMEWHERE BUT NEVER FIRES" IS AMBIGUOUS, and reading it as starvation is a mistake
 // this census made on its own first run. It means one of two things, and they need opposite work:
 //
 //   STARVED      a broader rung precedes it on every shape it claims    -> item 1583's gate
@@ -472,7 +472,7 @@ for (const k of never) {
   console.log(
     `  ${k.padEnd(24)} ${
       starvedEver.has(k)
-        ? '⚠️  willing somewhere, never fires — STARVED or a CORPUS GAP, rule out the gap first'
+        ? ' willing somewhere, never fires — STARVED or a CORPUS GAP, rule out the gap first'
         : 'no corpus shape reaches it'
     }`,
   );

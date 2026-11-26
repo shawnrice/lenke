@@ -21,7 +21,7 @@ import { parse } from './parser.js';
  * (2.23x), and the remainder is `propOf` + `compareTruth` per element, which that ablation inlined
  * away and this change still pays.
  *
- * ⚠️ THIS FILE EXISTS BECAUSE THE FUNCTION ALREADY CAUSED A WRONG ANSWER. Its first version listed
+ * THIS FILE EXISTS BECAUSE THE FUNCTION ALREADY CAUSED A WRONG ANSWER. Its first version listed
  * the carriers to refuse BY HAND and the list was short: `CPredicate` has TWELVE and four were
  * missed (`pathProps`, `labelTests`, `truthTestProps`, `typedTests`), so
  * `WHERE p.meta.city = 'NYC' AND p.n > 2` specialized to the `p.n > 2` half and answered 5 instead
@@ -225,7 +225,7 @@ describe('predicates that must NOT specialize', () => {
     // A null test plus a comparison.
     ['n.nulled IS NULL AND n.n > 2', 0],
     /**
-     * ⚠️ A PARTIALLY LIFTED PREDICATE, and the case mutation said was missing. `n.n > 2` lifts into
+     * A PARTIALLY LIFTED PREDICATE, and the case mutation said was missing. `n.n > 2` lifts into
      * `cmpProps` while `n.n * 1 > 2` CANNOT, so a general `where` survives beside exactly one
      * `cmpProps` entry — the one shape where a non-array carrier is the only thing standing
      * between the fast path and a dropped conjunct.
@@ -235,7 +235,7 @@ describe('predicates that must NOT specialize', () => {
      * the array branch caught them all and the `where` branch was never exercised.
      */
     ['n.n > 2 AND n.n * 1 > 2', 0],
-    // A second partially-lifted shape. ⚠️ The first version of this line used `n.age`, which this
+    // A second partially-lifted shape. The first version of this line used `n.age`, which this
     // fixture does not carry — so the predicate was UNKNOWN for every vertex, the count was 0, and
     // the agreement with the row form was FREE. The non-zero assertion below caught it, which is
     // the whole reason item 1330 put one there.
@@ -286,7 +286,7 @@ describe('the equality arm keeps = and IS NULL distinct (item 210 route two)', (
 
   test('a LIST value still matches a stored list structurally (GENERAL path, not the fast arm)', () => {
     /**
-     * ⚠️ THIS DOES NOT EXERCISE THE FAST ARM, and saying so matters. It was written believing it
+     * THIS DOES NOT EXERCISE THE FAST ARM, and saying so matters. It was written believing it
      * did, and the `reference-equality` mutant — JS `===` for `structuralEq` in the specialized
      * closure — SURVIVED with it green. A throw on a non-scalar right-hand side then showed why:
      * no list ever reaches that closure, because a list literal does not lift into `eqProps`.
@@ -493,7 +493,7 @@ describe('item 1347 — the NULL carrier arm', () => {
     // `not3(UNKNOWN)` is UNKNOWN, and a filter keeps only TRUE (item 259), so neither spelling may
     // pass. This is the assertion a hand-written `!` instead of `not3` would fail.
     //
-    // ⚠️ UNKNOWN IS `null`, NOT `undefined` — `Truth = boolean | null`. This test first used
+    // UNKNOWN IS `null`, NOT `undefined` — `Truth = boolean | null`. This test first used
     // `undefined` and FAILED, which is worth keeping as a note: `not3` is `t === null ? null : !t`,
     // so an out-of-type `undefined` falls to `!undefined === true` and the negated spelling PASSES
     // the row. The sentinel matters, and the type is the thing that says which one.
@@ -518,7 +518,7 @@ describe('item 1347 — the NULL carrier arm', () => {
   /**
    * ITEM 1352: the two spellings must LIFT THE SAME WAY, not merely agree.
    *
-   * ⚠️ THE ANSWER CANNOT SEE THIS. `NOT (n.k IN [..])` and `n.k NOT IN [..]` returned identical
+   * THE ANSWER CANNOT SEE THIS. `NOT (n.k IN [..])` and `n.k NOT IN [..]` returned identical
    * rows both before and after the lift — the gap was 8.58 ms against 3.01 and no correctness test
    * could notice. So the assertion has to be on the COMPILED SHAPE, which is item 1347's lesson
    * about a decision being observable: `predicateOf` hands back the clause, and a lifted membership

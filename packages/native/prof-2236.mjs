@@ -52,5 +52,5 @@ for (let r = 0; r < 6; r += 1) {
   }
 }
 
-/* ⚠️ After the loop, outside the measured work — see prof-2243.mjs's note (item 2244). */
+/* After the loop, outside the measured work — see prof-2243.mjs's note (item 2244). */
 console.log(`  arm=${ARM} reps=6 nodes=${N} rows=${rows}`);

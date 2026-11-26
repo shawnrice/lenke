@@ -22,7 +22,7 @@ import { query } from './index.js';
 // 1261 and 1262, the second being the `NOT (… IS NULL)` spelling that was missed the first time.
 // Both are folded here at once.
 //
-// ⚠️ WHAT THIS FILE IS FOR IS THE SEMANTICS, not the speed. A null test is TOTAL (`null IS NULL` is
+// WHAT THIS FILE IS FOR IS THE SEMANTICS, not the speed. A null test is TOTAL (`null IS NULL` is
 // TRUE, never UNKNOWN) which makes the lift simple — but "is this cell null" still has to classify
 // an ABSENT property, a STORED null and a dotted path exactly as the generic path does, and the
 // lifted list is the ONLY carrier of the conjunct once `compilePredicate` empties `where`.
@@ -79,8 +79,8 @@ describe('IS NULL / IS NOT NULL lift into nullProps (item 1270)', () => {
     expect(countOf("MATCH (n:P) WHERE n.k IS NULL AND n.s IN ['yy'] RETURN count(*) AS c")).toBe(1);
   });
 
-  test('⚠️ a sibling that SETTLES the row suppresses a raise, as it does on the generic route', () => {
-    // ⚠️ REWRITTEN AT ITEM 1286, AND THE BEHAVIOUR IT USED TO ASSERT WAS A CROSS-ENGINE DIVERGENCE.
+  test('a sibling that SETTLES the row suppresses a raise, as it does on the generic route', () => {
+    // REWRITTEN AT ITEM 1286, AND THE BEHAVIOUR IT USED TO ASSERT WAS A CROSS-ENGINE DIVERGENCE.
     // The original argument was that running a non-raising family FIRST "would let a FALSE test
     // return early and swallow that raise — changing WHICH queries error", so this family ran LAST
     // among the lifted blocks. The premise is right and the conclusion was backwards: the GENERIC
@@ -105,7 +105,7 @@ describe('IS NULL / IS NOT NULL lift into nullProps (item 1270)', () => {
     ).toThrow();
   });
 
-  test('⚠️ the far-hop MERGE carries nullProps (a dropped list would return a SUPERSET)', () => {
+  test('the far-hop MERGE carries nullProps (a dropped list would return a SUPERSET)', () => {
     // `mergeFarPreds` concatenates an inline far constraint with the lifted clause predicate. With
     // `nullProps` left out of that merge the clause would VANISH and this would answer 2 instead
     // of 1 — a wrong answer, not a slow one.
@@ -122,7 +122,7 @@ describe('IS NULL / IS NOT NULL lift into nullProps (item 1270)', () => {
     ).toEqual([2]);
   });
 
-  test('⚠️ ROUTE: all three spellings LIFT, and the NOT spelling FLIPS the flag', () => {
+  test('ROUTE: all three spellings LIFT, and the NOT spelling FLIPS the flag', () => {
     // Admitting a spelling to a lifted family is ANSWER-EQUIVALENT, so every test above passes
     // with the lift reverted and only the cost changes. Item 1269's mutation run proved that two
     // such mutants survive a whole answer suite, so the PURE decision is asserted directly.

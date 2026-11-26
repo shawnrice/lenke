@@ -138,7 +138,7 @@ export const defineNode = <S extends StandardSchemaV1>(
  * `id` (string). Passing ids avoids the ergonomic tax of holding onto `Vertex`
  * objects — the edge only needs an endpoint the graph can resolve.
  *
- * ⚠️ A string `VertexRef` is resolved as the vertex **id** (the graph's UUID /
+ * A string `VertexRef` is resolved as the vertex **id** (the graph's UUID /
  * `Vertex.id`, via `getVertexById`), NOT as a natural/business key property. A
  * common footgun: passing `'alice'` because a vertex has `{ name: 'alice' }` will
  * NOT match — it looks up the vertex whose *id* is `'alice'` and throws

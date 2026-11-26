@@ -18,7 +18,7 @@ import {
  * Item 1574: `order()` immediately followed by `take(n)` takes a bounded top-k instead of sorting
  * everything and slicing. **2.07x** at 200,000 values (55.2 → 26.7 ms), control flat.
  *
- * ⚠️ TWO ANSWER-VISIBLE PROPERTIES, and both are the reason this file exists rather than a bench row:
+ * TWO ANSWER-VISIBLE PROPERTIES, and both are the reason this file exists rather than a bench row:
  *
  *   1. TIE ORDER. Gremlin's sort is stable and tie order is compared against native, so the top-k
  *      must return the SAME prefix a stable full sort would — which is why its comparator breaks
@@ -40,7 +40,7 @@ const ties = (): Graph => {
   return graph;
 };
 
-describe('⚠️ the top-k returns exactly the stable full sort prefix', () => {
+describe('the top-k returns exactly the stable full sort prefix', () => {
   test('ties at the boundary keep ARRIVAL order', () => {
     const graph = ties();
 
@@ -93,7 +93,7 @@ describe('⚠️ the top-k returns exactly the stable full sort prefix', () => {
   });
 });
 
-describe('⚠️ faults are preserved — every key is still evaluated', () => {
+describe('faults are preserved — every key is still evaluated', () => {
   test('ordering raw elements still raises, even with a small cap', () => {
     // The element check runs over ALL keyed items, above the cap. With the cap applied first this
     // would return 1 vertex instead of raising.
@@ -133,7 +133,7 @@ describe('the fusion, and what it deliberately refuses', () => {
     expect(capOf(traversal(V(), values('n'), order()), ties())).toBeUndefined();
   });
 
-  test('⚠️ a SKIP between them refuses — the bound would have to be skip + take', () => {
+  test('a SKIP between them refuses — the bound would have to be skip + take', () => {
     // Deliberately not handled: `cap = n` would drop the rows the skip is meant to pass over.
     expect(capOf(traversal(V(), values('n'), order(), skip(5), limit(7)), ties())).toBeUndefined();
   });

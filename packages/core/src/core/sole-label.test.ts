@@ -1,7 +1,7 @@
 /*
  * Item 2085 — `LabelBox.sole` and the `soleLabel` accessor.
  *
- * ⚠️⚠️ **STALENESS IS THE ONLY REAL RISK, AND THERE ARE THREE WRITE SITES, NOT ONE.**
+ * **STALENESS IS THE ONLY REAL RISK, AND THERE ARE THREE WRITE SITES, NOT ONE.**
  * `commitElementLabels`'s own doc calls itself "the single funnel for every label write" — and that
  * is true of the MAP ENTRY, not of the box's FIELDS. Both element setters write `#lbox.set` directly
  * whenever the element already holds its box, which is the common case. A derived field maintained
@@ -29,13 +29,13 @@ describe('soleLabel (item 2085)', () => {
     const g = g1();
 
     expect(g.getVertexById('one')!.soleLabel).toBe('P');
-    // 🔑 `undefined` MEANS ZERO **OR MANY** — the two cases are deliberately indistinguishable,
+    // `undefined` MEANS ZERO **OR MANY** — the two cases are deliberately indistinguishable,
     // because both must fall back to `labels.has(n)`. A reader treating it as "no label" is wrong.
     expect(g.getVertexById('many')!.soleLabel).toBeUndefined();
     expect(g.getVertexById('none')!.soleLabel).toBeUndefined();
   });
 
-  test('⚠️⚠️ the SETTER keeps it current — read FIRST, so the cached-box branch runs', () => {
+  test('the SETTER keeps it current — read FIRST, so the cached-box branch runs', () => {
     const g = g1();
     const v = g.getVertexById('one')!;
 
@@ -66,7 +66,7 @@ describe('soleLabel (item 2085)', () => {
     expect(v.soleLabel).toBe('W');
   });
 
-  test('⚠️ add/remove label keep it current, in both directions', () => {
+  test('add/remove label keep it current, in both directions', () => {
     const g = g1();
     const v = g.getVertexById('one')!;
 
@@ -82,9 +82,9 @@ describe('soleLabel (item 2085)', () => {
     expect(v.soleLabel).toBe('R');
   });
 
-  test("⚠️⚠️ TWO instances sharing one id see each other's write", () => {
+  test("TWO instances sharing one id see each other's write", () => {
     /*
-     * 🔑 THE BOX EXISTS FOR THIS CASE. `Graph.elementProperties`/`elementLabels` are keyed by ID, and
+     * THE BOX EXISTS FOR THIS CASE. `Graph.elementProperties`/`elementLabels` are keyed by ID, and
      * two attached `Vertex` objects can share one id — which is why `commitElementLabels` mutates the
      * box rather than replacing the map entry. A `sole` cached on the ELEMENT instead of the box
      * would leave whichever instance read first answering staler than its own `labels`.
@@ -124,7 +124,7 @@ describe('soleLabel (item 2085)', () => {
     expect(e.soleLabel).toBe('F');
   });
 
-  test('⚠️ it AGREES with the set on every element, which is the invariant', () => {
+  test('it AGREES with the set on every element, which is the invariant', () => {
     /*
      * The general statement the individual cases above are instances of: `soleLabel` is the set's one
      * member when the set has exactly one, and `undefined` otherwise — checked after a round of

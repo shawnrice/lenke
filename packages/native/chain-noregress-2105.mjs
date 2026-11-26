@@ -1,16 +1,16 @@
 /*
  * Item 2105 — does `chainProjection` still EARN its keep where it has no seek to lose to?
  *
- * ⚠️⚠️ **THIS IS THE CHECK THAT MATTERS, NOT THE HEADLINE.** The gate hands the query to the orienting
+ * **THIS IS THE CHECK THAT MATTERS, NOT THE HEADLINE.** The gate hands the query to the orienting
  * matcher when the far node carries a genuine index seek. This rung's DOCUMENTED wins are on fixtures
  * with no such seek — item 1820 measured **5.8x** for a three-hop `RETURN DISTINCT` (418.6 ms against
  * 72.2) and item 1843 another 2.69x. A gate that declined there would hand back 5.8x to buy 934x
  * somewhere else.
  *
- * 🔑 SO EVERY SHAPE HERE IS UNINDEXED, and the arms are the gate LIVE against the gate KILLED. If the
+ * SO EVERY SHAPE HERE IS UNINDEXED, and the arms are the gate LIVE against the gate KILLED. If the
  * gate is correctly narrow, the two are the SAME — the rung keeps answering and nothing is lost.
  *
- * ⚠️ `INDEXED=1` runs the same shapes WITH the index, where LIVE should be dramatically faster. Running
+ * `INDEXED=1` runs the same shapes WITH the index, where LIVE should be dramatically faster. Running
  * both is what separates "the gate never fires" from "the gate fires in the right place".
  */
 import { Graph } from '@lenke/core';
@@ -47,10 +47,10 @@ if (INDEXED) {
 const C3 = '(a:P)-[:E]->(m:P)-[:E]->(m2:P)-[:E]->(b:P)';
 
 const shapes = {
-  /* 🔑 ITEM 1820'S OWN SHAPE — the 5.8x. A far predicate, DISTINCT, three hops. */
+  /* ITEM 1820'S OWN SHAPE — the 5.8x. A far predicate, DISTINCT, three hops. */
   '3h DISTINCT (1820)': `MATCH ${C3} WHERE b.tag = $t RETURN DISTINCT a.n AS n`,
   '3h rows': `MATCH ${C3} WHERE b.tag = $t RETURN a.n AS n`,
-  /* ⚠️ NO far predicate at all — the gate cannot fire, so this is a CONTROL for the harness. */
+  /* NO far predicate at all — the gate cannot fire, so this is a CONTROL for the harness. */
   '3h rows, no predicate (control)': `MATCH ${C3} RETURN a.n AS n`,
   '3h folded min': `MATCH ${C3} WHERE b.tag = $t RETURN min(a.n) AS m`,
   '3h grouped count': `MATCH ${C3} WHERE b.tag = $t RETURN a.n AS k, count(*) AS c`,

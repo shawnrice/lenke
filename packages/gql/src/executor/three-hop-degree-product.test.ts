@@ -1,6 +1,6 @@
 // The three-hop count's flat-array degree product (item 1685), and the clauses that must decline it.
 //
-// ⚠️ A WRONGLY RELAXED CLAUSE RETURNS A WRONG COUNT, so the differential assertions below catch it.
+// A WRONGLY RELAXED CLAUSE RETURNS A WRONG COUNT, so the differential assertions below catch it.
 // A wrongly TIGHTENED one silently abandons the arm and every answer stays right — which is what
 // `csrDegreeProductApplies`' own unit test is for. Both directions are covered here deliberately.
 import { describe, expect, test } from 'bun:test';
@@ -84,7 +84,7 @@ describe('the fast arm agrees with an independent route', () => {
   }
 });
 
-describe('⚠️ the clauses that must DECLINE, each still answering correctly', () => {
+describe('the clauses that must DECLINE, each still answering correctly', () => {
   /**
    * Each of these would be a WRONG COUNT if the arm took it, because a degree array cannot express
    * the constraint. The assertion is against the subquery route, so a relaxed guard shows up as a
@@ -108,12 +108,12 @@ describe('⚠️ the clauses that must DECLINE, each still answering correctly',
   }
 
   /**
-   * ⚠️ A LABEL AT THE START IS THE SUBTLE ONE. `(a:Q)` constrains a position the arm reaches only as
+   * A LABEL AT THE START IS THE SUBTLE ONE. `(a:Q)` constrains a position the arm reaches only as
    * a DEGREE, so it must decline — but `(a:P)` on an all-`P` graph is VACUOUS and `effectiveLabel`
    * returns `undefined` for it, so that one still qualifies. The two cannot be told apart by
    * looking at the pattern.
    */
-  test('⚠️ a NON-vacuous start label declines, where a vacuous one qualifies', () => {
+  test('a NON-vacuous start label declines, where a vacuous one qualifies', () => {
     const nonVacuous = countOf('MATCH (a:Q)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c');
     const vacuous = countOf('MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c');
 
@@ -151,7 +151,7 @@ describe('a write between two counts is seen', () => {
    * cache with no invalidation answers correctly forever.
    */
   /**
-   * ⚠️ THE INVARIANT IS AGREEMENT WITH THE ORACLE AFTER THE WRITE, NOT "the number moved" — and the
+   * THE INVARIANT IS AGREEMENT WITH THE ORACLE AFTER THE WRITE, NOT "the number moved" — and the
    * first version of this test asserted the latter and FAILED for a legitimate reason. Adding
    * `v0 -> v1` left the count at 100 because `v0` has no in-edges on this fixture, so no 3-walk can
    * route through that edge: `indeg(v0) * …` is zero however many edges leave it. The test was
@@ -201,7 +201,7 @@ describe('a write between two counts is seen', () => {
     expect(after).toBe(Number(query(fresh, q)[0].c));
   });
 
-  test('⚠️ an edge GAINING the walked type changes the count', () => {
+  test('an edge GAINING the walked type changes the count', () => {
     const h = build(50);
     const q = 'MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS c';
     const anF = [...h.edges].find((edge) => edge.labels.has('F') && !edge.labels.has('E'));
@@ -232,11 +232,11 @@ describe('csrDegreeProductApplies — the route choice as a pure function', () =
   });
 
   /**
-   * ⚠️ THE DIRECTION A DIFFERENTIAL TEST CANNOT SEE. A clause wrongly TIGHTENED keeps every answer
+   * THE DIRECTION A DIFFERENTIAL TEST CANNOT SEE. A clause wrongly TIGHTENED keeps every answer
    * correct and silently abandons the arm, so only a direct assertion catches it — the same reason
    * `walkKindFor` has its own test (`perf-gate-needs-its-own-test`).
    */
-  test('⚠️ each clause declines on its own, and nothing else does', () => {
+  test('each clause declines on its own, and nothing else does', () => {
     expect(csrDegreeProductApplies({ ...ok, aBoth: true })).toBe(false);
     expect(csrDegreeProductApplies({ ...ok, midBoth: true })).toBe(false);
     expect(csrDegreeProductApplies({ ...ok, dBoth: true })).toBe(false);

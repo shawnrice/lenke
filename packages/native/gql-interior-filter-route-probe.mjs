@@ -1,7 +1,7 @@
 /**
  * WHICH ROUTE ANSWERS `count 3-hop + interior filter`, AND WHERE DOES ITS TIME GO?
  *
- * ⚠️ THIS QUESTION IS ASKED BECAUSE A NOTE SAYS TO ASK IT FIRST. Item 1683's route map found the row
+ * THIS QUESTION IS ASKED BECAUSE A NOTE SAYS TO ASK IT FIRST. Item 1683's route map found the row
  * never enters `sweepChain` (counters: 0 entries, 66,156 `side` calls), and item 1683 itself is the
  * entry that ignored its own predecessor's "find the route before editing" note, relaxed a memo gate
  * on an assumption, got incoherent results and had to revert. Item 1688 then took the start and end
@@ -12,7 +12,7 @@
  *   node --cpu-prof --cpu-prof-dir=<dir> gql-interior-filter-route-probe.mjs
  *   N=200000 FANOUT=5 CALLS=20 node ... (the defaults)
  *
- * ⚠️ The fixture is item 1684's third-trap-free shape: the target is NONLINEAR in `i`, so in-degree
+ * The fixture is item 1684's third-trap-free shape: the target is NONLINEAR in `i`, so in-degree
  * varies rather than being constant under a linear bijection, and a 3-walk count is not `N * F^k` by
  * arithmetic. The distinct-endpoint count is asserted before anything is timed.
  */
@@ -53,7 +53,7 @@ for (let i = 0; i < N; i += 1) {
   }
 }
 
-// ⚠️ The fixture's own statistics, not its output: a degenerate generator returns the RIGHT answer.
+// The fixture's own statistics, not its output: a degenerate generator returns the RIGHT answer.
 if (targets.size < N / 2) {
   throw new Error(`FIXTURE DEGENERATE: ${targets.size} distinct endpoints over ${N} vertices`);
 }
@@ -90,7 +90,7 @@ const timed = (q) => {
     series.push(performance.now() - t0);
   }
 
-  // ⚠️ MEDIAN of the warm reps, not min: the TS per-row path plateaus high and emits a rare fast
+  // MEDIAN of the warm reps, not min: the TS per-row path plateaus high and emits a rare fast
   // rep, so `min` estimates the two arms differently.
   const warm = series.slice(3).sort((a, b) => a - b);
 

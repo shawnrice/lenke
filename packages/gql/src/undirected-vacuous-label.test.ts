@@ -13,7 +13,7 @@ import { query } from './index.js';
  * and `matchesLabel` at 2.8%: **35.7% spent on a label that rejects nothing**, which is why that row
  * read 503 ns a row against the far-driven walk's 192.
  *
- * ⚠️ THE FAILURE MODE IS A WRONG ROW SET, NOT A SLOW ONE. `vacuousLabel` is consulted per CALL
+ * THE FAILURE MODE IS A WRONG ROW SET, NOT A SLOW ONE. `vacuousLabel` is consulted per CALL
  * because vacuity is a property of the graph, so the same query is correct on one graph and wrong on
  * another if the drop is mis-decided. These tests pin both sides on fixtures that differ ONLY in
  * whether the label is vacuous.

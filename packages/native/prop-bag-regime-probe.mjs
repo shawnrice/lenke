@@ -22,7 +22,7 @@
  *
  *     node prop-bag-regime-probe.mjs            # sweeps 1k / 20k / 200k
  *
- * ⚠️ Reads are shuffled by a deterministic LCG so the access pattern is not sequential. Walking bags
+ * Reads are shuffled by a deterministic LCG so the access pattern is not sequential. Walking bags
  * in allocation order measures the prefetcher, not the engine's access pattern, and would make every
  * arm look flat.
  */
@@ -165,7 +165,7 @@ const time = (read, bags, idx) => {
 };
 
 /**
- * ⚠️ ONE ARM PER PROCESS when `ARM` is set, and item 1364 is why.
+ * ONE ARM PER PROCESS when `ARM` is set, and item 1364 is why.
  *
  * `readObj` is ONE shared call site used by `locality`, `shapes` and `frozen`, run in that fixed
  * order inside a single process. So `shapes` drives that site megamorphic and `frozen` inherits a

@@ -7,7 +7,7 @@
 //     HOP order by EXPRESSION   580.60 ms   800,000 rows
 //     HOP order by alias        357.66      800,000        1.62x, unchanged by item 1962
 //
-// 🔑 THE ARMS, one shape per process, and the third is the one item 1961 had to invent twice:
+// THE ARMS, one shape per process, and the third is the one item 1961 had to invent twice:
 //
 //     alias    ORDER BY x        the column arm — projects once, sorts the projected rows
 //     expr     ORDER BY b.n + 1  `deferredHopOrder` — walk emits KEY + CARRIER columns, sorts
@@ -62,7 +62,7 @@ const SHAPES = {
    * ("`sortRowsByColumns` full-sorted every row and sliced, so `ORDER BY a LIMIT 5` over 200,000
    * rows paid an O(n log n) sort to emit five").
    *
-   * ⚠️ THE PAIR MUST SHARE ITS PROJECTION. The screen's windowed rows project `b.n + 1 AS c`
+   * THE PAIR MUST SHARE ITS PROJECTION. The screen's windowed rows project `b.n + 1 AS c`
    * (computed) while its unwindowed rows project `b.n AS x` (bare), so the screen's own comparison
    * is confounded — it says so at `HOP start-only proj, far key`. These four hold the projection
    * fixed and vary ONLY the window.
@@ -72,7 +72,7 @@ const SHAPES = {
   winExpr: 'MATCH (a:T)-[:E]->(b:T) RETURN b.n + 1 AS c ORDER BY b.n + 1 LIMIT 10',
   openExpr: 'MATCH (a:T)-[:E]->(b:T) RETURN b.n + 1 AS c ORDER BY b.n + 1',
   /*
-   * 🔑 THE CONTROL THE WINDOWED PAIR NEEDS, and without it the pair says nothing. `none` above
+   * THE CONTROL THE WINDOWED PAIR NEEDS, and without it the pair says nothing. `none` above
    * projects a BARE property; these shapes project a COMPUTED one, so the walk+projection cost is
    * not the same. `sortRowsByColumns`' heap IS wired for `LIMIT 10` over 1,000,000 rows
    * ((0 + 10) * 16 <= 1e6), so if the windowed arm still costs what the unwindowed one does, the
@@ -97,7 +97,7 @@ for (let r = 0; r < REPS; r += 1) {
 
     // An answer guard, so an arm that visits the right rows in the wrong order still compares and
     // a WRONG answer does not.
-    // ⚠️ THE FIRST COLUMN, not `row.x`: the windowed shapes name theirs `c`, and reading `x` made
+    // THE FIRST COLUMN, not `row.x`: the windowed shapes name theirs `c`, and reading `x` made
     // the checksum `NaN` — a guard that silently stopped guarding. Item 1961's lesson about arms
     // one level down.
     for (const row of got) {

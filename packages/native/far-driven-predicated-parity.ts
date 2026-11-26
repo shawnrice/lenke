@@ -5,7 +5,7 @@ import { deserialize as tsDeserialize } from '@lenke/serialization';
 /**
  * DO THE TWO ENGINES STILL AGREE ON A FILTERED HOP PROJECTION, now that TS far-drives it? (1781)
  *
- * ⚠️ WRITTEN BECAUSE `bun run fuzz` GREEN SAYS NOTHING ABOUT THIS SHAPE, and the counter that looks
+ * WRITTEN BECAUSE `bun run fuzz` GREEN SAYS NOTHING ABOUT THIS SHAPE, and the counter that looks
  * like it does is for a different one. The differential fuzzer reports `hopFilter=172/156`, which
  * reads like coverage of exactly this family — but its test is
  *
@@ -17,7 +17,7 @@ import { deserialize as tsDeserialize } from '@lenke/serialization';
  * and as item 1776's unordered page, found the same way: by reading the generator rather than
  * trusting a green suite. Two items apart, in a counter that was ALREADY being read as coverage.
  *
- * ⚠️ THE ORACLE IS THE MULTISET, NOT THE POSITION, and that is the difference from
+ * THE ORACLE IS THE MULTISET, NOT THE POSITION, and that is the difference from
  * `skip-only-page-parity.ts`. Item 1781 changes the far-driven walk's visit order deliberately, and
  * for an UNORDERED GQL projection row order is unspecified ([[order-is-unspecified]], a settled
  * won't-fix) — which is exactly why the change is legal on the GQL side and is NOT available to
@@ -157,7 +157,7 @@ for (const [name, admitted, control] of CASES) {
   const tsAdmitted = rowsOf('ts', admitted);
   const adm = verdict(tsAdmitted, rowsOf('native', admitted));
   const ctl = verdict(rowsOf('ts', control), rowsOf('native', control));
-  // ⚠️ A SHAPE THAT MATCHES NOTHING AGREES WITH A BROKEN ONE TRIVIALLY (item 1416's rule, and the
+  // A SHAPE THAT MATCHES NOTHING AGREES WITH A BROKEN ONE TRIVIALLY (item 1416's rule, and the
   // differential fuzzer's own "non-zero floor is what matters"). Counted and reported, so an empty
   // row is not mistaken for a pass.
   const rowCount = (JSON.parse(tsAdmitted) as unknown[]).length;
@@ -176,7 +176,7 @@ for (const [name, admitted, control] of CASES) {
 
   console.log(
     `${name.padEnd(28)} rows ${String(rowCount).padStart(3)}  admitted ${adm.padEnd(26)} declined-control ${ctl.padEnd(26)}` +
-      `${broken ? '  ⚠️ MULTISET DIFFERS' : ''}${rowCount === 0 ? '  ⚠️ EMPTY' : ''}`,
+      `${broken ? '  MULTISET DIFFERS' : ''}${rowCount === 0 ? '  EMPTY' : ''}`,
   );
 }
 

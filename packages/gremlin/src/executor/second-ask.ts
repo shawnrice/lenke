@@ -1,7 +1,7 @@
 import type { Graph } from '@lenke/core';
 
 /*
- * ⚠️ A LEAF MODULE, and item 1983 is why. This policy lived in `hop-values-csr.ts` while its five
+ * A LEAF MODULE, and item 1983 is why. This policy lived in `hop-values-csr.ts` while its five
  * callers were all hop-values walks, which import that file anyway. The two-hop COUNT needs it too
  * (`count-shortcut.ts`), and that file is imported BY `hop-values-csr.ts` — so importing it the
  * other way produced a dependency cycle the lint refused. Extracting the policy is the fix the lint
@@ -14,7 +14,7 @@ import type { Graph } from '@lenke/core';
  * Has this (graph, topology version, hop shape) been asked for BEFORE? The first ask returns
  * `false` and records it; every later ask returns `true`.
  *
- * ⚠️⚠️ **THIS POLICY IS THE ITEM.** The CSR is keyed on `topologyVersion`, so the first query after
+ * **THIS POLICY IS THE ITEM.** The CSR is keyed on `topologyVersion`, so the first query after
  * any topology write pays the build — and `hop-values.ts` priced exactly that at items 1693/1694
  * without settling it ("`handCsrPlusBuild` 167.00 ms, **0.83x**, the FIRST query only"). Measured
  * here with a kill-switch A/B at 200,000 vertices / 1,000,000 edges, three order-alternated rounds,
@@ -22,7 +22,7 @@ import type { Graph } from '@lenke/core';
  *
  * ```text
  *   hop   WARM   89.0 93.6 83.9  ->  42.3 48.9 42.1     2.10x
- *   hop   COLD  106.7 109.2 110.1 -> 181.2 180.0 165.5   0.61x   ⬅ a 1.64x REGRESSION, first query
+ *   hop   COLD  106.7 109.2 110.1 -> 181.2 180.0 165.5   0.61x   <- a 1.64x REGRESSION, first query
  *   hop2  [control]                                      1.09x
  *   optional [control]                                   1.06x
  * ```
@@ -36,16 +36,16 @@ import type { Graph } from '@lenke/core';
  *     about and the reason the key includes the version;
  *   - a repeated read pays the build once and wins from then on.
  *
- * ⚠️ IT IS A ROUTE CHOICE, SO IT IS ANSWER-EQUIVALENT AND EVERY MUTANT OF IT SURVIVES THE
+ * IT IS A ROUTE CHOICE, SO IT IS ANSWER-EQUIVALENT AND EVERY MUTANT OF IT SURVIVES THE
  * BEHAVIOURAL TESTS — [[perf-gate-needs-its-own-test]]. Hence a pure function with its own unit
  * test, which is what item 1776 did for `unsortedPageRoute`.
  *
- * ⚠️ AND IT IS KEYED ON THE VERSION, NOT MERELY STAMPED WITH IT: a generation is dropped WHOLE on
+ * AND IT IS KEYED ON THE VERSION, NOT MERELY STAMPED WITH IT: a generation is dropped WHOLE on
  * any topology write, the same discipline `chainCsrCache` uses, so nothing leaks one dead entry per
  * shape per write.
  */
 /**
- * ⚠️⚠️ **`kind` NAMESPACES THE RECORD, AND OMITTING IT IS CORRECT FOR EVERY CALLER THAT DOES** (item
+ * **`kind` NAMESPACES THE RECORD, AND OMITTING IT IS CORRECT FOR EVERY CALLER THAT DOES** (item
  * 2016). The nine original callers all share the default namespace deliberately —
  * `optional-hop-values.ts` says so in terms, "THE POLICY IS ITEM 1889'S, REUSED RATHER THAN
  * RE-KEYED" — and they are right to, because every one of them builds the SAME structure from that

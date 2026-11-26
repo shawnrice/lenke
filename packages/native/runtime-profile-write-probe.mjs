@@ -19,11 +19,11 @@
  *     PROF_OUT=<dir>/w-<shape>.cpuprofile node runtime-profile-write-probe.mjs <shape> <reps>
  *     node runtime-profile-write-probe.mjs <shape> <reps>        # timing only, no profile
  *
- * ⚠️ Writes ALLOCATE, so every rep gets a FRESH fixture and the reps are sized per shape. Run it
+ * Writes ALLOCATE, so every rep gets a FRESH fixture and the reps are sized per shape. Run it
  * under the cgroup cap: `timeout 600 systemd-run --user --scope -q -p MemoryMax=16G
  * -p MemorySwapMax=0 …` — item 1357's `withEdges` arm was OOM-killed (exit -9) for exactly this.
  *
- * ⚠️ SETUP IS SEPARATED FROM THE MEASURED PHASE, and it was not until item 1396. Four of the six
+ * SETUP IS SEPARATED FROM THE MEASURED PHASE, and it was not until item 1396. Four of the six
  * shapes built their fixture INSIDE the function being profiled and timed:
  *
  *   - `addEdgeOnly`'s own doc said "edges onto a prebuilt vertex set, so the measured work is
@@ -150,7 +150,7 @@ const SHAPES = {
   /**
    * The O(1)-BY-ID CONTROL, which the standing instruction names explicitly.
    *
-   * ⚠️ The ids are PRE-BUILT, because item 1395 measured that constructing `` `v${i}` `` per lookup
+   * The ids are PRE-BUILT, because item 1395 measured that constructing `` `v${i}` `` per lookup
    * costs ~45-56 ns against ~5 ns for the lookup — ten times the thing being measured — and drifts
    * with id length on its own. `id-lookup-hotset-probe.mjs` is the instrument for the invariant;
    * this is only the write screen's control, and it should not re-introduce that confound.
@@ -219,7 +219,7 @@ if (sink === 0) {
 }
 
 /*
- * ⚠️⚠️ THE CLOSED-FRAMES REMINDER IS PRINTED, NOT JUST FILED (item 1985).
+ * THE CLOSED-FRAMES REMINDER IS PRINTED, NOT JUST FILED (item 1985).
  *
  * `PROBES.md` opens with a table of frames that are closed targets, and its own sentence is "read
  * this BEFORE nominating anything from a profile". CLAUDE.md's rule, though, is to read `PROBES.md`
@@ -232,7 +232,7 @@ if (sink === 0) {
  * profile, before anyone reads the frames.
  */
 const CLOSED_FRAMES_NOTE =
-  '# ⚠️ Before nominating a frame from this profile, read the CLOSED-FRAMES table at the top of ' +
+  '# Before nominating a frame from this profile, read the CLOSED-FRAMES table at the top of ' +
   'PROBES.md.\n#    indexEdgeLabel, getEdgeById/getVertexById, commitElementLabels, set labels, ' +
   '#commitNormalized,\n#    insertEdge, pushTokens, addVertex and (garbage collector) are ALL ' +
   'closed targets — indexEdgeLabel has\n#    SIX prior arrivals. A profile whose top frames are ' +

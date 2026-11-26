@@ -5,13 +5,13 @@
  * `optional: hop` at **10.11 ms for 80,000 rows** against `hop1: values`' 3.49 ms for the SAME
  * 80,000 rows.
  *
- * ⚠️ AND `optional` IS ALREADY FUSED AT THE STEP LEVEL, which is what makes this worth measuring
+ * AND `optional` IS ALREADY FUSED AT THE STEP LEVEL, which is what makes this worth measuring
  * rather than assuming. `optional-hop.ts` (items 1480/1483/1628) replaced `optionalStep`'s
  * per-traverser sub-plan — a one-element array, a 103-arm dispatch and a generator per step — with
  * one loop, and took the bucket directly for a directed single type. So whatever is left is NOT the
  * sub-plan wrapper that item 1480 removed.
  *
- * ⚠️ ON THIS FIXTURE EVERY VERTEX HAS AN OUT-EDGE, so `optional` NEVER takes its empty branch and
+ * ON THIS FIXTURE EVERY VERTEX HAS AN OUT-EDGE, so `optional` NEVER takes its empty branch and
  * the two shapes return the same row count over the same walk. That is deliberate: it isolates the
  * per-row cost from the left-join semantics. The `sparse` arm exists for the other half — there a
  * vertex with no `E` edge emits ITSELF, which is the thing `out(T)` cannot do and the reason the
@@ -95,7 +95,7 @@ const SHAPES = {
   opt2: () => traversal(V(), optional(traversal(out('E'), out('E'))), values('n')),
   hop2: () => traversal(V(), out('E'), out('E'), values('n')),
   /*
-   * ⚠️ ITEM 2027's ARMS. The route census shows `opt: optional count` GENERIC while all four of its
+   * ITEM 2027's ARMS. The route census shows `opt: optional count` GENERIC while all four of its
    * siblings (`optional values`, `optional id`, `optional bare`, `optional two hops`) are fused —
    * both steps run generically, so `optionalHopValues` declines the whole plan. `pickFor` returns
    * `undefined` for a `count` projection, which is exactly the gap item 1956 closed in the
@@ -114,7 +114,7 @@ const series = [];
 let rows = 0;
 
 /**
- * ⚠️ EVERY REP IS RECORDED AND THE WARM-UPS ARE REPORTED SEPARATELY, because rep 1 is where a
+ * EVERY REP IS RECORDED AND THE WARM-UPS ARE REPORTED SEPARATELY, because rep 1 is where a
  * one-shot query's costs live — including item 1888's CSR build, which is cached per graph per
  * `topologyVersion` and so is invisible from rep 2 onwards. Item 1695's criterion for an arm like
  * that is "safe iff the walk costs more than the rebuild", and only the cold rep can say.
@@ -141,7 +141,7 @@ if (process.env.SERIES === '1') {
   );
 }
 
-// ⚠️ THE SERIES IS PRINTABLE AND THAT IS NOT A CONVENIENCE. CLAUDE.md: "for the TS per-row path,
+// THE SERIES IS PRINTABLE AND THAT IS NOT A CONVENIENCE. CLAUDE.md: "for the TS per-row path,
 // `min`-of-N is the wrong estimator, and it can hide the win. Print the per-rep series before
 // trusting any summary of it." This file's first 9-rep run read the `optional` arm at 116 ns a row
 // where a 150-rep profile of the SAME shape read 70.3 — a whole verdict's worth of warm-up.

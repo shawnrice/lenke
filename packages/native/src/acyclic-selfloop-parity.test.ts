@@ -1,6 +1,6 @@
 // `ACYCLIC` / `TRAIL` / `WALK` over a quantified path, TS against the Rust engine (item 2001).
 //
-// ⚠️⚠️ **THIS FILE EXISTS BECAUSE I MADE A CROSS-ENGINE CLAIM I HAD NOT CHECKED.**
+// **THIS FILE EXISTS BECAUSE I MADE A CROSS-ENGINE CLAIM I HAD NOT CHECKED.**
 // `acyclic-selfloop-2001.mjs` advertised `LENKE_ENGINE=1` as routing its queries through the Rust
 // engine. It does not — `LENKE_ENGINE` is read only by `package.json`'s `test:engine` script, and
 // `query` from `@lenke/gql` never consults it — so that run was TypeScript twice and its identical
@@ -8,14 +8,14 @@
 // `conformance-harness.ts`'s `nativeBackend()`. **A claim about two engines needs a harness that can
 // see both.**
 //
-// 🔑 WHY THESE SHAPES. Item 2001 found `MATCH ACYCLIC` falling off the var-length counting rung into
+// WHY THESE SHAPES. Item 2001 found `MATCH ACYCLIC` falling off the var-length counting rung into
 // the general matcher (234-520x), and the cure under consideration is to give the rung an ACYCLIC
 // correction the way it already has one for TRAIL. Any such correction is arithmetic over self-loops
 // and returns, so these fixtures — a lone self-loop, a self-loop beside a real edge, and parallel
 // edges — are exactly the inputs it would get wrong. Pinning both engines' current answers FIRST
 // means the correction has an oracle that is not the correction's own author.
 //
-// ⚠️ AND IT PINS `WALK` TOO, not just `ACYCLIC`. Reading the bindings (rather than a `count(*)`)
+// AND IT PINS `WALK` TOO, not just `ACYCLIC`. Reading the bindings (rather than a `count(*)`)
 // showed that on `a->a` + `a->b` the depth-2 rows are `a->a->b` ONLY — `a->a->a`, the same edge
 // twice, is absent even in WALK mode. That is the baseline any correction subtracts from, and I had
 // modelled it as all edge sequences, which is where two successive wrong formulas came from. If that
@@ -76,7 +76,7 @@ const BOUNDS = ['{1,1}', '{1,2}', '{1,3}', '{2,2}'] as const;
 const MODES = { WALK: 'MATCH', TRAIL: 'MATCH TRAIL', ACYCLIC: 'MATCH ACYCLIC' } as const;
 
 /*
- * ⚠️ `tsDeserialize` RATHER THAN A HAND-ROLLED READER. The differential fuzzer builds its TS graph
+ * `tsDeserialize` RATHER THAN A HAND-ROLLED READER. The differential fuzzer builds its TS graph
  * this way and its native graph with `graphFromNdjson`, so using both here means the two engines read
  * the SAME bytes through the SAME paths the fuzzer already exercises. A bespoke reader in this file
  * would be a third ingest, and a divergence in it would read as a divergence in the query.
@@ -87,7 +87,7 @@ describe('ACYCLIC/TRAIL/WALK over a quantified path: TS vs native', () => {
   for (const fx of FIXTURES) {
     for (const [mode, keyword] of Object.entries(MODES)) {
       for (const bound of BOUNDS) {
-        // ⚠️ ORDERED comparison, not a multiset. These queries carry no `ORDER BY`, but a quantified
+        // ORDERED comparison, not a multiset. These queries carry no `ORDER BY`, but a quantified
         // path's row order is the rung's own output order and the differential fuzzer gives such
         // shapes a final sort key precisely because it is otherwise unspecified — here the shapes are
         // tiny and deterministic, so pinning order costs nothing and catches a reordering cure.
@@ -102,7 +102,7 @@ describe('ACYCLIC/TRAIL/WALK over a quantified path: TS vs native', () => {
           }
 
           const tsRows = [...tsQuery(tsGraphOf(fx.ndjson), text, {})];
-          // ⚠️ FREED DETERMINISTICALLY. The engine warns when a `RustGraph` is garbage-collected
+          // FREED DETERMINISTICALLY. The engine warns when a `RustGraph` is garbage-collected
           // without `free()` — finalizers are not guaranteed to run, so a leaked handle sits
           // unreleased. One handle per test case here, so the warning fires once per case and the
           // fix is one `try/finally`.
@@ -116,7 +116,7 @@ describe('ACYCLIC/TRAIL/WALK over a quantified path: TS vs native', () => {
           })();
 
           /*
-           * ⚠️ COMPARED AS ARRAYS, ORDERED. `RustGraph.query` returns row OBJECTS — the same shape
+           * COMPARED AS ARRAYS, ORDERED. `RustGraph.query` returns row OBJECTS — the same shape
            * the TS side returns — not the `{columns, rows}` JSON document that
            * `resultsEqualInOrder` canonicalizes, so routing these through that helper parsed an
            * empty string and failed all 48 cases on the harness rather than on the engines.
@@ -132,7 +132,7 @@ describe('ACYCLIC/TRAIL/WALK over a quantified path: TS vs native', () => {
 });
 
 /*
- * ⚠️⚠️ **A GENERATED FIXTURE WITH REAL CYCLES, because the four hand fixtures above are 1-2 vertices
+ * **A GENERATED FIXTURE WITH REAL CYCLES, because the four hand fixtures above are 1-2 vertices
  * and a DFS can be wrong in ways they cannot show** (item 2002). The acyclic COUNT route is a
  * depth-first walk carrying a visited set; the cases that distinguish it from a trail walk are
  * 2-cycles and longer returns, at a depth where the pruning actually changes the answer. This graph
@@ -140,7 +140,7 @@ describe('ACYCLIC/TRAIL/WALK over a quantified path: TS vs native', () => {
  * the Rust engine — an INDEPENDENT implementation, which is the only oracle here that was not
  * written by the same person as the route.
  *
- * ⚠️ AND THE COUNTS ARE ASSERTED NON-TRIVIAL. A route that answered 0 everywhere, or that declined
+ * AND THE COUNTS ARE ASSERTED NON-TRIVIAL. A route that answered 0 everywhere, or that declined
  * and silently fell back, would agree with native on every row — so the test checks that ACYCLIC and
  * WALK actually DIFFER on this graph. Without that, the parity assertions pass on a fixture where
  * acyclicity never bites, which is exactly the hole item 2001's first correction formula fell into.
@@ -178,8 +178,8 @@ const CYCLIC_NDJSON = (() => {
   }
 
   /*
-   * ⚠️⚠️ **A HUB: vertex 0 has many out-edges and no matching in-edges, so a SEEDED query sees a
-   * different graph forwards and backwards.** ⚠️ An earlier version of this comment claimed the hub
+   * **A HUB: vertex 0 has many out-edges and no matching in-edges, so a SEEDED query sees a
+   * different graph forwards and backwards.** An earlier version of this comment claimed the hub
    * was needed because the construction above is reverse-isomorphic to itself and therefore made
    * inward and outward counts equal. **That reasoning was wrong, and asserting it failed at every
    * bound.** An UNSEEDED total path count is equal to its reverse for EVERY graph — reversing a
@@ -192,7 +192,7 @@ const CYCLIC_NDJSON = (() => {
   }
 
   /*
-   * ⚠️ AN ISOLATED VERTEX, AND A MUTATION ROUND IS WHY. The route skips a source whose CSR slot is
+   * AN ISOLATED VERTEX, AND A MUTATION ROUND IS WHY. The route skips a source whose CSR slot is
    * `undefined` — a vertex carrying no edge of the queried type. Without such a vertex here, the
    * mutant that removes that guard SURVIVED: every source in a fully-connected fixture has a slot,
    * so the guard is unreachable and its removal changes nothing.
@@ -230,7 +230,7 @@ describe('ACYCLIC counts over a cyclic generated graph: TS vs native', () => {
 
       expect(nativeRows).toEqual(tsRows);
 
-      // ⚠️ NON-TRIVIALITY: acyclicity must actually bite here, or the parity above proves nothing.
+      // NON-TRIVIALITY: acyclicity must actually bite here, or the parity above proves nothing.
       const walk = [...tsQuery(tsGraphOf(CYCLIC_NDJSON), walkText, {})][0] as { c: number };
       const acyclic = tsRows[0] as { c: number };
 
@@ -246,12 +246,12 @@ describe('ACYCLIC counts over a cyclic generated graph: TS vs native', () => {
       }
 
       /*
-       * ⚠️ THE MIRROR SPELLING, AND A MUTATION ROUND IS WHY. The route reads the IN-adjacency when
+       * THE MIRROR SPELLING, AND A MUTATION ROUND IS WHY. The route reads the IN-adjacency when
        * `inward` is set; the mutant hard-coding `csrFor(graph, false, types)` SURVIVED because no
        * test used `<-[:E]-`. On this graph the in- and out-counts are NOT equal (the chords are
        * one-directional), so a route that ignored `inward` answers the outward count here.
        */
-      // ⚠️ SEEDED, AND THAT IS LOAD-BEARING. An unseeded total count is identical forwards and
+      // SEEDED, AND THAT IS LOAD-BEARING. An unseeded total count is identical forwards and
       // backwards for every graph (see the hub note above), so the unseeded spelling cannot catch a
       // route that ignores `inward` no matter what the fixture looks like.
       const text = `MATCH ACYCLIC (x:T)<-[:E]-${bound}(y:T) WHERE x.n = 3 RETURN count(*) AS c`;
@@ -269,7 +269,7 @@ describe('ACYCLIC counts over a cyclic generated graph: TS vs native', () => {
       expect((tsRows[0] as { c: number }).c).toBeGreaterThan(0);
 
       /*
-       * ⚠️ THE DIRECTION MUST ACTUALLY MATTER HERE, AND IT IS ASSERTED RATHER THAN ASSUMED. Parity
+       * THE DIRECTION MUST ACTUALLY MATTER HERE, AND IT IS ASSERTED RATHER THAN ASSUMED. Parity
        * alone is satisfied by a route that ignores `inward` whenever the two spellings happen to
        * agree — which, for an UNSEEDED count, they always do. With the seed they differ because of
        * the hub, and this line is what fails if a later edit removes that asymmetry instead of the
@@ -313,13 +313,13 @@ describe('ACYCLIC counts over a cyclic generated graph: TS vs native', () => {
 });
 
 /*
- * ⚠️⚠️ **THE `DISTINCT` ARM IS A DIFFERENT ROUTE FROM THE COUNT ARM, and item 2004 added it with no
+ * **THE `DISTINCT` ARM IS A DIFFERENT ROUTE FROM THE COUNT ARM, and item 2004 added it with no
  * cross-engine coverage until this block.** `count(*) ACYCLIC` goes to `acyclic-count.ts`'s DFS
  * (item 2002); `RETURN DISTINCT y.n` goes to `reachability.ts`'s new `spec.acyclic` arm, which
  * produces the reached SET over the CSR. Two routes, two chances to be wrong, and the tests above
  * only exercise the first.
  *
- * 🔑 AND THE SEED AXIS IS HERE DELIBERATELY. Item 2003's whole finding was that the unseeded case
+ * AND THE SEED AXIS IS HERE DELIBERATELY. Item 2003's whole finding was that the unseeded case
  * hides divergences: with every vertex a source, every ACYCLIC-vs-BFS difference reduces to a
  * self-loop, and a cure keyed on that looks sound. Seeded, a 2-cycle diverges too. So every shape
  * below is run BOTH ways.
@@ -349,7 +349,7 @@ describe('DISTINCT ACYCLIC over a cyclic generated graph: TS vs native', () => {
         })();
 
         /*
-         * ⚠️ COMPARED AS SORTED MULTISETS, not as sequences — and that is the contract rather than
+         * COMPARED AS SORTED MULTISETS, not as sequences — and that is the contract rather than
          * convenience. `DISTINCT` carries no `ORDER BY`, GQL row order is unspecified here, and the
          * differential fuzzer compares these structurally for exactly that reason. The new arm is a
          * DFS where the BFS it sits beside is breadth-first, so it legitimately emits in a different
@@ -404,7 +404,7 @@ describe('DISTINCT ACYCLIC over a cyclic generated graph: TS vs native', () => {
 });
 
 /*
- * ⚠️⚠️ **A DISCRIMINATING FIXTURE, AND SIX SURVIVING MUTANTS ARE WHY IT EXISTS** (item 2004).
+ * **A DISCRIMINATING FIXTURE, AND SIX SURVIVING MUTANTS ARE WHY IT EXISTS** (item 2004).
  * The generated graph above has every vertex as a seed, and that SATURATES the reached set: each
  * vertex is found at depth 1 from its own in-neighbour, so the answer is `{v : v has an in-edge}`
  * whatever the DFS does deeper. Three separate mutants survived on that one fact —
@@ -412,7 +412,7 @@ describe('DISTINCT ACYCLIC over a cyclic generated graph: TS vs native', () => {
  * `direction-ignored` (walking the out-adjacency for an inward query, which on a ring where every
  * vertex has both is the SAME set).
  *
- * 🔑 THE THREE PROPERTIES THAT BREAK SATURATION, each aimed at a specific survivor:
+ * THE THREE PROPERTIES THAT BREAK SATURATION, each aimed at a specific survivor:
  *
  *   1. **A NARROW SEED.** Only `s` carries `k = 1`, so the answer is what ONE source reaches and
  *      every pruning decision is visible in it.
@@ -445,7 +445,7 @@ const DIAMOND_NDJSON = [
   // An `F` edge out of `s`, reaching a vertex no `E` path reaches.
   '{"type":"edge","id":"d7","labels":["F"],"from":"s","to":"f","properties":{}}',
   /*
-   * ⚠️⚠️ **A SECOND SEED SHARING AN INTERMEDIATE, because `onPath.fill(0)` only matters ACROSS
+   * **A SECOND SEED SHARING AN INTERMEDIATE, because `onPath.fill(0)` only matters ACROSS
    * seeds and the component above has exactly ONE.** With a single seed the reset is a no-op, so the
    * mutant deleting it SURVIVED even on the non-saturated fixture.
    *
@@ -454,7 +454,7 @@ const DIAMOND_NDJSON = [
    * finds `y` and `z`. A DFS that keeps `g1`'s marks finds `m` already flagged and never reaches
    * either.
    *
-   * ⚠️ IT DEPENDS ON SEED ORDER — `g1` must run before `g2` — which is the NDJSON insertion order
+   * IT DEPENDS ON SEED ORDER — `g1` must run before `g2` — which is the NDJSON insertion order
    * here and therefore deterministic. **So the mirror pair `j1`/`j2` is declared in the OPPOSITE
    * arrangement**, and one of the two bites whichever way the seed list is enumerated. A single
    * component would pass by ordering luck half the time, which is a flaky test dressed as a passing
@@ -513,7 +513,7 @@ describe('the ACYCLIC arm on a NON-SATURATED fixture', () => {
       return;
     }
 
-    // ⚠️ `{1,3}` from `s`: p(1) q(2) r(3 via the long route AND 1 via the short) t(2) u(3).
+    // `{1,3}` from `s`: p(1) q(2) r(3 via the long route AND 1 via the short) t(2) u(3).
     // A DFS that leaves `r` marked after the long branch never reaches `t` or `u`.
     const { ts, native } = ask(
       'MATCH ACYCLIC (x:T)-[:E]->{1,3}(y:T) WHERE x.k = 1 RETURN DISTINCT y.n AS v',
@@ -532,7 +532,7 @@ describe('the ACYCLIC arm on a NON-SATURATED fixture', () => {
     }
 
     /*
-     * ⚠️ THE ACROSS-SEED CASE, which the single-seed component cannot show. `y`/`z` (n = 14, 15)
+     * THE ACROSS-SEED CASE, which the single-seed component cannot show. `y`/`z` (n = 14, 15)
      * hang off `m`, which the FIRST seed reaches at depth 3 and the second at depth 1; `yy`/`zz`
      * (22, 23) are the mirror. If the path marks are not cleared between seeds, the later seed finds
      * the shared vertex flagged and both pairs vanish.
@@ -591,7 +591,7 @@ describe('the ACYCLIC arm on a NON-SATURATED fixture', () => {
     }
 
     /*
-     * ⚠️⚠️ **THIS IS THE SHAPE A SURVIVING MUTANT WOULD HAVE MADE WRONG, and nothing else covers
+     * **THIS IS THE SHAPE A SURVIVING MUTANT WOULD HAVE MADE WRONG, and nothing else covers
      * it.** When the projection is a bare `count(DISTINCT b)`, `runReach` answers `kept.length` —
      * the reached LIST's length — rather than deduping downstream. So a walk that pushed a vertex
      * into `reached` more than once (reaching it by several acyclic paths, which this fixture does:

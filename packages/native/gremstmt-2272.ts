@@ -1,21 +1,21 @@
 /**
- * ⚠️⚠️ **THE GREMLIN TWIN OF ITEM 2269/2271 (item 2272).** GQL's statement cost grew 5x once a session
+ * **THE GREMLIN TWIN OF ITEM 2269/2271 (item 2272).** GQL's statement cost grew 5x once a session
  * cycled over more than `PARSE_CACHE_CAP` distinct texts — shipped as 64 → 512 at item 2271. Gremlin cannot
  * have that exact defect: **its caches are keyed `WeakMap<Graph, {tv, byShape: Map<string, …>}>`** — on the
  * GRAPH plus a SHAPE STRING, never on the plan object or on text — so rebuilding an identical traversal
  * hits the same `shapeKey`. And there is no parse step at all; the caller builds the plan directly.
  *
- * 🔑 **BUT THAT LEAVES A REAL QUESTION NO SCREEN ASKS.** Every screen and bench row builds its
+ * **BUT THAT LEAVES A REAL QUESTION NO SCREEN ASKS.** Every screen and bench row builds its
  * `traversal(...)` ONCE and reuses the object. A real application builds one per request. So:
  *
  *     reuse      ONE plan object, called many times      — what every screen measures
  *     fresh      a NEW traversal() per call, same shape   — what an application does
  *     distinct   a NEW traversal() per call, MANY shapes  — tests the `byShape` string caches
  *
- * ⚠️ All three must do identical work per call, so `distinct` varies only the `has` VALUE — which changes
+ * All three must do identical work per call, so `distinct` varies only the `has` VALUE — which changes
  * the shape key without changing the row count. The row count is asserted for exactly that reason.
  *
- * ⚠️ The fixture is small (execution cheap) so per-call plan handling is visible rather than swamped.
+ * The fixture is small (execution cheap) so per-call plan handling is visible rather than swamped.
  */
 import { Graph } from '@lenke/core';
 import { V, count, gte, has, hasLabel, toArray, traversal, type Plan } from '@lenke/gremlin';

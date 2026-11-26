@@ -33,22 +33,22 @@ export const skipTraversers = function* (
 };
 
 /*
- * ⚠️ A RING, NOT `push` + `shift` (item 2082). The old form moved every surviving element one slot on
+ * A RING, NOT `push` + `shift` (item 2082). The old form moved every surviving element one slot on
  * each row past `n`; measured by hand over 200,000 rows (medians of 14, two rounds):
  *
  *     walk alone (control)   0.222 ms
  *     push + shift           0.960        -> 0.74 ms of buffering
  *     ring store             0.286        -> 0.064 ms
  *
- * ⚠️ 0.74 ms IS ~7% OF THE QUERY IT WAS FOUND IN, under CLAUDE.md's noise floor — so this is not sold
+ * 0.74 ms IS ~7% OF THE QUERY IT WAS FOUND IN, under CLAUDE.md's noise floor — so this is not sold
  * as the win (the fused rung in `node-values.ts` is). It is here because the ring is strictly less work
  * for the same answer, and it reaches every `tail` shape the fusion declines.
  *
- * ⚠️⚠️ **`n < 1` STILL CONSUMES THE STREAM, AND AN EARLY `return` HERE WAS A REAL DIVERGENCE.** The
+ * **`n < 1` STILL CONSUMES THE STREAM, AND AN EARLY `return` HERE WAS A REAL DIVERGENCE.** The
  * first version of this guard returned without touching the stream — and `store('x').tail(0).cap('x')`
  * then read a bag of **0** where HEAD's unconditional loop read **5**, because `store` is lazy by
  * contract (items 2070/2078) and only banks what actually flows through it. A perf change must not
- * move that, so the zero arm drains. ⚠️ `% 0` is NaN, which is why it is a separate arm at all rather
+ * move that, so the zero arm drains. `% 0` is NaN, which is why it is a separate arm at all rather
  * than something the ring can absorb.
  */
 export const tailTraversers = function* (
@@ -56,7 +56,7 @@ export const tailTraversers = function* (
   n: number,
 ): Iterable<Traverser<unknown>> {
   if (n < 1) {
-    // ⚠️ DRAIN, DO NOT SKIP — see the note above. The count is unused; the PULL is the point.
+    // DRAIN, DO NOT SKIP — see the note above. The count is unused; the PULL is the point.
     let drained = 0;
 
     for (const _t of stream) {
@@ -76,7 +76,7 @@ export const tailTraversers = function* (
     seen++;
   }
 
-  // ⚠️ The oldest surviving row is at `seen % n` once the ring has WRAPPED, and at 0 before that.
+  // The oldest surviving row is at `seen % n` once the ring has WRAPPED, and at 0 before that.
   const kept = seen < n ? seen : n;
   const start = seen < n ? 0 : seen % n;
 

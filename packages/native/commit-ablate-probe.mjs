@@ -5,11 +5,11 @@
  * term, never decomposed. Its body is a `#graph` null check, an `Object.freeze`, a box resolution
  * (`this.#box ?? elementProperties.get(id)`), and two field stores (`box.bag`, `box.keys`).
  *
- * ⚠️ YIELDS TO THE EVENT LOOP. Item 1732: `markMutated` only clears `pendingTokens` on a
+ * YIELDS TO THE EVENT LOOP. Item 1732: `markMutated` only clears `pendingTokens` on a
  * `queueMicrotask`, so a synchronous write loop measures unbounded array growth and misattributes
  * ~4.4 points. A write instrument must return to the loop.
  *
- * ⚠️ ONE ARM PER PROCESS AND PER BUILD. The arm is a source edit to `packages/core`, rebuilt into
+ * ONE ARM PER PROCESS AND PER BUILD. The arm is a source edit to `packages/core`, rebuilt into
  * the dist this reads (`fuzzers-read-built-dists`). ARM is echoed back so the caller can assert the
  * arm it asked for is the arm that ran -- and the caller must ALSO assert the DIST contains the
  * arm's code, because a build that silently failed leaves the previous arm in place and the
@@ -29,7 +29,7 @@
  * removes a branch whose right side never evaluates -- it measured flat, which is what makes the
  * freeze reading trustworthy.
  *
- * ⚠️ `nofreeze`'s r1 (100.12) was still warming -- its series declines 466 -> 387 while r2 and r3
+ * `nofreeze`'s r1 (100.12) was still warming -- its series declines 466 -> 387 while r2 and r3
  * are flat (315, 296). The settled figure is 74-79.
  */
 import { Graph } from '@lenke/core';

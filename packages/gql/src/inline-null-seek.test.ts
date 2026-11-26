@@ -7,7 +7,7 @@ import { indexCandidates } from './executor/matching.js';
 import { query } from './index.js';
 
 /**
- * ⚠️ ITEM 1605 — A WRONG ANSWER: an index on a key made `{k: null}` UNDER-COUNT, by exactly the
+ * ITEM 1605 — A WRONG ANSWER: an index on a key made `{k: null}` UNDER-COUNT, by exactly the
  * vertices that lack the key.
  *
  * `indexCandidates` seeds from `node.pred.props` — the INLINE constraint — and `isScalar` admits
@@ -31,7 +31,7 @@ import { query } from './index.js';
  * Twenty is right: the unindexed path, the `IS NULL` spelling and `satisfies`'s own `props` loop all
  * agree, and `IS NULL` canonicalizes TO `{k: null}`. The indexed path silently dropped ten rows.
  *
- * ⚠️ HOW IT HID. Every probe this session used a non-null `$param`, and the one contract that would
+ * HOW IT HID. Every probe this session used a non-null `$param`, and the one contract that would
  * have caught it — item 149's "an index may change the COST and must never change the COUNT" — is
  * asserted by `gql-seek-revalidation-probe.mjs` on exactly the shapes it measures, none of which is
  * null-valued. The whole suite was green. It surfaced only because item 1605 went looking at what
@@ -93,7 +93,7 @@ describe('an index must change the COST and never the COUNT', () => {
 
   test('and on the right NUMBERS, which agreement alone cannot show', () => {
     /**
-     * ⚠️ TWO WRONG PATHS AGREEING IS STILL WRONG — items 1581/1596 both shipped a normalizer whose
+     * TWO WRONG PATHS AGREEING IS STILL WRONG — items 1581/1596 both shipped a normalizer whose
      * comparison passed while both sides were wrong. These literals come from the fixture: 10
      * stored nulls, 10 absent, 20 valued.
      */

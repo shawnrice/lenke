@@ -1,7 +1,7 @@
 /*
  * Item 2061 — the fused COUNT of the existence-filtered scan, reached through the `hasKey` spelling.
  *
- * ⚠️⚠️ **THE CENTRAL RISK HERE IS A WRONG ANSWER, NOT A SLOW ONE.** This rung substitutes a `values(k)`
+ * **THE CENTRAL RISK HERE IS A WRONG ANSWER, NOT A SLOW ONE.** This rung substitutes a `values(k)`
  * projection for the `hasKey(k)` step the engine's rewrite produced, which is sound ONLY because the
  * residual is a `count()` that cannot tell vertices from values apart. Under `order()`, `min()`,
  * `max()` or `fold()` the same substitution would sort or fold the VALUES where the plan asks for the
@@ -86,7 +86,7 @@ describe('fused where+hasKey+count (item 2061)', () => {
 
   test('the ANSWER is the vertices with BOTH an out-E edge and the key', () => {
     /*
-     * 🔑 `a` and `b` qualify. `c` has the edge but no `n`; `d` has `n` but no edge. Both exclusions
+     * `a` and `b` qualify. `c` has the edge but no `n`; `d` has `n` but no edge. Both exclusions
      * matter: dropping either test would answer 3, and dropping both 4.
      */
     expect(
@@ -102,13 +102,13 @@ describe('fused where+hasKey+count (item 2061)', () => {
     expect(claimed!.values.drain!()).toStrictEqual([10, 20]);
   });
 
-  test('⚠️⚠️ an `order` residual DECLINES — substituting the projection there would sort VALUES, not VERTICES', () => {
+  test('an `order` residual DECLINES — substituting the projection there would sort VALUES, not VERTICES', () => {
     expect(
       scanWhereHasKeyCountResidual(rewritten(['n'], { kind: 'order', bys: [] }), g),
     ).toBeUndefined();
   });
 
-  test('⚠️ `min`, `max` and `fold` residuals DECLINE for the same reason', () => {
+  test('`min`, `max` and `fold` residuals DECLINE for the same reason', () => {
     expect(scanWhereHasKeyCountResidual(rewritten(['n'], { kind: 'min' }), g)).toBeUndefined();
     expect(scanWhereHasKeyCountResidual(rewritten(['n'], { kind: 'max' }), g)).toBeUndefined();
     expect(scanWhereHasKeyCountResidual(rewritten(['n'], { kind: 'fold' }), g)).toBeUndefined();
@@ -116,7 +116,7 @@ describe('fused where+hasKey+count (item 2061)', () => {
 
   test('and those spellings still ANSWER correctly through whatever route they take', () => {
     /*
-     * ⚠️ A DECLINE IS ONLY HALF THE ASSERTION. [[rung-precedence-hides-the-code-under-test]]: a rung
+     * A DECLINE IS ONLY HALF THE ASSERTION. [[rung-precedence-hides-the-code-under-test]]: a rung
      * that declines must leave a path that still answers, so each of these is run end to end. They
      * project VERTICES (the `hasKey` form keeps elements), so a route that sorted values would be
      * visibly wrong rather than merely slow.
@@ -135,9 +135,9 @@ describe('fused where+hasKey+count (item 2061)', () => {
     ).toStrictEqual([10, 20]);
   });
 
-  test('⚠️⚠️ THE COUNT METHOD AGREES EXACTLY WITH THE WALK IT CLAIMS TO COUNT (item 2062)', () => {
+  test('THE COUNT METHOD AGREES EXACTLY WITH THE WALK IT CLAIMS TO COUNT (item 2062)', () => {
     /*
-     * ⚠️⚠️ **THIS IS THE WRONG-ANSWER GUARD FOR THE WHOLE FAST PATH.** `nodeValuesWhereCount` is a
+     * **THIS IS THE WRONG-ANSWER GUARD FOR THE WHOLE FAST PATH.** `nodeValuesWhereCount` is a
      * SECOND implementation of the walk's predicate — the existence hop AND the `key in props` drop
      * that is `values(k)`'s contract. If the two ever disagree, every `… count()` on this shape
      * silently returns a different number from the rows it is supposed to be counting, and no test of
@@ -158,7 +158,7 @@ describe('fused where+hasKey+count (item 2061)', () => {
 
   test('the count method agrees with the walk on a key NO vertex carries, and on one EVERY vertex carries', () => {
     /*
-     * ⚠️ THE TWO DEGENERATE ENDS, because an off-by-one in a tight loop shows up at the boundaries:
+     * THE TWO DEGENERATE ENDS, because an off-by-one in a tight loop shows up at the boundaries:
      * a key nothing has must count 0, and one everything has must count exactly the vertices passing
      * the existence hop (3 of 4 here — `d` has no out-E edge).
      */
@@ -168,7 +168,7 @@ describe('fused where+hasKey+count (item 2061)', () => {
     expect(none!.values.count!()).toBe(none!.values.drain!().length);
 
     /*
-     * ⚠️ `u` IS ON EVERY VERTEX, which is what makes this the OTHER end rather than the absent case
+     * `u` IS ON EVERY VERTEX, which is what makes this the OTHER end rather than the absent case
      * twice. My first attempt used `id` — not a property here — so it re-tested 0 under a name that
      * claimed otherwise. The answer is the vertices passing the existence hop: `a`, `b`, `c` have an
      * out-E edge and `d` does not.
@@ -199,9 +199,9 @@ describe('fused where+hasKey+count (item 2061)', () => {
     expect(scanWhereHasKeyCountResidual(five, g)).toBeUndefined();
   });
 
-  test('⚠️ a NON-hasKey projection declines — and would THROW if the gate were removed', () => {
+  test('a NON-hasKey projection declines — and would THROW if the gate were removed', () => {
     /*
-     * ⚠️⚠️ THIS CASE IS HERE BECAUSE A MUTANT SURVIVED MY FILE. Deleting the
+     * THIS CASE IS HERE BECAUSE A MUTANT SURVIVED MY FILE. Deleting the
      * `projection?.kind !== 'hasKey'` gate makes the rung accept ANY step in the projection slot and
      * then read `projection.keys[0]` off it — `id()` carries no `keys`, so it is a TypeError, not a
      * wrong route. The wide suite caught it; this file had nothing that put a keyless step there.

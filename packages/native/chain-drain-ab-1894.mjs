@@ -23,7 +23,7 @@ const REPS = process.env.REPS ?? '30';
 const SHAPES = ['opt2', 'optional', 'hop', 'hop2'];
 
 const KILLS = [
-  // ⚠️ RENAMING THE DRAIN IS THE KILL: `toArray` reads `drain` only if it is a FUNCTION on the
+  // RENAMING THE DRAIN IS THE KILL: `toArray` reads `drain` only if it is a FUNCTION on the
   // walk, so a renamed method sends it back to spreading the generator — which is exactly the state
   // before this item. The anchor includes the comment above the method so it is unique in the dist.
   [
@@ -117,7 +117,7 @@ for (const shape of SHAPES) {
   const postCold = rows
     .filter(([, w, s]) => w === 'POST' && s === shape)
     .map(([, , , r]) => r.cold);
-  // ⚠️ THE HEADLINE IS THE MEDIAN OF ROUNDS, NOT THE MIN. On one run the min made the CONTROL read
+  // THE HEADLINE IS THE MEDIAN OF ROUNDS, NOT THE MIN. On one run the min made the CONTROL read
   // 0.85x off a single low PRE reading (1.92 against 2.33/2.34) while its medians were 2.33 and
   // 2.29 — flat. CLAUDE.md says this in terms for the TS per-row path; it applies to the
   // round-level summary too.

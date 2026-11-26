@@ -25,7 +25,7 @@ import {
  * that probe's fixture gained a second edge label. Item 1311 had already built the sibling rewrite
  * for the same TYPE in opposite directions; this is the same DIRECTION with different types.
  *
- * ⚠️ THE FIXTURE THAT MATTERS IS THE ONE WITH AN EDGE IN BOTH BUCKETS, and item 1459 flagged that it
+ * THE FIXTURE THAT MATTERS IS THE ONE WITH AN EDGE IN BOTH BUCKETS, and item 1459 flagged that it
  * did not exist anywhere. `union(out(T), out(U))` CONCATENATES, so an edge carrying both `T` and `U`
  * is emitted TWICE; `out(T, U)` dedupes across buckets and emits it ONCE. The rewrite is therefore
  * answer-changing on such a graph, and is gated on `graph.multiTypeEdgeCount === 0`.
@@ -65,7 +65,7 @@ const build = (shared: boolean): Graph => {
 const n = (g: Graph, ...steps: readonly unknown[]): number =>
   toArray(traversal(...(steps as never[])), g)[0] as number;
 
-describe('⚠️ AN EDGE IN BOTH BUCKETS: the spellings DISAGREE and the gate must decline (item 1460)', () => {
+describe('AN EDGE IN BOTH BUCKETS: the spellings DISAGREE and the gate must decline (item 1460)', () => {
   test('the union counts the shared edge twice and the fused form once', () => {
     // THE WHOLE SOUNDNESS CASE. 4 edges, one carrying T and U: out(T) sees 3, out(U) sees 2, so the
     // union emits 5 while out(T, U) emits the 4 DISTINCT edges. Both numbers are correct for their
@@ -97,7 +97,7 @@ describe('⚠️ AN EDGE IN BOTH BUCKETS: the spellings DISAGREE and the gate mu
 });
 
 describe('no edge in two buckets: the spellings agree and the rewrite fires (item 1460)', () => {
-  test('⚠️ the counts match, and the plan is actually REWRITTEN', () => {
+  test('the counts match, and the plan is actually REWRITTEN', () => {
     const g = build(false);
 
     expect(g.multiTypeEdgeCount).toBe(0);
@@ -146,7 +146,7 @@ describe('no edge in two buckets: the spellings agree and the rewrite fires (ite
 });
 
 describe('the shapes that must DECLINE even with no multi-type edge (item 1460)', () => {
-  test('⚠️ a SHARED type name declines — and it exposed a COUNT-vs-YIELD divergence (item 1460)', () => {
+  test('a SHARED type name declines — and it exposed a COUNT-vs-YIELD divergence (item 1460)', () => {
     // I wrote this expecting `out(T, T)` to emit each edge ONCE (the earlier-buckets dedupe), and it
     // does not. What the engine actually does, and what TinkerPop 3.7.3 says:
     //

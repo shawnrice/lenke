@@ -121,7 +121,7 @@ const ARMS = {
     return n;
   },
   /**
-   * ⚠️ THE HYPOTHESIS. `dirbranch` reads ~28 ns/vertex more than `bucket`, and the only difference
+   * THE HYPOTHESIS. `dirbranch` reads ~28 ns/vertex more than `bucket`, and the only difference
    * is the `direct.forward ? v.adjTo : v.adjFrom` ternary — which puts TWO different getters at
    * ONE property-access site and defeats its inline cache. Splitting the loop in two makes each
    * access monomorphic again. If this arm lands back at `bucket`'s cost, the ternary is the whole

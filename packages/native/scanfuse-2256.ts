@@ -1,11 +1,11 @@
 /**
- * ⚠️⚠️ **IS THE SCAN CONTROL FUSED? (item 2256)** Item 1933 prices GQL `SET`'s "write alone" by subtracting
+ * **IS THE SCAN CONTROL FUSED? (item 2256)** Item 1933 prices GQL `SET`'s "write alone" by subtracting
  * `MATCH (n:T) RETURN n.n AS x`, and item 2255 found that control reading **25 ns/row** — while a property
  * read ALONE measured ~73 ns at item 2238. A scan plus a property read cannot cost 25 ns, so either the
  * control takes a route `SET` cannot (making the subtrahend too small and the 2.60x write-alone ratio
  * OVERSTATED), or the 73 ns figure does not transfer.
  *
- * 🔑 **THE TEST IS SPELLINGS.** If one projection shape is fused and others are not, the fused one is
+ * **THE TEST IS SPELLINGS.** If one projection shape is fused and others are not, the fused one is
  * dramatically cheaper for no semantic reason — which is exactly the class of defect `CLAUDE.md`'s
  * "equivalent spellings must cost the same" section exists for:
  *
@@ -15,7 +15,7 @@
  *     element     RETURN n AS x              the element itself, no property read
  *     set         SET n.n = 1                the arm being decomposed, for scale
  *
- * ⚠️ Every arm is verified to produce 20,000 rows (or to have written them), so an arm cannot read fast by
+ * Every arm is verified to produce 20,000 rows (or to have written them), so an arm cannot read fast by
  * doing less — the trap item 1682 names as a strawman arm.
  */
 import { Graph } from '@lenke/core';
@@ -55,7 +55,7 @@ for (const [name, text, writes] of ARMS) {
   const series: number[] = [];
   let rows = 0;
 
-  /* ⚠️ A WRITE IS NOT IDEMPOTENT, so the write arm rebuilds per rep with the build OUTSIDE the timer. */
+  /* A WRITE IS NOT IDEMPOTENT, so the write arm rebuilds per rep with the build OUTSIDE the timer. */
   let g = build();
 
   for (let r = 0; r < REPS; r += 1) {

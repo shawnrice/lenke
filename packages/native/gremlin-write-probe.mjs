@@ -5,12 +5,12 @@
  * the 32-shape profile probe is reads only. Item 1554 found and closed the same gap on the GQL side,
  * so this is its twin.
  *
- * ⚠️ THE LOOKUP KEY IS INDEXED, and that is the whole lesson of item 1554. Its first run measured a
+ * THE LOOKUP KEY IS INDEXED, and that is the whole lesson of item 1554. Its first run measured a
  * `SET` at 695 us/op and read it as write cost; the real figure was 4.61 us and the other 690 was a
  * 20,000-vertex SCAN inside the `MATCH`, counted once in the floor arm and once in each write.
  * `INDEXED=0` reproduces the mistake deliberately.
  *
- * ⚠️ PER-OPERATION, NOT BULK. `ts-ingest-is-constant-factor` already closed bulk ingest. The open
+ * PER-OPERATION, NOT BULK. `ts-ingest-is-constant-factor` already closed bulk ingest. The open
  * question is the SERVING shape: one small write at a time against a graph that already holds data.
  *
  * Each arm gets a FRESH graph, so no arm inherits another's mutations and per-operation cost is

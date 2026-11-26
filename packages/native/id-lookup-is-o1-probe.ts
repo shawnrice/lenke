@@ -11,7 +11,7 @@
 // One arm and one size per process, because four separate readings in this run were inverted by
 // measuring several things in one process (items 1320, 1321, 1323, 1325).
 //
-// ⚠️ HOW TO READ THIS PROBE'S NUMBERS (item 1395). The arms are correct and the invariant HOLDS, but
+// HOW TO READ THIS PROBE'S NUMBERS (item 1395). The arms are correct and the invariant HOLDS, but
 // the headline figure is NOT the engine's lookup cost and the residual drift is NOT complexity.
 // Measured here: `core-getVertexById` reads 105.7 / 112.6 / 129.5 ns over a 16x range (+22.5%) and
 // `core-getEdgeById` 99.9 / 111.9 / 130.5 (+30.6%) — and `log2(800000)/log2(50000)` is 1.26, so that

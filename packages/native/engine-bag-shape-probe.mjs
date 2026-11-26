@@ -20,7 +20,7 @@
  *
  *     ARM=uniform|varied SIZE=200000 node engine-bag-shape-probe.mjs
  *
- * ⚠️ ONE ARM PER PROCESS (item 762, and item 1364 is the cautionary tale): the two arms differ
+ * ONE ARM PER PROCESS (item 762, and item 1364 is the cautionary tale): the two arms differ
  * precisely in the dispatch state of a shared site, so running both in one process would have the
  * first pollute the second and measure nothing. That is the bug this probe exists because of.
  */

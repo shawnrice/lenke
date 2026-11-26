@@ -18,7 +18,7 @@ import { query } from './index.js';
  * small to reach a second allocation. A correctness-critical path was reachable only at scale, so no
  * amount of careful review of the small cases would have found it.
  *
- * ⚠️ THE FIXTURE SIZE IS NOT ENOUGH, AND A CYCLE IS THE WRONG SHAPE. The first version of this file
+ * THE FIXTURE SIZE IS NOT ENOUGH, AND A CYCLE IS THE WRONG SHAPE. The first version of this file
  * used a 4,096-vertex CYCLE and M5 STILL SURVIVED — because on a cycle every slot contributes
  * exactly the same number of continuations, so weight misrouted from one slot to another leaves the
  * TOTAL unchanged. The count is invariant to the very corruption the mutant causes. That is item
@@ -97,7 +97,7 @@ const countOf = (g: Graph, src: string): number => query<{ c: number }>(g, src)[
 const CHAIN4 = 'MATCH (a)-[:E]->(b)-[:E]->(c)-[:E]->(d)-[:E]->(e) RETURN count(*) AS c';
 
 describe('the slot memo survives several buffer doublings (item 1418)', () => {
-  test('⚠️ the 4-hop count over 4096 slots matches an independent walk', () => {
+  test('the 4-hop count over 4096 slots matches an independent walk', () => {
     // THE MUTANT-KILLER. With the growth copy short by one entry the memo loses a neighbour at each
     // doubling, so this count comes back low. At 4096 slots the initial 1024-entry buffer must grow
     // at least twice.
@@ -145,7 +145,7 @@ describe('the slot memo survives several buffer doublings (item 1418)', () => {
 
 describe('the memo over a graph where slots have several neighbours (item 1418)', () => {
   test('out-degree 2 fills runs longer than one, which single-degree fixtures cannot', () => {
-    // ⚠️ EVERY FIXTURE ABOVE HAS OUT-DEGREE 1, so each memo run holds exactly one entry and an
+    // EVERY FIXTURE ABOVE HAS OUT-DEGREE 1, so each memo run holds exactly one entry and an
     // off-by-one WITHIN a run is invisible. This one gives each vertex two outgoing edges, so runs
     // are length 2 and `off`/`len` have to be right relative to each other.
     const n = 1500;

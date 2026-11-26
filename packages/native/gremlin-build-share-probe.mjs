@@ -6,7 +6,7 @@
  * a profile — but it means a real caller whose values vary pays something the standing instrument
  * cannot see, and item 1577 cut that cost 4.27x without any probe row moving.
  *
- * ⚠️ ONE SHAPE PER PROCESS (`SHAPE=<name>`), because the first version of this measurement put four
+ * ONE SHAPE PER PROCESS (`SHAPE=<name>`), because the first version of this measurement put four
  * shapes in one process and reported a **NEGATIVE build share of -95.9%** for `point` — fresh plans
  * apparently faster than a reused one. That is item 762's dispatch pollution: all four arms share
  * one `toArray` call site, which goes megamorphic. The impossible sign is what exposed it; a merely

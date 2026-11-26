@@ -7,7 +7,7 @@
 # priced a single read at ~22 ns including the call, so four redundant ones is ~80 ns a row.
 #
 #   base  as shipped
-#   memo  ⚠️ CEILING ONLY, AND KNOWINGLY UNSAFE: a module-level one-entry memo keyed on the bound
+#   memo  CEILING ONLY, AND KNOWINGLY UNSAFE: a module-level one-entry memo keyed on the bound
 #         object's IDENTITY. It is NOT a shipping candidate -- a write REPLACES an element's bag
 #         without changing the element object, so `MATCH (n) SET n.x = 1 RETURN n.x` would read a
 #         stale bag. It exists to answer "is the redundancy worth plumbing for?" before any design.
@@ -15,7 +15,7 @@
 # A safe version would hoist the bag inside the projection's own row scope, where no write can
 # intervene. That is only worth building if this ceiling is large.
 #
-# ⚠️ CONTROLS: `hoprows` and `distincthi` read ONE property per row, so they cannot gain from
+# CONTROLS: `hoprows` and `distincthi` read ONE property per row, so they cannot gain from
 # removing redundancy -- they can only lose the memo's extra branch. If they gain, the reading is
 # not about redundancy.
 set -u

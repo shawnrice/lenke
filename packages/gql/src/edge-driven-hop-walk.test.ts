@@ -15,12 +15,12 @@ import { query } from './index.js';
  *   10% off-label:                                             20.57 -> 5.54
  * ```
  *
- * ⚠️⚠️ ROW ORDER DIFFERS FROM THE OTHER ARMS BY DESIGN — this one emits in edge-bucket order where
+ * ROW ORDER DIFFERS FROM THE OTHER ARMS BY DESIGN — this one emits in edge-bucket order where
  * they emit in vertex order. Row order is unspecified for an unordered result (the repo's own
  * WON'T-FIX, like SQL without `ORDER BY`), so every answer here is compared as a MULTISET. An
  * `ORDER BY` forces the start-driven arm and never reaches this walk, which is its own test below.
  *
- * 🔑 AND THE ROUTE CHOICE IS TESTED THROUGH `labelCoverage`, NOT THROUGH TIMING. Both arms report
+ * AND THE ROUTE CHOICE IS TESTED THROUGH `labelCoverage`, NOT THROUGH TIMING. Both arms report
  * the same rung (`hopProjection`), so `routes()` cannot tell them apart —
  * [[perf-gate-needs-its-own-test]]'s rule is to extract the arithmetic and unit-test it, which is
  * what the first describe block does.
@@ -69,7 +69,7 @@ describe('labelCoverage — the gate arithmetic, tested as a pure function', () 
 });
 
 /**
- * ⚠️ OFF-LABEL VERTICES CARRY NO EDGES, so `MATCH (a:T)-[:E]->(b:T)` and `MATCH (a)-[:E]->(b)`
+ * OFF-LABEL VERTICES CARRY NO EDGES, so `MATCH (a:T)-[:E]->(b:T)` and `MATCH (a)-[:E]->(b)`
  * answer the SAME multiset — which is what lets one spelling be the oracle for the other. Without
  * that the two would be different questions and no comparison would mean anything (the fixture bug
  * item 1935 caught on itself).

@@ -1,7 +1,7 @@
 /**
  * DOES `match()` DRIVE FROM THE SELECTIVE PATTERN? (item 1656)
  *
- * ⚠️ WHY THIS IS A DIFFERENT QUESTION FROM THE FOUR ITEMS BEFORE IT. The solver has been optimised
+ * WHY THIS IS A DIFFERENT QUESTION FROM THE FOUR ITEMS BEFORE IT. The solver has been optimised
  * four times — item 1478 (`tupleKey`, 1.10x), items 1559/1560 (the tag snapshot, 1.16-1.23x) and
  * item 1627 (the adjacency read, 1.08-1.11x) — every one a CONSTANT FACTOR, and item 1559's
  * 5.68x "ceiling" turned out to be a pruned search. This asks whether the solver's WORK is
@@ -18,11 +18,11 @@
  * `edgesByLabel.get('S')` is how `adjacentCount` already answers a global edge count — so this is a
  * question about the solver's ENTRY CHOICE, not about a missing structure.
  *
- * ⚠️ THE FLOOR IS A HAND ROUTE, AND IT ASSERTS THE SAME ANSWER. A floor that answered something
+ * THE FLOOR IS A HAND ROUTE, AND IT ASSERTS THE SAME ANSWER. A floor that answered something
  * else would make the ratio meaningless (item 1465), and this corpus has shipped that error twice
  * this session alone.
  *
- * ⚠️ AND THE GAP IS SWEPT OVER SELECTIVITY, because a constant factor and an algorithmic gap look
+ * AND THE GAP IS SWEPT OVER SELECTIVITY, because a constant factor and an algorithmic gap look
  * identical at one point. If the ratio grows as `S` gets rarer, the solver's work is driven by the
  * wrong pattern; if it is flat, it is a constant factor and these four items already own it.
  *
@@ -122,7 +122,7 @@ for (const rarity of [1, 5, 25, 100, 500]) {
   const viaSolver = toArray(selective, graph) as number[];
   const viaHand = handRoute(graph);
 
-  // ⚠️ THE ANSWER ASSERTION IS THE GATE ON THE WHOLE ROW.
+  // THE ANSWER ASSERTION IS THE GATE ON THE WHOLE ROW.
   if (viaSolver[0] !== viaHand) {
     throw new Error(`rarity ${rarity}: solver ${viaSolver[0]} !== hand ${viaHand}`);
   }

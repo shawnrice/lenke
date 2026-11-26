@@ -1,16 +1,16 @@
 /*
  * Item 2105 — does item 2104's defect shape exist in the SIBLING row rungs?
  *
- * 🔑 THE SIGNATURE IS CHEAP AND DECISIVE: a vacuous `LIMIT` cannot change an answer smaller than the
+ * THE SIGNATURE IS CHEAP AND DECISIVE: a vacuous `LIMIT` cannot change an answer smaller than the
  * limit, but it DOES defeat a length-gated rung and let the plan fall through to the orienting matcher.
  * **If "as written" is slower than "as written + LIMIT", that rung is losing to declining** — which is
  * exactly what item 2103 found for `hop2Projection` (59x) and 2104 fixed (82x).
  *
- * ⚠️ ROW PROJECTIONS, NOT `count(*)`. Item 2102's by-depth probe held the projection at `count(*)` and
+ * ROW PROJECTIONS, NOT `count(*)`. Item 2102's by-depth probe held the projection at `count(*)` and
  * reported "the gap needs three hops" — a confound, because the count path has the seek and the row
  * paths did not. Every shape here RETURNS ROWS.
  *
- * ⚠️ EVERY PAIR IS ASSERTED TO THE SAME ROW COUNT. A `LIMIT` lower than the answer would change it, and
+ * EVERY PAIR IS ASSERTED TO THE SAME ROW COUNT. A `LIMIT` lower than the answer would change it, and
  * the pair would then be two different questions rather than one spelling difference.
  */
 import { Graph } from '@lenke/core';
@@ -24,7 +24,7 @@ const g = new Graph();
 
 for (let i = 0; i < NODES; i += 1) {
   /*
-   * ⚠️ `tag` IS SELECTIVE (1 in 2,000) AND `:P` IS UNIFORM. A selective far predicate is what makes a
+   * `tag` IS SELECTIVE (1 in 2,000) AND `:P` IS UNIFORM. A selective far predicate is what makes a
    * seek worth having; a uniform label keeps `orient`'s bucket-size arm out of the comparison, so the
    * only thing that can move a row is the SEEK — which is what item 2104's gate requires.
    */
@@ -89,7 +89,7 @@ for (const [name, q] of Object.entries(shapes)) {
   }
 
   const ratio = bare.ms / limited.ms;
-  const flag = ratio > 1.5 ? '  ⚠️ LOSES TO DECLINING' : '';
+  const flag = ratio > 1.5 ? '  LOSES TO DECLINING' : '';
 
   console.log(
     `  ${name.padEnd(28)} ${bare.ms.toFixed(2).padStart(11)} ${limited.ms.toFixed(2).padStart(9)} ${ratio.toFixed(2).padStart(6)}x  ${bare.n}${flag}`,

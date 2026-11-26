@@ -1,7 +1,7 @@
 /**
  * `V().out(E)xK.values(k)` — ONE SHAPE PER PROCESS, for item 1875's `valueAt` deletion test.
  *
- * ⚠️ THE CONTROL IS A DEPTH, NOT A DIFFERENT QUERY. `valueAt` is defined inside `stackedWalk`,
+ * THE CONTROL IS A DEPTH, NOT A DIFFERENT QUERY. `valueAt` is defined inside `stackedWalk`,
  * which `hop-chain-values.ts` uses from depth THREE up — depth 2 "keeps the literal nesting here".
  * So `DEPTH=2` exercises a loop the change cannot reach while sharing the fixture, the engine and
  * the harness with `DEPTH=3`. If both move, it is the build or the machine.

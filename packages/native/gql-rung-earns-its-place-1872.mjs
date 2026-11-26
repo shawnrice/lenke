@@ -6,17 +6,17 @@
  * correctly, every test passes, and the regression is invisible. On the Gremlin side that hid a
  * **678x** loss for ~390 items.
  *
- * ⚠️ THE GQL SIDE IS CHEAPER TO DISABLE AND THAT IS THE ONE ADVANTAGE IT HAS. `compileLinear`
+ * THE GQL SIDE IS CHEAPER TO DISABLE AND THAT IS THE ONE ADVANTAGE IT HAS. `compileLinear`
  * returns a `CLinear` whose FIELDS are the routes, and `runLinear` dispatches on them — so nulling
  * every function-valued field disables all ~30 detectors in one edit, where Gremlin needed eight
  * call sites patched individually.
  *
- * ⚠️ THE SHAPE CORPUS IS `routes-fired.test.ts`'s OWN TABLE, not a hand-picked list. That file
+ * THE SHAPE CORPUS IS `routes-fired.test.ts`'s OWN TABLE, not a hand-picked list. That file
  * maintains (name, query, expected routes) for every detector, so it cannot drift from the rungs
  * the way a second list would — and the rows whose expected route list is EMPTY are skipped, since
  * a shape no rung claims has no verdict that could have decayed.
  *
- * ⚠️⚠️ IT IS A SCREEN, NOT A MEASUREMENT, FOR THE REASON ITEM 1871 LEARNED BY GETTING IT WRONG.
+ * IT IS A SCREEN, NOT A MEASUREMENT, FOR THE REASON ITEM 1871 LEARNED BY GETTING IT WRONG.
  * Many shapes share a process, and the cross-row inline-cache pollution is NOT symmetric between
  * arms: in arm A the preceding rows exercise assorted RUNGS, in arm B they all exercise the general
  * matcher, so arm B's shared path is warmer by the time a shape runs. That favours arm B — the arm
@@ -191,8 +191,8 @@ try {
     console.log(
       `${name.slice(0, 37).padEnd(38)} ${a.ms.toFixed(2).padStart(7)} ${b.ms
         .toFixed(2)
-        .padStart(10)} ${ratio.toFixed(2).padStart(9)}x  ${bad ? '⚠️ GENERAL WINS' : ''}${
-        a.ok === b.ok ? '' : '  ⚠️ ARMS DISAGREE ON RAISING'
+        .padStart(10)} ${ratio.toFixed(2).padStart(9)}x  ${bad ? 'GENERAL WINS' : ''}${
+        a.ok === b.ok ? '' : '  ARMS DISAGREE ON RAISING'
       }`,
     );
   }
@@ -202,7 +202,7 @@ try {
   if (flagged.length === 0) {
     console.log('# every rung still beats the general matcher (within the 1.25x flag threshold).');
   } else {
-    console.log('# ⚠️ CANDIDATES — each needs its own ISOLATED one-shape-per-process A/B:');
+    console.log('# CANDIDATES — each needs its own ISOLATED one-shape-per-process A/B:');
 
     for (const [name, ratio] of flagged) {
       console.log(`#   ${name}  ${ratio.toFixed(2)}x`);

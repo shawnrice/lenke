@@ -1,7 +1,7 @@
 /**
  * IS THE GQL ONE-HOP PROJECTION DELEGATION OR LAYOUT? (item 1895)
  *
- * ⚠️ THE `handSet` METHOD FROM ITEM 1893, APPLIED TO THE OTHER ENGINE. That item found the Gremlin
+ * THE `handSet` METHOD FROM ITEM 1893, APPLIED TO THE OTHER ENGINE. That item found the Gremlin
  * edge rung was **2.08x its own hand-written walk over the identical data** — so the structure was
  * never the first problem — and the fix was a twenty-line eager fill. A profile cannot separate
  * delegation from layout (the cost is spread across `pick`, the walk, the getters); a hand arm over
@@ -27,7 +27,7 @@
  *                 template — prices the object spread the engine uses
  *   handBare      bare values, no row objects at all — the Gremlin comparison, to price the row
  *
- * ⚠️ FANOUT IS A PARAMETER AND THE DEFAULT IS 5, not the grid's 1: the engine's strategy is "project
+ * FANOUT IS A PARAMETER AND THE DEFAULT IS 5, not the grid's 1: the engine's strategy is "project
  * once per far vertex, clone per edge", so at fanout 1 the clone loop never runs and the arm that
  * matters most is invisible. The grid uses 1 deliberately for its own reason (every depth returns
  * the same rows); this file is about the per-row cost.
@@ -167,7 +167,7 @@ const handBare = () => {
 const ARMS = { engine, handFar, handArr, handLit, handBare };
 const arm = ARMS[ARM];
 const series = [];
-// ⚠️ THE COLD REPS ARE REPORTED, not just dropped: a cached CSR's build is paid on rep 1 and
+// THE COLD REPS ARE REPORTED, not just dropped: a cached CSR's build is paid on rep 1 and
 // invisible afterwards, and item 1889 found a lever whose whole risk lived there.
 const cold = [];
 let rows = 0;

@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2026 — mutation round on the existence-filtered scan rung's RESIDUAL sibling.
 #
-# ⚠️⚠️ **FIRST, DOES THE TEST FILE REACH THE NEW CODE AT ALL?** Item 2018 wrote 13 tests for a new
+# **FIRST, DOES THE TEST FILE REACH THE NEW CODE AT ALL?** Item 2018 wrote 13 tests for a new
 # path and every walk mutant SURVIVED them, because rungs above answered each shape and the new code
 # never ran. The `count-never-fused` mutant below is that check made permanent: it forces
 # `fusableProjectedCount` to return false, so the fused case declines everywhere. It is
@@ -56,7 +56,7 @@ MUTANTS=(
   "residual-off-by-one@@  return values === undefined ? undefined : { values, rest: steps.slice(3) };@@s@rest: steps.slice(3)@rest: steps.slice(4)@"
   "residual-empty@@  return values === undefined ? undefined : { values, rest: steps.slice(3) };@@s@rest: steps.slice(3)@rest: []@"
   "residual-whole-plan@@  return values === undefined ? undefined : { values, rest: steps.slice(3) };@@s@rest: steps.slice(3)@rest: steps@"
-  # ⚠️ ANSWER-EQUIVALENT: the pipeline answers identically, so this SHOULD survive the answer tests
+  # ANSWER-EQUIVALENT: the pipeline answers identically, so this SHOULD survive the answer tests
   # and must be caught by the residual's own assertions.
   "residual-never-fused@@  if (steps.length <= 3) {@@/export const scanWhereValuesResidual/,/^};/s@  if (steps.length <= 3) {@  if (true) {@"
 )

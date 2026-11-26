@@ -8,19 +8,19 @@
 // edge, 4,000,000 to ingest a million**, and it profiles at 8-16% of every fixture build in this
 // session's probes.
 //
-// 🔑 THE ARMS, and the point is to separate the wrapper from the lookup:
+// THE ARMS, and the point is to separate the wrapper from the lookup:
 //
 //     mapGet      `g.verticesById.get(id)`      the floor — the map itself
 //     byId        `g.getVertexById(id)`         the public accessor
 //     edgeById    `g.getEdgeById(id)`           its edge twin
 //     missing     `g.getVertexById(absent)`     the `?? null` arm, which a hit never takes
 //
-// ⚠️ `getVertexById` IS A PER-INSTANCE ARROW CLASS FIELD, not a prototype method, so each `Graph`
+// `getVertexById` IS A PER-INSTANCE ARROW CLASS FIELD, not a prototype method, so each `Graph`
 // carries its own function object. For ONE graph a call site stays monomorphic; the reason to
 // measure rather than argue is that a wrapper around a `Map.get` is exactly the shape V8 either
 // inlines to nothing or does not.
 //
-// ⚠️ THE KEYS ARE SHUFFLED AND READ FROM AN ARRAY, so the loop measures lookups rather than string
+// THE KEYS ARE SHUFFLED AND READ FROM AN ARRAY, so the loop measures lookups rather than string
 // construction — building `String(i)` inside the timed loop would measure the allocator.
 //
 //     bun byidcost-1969.mjs
@@ -147,5 +147,5 @@ for (const n of SIZES) {
 }
 
 console.log(
-  '\n⚠️ O(1) is the flatness of these columns across n, not any single row. The `hits` guard must read n/n/n/0.',
+  '\nO(1) is the flatness of these columns across n, not any single row. The `hits` guard must read n/n/n/0.',
 );

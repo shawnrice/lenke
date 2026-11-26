@@ -5,7 +5,7 @@
  * becomes a `Row`, which is why three separate modules reached back into `core.ts` for it before
  * this file existed.
  *
- * ⚠️ `valueKey` IS A GROUPING KEY, NOT AN ORDERING ONE, and the two must not be confused —
+ * `valueKey` IS A GROUPING KEY, NOT AN ORDERING ONE, and the two must not be confused —
  * `compareSort` in `values.ts` is the ordering side. A key is for equality and bucketing (DISTINCT,
  * GROUP BY), so it only has to be injective; the total order has to agree with the Rust engine
  * BYTE FOR BYTE or snapshots diverge. `temporalKey` and `keyReplacer` are here because they exist
@@ -277,12 +277,12 @@ export const projectRow = (
  * for nothing. This drives the SAME iterable with one `for…of` and pushes, which is what the
  * composition means.
  *
- * ⚠️ IT IS NOT A GENERAL REPLACEMENT FOR `map`. The mapper here is called with ONE argument;
+ * IT IS NOT A GENERAL REPLACEMENT FOR `map`. The mapper here is called with ONE argument;
  * `map`'s is called with `(value, index)`. Both call sites below pass a unary mapper (`mapToRow`
  * and a `projectRow` closure), checked before this was written. A mapper that reads an index would
  * silently receive `undefined`.
  *
- * ⚠️ AND IT MUST STAY STREAMING OVER ITS INPUT. `bindings` is lazy for every shape that matches —
+ * AND IT MUST STAY STREAMING OVER ITS INPUT. `bindings` is lazy for every shape that matches —
  * consuming it with `for…of` pulls exactly as `Array.from` did, one binding at a time. Building an
  * intermediate array of bindings first would hold the whole match in memory, which is the eager-fill
  * failure of item 437.
@@ -298,7 +298,7 @@ export const mapToArray = <T, R>(it: Iterable<T>, f: (x: T) => R): R[] => {
 };
 
 /**
- * ⚠️ MOVED DOWN FROM `hop-projection.ts` (item 1666). `shortcuts.ts` needed this ONE symbol from
+ * MOVED DOWN FROM `hop-projection.ts` (item 1666). `shortcuts.ts` needed this ONE symbol from
  * `hop-projection.ts` while `hop-projection.ts` needed nine back — one of the four mutual import
  * pairs that made this package cyclic, closed by moving the single thin-side symbol. It is a row
  * projection, so this was always its home.
@@ -312,13 +312,13 @@ export const mapToArray = <T, R>(it: Iterable<T>, f: (x: T) => R): R[] => {
 /**
  * Everything `plainRowProjection` demands EXCEPT `DISTINCT` — item 1820.
  *
- * ⚠️ SPLIT OUT RATHER THAN RELAXING `plainRowProjection`, which several rungs share: a rung that
+ * SPLIT OUT RATHER THAN RELAXING `plainRowProjection`, which several rungs share: a rung that
  * can dedupe its own output can admit `DISTINCT`, and one that cannot must keep refusing it, so
  * the two questions are not the same predicate. `plainRowProjection` below is defined in terms of
  * this one and is therefore unchanged by construction — the thing to avoid here was a relaxation
  * that silently widened every OTHER rung's admission at the same time.
  *
- * ⚠️ `DISTINCT` IS SAFE TO SEPARATE AND THE PAGERS ARE NOT, which is why only `distinct` moves out.
+ * `DISTINCT` IS SAFE TO SEPARATE AND THE PAGERS ARE NOT, which is why only `distinct` moves out.
  * `SKIP`/`LIMIT` with no `ORDER BY` let row order decide WHICH rows survive, so a rung whose walk
  * order differs from the general path's would return different ROWS (`order-is-unspecified` makes
  * that unobservable only when every row survives). Dedupe keeps one row per key whatever the order,
@@ -337,7 +337,7 @@ export const plainRowProjection = (proj: Projection): boolean =>
   !proj.distinct && plainRowProjectionIgnoringDistinct(proj);
 
 /**
- * ⚠️ MOVED DOWN FROM `clauses.ts` (item 1666), to close the LAST import cycle in the package.
+ * MOVED DOWN FROM `clauses.ts` (item 1666), to close the LAST import cycle in the package.
  * Extracting `projection.ts` left `projection -> clauses` (for this one function) against
  * `clauses -> projection` (for `applyProjection` and `projectedRows`) — the third fresh cycle
  * `import/no-cycle` caught during this split rather than after it. `mapToRow` turns a binding into

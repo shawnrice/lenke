@@ -5,25 +5,25 @@
 // The numeric twin is 78.50 against 62.23, only 1.26x. Subtracting the two floors leaves ~107 ms on
 // 800,000 comparisons: **~134 ns per string comparison.**
 //
-// ⚠️ THE PROFILE POINTS SOMEWHERE ELSE AND IS MISLEADING HERE. It puts 60.3% in the CSR walk's lazy
+// THE PROFILE POINTS SOMEWHERE ELSE AND IS MISLEADING HERE. It puts 60.3% in the CSR walk's lazy
 // iterator (`walk$3`'s generator) and only **1.8% in `compareCodePoints`** — but
 // `compareCodePoints`' fast path is three comparisons and inlines into its caller, so its cost is
 // attributed to the generator frame. [[frame-attribution-trap]]: a frame is attribution until a
 // deletion test with a control says otherwise, and the two FLOORS above are that control.
 //
-// 🔑 WHAT THE REDUCTION WOULD BE. `compareTotal` runs a chain per comparison: four null tests, the
+// WHAT THE REDUCTION WOULD BE. `compareTotal` runs a chain per comparison: four null tests, the
 // number/NaN block, two `typeRank` calls, the `cmpSameType` dispatch, and inside
 // `compareCodePoints` a surrogate test on BOTH strings — all to re-establish a fact that is
 // per-string and invariant. For two surrogate-free strings the answer is literally
 // `a < b ? -1 : a > b ? 1 : 0`.
 //
-// ⚠️⚠️ AND `sort-key-specialize.ts` ALREADY DOES THIS FOR `order()` — read its note before
+// AND `sort-key-specialize.ts` ALREADY DOES THIS FOR `order()` — read its note before
 // believing anything here. It records that the STRING arm is worth having (item 1712's correctness
 // fix cost 1.55x-1.68x and this is what made it affordable) while a NUMERIC arm was built, measured
 // six times at 0.93x-1.18x and dropped, because an O(n) classification scan ate the win. Its note
 // names the open question as "a cheaper classification".
 //
-// 🔑 A FOLD IS WHERE THAT CHEAPER CLASSIFICATION EXISTS: it can classify AS IT FOLDS, for free,
+// A FOLD IS WHERE THAT CHEAPER CLASSIFICATION EXISTS: it can classify AS IT FOLDS, for free,
 // because it already visits every element once. A sort must classify BEFORE it can sort. Same
 // structural difference item 1918 found for the numeric arm — but unlike that one, `min`/`max` over
 // a total order are ORDER-INVARIANT, so there is no summation-order question and no byte-identity
@@ -38,7 +38,7 @@ const REPS = Number(process.env.REPS ?? 9);
 // The fixture's own `s` values: 7 distinct short ASCII strings, cycled.
 const vals = Array.from({ length: COUNT }, (_, i) => `s${i % 7}`);
 
-// ⚠️ A SECOND SET WITH A SURROGATE, so the arm that must DECLINE is measured too rather than
+// A SECOND SET WITH A SURROGATE, so the arm that must DECLINE is measured too rather than
 // assumed free. One in every 1000 carries an astral character.
 const mixed = Array.from({ length: COUNT }, (_, i) =>
   i % 1000 === 0 ? `s\u{1F600}${i}` : `s${i % 7}`,
@@ -49,7 +49,7 @@ const mixed = Array.from({ length: COUNT }, (_, i) =>
  * from the real one rather than guessed: four null tests, the number/NaN block, the type ranks, the
  * same-type dispatch, then `compareCodePoints`.
  *
- * ⚠️ IT IS A TRANSCRIPTION AND SO IT IS EVIDENCE ABOUT THE SHAPE, NOT A MEASUREMENT OF THE ENGINE.
+ * IT IS A TRANSCRIPTION AND SO IT IS EVIDENCE ABOUT THE SHAPE, NOT A MEASUREMENT OF THE ENGINE.
  * The engine's own number is the 199.92 ms row; this prices how much of it the reduction could
  * remove.
  */
@@ -193,21 +193,21 @@ for (const { label, xs } of SETS) {
     );
   }
 
-  // ⚠️ THE ANSWER CHECK, because a faster arm that answers differently is not a faster arm. `bare`
+  // THE ANSWER CHECK, because a faster arm that answers differently is not a faster arm. `bare`
   // is EXPECTED to differ on the astral set — that is why it is unreachable.
   const ref = answers.full;
 
   for (const name of ['real', 'fused']) {
     if (answers[name] !== ref) {
       console.log(
-        `  ❌ ${name} answered ${JSON.stringify(answers[name])}, full answered ${JSON.stringify(ref)}`,
+        `  ${name} answered ${JSON.stringify(answers[name])}, full answered ${JSON.stringify(ref)}`,
       );
     }
   }
 
   if (answers.bare !== ref) {
     console.log(
-      `  ⚠️ bare answered ${JSON.stringify(answers.bare)} vs ${JSON.stringify(ref)} — as expected, it is not a candidate`,
+      `  bare answered ${JSON.stringify(answers.bare)} vs ${JSON.stringify(ref)} — as expected, it is not a candidate`,
     );
   }
 

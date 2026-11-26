@@ -1,7 +1,7 @@
 /**
  * DOES `two-hop-count-csr.test.ts` HAVE TEETH? (item 1890)
  *
- * ⚠️ THE TWO ROUTES RETURN THE SAME NUMBER, so the gate and the policy can only be caught by their
+ * THE TWO ROUTES RETURN THE SAME NUMBER, so the gate and the policy can only be caught by their
  * own unit tests — [[perf-gate-needs-its-own-test]]. Half the mutants below target those rather than
  * the arithmetic, which is the half that would otherwise be believed without evidence.
  *
@@ -66,7 +66,7 @@ const MUTANTS = [
     1,
   ],
   [
-    // ⚠️ TWO OCCURRENCES — `csrFor`'s own cache uses the same generation pattern, and mine is the
+    // TWO OCCURRENCES — `csrFor`'s own cache uses the same generation pattern, and mine is the
     // SECOND in the file. The anchor assertion is what said so.
     'the policy never resets on a topology write',
     'csr',
@@ -89,7 +89,7 @@ const MUTANTS = [
 const EXPECTED_SURVIVORS = new Set();
 
 /**
- * ⚠️ BOTH STREAMS, ALWAYS, AND THAT IS WHY THIS IS `spawnSync`. `execFileSync` returns STDOUT on
+ * BOTH STREAMS, ALWAYS, AND THAT IS WHY THIS IS `spawnSync`. `execFileSync` returns STDOUT on
  * success and only exposes stderr on a throw — and `bun test` writes `N pass` to **stderr**, so the
  * first cut of this file read an empty result on the passing baseline and declared it broken. Item
  * 767 made the same mistake in the other direction.
@@ -97,10 +97,10 @@ const EXPECTED_SURVIVORS = new Set();
 /** The three outcomes as a label; a nested ternary is what the linter objects to. */
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
 const run = () => {
@@ -162,7 +162,7 @@ try {
     const ran = /\d+ pass/.test(r.text);
 
     if (!ran && r.code !== 124) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -190,6 +190,6 @@ try {
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

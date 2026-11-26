@@ -1,7 +1,7 @@
 /**
  * Item 1349: `within` / `without` membership, after the per-element closure was removed.
  *
- * ⚠️ WHY THIS FILE EXISTS. The change replaced `pred.values.some((x) => valueEq(value, x))` with a
+ * WHY THIS FILE EXISTS. The change replaced `pred.values.some((x) => valueEq(value, x))` with a
  * named function taking `value` as a PARAMETER, which is a 3.44-3.90x win and is supposed to be
  * SEMANTICALLY INERT. "Supposed to be" is the part that needs a test: the existing suite covers the
  * ordinary cases (22 tests fail if the helper throws), but the values where two notions of equality
@@ -121,7 +121,7 @@ describe('`without` is the complement of `within` on every vertex', () => {
       const inSet = new Set(ids(traversal(V(), hasLabel('T'), has('k', within(...vals)))));
       const outSet = ids(traversal(V(), hasLabel('T'), has('k', without(...vals))));
 
-      // ⚠️ THE COMPLEMENT IS OVER EVERY VERTEX, INCLUDING THE ONE WITH NO `k` AT ALL — measured,
+      // THE COMPLEMENT IS OVER EVERY VERTEX, INCLUDING THE ONE WITH NO `k` AT ALL — measured,
       // after this assertion first took it over the carriers and failed. An absent key reads
       // `undefined`, so `within(..)` finds nothing to match and `without(..)` is vacuously TRUE:
       // `without(5)` selects 7 of the 8 vertices, `absent` among them, while `has('k')` reports

@@ -1,7 +1,7 @@
 /*
  * Item 2087 — `MATCH <chain> RETURN count(*)` off the level recurrence.
  *
- * ⚠️⚠️ **TWO THINGS CAN GO WRONG HERE AND NEITHER IS THE ROUTE.**
+ * **TWO THINGS CAN GO WRONG HERE AND NEITHER IS THE ROUTE.**
  *
  * 1. THE COUNT. `count(*)` over a chain is the number of PATHS, which is `sum(u)` after the
  *    recurrence — but only if every label mask is applied. A rung that dropped an intermediate label
@@ -23,7 +23,7 @@ import { chainLabelsAllVacuous } from './chain-fold-levels.js';
 /**
  * `n` vertices labelled `:P`, each with `fanout` DISTINCT out-edges, plus optional extras.
  *
- * ⚠️ THE TARGET SPLITS ON THE REPEAT INDEX (`hop`), which is what makes the fanout real. The form
+ * THE TARGET SPLITS ON THE REPEAT INDEX (`hop`), which is what makes the fanout real. The form
  * `(i * a + b) % n` is invariant under `i -> i + n`, so a generator looping `i` over `n * fanout`
  * sends all of one vertex's edges to the SAME target — out-degree looks right and the graph is
  * functional. Six fixtures in this repo had that bug.
@@ -65,7 +65,7 @@ const branches = (g: Graph): number => {
 
     const seen = new Set<string>();
 
-    // ⚠️ `outEdges` DOES NOT EXIST on `Vertex`; the adjacency is `adjFrom`, a Map of label -> Set.
+    // `outEdges` DOES NOT EXIST on `Vertex`; the adjacency is `adjFrom`, a Map of label -> Set.
     // Checked against the prototype rather than assumed, after the first spelling threw.
     for (const byLabel of v.adjFrom?.values() ?? []) {
       for (const e of byLabel) {
@@ -82,8 +82,8 @@ const branches = (g: Graph): number => {
 const countOf = (g: Graph, q: string): unknown => (query(g, q)[0] as Record<string, unknown>).c;
 
 describe('chain count(*) via the level recurrence (item 2087)', () => {
-  test('⚠️ THE FIXTURE BRANCHES — asserted before any count is trusted', () => {
-    // 🔑 Without this, every `n·f²` below is true by construction and validates nothing.
+  test('THE FIXTURE BRANCHES — asserted before any count is trusted', () => {
+    // Without this, every `n·f²` below is true by construction and validates nothing.
     expect(branches(chainGraph(50, 3))).toBe(3);
     expect(branches(chainGraph(50, 4))).toBe(4);
   });
@@ -106,11 +106,11 @@ describe('chain count(*) via the level recurrence (item 2087)', () => {
     );
   });
 
-  test('⚠️⚠️ AN INTERMEDIATE LABEL FILTERS, and FANOUT=1 could not see it', () => {
+  test('AN INTERMEDIATE LABEL FILTERS, and FANOUT=1 could not see it', () => {
     /*
-     * 🔑 THE ONE WAY THIS RUNG COULD OVER-COUNT. `b:Q` is carried by NO `v` vertex, so every path is
+     * THE ONE WAY THIS RUNG COULD OVER-COUNT. `b:Q` is carried by NO `v` vertex, so every path is
      * killed at the middle node and the answer is 0. A rung that ignored `level.label` would return
-     * the unfiltered `n·f²`. ⚠️ At FANOUT=1 both a correct and an over-counting rung return a number
+     * the unfiltered `n·f²`. At FANOUT=1 both a correct and an over-counting rung return a number
      * of the same ORDER, so the branching fanout is what makes the 0 unmistakable.
      */
     const g = chainGraph(60, 3, ['Q']);
@@ -118,46 +118,46 @@ describe('chain count(*) via the level recurrence (item 2087)', () => {
     expect(countOf(g, 'MATCH (a:P)-[:E]->(b:Q)-[:E]->(c:P) RETURN count(*) AS c')).toBe(0);
   });
 
-  test('⚠️ a START label filters too — the seed mask, not a level mask', () => {
+  test('a START label filters too — the seed mask, not a level mask', () => {
     const g = chainGraph(60, 3, ['Q']);
 
     expect(countOf(g, 'MATCH (a:Q)-[:E]->(b:P)-[:E]->(c:P) RETURN count(*) AS c')).toBe(0);
   });
 
-  test("⚠️ a FAR label filters — the last level's mask", () => {
+  test("a FAR label filters — the last level's mask", () => {
     const g = chainGraph(60, 3, ['Q']);
 
     expect(countOf(g, 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:Q) RETURN count(*) AS c')).toBe(0);
   });
 
-  test('⚠️⚠️ IT AGREES WITH THE PER-EDGE PATH, which `LIMIT` forces', () => {
+  test('IT AGREES WITH THE PER-EDGE PATH, which `LIMIT` forces', () => {
     /*
-     * ⚠️ THE ORACLE. A `LIMIT` declines this rung by its own gate (see the note there on `LIMIT 0`),
+     * THE ORACLE. A `LIMIT` declines this rung by its own gate (see the note there on `LIMIT 0`),
      * so the same query with a vacuous `LIMIT` is answered by the general machinery — a second route
      * to the same number, which is the only check that does not restate this rung's arithmetic.
      */
     const g = chainGraph(60, 3, ['Q']);
     const q = 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN count(*) AS c';
 
-    // ⚠️ `g` HERE ALREADY CARRIES `Q`, so the un-limited arm really is this rung and the limited
+    // `g` HERE ALREADY CARRIES `Q`, so the un-limited arm really is this rung and the limited
     // arm really is the general path — the two routes, not one route twice.
     expect(countOf(g, q)).toBe(countOf(g, `${q} LIMIT 10`));
   });
 
-  test('⚠️⚠️ `LIMIT 0` YIELDS NO ROWS — the reason the gate refuses paging', () => {
+  test('`LIMIT 0` YIELDS NO ROWS — the reason the gate refuses paging', () => {
     /*
-     * 🔑 This rung returns its one row unconditionally, so admitting `LIMIT 0` would be a WRONG
+     * This rung returns its one row unconditionally, so admitting `LIMIT 0` would be a WRONG
      * ANSWER rather than a slow one. The gate refuses it and the general path answers — asserted
      * here, because a gate that stopped refusing would change this from 0 rows to 1.
      */
     /*
-     * ⚠️⚠️ **`['Q']` IS LOAD-BEARING AND ITS ABSENCE MADE THIS TEST VACUOUS.** Written without an
+     * **`['Q']` IS LOAD-BEARING AND ITS ABSENCE MADE THIS TEST VACUOUS.** Written without an
      * off-label vertex, `:P` is carried by every vertex, the rung DECLINES at execution time, and the
      * general path answers `[]` whatever the gate says — so a mutant admitting `LIMIT` SURVIVED this
      * assertion. With `Q` present the rung is the one answering, and admitting `LIMIT` returns
      * `[{ c: 540 }]` for `LIMIT 0`: measured, not assumed.
      *
-     * 🔑 Same shape as item 2085's "every label-writing test reads FIRST": a test must force the
+     * Same shape as item 2085's "every label-writing test reads FIRST": a test must force the
      * branch it is written for, and a fixture that routes around it looks identical when passing.
      */
     const g = chainGraph(60, 3, ['Q']);
@@ -167,9 +167,9 @@ describe('chain count(*) via the level recurrence (item 2087)', () => {
     ).toStrictEqual([]);
   });
 
-  test('⚠️ THE ALL-VACUOUS CASE IS HANDED BACK, and still answers correctly', () => {
+  test('THE ALL-VACUOUS CASE IS HANDED BACK, and still answers correctly', () => {
     /*
-     * 🔑 THE EXECUTION-TIME DECLINE. With no off-label vertex, `:P` is carried by EVERY vertex, so
+     * THE EXECUTION-TIME DECLINE. With no off-label vertex, `:P` is carried by EVERY vertex, so
      * `countShortcut`'s unfiltered CSR arm answers (12.57 ms/rep against this rung's ~20) and this
      * rung returns `undefined`. The ANSWER is what a test can see; the route is measured, not
      * asserted — but a decline that broke would show up as a wrong number here if the two routes ever
@@ -185,7 +185,7 @@ describe('chain count(*) via the level recurrence (item 2087)', () => {
   });
 
   /*
-   * ⚠️⚠️ THE ROUTE PREDICATE, TESTED DIRECTLY. Five mutants against the execution-time decline all
+   * THE ROUTE PREDICATE, TESTED DIRECTLY. Five mutants against the execution-time decline all
    * SURVIVED the tests above, because both routes return the same count — a route choice is
    * answer-equivalent by construction, so only a unit test of the predicate itself has teeth.
    */
@@ -198,9 +198,9 @@ describe('chain count(*) via the level recurrence (item 2087)', () => {
     expect(rows.reduce((t, r) => t + Number((r as Record<string, unknown>).n), 0)).toBe(540);
   });
 
-  test('⚠️⚠️ A ONE-ITEM `GROUP BY` DECLINES — the shape the `groupKeys` guard exists for', () => {
+  test('A ONE-ITEM `GROUP BY` DECLINES — the shape the `groupKeys` guard exists for', () => {
     /*
-     * 🔑 A MUTANT ADMITTING `groupKeys` SURVIVED TWO EARLIER ATTEMPTS AT THIS TEST, and each failure
+     * A MUTANT ADMITTING `groupKeys` SURVIVED TWO EARLIER ATTEMPTS AT THIS TEST, and each failure
      * was instructive:
      *
      *   - `RETURN c.k AS k, count(*)` — TWO projection items, so `items.length !== 1` declines first
@@ -208,7 +208,7 @@ describe('chain count(*) via the level recurrence (item 2087)', () => {
      *   - `LET k = c.k … GROUP BY k` — ISO-GQL groups by a BOUND NAME, and the `LET` makes it THREE
      *     clauses, so `clauses.length !== 2` declines first instead.
      *
-     * 🔑 `GROUP BY <pattern variable>` is the shape that reaches it: two clauses, ONE projection item,
+     * `GROUP BY <pattern variable>` is the shape that reaches it: two clauses, ONE projection item,
      * and a non-empty group key. Admitting it would collapse every group into a single total.
      */
     const g = chainGraph(60, 3, ['Q']);
@@ -219,9 +219,9 @@ describe('chain count(*) via the level recurrence (item 2087)', () => {
     expect(rows.reduce((t, r) => t + Number((r as Record<string, unknown>).n), 0)).toBe(540);
   });
 
-  test("⚠️ `SKIP 1` YIELDS NO ROWS — the paging refusal's other half", () => {
+  test("`SKIP 1` YIELDS NO ROWS — the paging refusal's other half", () => {
     /*
-     * ⚠️ A separate mutant from `LIMIT`, and it survived until this test existed: this rung returns one
+     * A separate mutant from `LIMIT`, and it survived until this test existed: this rung returns one
      * row, so `SKIP 1` must yield none. The fixture carries `Q` so the rung is the one answering.
      */
     const g = chainGraph(60, 3, ['Q']);
@@ -235,22 +235,22 @@ describe('chain count(*) via the level recurrence (item 2087)', () => {
     const levelsOf = (...labels: (string | undefined)[]): { label: string | undefined }[] =>
       labels.map((label) => ({ label }));
 
-    test('🔑 ALL VACUOUS → true, so `countShortcut` keeps the query', () => {
+    test('ALL VACUOUS → true, so `countShortcut` keeps the query', () => {
       // No off-label vertex: every vertex is `:P`, so `:P` elides.
       const g = chainGraph(40, 2);
 
       expect(chainLabelsAllVacuous(g, 'P', levelsOf('P', 'P'))).toBe(true);
     });
 
-    test('⚠️ a NON-VACUOUS START → false', () => {
+    test('a NON-VACUOUS START → false', () => {
       const g = chainGraph(40, 2, ['Q']);
 
       expect(chainLabelsAllVacuous(g, 'P', levelsOf('P', 'P'))).toBe(false);
     });
 
-    test('⚠️⚠️ a non-vacuous label on ONE LEVEL ONLY → false', () => {
+    test('a non-vacuous label on ONE LEVEL ONLY → false', () => {
       /*
-       * 🔑 THE MUTANT THIS EXISTS FOR. Dropping `levels.every(...)` leaves the start test alone, so a
+       * THE MUTANT THIS EXISTS FOR. Dropping `levels.every(...)` leaves the start test alone, so a
        * query whose START label is vacuous and whose LEVEL label is not would wrongly be handed back
        * to the per-edge tally. `Q` is carried by one vertex, so a level asking for it filters hard.
        */
@@ -260,15 +260,15 @@ describe('chain count(*) via the level recurrence (item 2087)', () => {
       expect(chainLabelsAllVacuous(g, undefined, levelsOf(undefined, 'Q'))).toBe(false);
     });
 
-    test('⚠️ an ABSENT label counts as vacuous — there is nothing to filter', () => {
+    test('an ABSENT label counts as vacuous — there is nothing to filter', () => {
       const g = chainGraph(40, 2, ['Q']);
 
       expect(chainLabelsAllVacuous(g, undefined, levelsOf(undefined, undefined))).toBe(true);
     });
 
-    test('⚠️ a label NO vertex carries is NOT vacuous — it filters everything', () => {
+    test('a label NO vertex carries is NOT vacuous — it filters everything', () => {
       /*
-       * ⚠️ `vacuousLabel` is an EXACT equality (the bucket size against `vertexCount`), so a label
+       * `vacuousLabel` is an EXACT equality (the bucket size against `vertexCount`), so a label
        * with an EMPTY bucket is not vacuous — correctly, since eliding it would turn "no rows" into
        * "every row". The sharpest case for a predicate that tested "bucket is missing".
        */

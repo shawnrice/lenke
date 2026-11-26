@@ -1,7 +1,7 @@
 /**
  * THE GREMLIN POINT LOOKUP AGAINST A HAND FLOOR, and the two spellings of it against each other.
  *
- * ⚠️ WHY IT EXISTS. Three items left questions on this shape and none of them can be answered from
+ * WHY IT EXISTS. Three items left questions on this shape and none of them can be answered from
  * the others' numbers (item 1640: do not compare across files):
  *
  * - **Item 1642** decomposed `V().hasId(x).values(k)` at **1277.6 ns/call** — 233.8 construction,
@@ -22,7 +22,7 @@
  *     ARM=seeded bun gremlin-point-floor.ts
  *     ARM=hasid-rebuilt N=200000 REPS=14 bun gremlin-point-floor.ts
  *
- * ⚠️ IT IMPORTS THE EXECUTOR FROM `src`, NOT FROM `@lenke/gremlin`. Item 1647 lost an A/B to that:
+ * IT IMPORTS THE EXECUTOR FROM `src`, NOT FROM `@lenke/gremlin`. Item 1647 lost an A/B to that:
  * the package resolves to the BUILT DIST, so a `src`-only change measures as a null in both arms.
  *
  * ONE ARM PER PROCESS (item 762), and the ids are spread across the vertex set so no single entry
@@ -38,7 +38,7 @@ import { traversal } from '@lenke/gremlin';
 import { countShortcut } from '../gremlin/src/executor/count-shortcut.js';
 // eslint-disable-next-line boundaries/no-cross-package-relative-import -- internal executor entry point, read pre-build
 import { effectivePlan, toArray } from '../gremlin/src/executor/index.js';
-// ⚠️ THE DIRECTIVE SITS INSIDE THE BRACES, which looks odd and is the only placement that works:
+// THE DIRECTIVE SITS INSIDE THE BRACES, which looks odd and is the only placement that works:
 // the rule reports a WRAPPED import on its `} from '…'` line, so a directive above the `import`
 // keyword misses it — and keeping the import on one line instead fails `fmt:check` (item 1660).
 import {
@@ -101,7 +101,7 @@ for (let i = 0; i < NODES; i += 1) {
 }
 
 /**
- * ⚠️ EDGES, BECAUSE THE FIRST VERSION HAD NONE and the hop-count arms both answered 0 — a
+ * EDGES, BECAUSE THE FIRST VERSION HAD NONE and the hop-count arms both answered 0 — a
  * degree measurement on a degree-ZERO fixture, which is the answer-invariant-to-the-property trap
  * CLAUDE.md records at item 702. `to` splits on the repeat index so the graph BRANCHES (items
  * 1516/1518): `(a*k + b) % N` alone is invariant under `k -> k + N`, which would give every vertex
@@ -166,7 +166,7 @@ for (const id of IDS) {
 }
 
 /**
- * ⚠️ THE SHAPE THE DECLINE ACTUALLY COSTS MOST. `countShortcut` refuses any SEEDED source outright
+ * THE SHAPE THE DECLINE ACTUALLY COSTS MOST. `countShortcut` refuses any SEEDED source outright
  * (`(source.ids?.length ?? 0) > 0` returns undefined), so `V(id).out(T).count()` — one vertex's
  * out-degree, the commonest serving question there is — takes the whole traverser walk even though
  * the answer is the length of one adjacency list.
@@ -197,7 +197,7 @@ const floorManyIds = (): unknown => {
 };
 
 /**
- * ⚠️ THE CONTROL FOR A NEW RUNG, which the arms above cannot be. Every other arm here is either
+ * THE CONTROL FOR A NEW RUNG, which the arms above cannot be. Every other arm here is either
  * ADMITTED by item 1650's shortcut or answered before `run` reaches its call site, so none of them
  * prices what the extra gate costs a shape it DECLINES. `values(k, s)` fans out per key, which the
  * rung refuses, and `V(id)` bare has no projection at all — both walk past the new call site and on
@@ -212,7 +212,7 @@ for (const id of IDS) {
 }
 
 /**
- * ⚠️ THE MULTI-ROW CASE, so a change aimed at per-CALL overhead is not read off a one-row answer
+ * THE MULTI-ROW CASE, so a change aimed at per-CALL overhead is not read off a one-row answer
  * alone. 64 ids through one plan: if a change helps the fixed cost and hurts the per-row path, the
  * one-id arms cannot see it and this one can.
  */
@@ -233,7 +233,7 @@ const floorManyValues = (): unknown => {
 };
 
 /**
- * ⚠️ THE ENVELOPE QUESTION (item 1660), which item 1652's term-by-term ablations could NOT answer.
+ * THE ENVELOPE QUESTION (item 1660), which item 1652's term-by-term ablations could NOT answer.
  *
  * Item 1652 priced each term of the remaining ~126 ns separately — `newContext` at 2.7-5%, laziness
  * at FLAT, the rung's position at a wash — and declared a floor. But a sum of small ablations is not
@@ -245,7 +245,7 @@ const floorManyValues = (): unknown => {
  * `EFF_CHECKED` read, no `newContext`, no `withSack` peel, no `effectivePlan`, and none of the three
  * rungs that decline this shape before the fourth answers it.
  *
- * ⚠️ IT IS NOT A CANDIDATE IMPLEMENTATION. Skipping the static checks and the vacuous-label drop is
+ * IT IS NOT A CANDIDATE IMPLEMENTATION. Skipping the static checks and the vacuous-label drop is
  * UNSOUND — that is the point, exactly as item 1652's singleton `newContext` was. It prices a
  * ceiling nothing can exceed, and the three `pro-*` arms then say where inside that ceiling the time
  * sits, so a route token's share can be read off rather than estimated:
@@ -254,7 +254,7 @@ const floorManyValues = (): unknown => {
  *   pro-declines − pro-effective = the declining chain ALONE, which is all a route token removes
  *   bypass − floor           = the rung's own cost, unreachable without changing the contract
  *
- * ⚠️ THE `pro-*` ARMS RECONSTRUCT `run`'s PROLOGUE and so can DRIFT from it. They are a cross-check
+ * THE `pro-*` ARMS RECONSTRUCT `run`'s PROLOGUE and so can DRIFT from it. They are a cross-check
  * on the subtraction, never the primary number: if `pro-declines` does not land near
  * `seeded − bypass`, believe the subtraction and distrust the reconstruction.
  */
@@ -284,7 +284,7 @@ const bypassHopCount = (): unknown => {
 };
 
 /**
- * ⚠️ INSIDE THE RUNG (item 1660). `bypass-values − floor` is ~81 ns — **two thirds of the whole
+ * INSIDE THE RUNG (item 1660). `bypass-values − floor` is ~81 ns — **two thirds of the whole
  * call** and far more than the prologue — and nothing has ever decomposed it. These two arms split
  * it into the parts a change could reach.
  *
@@ -296,7 +296,7 @@ const bypassHopCount = (): unknown => {
  * `rung-walkonly − rung-eager` is the generator protocol: the generator object, its resume/suspend
  * per yield, and the `[...gen]` spread's array iterator.
  *
- * ⚠️ UNLIKE ITEM 1652's EAGER-ARRAY ABLATION, THIS ONE IS NOT AUTOMATICALLY UNSOUND. That item
+ * UNLIKE ITEM 1652's EAGER-ARRAY ABLATION, THIS ONE IS NOT AUTOMATICALLY UNSOUND. That item
  * replaced the rung's return value while keeping the generator, and measured FLAT. This removes the
  * generator machinery itself — which the laziness contract forbids for a MULTI-id list (`asStringId`
  * must raise from inside the walk, after earlier ids have yielded) but which **nothing observes for
@@ -337,7 +337,7 @@ const rungEager = (): unknown => {
 };
 
 /**
- * ⚠️ THE ARM THAT ANSWERS ITEM 1651's OBJECTION, which `rung-eager` alone does not.
+ * THE ARM THAT ANSWERS ITEM 1651's OBJECTION, which `rung-eager` alone does not.
  *
  * Item 1651 deleted the `{ [Symbol.iterator], drain }` wrapper partly because it made
  * `V(id).values(k)` RE-ITERABLE where `run`'s result is one-shot for nearly every plan — so whether
@@ -356,7 +356,7 @@ const rungEagerOneShot = (): unknown => {
 };
 
 /**
- * ⚠️ THE ARM THAT MAKES THE CROSS-CHECK EXACT. Every `pro-*` arm pays the id cycle, the plan-map
+ * THE ARM THAT MAKES THE CROSS-CHECK EXACT. Every `pro-*` arm pays the id cycle, the plan-map
  * lookup and the timing loop, and so does every `seeded`/`bypass` arm — so that base CANCELS in the
  * subtraction `seeded − bypass` but NOT in a `pro-*` arm's absolute number. Without this arm the
  * reconstruction reads ~42 ns against the subtraction's ~28 and the two look like they disagree.
@@ -391,7 +391,7 @@ const proDeclines = (): unknown => {
   const b = groupCountShortcut(effective, g);
   const c = ctx.tracksPath ? undefined : nodeValuesShortcut(effective, g);
 
-  // ⚠️ ASSERTED, not assumed: if any of the three ever ANSWERS this shape, the subtraction above is
+  // ASSERTED, not assumed: if any of the three ever ANSWERS this shape, the subtraction above is
   // measuring a different route from the one `seeded` takes and the whole arm is void.
   if (a !== undefined || b !== undefined || c !== undefined) {
     throw new Error('pro-declines: a rung ANSWERED — this is not the decline chain seeded pays');
@@ -425,7 +425,7 @@ const WORK: Record<string, () => unknown> = {
   hasid: () => toArray(hasidPlans.get(nextId())!, g),
   'seeded-count': () => toArray(seededCountPlans.get(nextId())!, g),
   'hasid-count': () => toArray(hasidCountPlans.get(nextId())!, g),
-  // ⚠️ THE CASE GREMLIN ACTUALLY HAS, because it has no parameter binding (item 1577): a caller
+  // THE CASE GREMLIN ACTUALLY HAS, because it has no parameter binding (item 1577): a caller
   // whose id varies builds a new plan every call and collects no memo.
   'seeded-rebuilt': () => toArray(traversal(V(nextId()), values('k')), g),
   'hasid-rebuilt': () => toArray(traversal(V(), hasId(nextId()), values('k')), g),

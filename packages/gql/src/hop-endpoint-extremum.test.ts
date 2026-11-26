@@ -1,6 +1,6 @@
 // The regression tests for item 1246's per-endpoint extremum fold.
 //
-// ⚠️ EVERY CASE HERE WAS WRITTEN TO KILL A MUTANT, and one of them was written because the mutant
+// EVERY CASE HERE WAS WRITTEN TO KILL A MUTANT, and one of them was written because the mutant
 // SURVIVED the whole suite first. The fold replaces a per-row walk with a per-distinct-endpoint
 // one, which is answer-equivalent when admitted — so nothing that merely checks results can see it
 // start firing on a shape it should refuse. The fixture is therefore built so that each refusal has
@@ -117,7 +117,7 @@ describe('the per-endpoint extremum fold (item 1246)', () => {
     // So min stays 10 but max becomes 51, NOT the directed 30 — which is what makes this fixture
     // able to tell the two directions apart at all.
     //
-    // ⚠️ NO SELF-LOOP CORRECTION IS NEEDED, unlike the counting paths (items 480-483): this fold
+    // NO SELF-LOOP CORRECTION IS NEEDED, unlike the counting paths (items 480-483): this fold
     // asks only whether x is reached, as a boolean, then folds x's value once. A loop sitting in
     // both adjacency maps cannot double-count a value `min`/`max` ignore the multiplicity of.
     expect(

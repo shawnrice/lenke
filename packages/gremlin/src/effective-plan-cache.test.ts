@@ -2,7 +2,7 @@
  * `effectivePlan`'s per-plan memo of its graph-free prefix (item 1647): what it caches, what it
  * deliberately does NOT, the reset, and the serialization its key shape was chosen to preserve.
  *
- * ⚠️ WHY THESE ARE THE TESTS. A cache on an answer-equivalent rewrite is invisible to every
+ * WHY THESE ARE THE TESTS. A cache on an answer-equivalent rewrite is invisible to every
  * differential test by construction (`perf-gate-needs-its-own-test`): a correct cache and no cache
  * at all return the same rows, so the suite that guards answers cannot see this code. What CAN go
  * wrong is what the cache is allowed to span, and there the failure is a wrong answer:
@@ -12,7 +12,7 @@
  *   - inherit the slot through `rewritten`'s spread and a rewritten plan is handed back as the
  *     answer for the plan it was rewritten FROM.
  *
- * ⚠️⚠️ THE FIRST OF THOSE IS NOT HYPOTHETICAL, AND IT IS WHY THIS CACHE STOPS WHERE IT DOES. Item
+ * THE FIRST OF THOSE IS NOT HYPOTHETICAL, AND IT IS WHY THIS CACHE STOPS WHERE IT DOES. Item
  * 1646 designed a whole-chain cache keyed on `(graph, graph.version)` and recorded that `Graph`
  * already carried the counter it needed. It does not: `version` and `epoch(name)` are REACTIVE
  * counters that advance when the mutation queue DRAINS, on a microtask. `addVertex()` followed by
@@ -55,7 +55,7 @@ const kindsOf = (plan: Plan, graph: Graph): string[] =>
 
 describe('Graph has no synchronous mutation counter', () => {
   /**
-   * ⚠️ THE PREMISE ITEM 1646 GOT WRONG, pinned as a property of `Graph` rather than left as a
+   * THE PREMISE ITEM 1646 GOT WRONG, pinned as a property of `Graph` rather than left as a
    * comment. If this test ever fails because the counters became synchronous, the whole-chain cache
    * that item priced becomes available — and until then it is a wrong answer.
    */
@@ -112,7 +112,7 @@ describe('the graph-dependent passes are NOT cached', () => {
   });
 
   /**
-   * ⚠️ THE WRONG ANSWER A `version`-KEYED WHOLE-CHAIN CACHE PRODUCES, with no `await` anywhere:
+   * THE WRONG ANSWER A `version`-KEYED WHOLE-CHAIN CACHE PRODUCES, with no `await` anywhere:
    * every read here happens in the same synchronous block as the write before it, which is exactly
    * where the reactive counter has not moved yet.
    */
@@ -161,7 +161,7 @@ describe('the graph-free prefix IS cached', () => {
   });
 
   /**
-   * ⚠️ THE MUTANT THIS KILLS is `rewritten` inheriting the slot through `...plan`, which object
+   * THE MUTANT THIS KILLS is `rewritten` inheriting the slot through `...plan`, which object
    * spread DOES copy for enumerable own symbol properties. A rewritten plan is a different step
    * list, so an entry on it answers a different question.
    */
@@ -174,7 +174,7 @@ describe('the graph-free prefix IS cached', () => {
   });
 
   /**
-   * ⚠️ THE ASSERTION ABOVE IS NOT ENOUGH, AND A MUTANT PROVED IT. Deleting `rewritten`'s reset
+   * THE ASSERTION ABOVE IS NOT ENOUGH, AND A MUTANT PROVED IT. Deleting `rewritten`'s reset
    * leaves the whole suite green, because every `rewritten` call the chain makes today happens
    * BEFORE the slot is written — so the inherited value is `undefined` either way and the reset is
    * defensive rather than load-bearing. This test reaches the hazard the reset exists for: a pass
@@ -214,7 +214,7 @@ describe('the graph-free prefix IS cached', () => {
 
 describe('a cached plan is still serializable', () => {
   /**
-   * ⚠️ THIS IS WHY THE SLOT IS SYMBOL-KEYED. `serialize.ts` does `JSON.stringify(plan)` as a public
+   * THIS IS WHY THE SLOT IS SYMBOL-KEYED. `serialize.ts` does `JSON.stringify(plan)` as a public
    * API, and the self-caching case above puts a CYCLE in the slot — which would make
    * `JSON.stringify` throw outright if the key were a plain string.
    */

@@ -1,18 +1,18 @@
 /*
  * Item 2097 — is `walkBothSegment`'s cost the 3-DEEP `yield*` GENERATOR CHAIN?
  *
- * ⚠️ WHAT IS ALREADY CLOSED, so this does not re-derive it: the matcher's per-row Binding Map copy
+ * WHAT IS ALREADY CLOSED, so this does not re-derive it: the matcher's per-row Binding Map copy
  * (28.5% self + 24% GC) had a no-copy VIEW built at item 2023 and a REUSED map at 2024, both priced
  * and REFUSED. And `withBinding` short-circuits on an anonymous name (`if (!name) return binding`), so
  * `[:E]` costs it nothing.
  *
- * 🔑 WHAT IS LEFT: `walkSegments`/`walkBothSegment` recurse by `yield* walkSegments(...)` once PER
+ * WHAT IS LEFT: `walkSegments`/`walkBothSegment` recurse by `yield* walkSegments(...)` once PER
  * EDGE, so every row of a three-segment pattern is handed up through THREE generator frames. Item
  * 2096 showed the shape emits 1.6M rows at 1.2 µs each against the directed walk's 0.7 — and
  * [[gremlin-values-is-the-floor]] records the same mechanism on the other engine: "the reduce is free;
  * the cost is the generator chain."
  *
- * ⚠️ THE ARMS PRODUCE THE SAME ROWS IN THE SAME ORDER and the count is asserted, so an arm that
+ * THE ARMS PRODUCE THE SAME ROWS IN THE SAME ORDER and the count is asserted, so an arm that
  * flattened the traversal differently would fail rather than look fast.
  */
 const DEPTH = Number(process.env.DEPTH ?? 3);
@@ -52,7 +52,7 @@ const arms = {
     return { rows, sink };
   },
   /*
-   * ⚠️ ONE generator, an EXPLICIT STACK instead of recursion — the same rows, the same order, but the
+   * ONE generator, an EXPLICIT STACK instead of recursion — the same rows, the same order, but the
    * value crosses ONE frame instead of DEPTH.
    */
   onegen: () => {
@@ -98,7 +98,7 @@ const arms = {
 
     return { rows, sink };
   },
-  // ⚠️ THE FLOOR: no generator at all, a callback. Bounds what removing the chain could reach.
+  // THE FLOOR: no generator at all, a callback. Bounds what removing the chain could reach.
   callback: () => {
     let sink = 0;
     let rows = 0;

@@ -1,16 +1,16 @@
 /**
- * ⚠️⚠️ **SWEEP THE SIZE — item 2284 measured the top-K heap at ONE size and called it inert (item 2285).**
+ * **SWEEP THE SIZE — item 2284 measured the top-K heap at ONE size and called it inert (item 2285).**
  *
- * 🔑 `boundedTopKeyed`'s own header cites its win at **200,000 rows** (62.4 ms → 9.5, 6.6x). Item 2284
- * measured 60,000 and found `LIMIT 100` costing exactly what a full sort costs. ⚠️ Those are not the same
+ * `boundedTopKeyed`'s own header cites its win at **200,000 rows** (62.4 ms → 9.5, 6.6x). Item 2284
+ * measured 60,000 and found `LIMIT 100` costing exactly what a full sort costs. Those are not the same
  * experiment, and "never swept the size" is this repo's most-repeated lesson (item 2264).
  *
- * ✅ Two arms at each size, identical but for the window:
+ * Two arms at each size, identical but for the window:
  *
  *   ordered   ORDER BY, no LIMIT    — sorts everything
  *   topk      ORDER BY, LIMIT 100   — the heap arm, confirmed to RUN (cap=100, allDirect=true)
  *
- * ⚠️ The heap's documented mechanism is sound — keys are extracted ONCE per item, not per comparison — so
+ * The heap's documented mechanism is sound — keys are extracted ONCE per item, not per comparison — so
  * if the ratio is flat at every size the claim in its header is what needs re-examining, and if it grows
  * with N then item 2284's 60k reading was simply below the crossover.
  */

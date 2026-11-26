@@ -1,15 +1,15 @@
 /**
- * ✅ **THE STANDING O(1)-BY-ID CHECK (item 2267).** The session's brief carries one explicit invariant —
+ * **THE STANDING O(1)-BY-ID CHECK (item 2267).** The session's brief carries one explicit invariant —
  * *"keep good O(1) access to get a vertex or edge by id"* — and it has been touched indirectly (item 2200
  * priced by-id lookup, 2239 found `getVertexById` is one `Map.get` that every element memoizes) but never
  * verified as an invariant. This verifies it the only way that counts: **by scaling the graph and checking
  * the per-lookup cost does not grow.**
  *
- * 🔑 O(1) means FLAT in N, so the test is a sweep, not a single number. ⚠️ A `Map.get` on string keys is
+ * O(1) means FLAT in N, so the test is a sweep, not a single number. A `Map.get` on string keys is
  * O(1) amortized but not free of cache effects, so a mild rise at large N is expected and a PROPORTIONAL
  * rise is the failure. Both vertices and edges are checked, since the brief names both.
  *
- * ⚠️ The ids are drawn in a SCATTERED order (a stride through the key space), not sequentially — a
+ * The ids are drawn in a SCATTERED order (a stride through the key space), not sequentially — a
  * sequential walk would measure prefetch rather than lookup, and would hide a structure that degrades.
  */
 import { Graph } from '@lenke/core';

@@ -1,16 +1,16 @@
 /**
- * ⚠️⚠️ **IS THE 3.61 ms `ORDER BY + LIMIT` ROW ON THE TOP-K HEAP OR OFF IT? (item 2284)**
+ * **IS THE 3.61 ms `ORDER BY + LIMIT` ROW ON THE TOP-K HEAP OR OFF IT? (item 2284)**
  *
- * 🔑 Top-K is already built (`topKPlan`, item 1064; measured 5.3-6.1x at item 1501), and its admission is a
+ * Top-K is already built (`topKPlan`, item 1064; measured 5.3-6.1x at item 1501), and its admission is a
  * pure function whose crossover was swept: `heapBeatsSort(cap, rows) = cap * 16 <= rows`.
  *
- * ✅ **That crossover is itself an ORACLE, so this needs no code edit.** With ~40,000 matching rows:
+ * **That crossover is itself an ORACLE, so this needs no code edit.** With ~40,000 matching rows:
  *
  *     LIMIT 200     200 * 16 =   3,200 <= 40,000   -> heap ADMITTED
  *     LIMIT 2000   2000 * 16 =  32,000 <= 40,000   -> heap ADMITTED, barely
  *     LIMIT 20000 20000 * 16 = 320,000 >  40,000   -> heap DECLINED, full sort
  *
- * ⚠️ My memory's rule is that timing cannot tell "declined" from "more work" — but here the two arms differ
+ * My memory's rule is that timing cannot tell "declined" from "more work" — but here the two arms differ
  * ONLY in a constant the planner reads, and the engine's own sweep says where the route flips. If the cost
  * per DELIVERED row jumps at the flip, the heap is live and doing its job. If the curve is smooth, the
  * shape never reached the heap at all.
@@ -68,7 +68,7 @@ console.log(`  heapBeatsSort crossover at cap = rows/16 = ${Math.floor(ctrlRows 
 console.log(`    cap     total ms   minus control   ns per DELIVERED row   heap?`);
 
 /*
- * 🔑🔑 **THE SAME SHAPE WITHOUT THE PREDICATE.** The filtered ladder came out FLAT across a 200x range of
+ * **THE SAME SHAPE WITHOUT THE PREDICATE.** The filtered ladder came out FLAT across a 200x range of
  * `cap`, which says the heap is not paying — and the likeliest reason is not that the heap is bad but that
  * this shape never reaches it: a `WHERE` may route to a broader rung that never calls `topKPlan`. If the
  * UNFILTERED ladder IS cap-sensitive, the predicate is what declines top-K, and that is a findable gap.

@@ -6,14 +6,14 @@
  * `sweepBlock`, the undirected one falls to `matchPattern`/`walkSegments`/`walkBothSegment`, the
  * general pattern matcher. **Before building an undirected arm, this asks what one could reach.**
  *
- * 🔑 **THE HAND ARM MUST REPRODUCE THE ROW ORDER, not just the multiset.** `hop-projection.ts` records
+ * **THE HAND ARM MUST REPRODUCE THE ROW ORDER, not just the multiset.** `hop-projection.ts` records
  * that `expand` emits, PER START VERTEX, the out-steps then the in-steps, skipping a self-loop in the
  * in-pass because a loop is indexed under BOTH maps — and that row order is OBSERVABLE for a
  * projection, which is why item 478's two-pass trick is confined to aggregates. A floor arm that
  * emitted a different order would be measuring a cheaper question (item 2016's rule: a floor arm must
  * take the same ROUTE, not merely touch the same data).
  *
- * ⚠️ SO THE SEQUENCES ARE COMPARED ELEMENT BY ELEMENT. If they diverge, the floor is void and the
+ * SO THE SEQUENCES ARE COMPARED ELEMENT BY ELEMENT. If they diverge, the floor is void and the
  * probe says so rather than printing a ratio.
  *
  *     bun undirected-floor-2051.mjs
@@ -49,7 +49,7 @@ const UNDIRECTED = 'MATCH (a:P)-[:E]-(b:P)-[:E]-(c:P)-[:E]-(d:P) RETURN d.k AS k
  * in-edges, and a self-loop is skipped in the in-pass because it appears in both maps.
  */
 /*
- * ⚠️ MODULE SCOPE, not a closure inside the walk — [[ts-closure-size-is-load-bearing]]: a walk defined
+ * MODULE SCOPE, not a closure inside the walk — [[ts-closure-size-is-load-bearing]]: a walk defined
  * INSIDE a returned closure gave unrelated queries a new slow mode (4x) in this repo, and the lint
  * rule that flagged it here is pointing at the same thing. It captures nothing, so hoisting is free.
  */
@@ -107,7 +107,7 @@ const handUndirected = () => {
 const engine = (text) => [...query(g, text)].map((r) => r.k);
 
 /*
- * ⚠️ EQUIVALENCE FIRST, AND AS A SEQUENCE. A ratio against an arm that answers a different question
+ * EQUIVALENCE FIRST, AND AS A SEQUENCE. A ratio against an arm that answers a different question
  * is worse than no number at all.
  */
 const want = engine(UNDIRECTED);
@@ -121,9 +121,9 @@ if (!same) {
   const at = want.findIndex((v, i) => v !== got[i]);
 
   console.log(
-    `  ⚠️ FIRST DIVERGENCE at index ${at}: engine ${String(want[at])} vs hand ${String(got[at])}`,
+    `  FIRST DIVERGENCE at index ${at}: engine ${String(want[at])} vs hand ${String(got[at])}`,
   );
-  console.log('  ⚠️ THE FLOOR IS VOID — a different order is a different question.');
+  console.log('  THE FLOOR IS VOID — a different order is a different question.');
   process.exit(1);
 }
 
@@ -155,7 +155,7 @@ const hand = time('HAND undirected', () => handUndirected(), want.length);
 const dir = time('engine directed', () => engine(DIRECTED), dRows);
 
 /*
- * ⚠️ BOTH RATIOS STATED THE SAME WAY ROUND, because my first version printed "the directed route is
+ * BOTH RATIOS STATED THE SAME WAY ROUND, because my first version printed "the directed route is
  * 0.34x cheaper", which is the reciprocal and reads as the opposite of what it means. A ratio label
  * that has to be mentally inverted is a wrong-answer generator in a probe nobody re-derives.
  */

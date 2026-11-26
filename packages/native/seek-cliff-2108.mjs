@@ -1,7 +1,7 @@
 /*
  * Item 2108 — binary-search the CLIFF: 2x the rows for 7.8x the time, then FLAT.
  *
- * 🔑 WHAT THE SWEEP FOUND. One hop, a predicate on the far node, an index on its key. Collected count
+ * WHAT THE SWEEP FOUND. One hop, a predicate on the far node, an index on its key. Collected count
  * against time, confirmed in both sweep orders and with item 2107 KILLED (so it is pre-existing):
  *
  * ```text
@@ -11,15 +11,15 @@
  *     600,000        437.4
  * ```
  *
- * ⚠️ LARGE-BUT-FLAT-IN-N MEANS A CEILING WAS HIT, not that the work scales. `min` shows the same cliff
+ * LARGE-BUT-FLAT-IN-N MEANS A CEILING WAS HIT, not that the work scales. `min` shows the same cliff
  * (19.7 -> 97.6), so it is in the WALK rather than in either fold.
  *
- * 🔑 THE HYPOTHESIS IS A SEED-SIDE DECISION FLIPPING: at 1-in-8 selectivity the index seek is taken and
- * at 1-in-4 it is not, with the fallback far worse than the seek it replaced. ⚠️ The powers-of-two
+ * THE HYPOTHESIS IS A SEED-SIDE DECISION FLIPPING: at 1-in-8 selectivity the index seek is taken and
+ * at 1-in-4 it is not, with the fallback far worse than the seek it replaced. The powers-of-two
  * fixture cannot separate "the threshold is here" from "the cost doubled", so this probe varies
  * selectivity CONTINUOUSLY and prints the per-row rate on both sides.
  *
- * ⚠️ THE WALK IS IDENTICAL AT EVERY POINT — same graph, same pattern, same index. ONLY the predicate's
+ * THE WALK IS IDENTICAL AT EVERY POINT — same graph, same pattern, same index. ONLY the predicate's
  * selectivity moves, which is what makes a step in the curve attributable to the decision and not to
  * the fixture.
  */
@@ -34,7 +34,7 @@ const MOD = Number(process.env.MOD ?? 1000);
 const g = new Graph();
 
 /*
- * ⚠️ `sel` IS A RESIDUE IN [0, MOD), so `sel < X` selects X/MOD of the vertices — any selectivity, not
+ * `sel` IS A RESIDUE IN [0, MOD), so `sel < X` selects X/MOD of the vertices — any selectivity, not
  * just a power of two. A hash index on `sel` makes each distinct value seekable, and the query asks for
  * a RANGE so the number of seeded vertices can be tuned finely.
  */
@@ -83,7 +83,7 @@ console.log(
 );
 
 /*
- * ⚠️ `sel < hi` with `hi` swept: an IN-list of hi values would be a different predicate form, and item
+ * `sel < hi` with `hi` swept: an IN-list of hi values would be a different predicate form, and item
  * 2101's lesson is that the FORM decides the route. One form, many widths.
  */
 let prevRate = 0;
@@ -97,7 +97,7 @@ for (const oneIn of [64, 32, 16, 12, 10, 8, 7, 6, 5, 4, 3, 2]) {
   const step = prevRate === 0 ? '' : `${(rate / prevRate).toFixed(2)}x/row`;
 
   console.log(
-    `  ${String(oneIn).padStart(8)} ${String(hi).padStart(9)} ${String(rows).padStart(8)} ${r.ms.toFixed(3).padStart(9)} ${rate.toFixed(1).padStart(8)}   ${step}${rate / (prevRate || rate) > 2 ? '  ⚠️ STEP' : ''}`,
+    `  ${String(oneIn).padStart(8)} ${String(hi).padStart(9)} ${String(rows).padStart(8)} ${r.ms.toFixed(3).padStart(9)} ${rate.toFixed(1).padStart(8)}   ${step}${rate / (prevRate || rate) > 2 ? '  STEP' : ''}`,
   );
   prevRate = rate;
 }

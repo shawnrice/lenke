@@ -1,6 +1,6 @@
 // `ORDER BY` over an UNBOUNDED reachability pattern (item 1250).
 //
-// ⚠️ THESE ARE NOT PERFORMANCE TESTS, they are "does it answer at all" tests. Before this item,
+// THESE ARE NOT PERFORMANCE TESTS, they are "does it answer at all" tests. Before this item,
 // `detectReachableShortcut` refused every `ORDER BY`, so an ordered query fell to the general path,
 // which ENUMERATES TRAILS over an unbounded pattern and threw `E_RESOURCE_EXHAUSTED` — telling the
 // user to "add a tighter bound" for a query whose unordered spelling answered in 29 ms. Each case
@@ -52,7 +52,7 @@ describe('ORDER BY over unbounded reachability (item 1250)', () => {
     }[];
 
     expect(asc.length).toBe(400);
-    // ⚠️ THE ORDER IS THE ASSERTION. The unordered spelling returns BFS order, which is not
+    // THE ORDER IS THE ASSERTION. The unordered spelling returns BFS order, which is not
     // ascending — so a sort that silently did not apply would fail here rather than pass.
     expect(asc.map((r) => r.n)).toEqual(Array.from({ length: 400 }, (_, i) => i));
 
@@ -90,7 +90,7 @@ describe('ORDER BY over unbounded reachability (item 1250)', () => {
     // and the general path answers. Declining is correct — the rung must not guess — and what
     // matters is that the ANSWER is still right.
     //
-    // ⚠️ ITS OWN TINY ACYCLIC FIXTURE, AND THAT IS A BUG FIX. This test first asserted a THROW,
+    // ITS OWN TINY ACYCLIC FIXTURE, AND THAT IS A BUG FIX. This test first asserted a THROW,
     // because on the dense cyclic fixture above the general path exhausts the trail budget. That
     // passed locally in ~1 s and FAILED IN CI at 5087 ms — bun's default test timeout is 5000 ms,
     // so it was timing out rather than asserting. A test whose verdict depends on how fast the
@@ -123,7 +123,7 @@ describe('ORDER BY over unbounded reachability (item 1250)', () => {
   });
 
   test('ORDER BY with a WINDOW is ordered FIRST and sliced second (item 1251)', () => {
-    // ⚠️ THIS TEST WAS WRITTEN AT ITEM 1250 ASSERTING A THROW, and item 1251 FLIPPED it. That is
+    // THIS TEST WAS WRITTEN AT ITEM 1250 ASSERTING A THROW, and item 1251 FLIPPED it. That is
     // what the pin was for: a recorded gap with an assertion that must change, rather than a
     // comment someone has to notice.
     //
@@ -156,7 +156,7 @@ describe('ORDER BY over unbounded reachability (item 1250)', () => {
 });
 
 describe('the reachability shortcut must be EXACT for its quantifier (item 1252)', () => {
-  // ⚠️ ONE NODE, ONE SELF-LOOP, and that is the whole fixture: it is the smallest graph on which
+  // ONE NODE, ONE SELF-LOOP, and that is the whole fixture: it is the smallest graph on which
   // WALK reachability and TRAIL reachability differ. A 2-hop TRAIL needs two DISTINCT edges and
   // there is only one, so anything with `min >= 2` matches NOTHING — while the BFS, which permits
   // edge reuse, walks a->a->a and reports one endpoint.
@@ -232,7 +232,7 @@ describe('explicit WALK reaches the reachability rung (item 1255)', () => {
   });
 
   test('ACYCLIC must NOT be admitted — it diverges from set reachability', () => {
-    // ⚠️ THE REASON THE OTHER MODES STAY REFUSED, asserted rather than asserted-in-a-comment. One
+    // THE REASON THE OTHER MODES STAY REFUSED, asserted rather than asserted-in-a-comment. One
     // node, one self-loop: `ACYCLIC ->+` is 0 because a self-loop repeats a node, while TRAIL and
     // WALK are 1 and a BFS would be too. If ACYCLIC were ever admitted to this rung, this flips.
     expect(c(LOOP, 'MATCH ACYCLIC (x:P)-[:R]->+(y) RETURN count(DISTINCT y) AS c')).toBe(0);

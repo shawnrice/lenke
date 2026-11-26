@@ -217,7 +217,7 @@ pub fn social_store(nodes: u32, deg: u32) -> lenke_engine::store::Store {
             &["Person"],
             &[
                 ("name", Value::Str(format!("name{i}").into())),
-                // ⚠️ `i % 100` IS PERIODIC, AND THAT HID A 6.7x FOR AS LONG AS THIS FIXTURE HAS
+                // `i % 100` IS PERIODIC, AND THAT HID A 6.7x FOR AS LONG AS THIS FIXTURE HAS
                 // EXISTED (item 1206). A branchy filter — `if present[i] && cmp(data[i])` — costs
                 // what its BRANCH MISPREDICTIONS cost, and this column gives one runs of 50 false
                 // then 50 true, which predicts almost perfectly. `WHERE p.age > 50 RETURN

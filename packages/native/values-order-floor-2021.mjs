@@ -8,7 +8,7 @@
  *     order: values order limit   2.00         10
  * ```
  *
- * ⚠️⚠️ **138 ns/row IS NOT OBVIOUSLY SLOW FOR A SORT, AND THAT IS THE WHOLE QUESTION.** A comparison
+ * **138 ns/row IS NOT OBVIOUSLY SLOW FOR A SORT, AND THAT IS THE WHOLE QUESTION.** A comparison
  * sort of 50,000 elements is ~800,000 comparisons, so a per-ROW figure on a sorted row is the wrong
  * denominator — `n log n` work divided by `n` grows with `n`. CLAUDE.md's rule against pricing a
  * target before measuring its floor applies with force here: items 1630 and 1908-1911 already fused
@@ -25,12 +25,12 @@
  *     numericsort   the same array, numeric compare  — what a type-specialized comparator could add
  * ```
  *
- * ⚠️ `n` IS `i % 97`, SO THERE ARE 97 DISTINCT VALUES AMONG N ROWS — a tie-heavy input, which is the
+ * `n` IS `i % 97`, SO THERE ARE 97 DISTINCT VALUES AMONG N ROWS — a tie-heavy input, which is the
  * screen's own fixture and not a choice made here. It matters: tie-heavy data changes how much work
  * a comparison sort does, so the floor has to be measured on THIS distribution rather than on
  * distinct keys. A `distinct` arm is included to show the difference rather than assume it.
  *
- * ⚠️ ONE ARM PER PROCESS (item 762).
+ * ONE ARM PER PROCESS (item 762).
  *
  *     ARM=engine bun values-order-floor-2021.mjs
  *     N=200000 ARM=handsort bun values-order-floor-2021.mjs
@@ -72,7 +72,7 @@ const collect = () => {
 };
 
 /*
- * ⚠️ THE COMPARATOR IS THE ENGINE'S TOTAL ORDER, NOT `a - b`. Gremlin's `order()` sorts through a
+ * THE COMPARATOR IS THE ENGINE'S TOTAL ORDER, NOT `a - b`. Gremlin's `order()` sorts through a
  * comparator that handles nulls, mixed types and NaN; `numericsort` below is the arm that prices
  * what dropping all of that would buy, and it is NOT a proposal — the engine cannot drop it without
  * knowing the column's type, which is the same specialization item 1711 built for GQL strings and
@@ -81,7 +81,7 @@ const collect = () => {
 const handSort = () => {
   const arr = collect();
 
-  // ⚠️ THIS IS THE ENGINE'S TOTAL-ORDER COMPARATOR'S FINAL EXPRESSION, so an if/else rewrite would
+  // THIS IS THE ENGINE'S TOTAL-ORDER COMPARATOR'S FINAL EXPRESSION, so an if/else rewrite would
   // measure different code than the engine runs. The disable must be ONE line to attach.
   // eslint-disable-next-line no-nested-ternary -- see above
   arr.sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
@@ -124,7 +124,7 @@ for (let r = 0; r < REPS; r += 1) {
   rows = got.length;
 
   if (r === 0) {
-    // ⚠️ A PREFIX AND A SUFFIX: an arm that did not actually sort is the failure mode, and a row
+    // A PREFIX AND A SUFFIX: an arm that did not actually sort is the failure mode, and a row
     // COUNT cannot see it.
     digest = `${got.slice(0, 3).join(' ')} … ${got.slice(-3).join(' ')}`;
   }

@@ -11,10 +11,10 @@
 //                          is "the first element" is degenerate, and optimizing it would be a
 //                          benchmark special rather than a workload.
 //
-// 🔑 SO THIS PRICES THE ONE REALISTIC SHAPE, against a HAND CEILING rather than a sibling — the
+// SO THIS PRICES THE ONE REALISTIC SHAPE, against a HAND CEILING rather than a sibling — the
 // fused rung takes ONE key and declines two, and the question is what that refusal costs.
 //
-// ⚠️ THE DENOMINATOR IS VALUES PRODUCED, NOT ELEMENTS VISITED. `values(k, w)` emits TWO values per
+// THE DENOMINATOR IS VALUES PRODUCED, NOT ELEMENTS VISITED. `values(k, w)` emits TWO values per
 // element where `values(k)` emits one, so a per-element figure flatters the single-key arm by 2x for
 // free — the mistake item 1858 declined a target over and item 1970 caught in its own control.
 //

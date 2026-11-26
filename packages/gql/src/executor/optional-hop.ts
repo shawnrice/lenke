@@ -1,7 +1,7 @@
 /**
  * THE OPTIONAL-HOP COUNT RUNG: `OPTIONAL MATCH (a)-[:T]->(b) RETURN count(*)`.
  *
- * ⚠️ AN OPTIONAL HOP COUNTS DIFFERENTLY FROM A PLAIN ONE, AND THAT IS THE WHOLE RUNG. A plain hop
+ * AN OPTIONAL HOP COUNTS DIFFERENTLY FROM A PLAIN ONE, AND THAT IS THE WHOLE RUNG. A plain hop
  * drops a row whose pattern finds nothing; an OPTIONAL one KEEPS it with the far side null-filled.
  * So the count is not the edge count — it is the edge count plus one for every start vertex with no
  * qualifying edge. A rung that reused the plain-hop closed form would under-count by exactly the
@@ -86,7 +86,7 @@ export const detectOptionalHopCount = (
     rel.variable !== undefined ||
     rel.direction === 'both' ||
     /*
-     * ⚠️ `plainNode` ALREADY COVERS THE PROPERTIES, and a second operand repeating its
+     * `plainNode` ALREADY COVERS THE PROPERTIES, and a second operand repeating its
      * properties half stood here until item 2392: `plainNode` is
      * `(properties?.length ?? 0) === 0 && where === undefined`, so
      * `node.properties.length > 0` could never decide anything this call had not already
@@ -117,7 +117,7 @@ export const detectOptionalHopCount = (
     /*
      * ITEM-2146-CLOSED-FORM: the whole count from THREE O(1) READS, no walk at all.
      *
-     * 🔑 THE ARITHMETIC. Each anchor contributes `max(1, degree)` (item 2123), and
+     * THE ARITHMETIC. Each anchor contributes `max(1, degree)` (item 2123), and
      * `Σ max(1, d) = Σ d + |{anchors with d = 0}|`. The first term is every qualifying edge; the second
      * is the anchors that have none:
      *
@@ -128,7 +128,7 @@ export const detectOptionalHopCount = (
      * Verified against the walk on the bench fixture: 300,000 + (200,000 - 100,000) = **400,000**, which
      * is exactly what the per-anchor walk answers.
      *
-     * ⚠️⚠️ **EVERY TERM IS EXACT ONLY UNDER THE FOUR CONDITIONS BELOW, and each one is load-bearing:**
+     * **EVERY TERM IS EXACT ONLY UNDER THE FOUR CONDITIONS BELOW, and each one is load-bearing:**
      *
      * - **a VACUOUS or absent anchor label**, so `|anchors|` is `vertexCount` and every edge of the type
      *   leaves an anchor. A selective label would need the edges FROM that label's vertices, which is not
@@ -138,17 +138,17 @@ export const detectOptionalHopCount = (
      * - **exactly ONE edge label in the whole graph**, checked per CALL because a write can add a second
      *   one to a graph this closure was compiled against.
      *
-     * ⚠️⚠️ **THE `withEdge` TERM WAS `edgesFromByLabel.size` AND THAT WAS A WRONG ANSWER (item 2162).**
+     * **THE `withEdge` TERM WAS `edgesFromByLabel.size` AND THAT WAS A WRONG ANSWER (item 2162).**
      * That index keeps a vertex's ENTRY after its last edge is removed — only the per-TYPE bucket inside
      * is deleted — so `.size` counts vertices that no longer have any out-edge and the unmatched set was
      * UNDER-counted. Three vertices and one edge, then `removeEdge`, answered **2 where 3 is right**, and
      * both the closed form and the general path were wrong because the general path's own counter read the
-     * same `.size`. 🔑 Found while probing `edgesFromByLabel` for a DIFFERENT feature (the `EXISTS` closed
+     * same `.size`. Found while probing `edgesFromByLabel` for a DIFFERENT feature (the `EXISTS` closed
      * form), not by any test — the mutation round at item 2146 asked whether a removed edge is reflected,
      * and it is, as long as some OTHER edge survives on that vertex.
      *
-     * 🔑 `verticesHavingType` walks the index and tests `has(type)`, which IS accurate after a removal.
-     * ⚠️ That turns an O(1) read into O(entries-with-any-edge) — still far below the whole-vertex walk it
+     * `verticesHavingType` walks the index and tests `has(type)`, which IS accurate after a removal.
+     * That turns an O(1) read into O(entries-with-any-edge) — still far below the whole-vertex walk it
      * replaces, and the row's measurement after the fix is recorded at item 2162.
      */
     if (closedFormFits(graph, anchorGate, far, types, name)) {
@@ -196,23 +196,23 @@ export const detectOptionalHopCount = (
 /**
  * May the OPTIONAL hop count be answered from counters alone (item 2146)?
  *
- * 🔑 Each condition makes one term of `|edges| + (|anchors| - |anchors with an edge|)` exact; see the note
+ * Each condition makes one term of `|edges| + (|anchors| - |anchors with an edge|)` exact; see the note
  * at the call site for the arithmetic and the measured prices.
  *
- * ⚠️ `edgesByLabel.size === 1` is the subtle one: `edgesFromByLabel` is keyed by VERTEX and its `.size` is
+ * `edgesByLabel.size === 1` is the subtle one: `edgesFromByLabel` is keyed by VERTEX and its `.size` is
  * "vertices with ANY out-edge". That equals "vertices with an edge of OUR type" only when the graph holds
- * exactly one edge label. 🔑 Checked per CALL, not per compile, because a write can add a second label to
+ * exactly one edge label. Checked per CALL, not per compile, because a write can add a second label to
  * a graph this closure was compiled against.
  */
 /**
  * How many vertices have at least one edge of `type` on the index's side.
  *
- * ⚠️⚠️ **NOT `index.size`, AND THAT DISTINCTION IS A WRONG ANSWER (item 2162).** The index is
+ * **NOT `index.size`, AND THAT DISTINCTION IS A WRONG ANSWER (item 2162).** The index is
  * `Map<vertexId, Map<label, Set<Edge>>>` and a vertex's OUTER entry survives the removal of its last
  * edge — only the inner per-type bucket is deleted. Measured directly: after `removeEdge` the entry reads
  * `entry=yes, hasT=false`, so `.size` counts a vertex with no edges at all while `has(type)` does not.
  *
- * 🔑 O(entries having ANY edge on that side), which is already far smaller than the vertex count on a
+ * O(entries having ANY edge on that side), which is already far smaller than the vertex count on a
  * sparse graph — and much smaller than the per-anchor walk this closed form exists to avoid.
  */
 const verticesHavingType = (index: Map<string, Map<string, Set<Edge>>>, type: string): number => {
@@ -246,7 +246,7 @@ const closedFormFits = (
 /**
  * THE GROUPED OPTIONAL-HOP COUNT: `MATCH (a:L) OPTIONAL MATCH (a)-[:T]->(b) RETURN a.k, count(*)`.
  *
- * ⚠️⚠️ **THE PAIR HAD NO RUNG THOUGH EACH HALF DID, AND THAT COST 18x.** `detectOptionalHopCount` above
+ * **THE PAIR HAD NO RUNG THOUGH EACH HALF DID, AND THAT COST 18x.** `detectOptionalHopCount` above
  * answers the UNGROUPED form and `detectGroupedHopCount` the NON-OPTIONAL grouped one; the combination
  * fell to the general path — one binding and one row per edge, then grouping. Measured at 200,000
  * vertices / 600,000 edges, 97 groups out:
@@ -258,17 +258,17 @@ const closedFormFits = (
  *     OPTIONAL rows (the walk)        129.7        <- so the grouped form cost 2.9x the walk itself
  * ```
  *
- * 🔑 IT IS THE RUNG ABOVE's ARITHMETIC, PER GROUP. That one sums `max(1, degree)` over the anchors; this
- * one adds each anchor's `max(1, degree)` to the group its key names. ⚠️ The `max(1, …)` is the whole
+ * IT IS THE RUNG ABOVE's ARITHMETIC, PER GROUP. That one sums `max(1, degree)` over the anchors; this
+ * one adds each anchor's `max(1, degree)` to the group its key names. The `max(1, …)` is the whole
  * difference from the plain grouped count — an anchor with no qualifying edge still contributes its one
  * null-filled row, and to its OWN group. Verified against the general path: three anchors with degrees
  * 2, 1 and 0 over two groups answer `{g:0,c:3}, {g:1,c:2}` where the non-OPTIONAL twin answers 2 and 1.
  *
- * ⚠️ **THE KEY MUST READ ONLY THE ANCHOR.** Grouping happens per anchor vertex in one pass, so a key over
+ * **THE KEY MUST READ ONLY THE ANCHOR.** Grouping happens per anchor vertex in one pass, so a key over
  * the FAR end would need the edges — that is `detectGroupedHopCount`'s far-keyed walk and a different
  * shape. A key reading anything else is refused rather than guessed at.
  *
- * ⚠️ `count(b)` IS NOT THIS RUNG: it excludes the null row (verified — 2 and 1 where `count(*)` gives 3
+ * `count(b)` IS NOT THIS RUNG: it excludes the null row (verified — 2 and 1 where `count(*)` gives 3
  * and 2), so it is the plain grouped count's arithmetic and belongs to that rung. Only `count(*)` here.
  */
 export const detectOptionalGroupedHopCount = (
@@ -326,7 +326,7 @@ export const detectOptionalGroupedHopCount = (
     rel.variable !== undefined ||
     rel.direction === 'both' ||
     /*
-     * ⚠️ `plainNode` ALREADY COVERS THE PROPERTIES, and a second operand repeating its
+     * `plainNode` ALREADY COVERS THE PROPERTIES, and a second operand repeating its
      * properties half stood here until item 2392: `plainNode` is
      * `(properties?.length ?? 0) === 0 && where === undefined`, so
      * `node.properties.length > 0` could never decide anything this call had not already
@@ -360,7 +360,7 @@ export const detectOptionalGroupedHopCount = (
     // ONE binding map for the whole scan, as the ungrouped rung does.
     const binding = new Map<string, unknown>();
     /*
-     * ⚠️ INSERTION-ORDERED, and the bucket holds the KEY VALUE as well as the tally: `valueKey` is not
+     * INSERTION-ORDERED, and the bucket holds the KEY VALUE as well as the tally: `valueKey` is not
      * reversible, so the representative has to be kept. That is `detectGroupedHopCount`'s own rule.
      */
     const groups = new Map<string, { key: unknown; n: number }>();
@@ -371,23 +371,23 @@ export const detectOptionalGroupedHopCount = (
       }
 
       /*
-       * ⚠️⚠️ **TWO WALKS, BECAUSE THE KEY'S END DECIDES THE SHAPE** — `detectGroupedHopCount`'s own rule,
+       * **TWO WALKS, BECAUSE THE KEY'S END DECIDES THE SHAPE** — `detectGroupedHopCount`'s own rule,
        * and the OPTIONAL twin needs it for the same reason.
        *
-       * 🔑 START-KEYED: read the anchor's property ONCE and add its whole `max(1, degree)` to that group.
+       * START-KEYED: read the anchor's property ONCE and add its whole `max(1, degree)` to that group.
        * O(V), and the degree never has to be itemized.
        *
-       * 🔑 FAR-KEYED (item 2124): the anchor's group is not known in advance — each EDGE lands in the
+       * FAR-KEYED (item 2124): the anchor's group is not known in advance — each EDGE lands in the
        * group its own far endpoint names, and an anchor with NO qualifying edge contributes one row to
        * the NULL group (verified: `b.k` of a null `b` is NULL). O(V + E).
        *
-       * ⚠️ AND A FAR VERTEX WHOSE KEY IS LEGITIMATELY NULL MERGES WITH THAT GROUP — verified against the
+       * AND A FAR VERTEX WHOSE KEY IS LEGITIMATELY NULL MERGES WITH THAT GROUP — verified against the
        * general path: two edges to null-keyed far ends plus three unmatched anchors answer ONE group of
        * five, not two groups. Keying both through `valueKey(… ?? null)` is what makes that automatic.
        */
       if (!onFar) {
         const d = sideOfVertex(vertex, out, types, far);
-        // 🔑 THE `max(1, …)`: an unmatched anchor still contributes its null-filled row, to ITS group.
+        // THE `max(1, …)`: an unmatched anchor still contributes its null-filled row, to ITS group.
         const add = d === 0 ? 1 : d;
 
         bump(groups, vertex.properties[keyProp] ?? null, add);
@@ -411,7 +411,7 @@ export const detectOptionalGroupedHopCount = (
       }
 
       if (matched === 0) {
-        // ⚠️ THE NULL-FILLED ROW: `b` is null, so `b.k` is NULL and the row groups there.
+        // THE NULL-FILLED ROW: `b` is null, so `b.k` is NULL and the row groups there.
         bump(groups, null, 1);
       }
     }
@@ -433,7 +433,7 @@ const bump = (groups: Map<string, { key: unknown; n: number }>, key: unknown, n:
 
   if (seen === undefined) {
     /*
-     * ⚠️ INSERTION-ORDERED, and the bucket holds the KEY VALUE as well as the tally: `valueKey` is not
+     * INSERTION-ORDERED, and the bucket holds the KEY VALUE as well as the tally: `valueKey` is not
      * reversible, so the representative has to be kept. That is `detectGroupedHopCount`'s own rule.
      */
     groups.set(k, { key, n });
@@ -445,7 +445,7 @@ const bump = (groups: Map<string, { key: unknown; n: number }>, key: unknown, n:
 /**
  * `RETURN <a-or-b>.<k> AS g, count(*) AS c` — the two-item projection this rung answers, or `null`.
  *
- * ⚠️ EXACTLY TWO ITEMS, one a property of the ANCHOR and one a bare `count(*)`. 🔑 `SKIP`/`LIMIT`/`ORDER
+ * EXACTLY TWO ITEMS, one a property of the ANCHOR and one a bare `count(*)`. `SKIP`/`LIMIT`/`ORDER
  * BY` are refused: the walk emits in group-insertion order, and a page or a sort would make that order
  * decide WHICH rows survive — the same reason items 2119/2120's gates refuse them.
  */
@@ -466,7 +466,7 @@ const hopKeyedCountStar = (
   }
 
   /*
-   * ⚠️ EITHER ORDER: `RETURN a.k, count(*)` and `RETURN count(*), a.k` are the same question, and
+   * EITHER ORDER: `RETURN a.k, count(*)` and `RETURN count(*), a.k` are the same question, and
    * refusing the second would be an equivalent-spelling gap of exactly the kind this repo is organised
    * around. The property item is whichever one IS a property.
    */
@@ -494,9 +494,9 @@ const hopKeyedCountStar = (
   }
 
   /*
-   * ⚠️ THE KEY MUST NAME ONE END OF THIS HOP — the anchor or the far node — and nothing else.
+   * THE KEY MUST NAME ONE END OF THIS HOP — the anchor or the far node — and nothing else.
    *
-   * ⚠️⚠️ **BOTH CONDITIONS BELOW ARE UNREACHABLE TODAY, AND THEIR MUTANTS SURVIVE BECAUSE OF IT** — not
+   * **BOTH CONDITIONS BELOW ARE UNREACHABLE TODAY, AND THEIR MUTANTS SURVIVE BECAUSE OF IT** — not
    * because the tests are weak. Item 2124 checked each candidate instead of asserting teeth it does not
    * have:
    *
@@ -509,8 +509,8 @@ const hopKeyedCountStar = (
    *   cannot fire either; it exists so an anonymous far end can never match by comparing
    *   `undefined === undefined`.
    *
-   * 🔑 They stay because they are the gate's CONTRACT — the walk below reads one end or the other and has
-   * no third behaviour — and because each costs one comparison per COMPILE, not per row. ⚠️ A reader who
+   * They stay because they are the gate's CONTRACT — the walk below reads one end or the other and has
+   * no third behaviour — and because each costs one comparison per COMPILE, not per row. A reader who
    * mutates them and sees a survivor should read this comment rather than conclude the tests are blind.
    */
   const onFar = key.variable === farVar && farVar !== undefined;

@@ -1203,7 +1203,7 @@ fn fused_hop_projection_matches_general() {
     // EVERY BOUND SHAPE THE ARM DISPATCHES, because item 1243 hoisted the operator out of the
     // per-edge loop into ten `match` arms and a wrong arm is a wrong ANSWER, not a slow one.
     //
-    // ⚠️ THE FOUR RANGE ARMS WERE ADDED BY MUTATION, NOT BY DESIGN. Swapping the
+    // THE FOUR RANGE ARMS WERE ADDED BY MUTATION, NOT BY DESIGN. Swapping the
     // `(lo_incl, hi_incl) = (true, false)` arm's `<` for a `<=` SURVIVED the whole suite: nothing
     // anywhere asked this path for a `>= lo AND < hi` range, so four of the arms were reachable and
     // unasserted. The scores below are chosen so all four combinations answer DIFFERENTLY — with
@@ -8973,7 +8973,7 @@ fn an_anchored_shortest_path_is_unaffected_by_the_ceiling() {
 
 /// A path bound over a NESTED subpath group must carry a real lineage (item 1238).
 ///
-/// ⚠️ THE EXPECTATIONS ARE HAND-ENUMERATED, and that is not a stylistic choice: item 1237
+/// THE EXPECTATIONS ARE HAND-ENUMERATED, and that is not a stylistic choice: item 1237
 /// established that the TS engine is WRONG on this shape (it ends at the unit's middle node and
 /// cannot tell `WALK` from `TRAIL`), so the differential fuzzer would reject the correct answer.
 /// A cross-engine comparison is the usual oracle here and is unavailable; this is the substitute.
@@ -9042,7 +9042,7 @@ fn nested_group_path_carries_a_real_lineage() {
         vec![2.0, 2.0],
         "two edges"
     );
-    // ⚠️ IDENTITY, NOT ONLY SIZE — and mutation is what forced this. With size-only assertions,
+    // IDENTITY, NOT ONLY SIZE — and mutation is what forced this. With size-only assertions,
     // two mutants SURVIVED the whole suite: making the first node the hop's TARGET instead of its
     // SOURCE, and reversing the chain. Both preserve every count, so only the element IDENTITIES
     // can tell them apart. Path A runs 1, 2, 3 and path B runs 3, 2, 1, so the two ENDS pin both:
@@ -9057,7 +9057,7 @@ fn nested_group_path_carries_a_real_lineage() {
         vec![1.0, 3.0],
         "and END at 3 and at 1 — the same multiset, which is why BOTH ends are asserted"
     );
-    // ⚠️ THE ROWS MUST NOT CHANGE. Item 1237's structural argument is that binding a path NAMES a
+    // THE ROWS MUST NOT CHANGE. Item 1237's structural argument is that binding a path NAMES a
     // match rather than filtering or multiplying it, so the count with a path must equal the count
     // without one. This is the assertion that pins it.
     let with_path = crate::exec::try_run(
@@ -9150,7 +9150,7 @@ fn nested_group_path_need(p: &Plan) -> Option<crate::ir::PathNeed> {
 /// A NESTED group's path, read for its size only, must be marked `CountOnly` (item 1239) — and
 /// must NOT be when its elements are read.
 ///
-/// ⚠️ SAME REASON THE `RepeatGroup` TWIN EXISTS: marking is ANSWER-EQUIVALENT, so no correctness
+/// SAME REASON THE `RepeatGroup` TWIN EXISTS: marking is ANSWER-EQUIVALENT, so no correctness
 /// test can see it stop firing. Item 1235 verified that by mutation; this is the gate for the
 /// nested operator, which only became markable once item 1238 gave it a lineage to suppress.
 #[test]
@@ -9192,7 +9192,7 @@ fn nested_group_path_size_only_is_marked_count_only() {
 /// A quantified group whose path is read for its SIZE ONLY must be marked `CountOnly` (item 1235),
 /// and one whose elements or group lists are read must NOT be.
 ///
-/// ⚠️ THIS TEST EXISTS BECAUSE THE CHANGE IS INVISIBLE TO EVERY OTHER KIND OF TEST, and that was
+/// THIS TEST EXISTS BECAUSE THE CHANGE IS INVISIBLE TO EVERY OTHER KIND OF TEST, and that was
 /// verified rather than assumed. Marking is ANSWER-EQUIVALENT: a mutant that resets the flag in
 /// `opt`'s unread-bindings rebuild — silently undoing the marking and costing 1.37x — SURVIVED the
 /// whole suite plus 200,000 `rewrite_fuzz` seeds. The opposite mutant, suppressing the chain
@@ -9271,7 +9271,7 @@ fn opt_plan(q: &str, store: &Store) -> Plan {
 /// optimizer is exercised, whether an error is tolerated), so folding them together would flatten a
 /// distinction rather than remove a duplication.
 ///
-/// ⚠️ THE SORTS ARE PART OF THE CONTRACT, not tidiness. Row order without an `ORDER BY` is
+/// THE SORTS ARE PART OF THE CONTRACT, not tidiness. Row order without an `ORDER BY` is
 /// UNSPECIFIED (item 2400), so a test comparing a projected column has to compare it
 /// order-insensitively or it pins something the engine does not promise. `ids_of` and `nums_of`
 /// sort for exactly that reason; `val_of` reads one row and `rows_of` only counts, so neither needs
@@ -13190,7 +13190,7 @@ fn the_forward_label_map_agrees_with_the_bucket_sweep() {
 /// NODE COUNT AND ROW COUNT ARE PINNED: every store has `TOTAL` nodes, the query returns the same
 /// 500 of them, and only the number of distinct labels in the graph varies.
 ///
-/// 🛑 THE AXIS IS FLAT AS OF ITEM 724 — this harness now measures the ABSENCE of the cost it was
+/// REFUTED: THE AXIS IS FLAT AS OF ITEM 724 — this harness now measures the ABSENCE of the cost it was
 /// written to document, and item 739 re-ran it to establish that. Min of three runs, 1 label
 /// against 40: `exec::run` 40.50 -> 41.73 us (was 50.89 -> 171.56) and the JSON carrier
 /// 83.82 -> 85.53 (was 92.13 -> 208.45). So 3.37x across the axis became 1.03x. The forward label
@@ -14679,7 +14679,7 @@ fn bounded_trail_counts_agree_with_enumeration() {
 /// The RESULT SIZE is held fixed at one row for the seeking shapes, so the only variable is how
 /// many nodes exist around the answer.
 ///
-/// ⚠️ THE LAST ROW IS THE CONTROL AND IT MUST RISE. An unfiltered scan is O(V) by definition, so
+/// THE LAST ROW IS THE CONTROL AND IT MUST RISE. An unfiltered scan is O(V) by definition, so
 /// if `scan all` stayed flat the harness could not see scaling at all and no other row's flatness
 /// would mean anything. That is the positive control this session needed twice before
 /// (`expression_cost_by_kind` read five rows at its own floor until `upper` was added).
@@ -14902,7 +14902,7 @@ fn write_cost_by_graph_size() {
 /// that inserted N nodes is O(N x V) — a quadratic on the rollback path, which no bench row
 /// covers.
 ///
-/// ⚠️ Measured BEFORE any edit, because the hypothesis is read off the code and this session has
+/// Measured BEFORE any edit, because the hypothesis is read off the code and this session has
 /// mis-attributed three costs that way. The discriminator is the same one item 663 used: hold the
 /// insert count FIXED and vary the GRAPH SIZE. If the per-rollback cost tracks the node count,
 /// the sweep is it.
@@ -14981,7 +14981,7 @@ fn rollback_cost_by_graph_size() {
 /// removal made a BATCH delete O(deleted × total) — so the question is not whether the sweep is
 /// wrong but whether the N=1 case should take it.
 ///
-/// ⚠️ **This harness exists because the hypothesis is read off the code, and this session has
+/// **This harness exists because the hypothesis is read off the code, and this session has
 /// mis-attributed three costs that way** (items 655, 656, and 659's floor). A size sweep settles
 /// it without any further reading: if the per-delete cost grows with the NODE COUNT the sweep is
 /// the cost; if it is flat, the sweep is not and the ~3x is elsewhere.
@@ -15051,7 +15051,7 @@ fn delete_one_cost_by_graph_size() {
 /// somewhere else, and the ffi and wasm columns sitting close together is what a cost SHARED by
 /// both bridges looks like.
 ///
-/// ⚠️ This harness exists because **decomposing one side of a boundary cannot say which side the
+/// This harness exists because **decomposing one side of a boundary cannot say which side the
 /// cost is on** (item 291). It times the two halves separately on the same store:
 ///
 /// - `pull` alone — the engine producing the result columns, no serialization at all.
@@ -15199,7 +15199,7 @@ fn projection_cost_engine_vs_egress() {
 /// over 6 names followed by a match with ~89 STRING arms. `abs` at 2.02 is the control — a
 /// fast-pathed function bypasses the dispatcher entirely, so the toll is not inherent to a call.
 ///
-/// ⚠️ **WHERE THE 16 ns IS NOT: the string matching.** This line used to name "resolve the
+/// **WHERE THE 16 ns IS NOT: the string matching.** This line used to name "resolve the
 /// function name once per batch" as the family's biggest lever, projecting 2.4x on
 /// `char_length`. **That was wrong twice over and item 656 measured it.**
 ///
@@ -15232,7 +15232,7 @@ fn projection_cost_engine_vs_egress() {
 /// refuted. Do not re-target the dispatch or the name lists without first isolating a component
 /// rather than removing everything at once.
 ///
-/// 🛑 TWO HYPOTHESES THIS DECOMPOSITION KILLED, both of which looked obvious:
+/// TWO HYPOTHESES THIS DECOMPOSITION REFUTED, both of which looked obvious:
 ///
 /// - **`upper`'s String allocation.** `str_map` does `Value::Str(f(s).into())`, so
 ///   `to_uppercase()` allocates and `GStr` copies — item 654's exact shape. But it is at most ~16
@@ -32775,7 +32775,7 @@ fn the_wide_multi_aggregate_arm_handles_absent_frontier_cells() {
 /// which the gate declines because soundness rests on there being exactly one item. Only column 0
 /// is compared.
 ///
-/// ⚠️ The first oracle tried was the PROPERTY spelling of the sort key (`ORDER BY b.k` instead of
+/// The first oracle tried was the PROPERTY spelling of the sort key (`ORDER BY b.k` instead of
 /// `ORDER BY v`), on the reasoning that the gate wants `Expr::Slot(0)`. The optimizer
 /// CANONICALIZES that into `Slot(0)` when it matches a projected item, so the "oracle" took the
 /// fast path too — the test would have compared the fast path with itself and passed while proving
@@ -32815,7 +32815,7 @@ fn the_hop_top_k_agrees_with_the_general_sort_over_every_arrangement() {
             &[Some(5.0), None, None],
             &[(0, 1), (0, 2)],
         ),
-        // ⚠️ NULLS AND VALUES INTERLEAVED, and this case exists because a mutant survived
+        // NULLS AND VALUES INTERLEAVED, and this case exists because a mutant survived
         // without it (item 1185's H2). Swapping only the `(null, non-null)` arm of the
         // comparator leaves `(non-null, null)` correct, which makes the comparator ASYMMETRIC
         // rather than reversed — so a fixture with ONE null and ONE value performs a single
@@ -33441,7 +33441,7 @@ fn the_fused_filtered_hop_extremum_agrees_with_the_grouped_fold() {
             (1, 4),
             (2, 5),
             (4, 5),
-            // ⚠️ `(3, 0)` IS LOAD-BEARING. Without it node 0 is only ever a SOURCE, so the
+            // `(3, 0)` IS LOAD-BEARING. Without it node 0 is only ever a SOURCE, so the
             // predicate leaves surviving targets {4, 5} — and for `str` those were `c3` and
             // `g7`, where string order and ID order AGREE (c3 < g7 and 4 < 5). A mutant
             // comparing node ids instead of their strings therefore answered correctly and
@@ -33542,7 +33542,7 @@ fn the_fused_filtered_hop_extremum_agrees_with_the_grouped_fold() {
 
 /// The ROUTE guard for item 1190, asserted on the pure predicate AND end to end.
 ///
-/// ⚠️ THIS EXISTS BECAUSE ITEM 1190 NEARLY SHIPPED A 1.47x REGRESSION. A far-endpoint label
+/// THIS EXISTS BECAUSE ITEM 1190 NEARLY SHIPPED A 1.47x REGRESSION. A far-endpoint label
 /// compiles to `Filter{IsLabeled{slot: 1}, Expand}`, so `MATCH (a:L)-[:T]->(b:L) RETURN min(b.k)`
 /// is a FILTERED hop and reaches `try_fused_hop_mask_agg` at exec.rs:1650 — sixty-two lines BEFORE
 /// `try_frontier_prop_agg` at 1712. Widening the fused arm to non-numeric columns diverted that
@@ -33688,7 +33688,7 @@ fn the_labelled_hop_extremum_routes_by_representation() {
 /// Item 1195 gated `resolve_elem`'s three CONTAINER arms on `holds_element`, so a container with
 /// nothing to resolve is returned untouched instead of rebuilt.
 ///
-/// ⚠️ THIS IS A DIRECT TEST OF THE PURE FUNCTION, and the end-to-end version it replaces was
+/// THIS IS A DIRECT TEST OF THE PURE FUNCTION, and the end-to-end version it replaces was
 /// WORTHLESS — it passed for the wrong reason and mutation is what exposed that. Blinding
 /// `holds_element` completely (`Node | Edge => false`, and `List => false`) SURVIVED all 2,047
 /// tests, because every shape that reaches egress with elements inside a container has already
@@ -33796,7 +33796,7 @@ fn an_element_still_renders_as_its_element_map_at_egress() {
 /// merely slow and cannot be caught by an answer, but a gate that MANGLES the clean path can,
 /// and this pins what `collect` returns on the fast `movable` arm (`aggregation.rs`).
 ///
-/// ⚠️ THE SUBTLE PART, and the premise this test was first written with BACKWARDS: an ABSENT
+/// THE SUBTLE PART, and the premise this test was first written with BACKWARDS: an ABSENT
 /// property is not a stored NULL. `collect(a.s)` over a node that simply has no `s` returns two
 /// cells, not three — and that is correct, not a dropped null, because this repo's model is
 /// that null is a stored, PRESENT value. Both engines agree on it (checked against the TS
@@ -33825,7 +33825,7 @@ fn a_container_with_nothing_to_resolve_keeps_every_cell() {
         format!("{:?}", rows.rows.iter().collect::<Vec<_>>())
     };
 
-    // ⚠️ `collect` and `collect_list` BOTH drop the null here — see the doc comment above and
+    // `collect` and `collect_list` BOTH drop the null here — see the doc comment above and
     // the OPEN conformance question recorded in CLOSED.md. This test deliberately asserts only
     // what is true today and what the egress gate could actually break, and pins the two arms
     // to EACH OTHER so that whichever way that question is settled, a change to one of them
@@ -34091,7 +34091,7 @@ fn a_single_bound_count_pairs_with_a_vacuous_companion_without_changing_the_answ
         }
     };
 
-    // ⚠️ EACH EXPECTATION IS WRITTEN OUT, not computed by the same rule the engine uses.
+    // EACH EXPECTATION IS WRITTEN OUT, not computed by the same rule the engine uses.
     //   >= 0      : 0, 5, +inf                      = 3   (NaN fails; -inf and -5 are below)
     //   > 0       : 5, +inf                          = 2
     //   <= 0      : -5, 0, -inf                      = 3
@@ -34113,7 +34113,7 @@ fn a_single_bound_count_pairs_with_a_vacuous_companion_without_changing_the_answ
     // `Eq`/`Ne` have no range form and must keep the original arm — pinned so a later widening of
     // the pairing to them fails here rather than silently answering differently.
     assert_eq!(count("a.k = 5"), 1.0, "equality is unpaired");
-    // ⚠️ FIVE, not four: `NaN <> 5` is TRUE here, which is this repo's documented NaN policy
+    // FIVE, not four: `NaN <> 5` is TRUE here, which is this repo's documented NaN policy
     // (predicates keep NaN JS-unordered, and `NaN != 5` is true in JS). My first expectation said
     // four, assuming UNKNOWN — the engine was right and the test was wrong. The `Ne` arm is
     // untouched by item 1205 either way: -5, 0, +inf, -inf and NaN all satisfy it.
@@ -34281,7 +34281,7 @@ fn every_filtered_scan_aggregate_survives_the_fold_split() {
         );
     }
 
-    // ⚠️ THE FILTER IS `<> 1e9` AND NOT `> -100` FOR A REASON. An ordering comparison EXCLUDES
+    // THE FILTER IS `<> 1e9` AND NOT `> -100` FOR A REASON. An ordering comparison EXCLUDES
     // NaN (`NaN > -100` is false), so the fold never saw it and the extremum's NaN placement was
     // not exercised at all — the first version of this test asserted a NaN max and got 9.0.
     // `<>` admits NaN, because this repo's predicates keep NaN JS-unordered (item 1205), so all
@@ -34347,7 +34347,7 @@ fn the_branchless_keep_list_keeps_exactly_the_same_rows() {
         format!("{:?}", rows.rows.iter().collect::<Vec<_>>())
     };
 
-    // ⚠️ NaN IS DROPPED BY EVERY ORDERING COMPARISON (it is false for all four) and KEPT by `<>`
+    // NaN IS DROPPED BY EVERY ORDERING COMPARISON (it is false for all four) and KEPT by `<>`
     // (this repo's predicates keep NaN JS-unordered — item 1205). The absent row is dropped by
     // every one of them. Both are exactly what the `continue`s and the comparison itself decide,
     // so a cursor that advanced on the wrong value would show up here first.
@@ -34421,13 +34421,13 @@ fn a_numeric_conjunction_canonicalizes_to_a_range_and_exclusions() {
         "contradictory equalities must not match: {both:?}"
     );
 
-    // ⚠️ A NaN LITERAL DECLINES. `x > NaN` is false for every x and `x <> NaN` is TRUE for every x
+    // A NaN LITERAL DECLINES. `x > NaN` is false for every x and `x <> NaN` is TRUE for every x
     // (NaN stays JS-unordered here — item 1205), so a NaN bound does not fold into a min/max at
     // all; folding it would silently admit or reject the whole column.
     assert_eq!(c(&[(Gt, 1.0), (Lt, f64::NAN)]), None);
     assert_eq!(c(&[(Ne, f64::NAN)]), None);
 
-    // ⚠️ AN EMPTY CONJUNCTION DECLINES, and the suite caught this: a bare `has(k)` yields no
+    // AN EMPTY CONJUNCTION DECLINES, and the suite caught this: a bare `has(k)` yields no
     // bounds, and the caller's general arm counts `present || nulls` — a stored present-null
     // included — where the canonical full range counts only typed values.
     assert_eq!(c(&[]), None);
@@ -34477,7 +34477,7 @@ fn a_three_bound_count_agrees_with_the_projection_route() {
         ("a.k > 50 AND a.k < 100 AND a.k <> 73", 2.0),
         // OUTSIDE the range, so the second pass is skipped and must not change the answer.
         ("a.k > 50 AND a.k < 100 AND a.k <> 7", 3.0),
-        // Inclusive ends, and a signed zero at the boundary. ⚠️ SIX, not five: `-0.0 >= 0` is
+        // Inclusive ends, and a signed zero at the boundary. SIX, not five: `-0.0 >= 0` is
         // TRUE (signed zeros compare equal), so the fixture's `-0.0` survives alongside `0.0`.
         // My first expectation said five and the engine was right — which is the reason the
         // fixture carries a `-0.0` at all, since the subtraction pass counts `v == x` and a
@@ -34487,7 +34487,7 @@ fn a_three_bound_count_agrees_with_the_projection_route() {
         ("a.k = 51 AND a.k > 0 AND a.k <> 73", 1.0),
         // Contradictory equalities.
         ("a.k = 51 AND a.k = 73", 0.0),
-        // ⚠️ NO NaN-LITERAL ROW HERE, AND THAT IS THE FINDING: a NaN literal is not expressible
+        // NO NaN-LITERAL ROW HERE, AND THAT IS THE FINDING: a NaN literal is not expressible
         // in a query at all. `0/0.0` RAISES ("division by zero") rather than evaluating to NaN,
         // so the canonicalizer's NaN guard is reachable only from the pure function, which tests
         // it directly. The guard stays because it is a total function's obligation, not because a
@@ -34507,7 +34507,7 @@ fn a_three_bound_count_agrees_with_the_projection_route() {
 /// (so the keep list is built branchlessly). A two-bound projection went 1030.1us to 448.1 on
 /// unpredictable data.
 ///
-/// ⚠️ IT ALSO WIDENS WHAT THE ARM ACCEPTS, which is the part that needs a test rather than a
+/// IT ALSO WIDENS WHAT THE ARM ACCEPTS, which is the part that needs a test rather than a
 /// measurement. The old block required one LOWER and one UPPER bound and declined anything else —
 /// `x >= 5 AND x >= 10` fell to the general path. Canonicalization tightens instead, so that shape
 /// is now served as `x >= 10`, and two-equality and exclusion shapes are served too. Each of those
@@ -34567,7 +34567,7 @@ fn a_canonicalized_conjunction_filter_keeps_exactly_the_same_rows() {
             "a.k < 100 AND a.k > 5",
             "[[Num(10.0)], [Num(50.0)], [Num(73.0)], [Num(99.0)]]",
         ),
-        // ⚠️ NEWLY SERVED: two bounds on the SAME side, which the old block declined. Tightening
+        // NEWLY SERVED: two bounds on the SAME side, which the old block declined. Tightening
         // makes this `k >= 10`.
         (
             "a.k >= 5 AND a.k >= 10",
@@ -34587,7 +34587,7 @@ fn a_canonicalized_conjunction_filter_keeps_exactly_the_same_rows() {
             "a.k > 5 AND a.k < 100 AND a.k <> 1000",
             "[[Num(10.0)], [Num(50.0)], [Num(73.0)], [Num(99.0)]]",
         ),
-        // ⚠️ TWO DIFFERENT KEYS must DECLINE the fold (the pointer check) and still answer: `k > 5`
+        // TWO DIFFERENT KEYS must DECLINE the fold (the pointer check) and still answer: `k > 5`
         // and `j > 50` together keep 10 and 5... j = 100 - k, so j > 50 means k < 50.
         ("a.k > 5 AND a.j > 50", "[[Num(10.0)]]"),
     ] {
@@ -34605,12 +34605,12 @@ fn a_canonicalized_conjunction_filter_keeps_exactly_the_same_rows() {
 /// 2,060-test suite. Dropping the second target (`s == a || s == b` to `s == a`) passed, and
 /// negating the compare (to `!= a`) passed. Both are wrong answers on this shape.
 ///
-/// ⚠️ THE COLUMN MUST BE HIGH-CARDINALITY, which is the reason this fixture is built here rather
+/// THE COLUMN MUST BE HIGH-CARDINALITY, which is the reason this fixture is built here rather
 /// than reusing `count_prop_fixture`. A low-cardinality string column is DICTIONARY-encoded and
 /// takes the dict branch (the one item 1219 fixed); only distinct values reach the `Str` branch,
 /// so a test over a handful of repeated strings would pass no matter what this arm does.
 ///
-/// ⚠️ AND A SINGLE TARGET DOES NOT REACH THIS FUNCTION AT ALL. `= 'x'` and `IN ['x']` are both
+/// AND A SINGLE TARGET DOES NOT REACH THIS FUNCTION AT ALL. `= 'x'` and `IN ['x']` are both
 /// planned as an `IndexSeek`, whose third arm degrades to a label scan when no index exists. The
 /// one-target case is asserted anyway, because it is the ANSWER that matters here and a future
 /// routing change could send it this way.
@@ -34699,11 +34699,11 @@ fn string_membership_count_over_a_high_cardinality_column() {
 /// comparison's arguments (which turns `>` into `<`) and dropping the RIGHT endpoint's presence
 /// test. Both are wrong answers.
 ///
-/// ⚠️ THE COUNTS ARE DELIBERATELY ASYMMETRIC, which is the whole design. With a symmetric fixture
+/// THE COUNTS ARE DELIBERATELY ASYMMETRIC, which is the whole design. With a symmetric fixture
 /// `b.k > a.k` and `b.k < a.k` return the SAME number, so an argument swap is invisible — that is
 /// exactly why the first mutant survived. Here `>` is 2 and `<` is 1.
 ///
-/// ⚠️ AND NO COUNT MAY EQUAL HALF THE PRESENT-PAIR TOTAL, or negating the predicate is invisible
+/// AND NO COUNT MAY EQUAL HALF THE PRESENT-PAIR TOTAL, or negating the predicate is invisible
 /// too: there are 4 edges with both endpoints present, so a row answering 2 is useless against a
 /// negation mutant. `>=` answers 3 against its complement's 1, which is what catches it.
 ///
@@ -34790,7 +34790,7 @@ fn edge_cross_count_over_every_operator_and_absent_endpoints() {
 /// alive against the whole suite: dropping the upper bound, flipping the lower bound's
 /// inclusivity, and turning the conjunction into a disjunction. Each is a wrong answer.
 ///
-/// ⚠️ EVERY ASSERTION BELOW IS CHOSEN TO SEPARATE ONE OF THOSE. A fixture whose values all sit
+/// EVERY ASSERTION BELOW IS CHOSEN TO SEPARATE ONE OF THOSE. A fixture whose values all sit
 /// strictly inside the range cannot see a dropped bound; one with no value AT a bound cannot see an
 /// inclusivity flip; one with nothing outside the range cannot see `&` become `|`. So `k` runs
 /// 1..=5 and the bounds land ON values, with counts that differ for every mutation:
@@ -34801,7 +34801,7 @@ fn edge_cross_count_over_every_operator_and_absent_endpoints() {
 ///   k >= 2 AND k <= 4  -> {2,3,4}   = 3      `&` becomes `|`      -> all     = 5
 /// ```
 ///
-/// ⚠️ AND A `<>` BOUND MUST STILL BE RIGHT, because `canonical_num_conj` puts it in `ne` and this
+/// AND A `<>` BOUND MUST STILL BE RIGHT, because `canonical_num_conj` puts it in `ne` and this
 /// arm DECLINES a non-empty `ne` — so the general per-edge arm answers it. That is the path a
 /// mutant removing the `ne` gate would break, and nothing else here exercises it.
 #[test]
@@ -34892,7 +34892,7 @@ fn two_bound_hop_count_reduces_to_a_range_without_changing_the_answer() {
 ///   subtraction -> addition                                   (already caught by the k=1 tests)
 /// ```
 ///
-/// ⚠️ THE FIXTURE PUTS ONE NODE AT EVERY VALUE 1..=10, so each count is small and exact and every
+/// THE FIXTURE PUTS ONE NODE AT EVERY VALUE 1..=10, so each count is small and exact and every
 /// mutation moves it by at least one. A fixture with no value OUTSIDE the range could not see the
 /// `inside` gate, and one with no REPEATED exclusion could not see the dedup — both were the
 /// reason those mutants lived.
@@ -35003,7 +35003,7 @@ fn count_with_k_exclusions_subtracts_each_distinct_in_range_value_once() {
 
 /// The ROUTE guard for `try_fused_hop_project` (item 1243).
 ///
-/// ⚠️ A FASTPATH ROUTE IS ANSWER-EQUIVALENT, so nothing else in this file can see it stop firing —
+/// A FASTPATH ROUTE IS ANSWER-EQUIVALENT, so nothing else in this file can see it stop firing —
 /// item 1235's lesson, and the reason this is a PLAN assertion rather than a result comparison.
 /// The arm hoists the bound operator out of the per-edge loop, which no output can reveal.
 #[test]
@@ -35049,7 +35049,7 @@ fn fused_hop_project_is_reached() {
 
 /// The TRUTH TABLE for `set_reachability_is_exact` (item 1256).
 ///
-/// ⚠️ THIS EXISTS BECAUSE TWO MUTANTS SURVIVED THE WHOLE SUITE. Reverting item 1256's refinement
+/// THIS EXISTS BECAUSE TWO MUTANTS SURVIVED THE WHOLE SUITE. Reverting item 1256's refinement
 /// survived (the open-bound trail declining again is answer-equivalent — it only changes a THROW
 /// into an answer), and so did dropping the `min` bound, which re-admits the UNSOUND case: an open
 /// trail at `min >= 2` taking a walk BFS. The second is a WRONG ANSWER with nothing to catch it.
@@ -35073,7 +35073,7 @@ fn set_reachability_exactness_truth_table() {
     assert!(exact(PathMode::Trail, 0, u32::MAX), "trail 0..=open");
     assert!(exact(PathMode::Trail, 1, u32::MAX), "trail 1..=open");
 
-    // ⚠️ AND THE CASES THAT MUST STAY REFUSED. `min >= 2` with an open bound is the self-loop
+    // AND THE CASES THAT MUST STAY REFUSED. `min >= 2` with an open bound is the self-loop
     // counterexample (`a -> a -> a` is a 2-hop WALK; a 2-hop trail needs two distinct edges), which
     // is the wrong answer the TS engine shipped until item 1252. A BOUNDED trail above one hop is
     // the original `max <= 1` reasoning, unchanged.
@@ -35088,7 +35088,7 @@ fn set_reachability_exactness_truth_table() {
     assert!(!exact(PathMode::Trail, 0, 2), "trail 0..=2 must refuse");
     assert!(!exact(PathMode::Trail, 1, 9), "trail 1..=9 must refuse");
 
-    // ⚠️ SIMPLE MOVED INTO TRAIL'S CONDITION AT ITEM 1257, and this assertion is how that change
+    // SIMPLE MOVED INTO TRAIL'S CONDITION AT ITEM 1257, and this assertion is how that change
     // announced itself: it previously required SIMPLE to be refused at every bound, so admitting
     // it made this test FAIL rather than slide through. Same cycle-removal argument — strip the
     // cycles from a walk and what remains visits each node at most once, which is a SIMPLE path —
@@ -35162,7 +35162,7 @@ fn open_trail_above_one_hop_is_not_walk_reachability() {
 
 /// The level cap for the `min >= 2` frontier walk (item 1258).
 ///
-/// ⚠️ A PURE TEST FOR A PERF FIX, because reverting the cap changes no ANSWER — it only makes an
+/// A PURE TEST FOR A PERF FIX, because reverting the cap changes no ANSWER — it only makes an
 /// unbounded pattern spin. Measured before the cap: `MATCH WALK (x)-[:R]->{2,}(y) RETURN
 /// count(DISTINCT y)` on ONE node with ONE self-loop took **29,253 ms**, because the loop's only
 /// exit was an empty frontier and a cyclic graph never empties one — 4.29 billion levels over a
@@ -35251,14 +35251,14 @@ fn open_lower_bound_walk_reaches_the_whole_cycle() {
 /// SHAPE mismatch: `has(k)` lowers to `PropertyExists`, which the matchers accept, while
 /// `IS NOT NULL` lowers to `IsNull { negated: true }`, which they do not.
 ///
-/// ⚠️ THE TWO PREDICATES ARE NOT INTERCHANGEABLE, which is why this is pinned rather than patched
+/// THE TWO PREDICATES ARE NOT INTERCHANGEABLE, which is why this is pinned rather than patched
 /// in the same breath. `ir.rs` states it: `PropertyExists` is true for a PRESENT value "regardless
 /// of that value", and it is "the one predicate that separates an absent property from a present
 /// `Null` … which `IS NOT NULL` cannot". So the masks differ — `PropertyExists` is
 /// `present || nulls`, `IS NOT NULL` is `present` alone — and treating one as the other would be a
 /// wrong answer on any column that stores a present-null.
 ///
-/// ⚠️ THIS TEST ASSERTS THE GAP, so a fix MUST FLIP IT. That mechanism has paid off three times in
+/// THIS TEST ASSERTS THE GAP, so a fix MUST FLIP IT. That mechanism has paid off three times in
 /// this run (items 1251, 1255, 1257): a recorded gap with a failing assertion attached beats a
 /// comment nobody re-reads.
 #[test]
@@ -35282,7 +35282,7 @@ fn is_not_null_reaches_the_presence_fast_path() {
     let hq = "MATCH (a:P)-[:T]->(c) WHERE c.k IS NOT NULL RETURN count(*) AS x";
     let hplan = crate::opt::optimize_indexed(crate::gql::parse(hq).unwrap(), &st);
 
-    // ⚠️ THE ARGUMENT MUST BE WHAT `exec.rs` PASSES — the AGGREGATE'S INPUT, not the whole plan.
+    // THE ARGUMENT MUST BE WHAT `exec.rs` PASSES — the AGGREGATE'S INPUT, not the whole plan.
     // The first version of this test handed over `Project{Aggregate{Filter{…}}}` and read the
     // resulting `None` as "the route declines", which was a statement about the test. Same class
     // as item 1260's three wrong-path measurements: a harness that does not mirror the real call
@@ -35314,7 +35314,7 @@ fn is_not_null_reaches_the_presence_fast_path() {
         }
     };
 
-    // ⚠️ AND THE THIRD SPELLING (item 1262), which `normalize_pred` canonicalizes to the same
+    // AND THE THIRD SPELLING (item 1262), which `normalize_pred` canonicalizes to the same
     // `IsNull { negated: true }`. Reverting that canonicalization is ANSWER-EQUIVALENT — the
     // spelling merely gets ~4x slower — so only a ROUTE assertion can see it, the same reason
     // item 1258's level cap needed a pure test rather than a timing one.
@@ -35341,7 +35341,7 @@ fn is_not_null_reaches_the_presence_fast_path() {
 
 /// The two presence predicates must still DIFFER where they genuinely should (item 1261).
 ///
-/// ⚠️ THIS IS THE TEST THAT MAKES THE FAST PATH SAFE. Item 1261 admitted `IS NOT NULL` to the
+/// THIS IS THE TEST THAT MAKES THE FAST PATH SAFE. Item 1261 admitted `IS NOT NULL` to the
 /// presence sweeps, and the only way that is correct is if the MASK follows the spelling:
 /// `PropertyExists` counts `present || nulls` (a stored present-null IS a present property), and
 /// `IS NOT NULL` counts `present` alone (a present-null is not a non-null value). Treating them as
@@ -35351,7 +35351,7 @@ fn is_not_null_reaches_the_presence_fast_path() {
 /// property — so the two spellings must answer 2 and 3.
 #[test]
 fn a_presence_count_over_a_num_column_with_absent_cells_is_right() {
-    // ⚠️ THE FIXTURE THAT REACHES THE HOISTED SWEEP (item 1287), and the reason it is separate from
+    // THE FIXTURE THAT REACHES THE HOISTED SWEEP (item 1287), and the reason it is separate from
     // `property_exists_and_is_not_null_differ_on_a_present_null`: that one stores a present-null,
     // which PROMOTES the column to `Gen` (item 1142), and every numeric fast path then declines. So
     // it cannot see `try_stream_num_count`'s presence arm at all.
@@ -35466,7 +35466,7 @@ fn property_exists_and_is_not_null_differ_on_a_present_null() {
         "has(k) is PropertyExists: present||nulls, so the present-null counts"
     );
 
-    // ⚠️ AND THE SAME DISTINCTION OVER A HOP, which the mutation run is why this exists: merging
+    // AND THE SAME DISTINCTION OVER A HOP, which the mutation run is why this exists: merging
     // the masks at the HOP site SURVIVED the whole suite when only the scan case was asserted.
     // Two sites, two sweeps, two tests — the scan case cannot speak for the hop.
     let mut hb = Builder::default();
@@ -35514,7 +35514,7 @@ fn property_exists_and_is_not_null_differ_on_a_present_null() {
         "hop has(k) is PropertyExists, so the present-null counts"
     );
 
-    // ⚠️ AND THE PREDICATE'S SLOT MUST MATTER, which the mutation run is also why this exists:
+    // AND THE PREDICATE'S SLOT MUST MATTER, which the mutation run is also why this exists:
     // dropping the `*s == slot` check from `is_not_null_on_slot` SURVIVED the suite. A predicate on
     // the SOURCE is a different question from one on the target, and a presence sweep over
     // neighbours cannot answer it.
@@ -35559,12 +35559,12 @@ fn property_exists_and_is_not_null_differ_on_a_present_null() {
 
 /// `NOT (x IS NULL)` canonicalizes to `x IS NOT NULL` (item 1262).
 ///
-/// ⚠️ SOUND BECAUSE A NULL TEST IS TOTAL. `ir.rs`: "`NULL IS NULL` is TRUE, not NULL", so the
+/// SOUND BECAUSE A NULL TEST IS TOTAL. `ir.rs`: "`NULL IS NULL` is TRUE, not NULL", so the
 /// predicate never yields UNKNOWN and `NOT` of it is its exact complement. That is precisely why
 /// this rewrite is safe where the ORDERING one is not — `NOT (NaN >= 2)` is TRUE while `NaN < 2` is
 /// FALSE, and `normalize_pred` restricts its comparison rewrite to equality for that reason.
 ///
-/// ⚠️ AND THE PRESENT-NULL CASE IS THE ONE WORTH ASSERTING, since item 1261 is about exactly that
+/// AND THE PRESENT-NULL CASE IS THE ONE WORTH ASSERTING, since item 1261 is about exactly that
 /// distinction: a STORED present-null is null-valued, so both spellings must EXCLUDE it, while
 /// `has(k)` (PropertyExists) includes it.
 #[test]
@@ -35574,7 +35574,7 @@ fn not_is_null_is_the_same_question_as_is_not_null() {
     let a = b.node(&["P"], &[("k", n(1.0))]);
     let p_null = b.node(&["P"], &[("k", Value::Null)]); // PRESENT null
     let c = b.node(&["P"], &[("k", n(3.0))]);
-    // ⚠️ A THIRD REAL VALUE SO THE TWO POLARITIES DIFFER. With two of each, `IS NULL` and
+    // A THIRD REAL VALUE SO THE TWO POLARITIES DIFFER. With two of each, `IS NULL` and
     // `IS NOT NULL` both answered 2 and the double-negation assertion below held for either
     // polarity — item 702's trap: an answer invariant to the thing being varied validates nothing.
     let e = b.node(&["P"], &[("k", n(5.0))]);
@@ -35678,7 +35678,7 @@ fn numeric_membership_spellings_are_one_question() {
     }
 }
 
-/// ⚠️ THE WRONG-ANSWER GUARD for the k-pass counter (item 1264).
+/// THE WRONG-ANSWER GUARD for the k-pass counter (item 1264).
 ///
 /// `stream_eq_set_count` counts ONE VECTORIZED PASS PER VALUE, so a repeated literal would run two
 /// passes over the same value and report twice its size. `k IN [2,2]` and `k = 2 OR k = 2` are
@@ -35793,7 +35793,7 @@ fn numeric_membership_reaches_the_streaming_count() {
     }
 }
 
-/// ⚠️ THE REJECTED FORM, PINNED AS A ROUTE RULE (item 1264).
+/// THE REJECTED FORM, PINNED AS A ROUTE RULE (item 1264).
 ///
 /// Teaching the SHARED matcher `eq_disjunction_on_slot` to accept `Expr::In` was written first, on
 /// the theory that 32 against 33 was a plan boundary for every column kind. For a dict column that
@@ -35866,7 +35866,7 @@ fn a_non_numeric_member_declines_the_numeric_arm() {
     b.node(&["P"], &[("k", n(2.0))]);
     let st = b.build();
 
-    // ⚠️ BOTH ARITIES, BECAUSE THERE ARE TWO CHECKS AND ONE LIST REACHES ONLY ONE OF THEM. A
+    // BOTH ARITIES, BECAUSE THERE ARE TWO CHECKS AND ONE LIST REACHES ONLY ONE OF THEM. A
     // 2-item `IN` is desugared by `normalize_pred` into an `Or`, so it exercises the `Column::Num`
     // arm's check; only a list ABOVE 32 items survives as `Expr::In` and reaches
     // `num_in_list_on_slot`'s. The mutation run is what established this: with the short list
@@ -35918,7 +35918,7 @@ fn a_non_numeric_member_declines_the_numeric_arm() {
         panic!("expected an Aggregate");
     };
 
-    // ⚠️ `let … else { panic!() }`, NOT `if let`. Written as a nested `if let` this assertion was
+    // `let … else { panic!() }`, NOT `if let`. Written as a nested `if let` this assertion was
     // SILENTLY SKIPPED whenever the plan was not the expected shape, and the mutation run proved
     // it: `non-numeric-member-skipped` SURVIVED against the `if let` form and is caught by this
     // one. A pinned assertion that does not execute is item 1260's error in new clothes — there
@@ -35964,7 +35964,7 @@ fn a_non_numeric_member_declines_the_numeric_arm() {
 fn an_unindexed_equality_count_matches_the_general_path() {
     let mut b = Builder::default();
 
-    // ⚠️ BIG ENOUGH TO PLAN AN `IndexSeek`, and the plan is ASSERTED below. The first version of
+    // BIG ENOUGH TO PLAN AN `IndexSeek`, and the plan is ASSERTED below. The first version of
     // this test had five nodes, which plans as a `Filter(Scan)` instead — so it never reached the
     // new arm and every mutant of that arm SURVIVED while the test passed. A fixture too small to
     // route is the same error as a measurement that emitted no row.
@@ -35975,7 +35975,7 @@ fn an_unindexed_equality_count_matches_the_general_path() {
     b.node(&["P"], &[("k", n(50.0))]);
     b.node(&["P"], &[("k", n(50.0))]);
     b.node(&["P"], &[("k", n(7.0))]);
-    // ⚠️ A ZERO CELL, AND IT IS LOAD-BEARING. A mutant that accepts a non-numeric literal by
+    // A ZERO CELL, AND IT IS LOAD-BEARING. A mutant that accepts a non-numeric literal by
     // defaulting it to 0.0 is answer-equivalent on a fixture with no zero — it survived until this
     // node existed. With it, `k = 'fifty'` would count this row instead of nothing.
     b.node(&["P"], &[("k", n(0.0))]);
@@ -36000,7 +36000,7 @@ fn an_unindexed_equality_count_matches_the_general_path() {
     plans_as_a_seek("MATCH (a:P) WHERE a.k = 50 RETURN count(*) AS x");
     plans_as_a_seek("MATCH (a) WHERE a.k = 50 RETURN count(*) AS x");
 
-    // ⚠️ THE OPTIMIZED PLAN, NOT THE PARSED ONE. `run(&parse(q), ..)` — what the answer tests in
+    // THE OPTIMIZED PLAN, NOT THE PARSED ONE. `run(&parse(q), ..)` — what the answer tests in
     // this file normally use — never performs the rewrite this item is about, so the new arm was
     // NEVER CALLED and every mutant of it survived while these assertions passed. Verified by
     // printing from inside the arm: no output at all until this changed.
@@ -36043,7 +36043,7 @@ fn an_unindexed_equality_count_matches_the_general_path() {
     );
 }
 
-/// ⚠️ A STORED PRESENT-NULL PROMOTES THE COLUMN TO `Gen`, and the count must still be right
+/// A STORED PRESENT-NULL PROMOTES THE COLUMN TO `Gen`, and the count must still be right
 /// (item 1267).
 ///
 /// This is the fixture that makes `seek_eq_num_count`'s `present`-only mask safe: it is reached
@@ -36184,7 +36184,7 @@ fn seek_count_cost_gate_boundary() {
     assert!(!sweeps(Some(0), 200_000));
     assert!(!sweeps(Some(0), 0));
 
-    // ⚠️ NO INDEX AT ALL SWEEPS, and this assertion is what the mutation run demanded: mapping
+    // NO INDEX AT ALL SWEEPS, and this assertion is what the mutation run demanded: mapping
     // `None` to "use the seek" is answer-equivalent and SURVIVED the whole suite while that choice
     // was made inline in the caller. It carries item 1267's 4.75x.
     assert!(sweeps(None, 200_000));
@@ -36194,7 +36194,7 @@ fn seek_count_cost_gate_boundary() {
     // (both are one node), asserted so the behaviour at tiny scale is not a surprise.
     assert!(sweeps(Some(1), 1));
 
-    // ⚠️ NO OVERFLOW, AND THE CORNER IS RIGHT. This assertion rejected the first implementation:
+    // NO OVERFLOW, AND THE CORNER IS RIGHT. This assertion rejected the first implementation:
     // `bucket.saturating_mul(96) > label` saturates both sides to `usize::MAX` here, compares
     // false, and so answers "use the index" for a bucket that is the whole graph. Dividing the
     // label instead cannot overflow and answers "sweep", which is correct.
@@ -36222,7 +36222,7 @@ fn the_seek_count_gate_is_answer_equivalent_on_both_sides() {
         b.node(&["P"], &[("k", n(3.0))]);
     }
 
-    // ⚠️ A STRICT SUBSET, AND THE MUTATION RUN DEMANDED IT. With every node labelled `P` the graph
+    // A STRICT SUBSET, AND THE MUTATION RUN DEMANDED IT. With every node labelled `P` the graph
     // count and the label count are the SAME number, so the assertion below could not see
     // `label-len-uses-whole-graph` and it SURVIVED. These 1,000 `Q` nodes make the two differ.
     for _ in 0..1_000 {
@@ -36247,7 +36247,7 @@ fn the_seek_count_gate_is_answer_equivalent_on_both_sides() {
     assert!(!sweeps(Some(500), 50_000));
     assert!(sweeps(Some(40_000), 50_000));
 
-    // ⚠️ THE DENOMINATOR IS THE LABEL BUCKET, NOT THE WHOLE GRAPH, and `label-len-uses-whole-graph`
+    // THE DENOMINATOR IS THE LABEL BUCKET, NOT THE WHOLE GRAPH, and `label-len-uses-whole-graph`
     // survived until this was asserted. It matters whenever the label is a strict subset: a sweep
     // visits the LABEL, so pricing it against the graph would over-estimate the sweep and keep the
     // index past the crossover.
@@ -36275,7 +36275,7 @@ fn the_seek_count_gate_is_answer_equivalent_on_both_sides() {
     }
 }
 
-/// ⚠️ `NOT (k <= v)` MUST NOT BE SEEDED FROM A RANGE INDEX — the guard for a fix that LOOKS
+/// `NOT (k <= v)` MUST NOT BE SEEDED FROM A RANGE INDEX — the guard for a fix that LOOKS
 /// sound and is not (items 402, 1277, 1278).
 ///
 /// `CLOSED.md` records item 402's 10.7x gap with "do not fix this in one line", because a NaN cell
@@ -36284,7 +36284,7 @@ fn the_seek_count_gate_is_answer_equivalent_on_both_sides() {
 /// where NaN sorts LAST — so `range_lookup(Gt, 5)` genuinely DOES return the NaN row (measured:
 /// `[9.0, +inf, NaN]`).
 ///
-/// ⚠️ AND IT IS FILTERED BACK OUT ONE LAYER UP, ON PURPOSE. `range_seek_ids` re-checks every
+/// AND IT IS FILTERED BACK OUT ONE LAYER UP, ON PURPOSE. `range_seek_ids` re-checks every
 /// candidate with `range_pass`, and its comment says why: "the index orders by the TOTAL order
 /// (cross-type by rank), but the OPERATOR is three-valued (cross-type → UNKNOWN → drop) … so an
 /// indexed seek returns exactly the scan-filter rows (the equivalent-spellings invariant)". A NaN

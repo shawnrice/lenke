@@ -194,7 +194,7 @@ describe('the hop-values shortcut and its residual', () => {
   });
 
   /**
-   * ⚠️ `order` AS A THIRD STEP OVER THE BARE HOP (item 1783), AND NO ANSWER-BASED TEST CAN SEE IT.
+   * `order` AS A THIRD STEP OVER THE BARE HOP (item 1783), AND NO ANSWER-BASED TEST CAN SEE IT.
    *
    * The other residual shapes above at least change which VALUES come out. This one cannot even be
    * distinguished by row ORDER, because the step under test is a sort — it defines the order on

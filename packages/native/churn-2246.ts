@@ -1,18 +1,18 @@
 /**
- * ⚠️⚠️ **SUSTAINED INTERLEAVED READ/WRITE CHURN (item 2246).** Item 2245 showed a SINGLE write is clean:
+ * **SUSTAINED INTERLEAVED READ/WRITE CHURN (item 2246).** Item 2245 showed a SINGLE write is clean:
  * correct answer, no demotion, and the per-element memos (`#adjTo`, `#box`, `#toV`) re-arm on the next
- * read. 🔑 But "re-arms on the next read" is exactly the property that can THRASH when writes keep
+ * read. But "re-arms on the next read" is exactly the property that can THRASH when writes keep
  * arriving — every write invalidates, every read re-fills, and a workload that alternates pays the refill
  * every time without ever amortizing it.
  *
- * ⚠️ This is the user's real workload shape, not a synthetic one: a people-graph taking corrections and
+ * This is the user's real workload shape, not a synthetic one: a people-graph taking corrections and
  * retractions between queries.
  *
  * **THE KNOB IS WRITES-PER-READ.** At `W=0` the read is the warm baseline; as `W` grows each read follows
  * more invalidation. The question is whether per-read cost grows with `W` (thrash), stays flat
  * (invalidation is cheap or scoped), or grows then plateaus (bounded refill).
  *
- * 🔑 Two things this probe does deliberately:
+ * Two things this probe does deliberately:
  *
  * - **A WALKING shape**, not a count. `out('E').count()` is the degree-sum CLOSED FORM and never touches an
  *   adjacency memo — item 2245's first attempt timed 0.0 ms and could not have detected anything.

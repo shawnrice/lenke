@@ -899,7 +899,7 @@ pub(super) fn try_distinct_frontier_multi(input: &Plan, store: &Store) -> Option
 /// Absence is a distinct value (a present-null / missing prop → one `Null` row, as
 /// grouping treats it). `None` unless the shape is exactly that over a `Num`/`Str`/
 /// `Bool` column.
-// 🛑 A FILTERED SIBLING OF THIS FUNCTION WAS BUILT AND REJECTED (item 974) — it is 2.9x SLOWER.
+// A FILTERED SIBLING OF THIS FUNCTION WAS BUILT AND REJECTED (item 974) — it is 2.9x SLOWER.
 //
 // This fast path requires `Project { Scan }` with nothing between, so a `Filter` disqualifies it
 // and the row falls to `distinct_batch`'s hash-per-row. Item 964 verified the planner reaches

@@ -1,7 +1,7 @@
 /**
  * Item 1781: the FAR-DRIVEN route for a raise-free far predicate.
  *
- * ⚠️ A ROUTE CHANGE IS ANSWER-EQUIVALENT, so none of the 4,478 existing tests can fail when it is
+ * A ROUTE CHANGE IS ANSWER-EQUIVALENT, so none of the 4,478 existing tests can fail when it is
  * wrong, and a green suite is not evidence that it fired (`perf-gate-needs-its-own-test`). Two
  * things therefore have to be pinned separately:
  *
@@ -157,7 +157,7 @@ describe('a raise-free far predicate takes the far-driven walk', () => {
     it(`agrees with the START-DRIVEN route it replaces: ${c.name}`, () => {
       // `OFFSET 1` forces the start-driven arm, so this compares the two ROUTES in one build.
       //
-      // ⚠️ THE PAGE REMOVES THE START-DRIVEN ARM'S FIRST ROW, NOT THE FAR-DRIVEN ARM'S, and a first
+      // THE PAGE REMOVES THE START-DRIVEN ARM'S FIRST ROW, NOT THE FAR-DRIVEN ARM'S, and a first
       // version of this test assumed otherwise and failed on 6 of 6 cases. The two routes enumerate
       // in different orders — which is the whole point of the order assertions below — so WHICH row
       // the page drops differs between them and `far.slice(1)` is not the paged arm's expectation.
@@ -235,7 +235,7 @@ describe('a predicate that CAN raise keeps the start-driven route and its faults
 });
 
 /**
- * ⚠️ THE GATE'S OWN TESTS, AND THEY ARE ROUTE ASSERTIONS BECAUSE NOTHING ELSE CAN SEE IT.
+ * THE GATE'S OWN TESTS, AND THEY ARE ROUTE ASSERTIONS BECAUSE NOTHING ELSE CAN SEE IT.
  *
  * The first mutation pass on this item caught every mutant in the WALK (27, 30, 5 and 1 failures)
  * and lost all three in the GATE: dropping `predicateCannotRaise`, `truthCannotRaise` or
@@ -248,7 +248,7 @@ describe('a predicate that CAN raise keeps the start-driven route and its faults
  * case below is a shape ONE conjunct of the gate declines, so each conjunct has a test that fails
  * without it.
  *
- * ⚠️ AND FAULT ORDER TURNED OUT NOT TO BE THE OBSERVABLE, which is worth stating because it is the
+ * AND FAULT ORDER TURNED OUT NOT TO BE THE OBSERVABLE, which is worth stating because it is the
  * reason item 936 gave for not building this at all. Both routes evaluate the predicate over the
  * same SET of far vertices, so no fault appears or disappears; only WHICH one escapes could differ.
  * Measured: the raising families that actually reach this gate are `truthProps`/`notTruthProps`,
@@ -320,7 +320,7 @@ describe('shapes the gate declines for reasons other than raising', () => {
   });
 
   it('a NON-VACUOUS start label keeps the start-driven route, and the stray vertex HAS AN EDGE so the branch is reachable', () => {
-    // ⚠️ THE STRAY VERTEX MUST HAVE AN OUT-EDGE, and a first version of this test gave it none.
+    // THE STRAY VERTEX MUST HAVE AN OUT-EDGE, and a first version of this test gave it none.
     // With an isolated `:M` vertex the far-driven walk would answer CORRECTLY even with the vacuity
     // check removed — every edge still runs between two `:L` vertices — so the mutant that drops
     // that check would survive against a fixture which cannot reach the branch. That is item 1777's

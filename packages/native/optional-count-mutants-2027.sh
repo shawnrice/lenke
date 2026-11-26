@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2027 — mutation round on the optional rung's unconsumed COUNT terminal.
 #
-# ⚠️⚠️ **FIRST, DOES THE TEST FILE REACH THE NEW CODE AT ALL?** Item 2018 wrote 13 tests for a new
+# **FIRST, DOES THE TEST FILE REACH THE NEW CODE AT ALL?** Item 2018 wrote 13 tests for a new
 # path and every walk mutant SURVIVED them, because rungs above answered each shape and the new code
 # never ran. The `count-never-fused` mutant below is that check made permanent: it forces
 # `fusableProjectedCount` to return false, so the fused case declines everywhere. It is
@@ -51,10 +51,10 @@ MUTANTS=(
   # ---- THE COUNT TERMINAL ----
   "count-declined@@  return proj.kind === 'count' ? { pick: (e) => e, drops: false, consumed: false } : undefined;@@s@proj.kind === 'count' ?@false ?@"
   "count-consumed@@  return proj.kind === 'count' ? { pick: (e) => e, drops: false, consumed: false } : undefined;@@s@drops: false, consumed: false } : undefined;@drops: false, consumed: true } : undefined;@"
-  # ⚠️ EXPECTED SURVIVOR, UNOBSERVABLE BY CONSTRUCTION: `drops` skips a pick that returns
+  # EXPECTED SURVIVOR, UNOBSERVABLE BY CONSTRUCTION: `drops` skips a pick that returns
   # `undefined`, and this pick is `(e) => e` — an element, never `undefined`. Same for the bare arm.
   "count-drops@@  return proj.kind === 'count' ? { pick: (e) => e, drops: false, consumed: false } : undefined;@@s@{ pick: (e) => e, drops: false, consumed: false }@{ pick: (e) => e, drops: true, consumed: false }@"
-  # ⚠️ EXPECTED SURVIVOR: a COUNT observes only HOW MANY values are emitted, never which, so the
+  # EXPECTED SURVIVOR: a COUNT observes only HOW MANY values are emitted, never which, so the
   # pick is unobservable here. `(e) => e` is kept because it is the element a FUTURE residual would
   # need (a `values(k)` after the count's position, say) — correct by intent, not by test.
   "count-picks-id@@  return proj.kind === 'count' ? { pick: (e) => e, drops: false, consumed: false } : undefined;@@s@count' ? { pick: (e) => e,@count' ? { pick: (e) => e.id,@"
@@ -63,7 +63,7 @@ MUTANTS=(
   "rest-always-three@@    rest: steps.slice(picked.consumed ? 3 : 2),@@s@steps.slice(picked.consumed ? 3 : 2)@steps.slice(3)@"
   "rest-always-two@@    rest: steps.slice(picked.consumed ? 3 : 2),@@s@steps.slice(picked.consumed ? 3 : 2)@steps.slice(2)@"
   # ---- THE SIBLINGS whose `consumed` the flag also sets ----
-  # ⚠️ EXPECTED SURVIVOR, UNOBSERVABLE BY CONSTRUCTION: the bare arm is reached only when `proj` is
+  # EXPECTED SURVIVOR, UNOBSERVABLE BY CONSTRUCTION: the bare arm is reached only when `proj` is
   # `undefined`, i.e. the plan has exactly TWO steps — and `slice(2)` and `slice(3)` are both `[]`
   # there. A third step would be SEEN as `proj` and never reach this arm.
   "bare-marked-consumed@@    return { pick: (e) => e, drops: false, consumed: false };@@s@    return { pick: (e) => e, drops: false, consumed: false };@    return { pick: (e) => e, drops: false, consumed: true };@"

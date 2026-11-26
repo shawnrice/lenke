@@ -6,7 +6,7 @@
  * same fixture shape, so the two surfaces can be compared on one instrument rather than inferred
  * from separate benches.
  *
- * ⚠️ ONE SHAPE PER PROCESS (items 737, 762). `SHAPE=<key>` selects; running the family together
+ * ONE SHAPE PER PROCESS (items 737, 762). `SHAPE=<key>` selects; running the family together
  * moved a row 20% by POSITION in item 1600's probe.
  *
  *     SHAPE=far-count bun gremlin-hop-filter-probe.ts
@@ -38,7 +38,7 @@ const SHAPES: Record<string, (v: string) => unknown> = {
   // Two hops, so the gate sits in the middle of the walk.
   'mid-count': (v) =>
     traversal(V(), hasLabel('User'), out('E'), has('team', eq(v)), out('E'), count()),
-  // ⚠️ THE SHAPE ITEM 1602 LEFT OPEN: a trailing filter AFTER the last hop. Its rung declines,
+  // THE SHAPE ITEM 1602 LEFT OPEN: a trailing filter AFTER the last hop. Its rung declines,
   // because the final contribution stops being a DEGREE once the far end is filtered — so it needs
   // the last level walked rather than summed. Item 1602's own note names it.
   'mid-and-trailing-count': (v) =>
@@ -79,7 +79,7 @@ for (let i = 0; i < NODES; i += 1) {
 }
 
 /**
- * ⚠️ SPLIT THE TARGET ON THE REPEAT INDEX, NOT ON `k`. `to = (a * k + b) % N` is INVARIANT under
+ * SPLIT THE TARGET ON THE REPEAT INDEX, NOT ON `k`. `to = (a * k + b) % N` is INVARIANT under
  * `k -> k + N`, so a loop over `k < NODES * FANOUT` gives every one of a vertex's FANOUT edges the
  * SAME target: out-degree, in-degree and isolated counts all look perfect while the graph is
  * FUNCTIONAL (CLAUDE.md, items 1516/1518). `Math.floor(k / NODES)` is what makes the fanout branch.

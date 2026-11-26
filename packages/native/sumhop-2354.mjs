@@ -1,17 +1,17 @@
 /**
- * ⚠️⚠️ **DOES A HOP REALLY DOUBLE THE `sum`/`max` GAP, OR DID I COMPARE TWO FIXTURES? (item 2354)**
+ * **DOES A HOP REALLY DOUBLE THE `sum`/`max` GAP, OR DID I COMPARE TWO FIXTURES? (item 2354)**
  *
  * Item 2353 read `bun run bench` as **sum/max = 3.0x on a hop** (287.9 against 96.1 ms) and contrasted it
- * with items 2335/2336's **1.58x on a scan** (25.37 against 16.07 ns a vertex). 🔑 But the bench's two rows
+ * with items 2335/2336's **1.58x on a scan** (25.37 against 16.07 ns a vertex). But the bench's two rows
  * use DIFFERENT FIXTURES — `sum over a hop` runs on `graphDoc` and `sum over a scan` on `nodesDoc` — and my
- * 1.58x came from a third fixture of my own. ⚠️ **The hop pair's ratio is clean; the comparison BETWEEN the
+ * 1.58x came from a third fixture of my own. **The hop pair's ratio is clean; the comparison BETWEEN the
  * hop and the scan is not.**
  *
- * ✅ So all four arms run here on ONE fixture: the same vertices, the same property, the same graph. If the
+ * So all four arms run here on ONE fixture: the same vertices, the same property, the same graph. If the
  * hop really doubles the gap, sum/max is ~1.6x on the scan arms and ~3x on the hop arms within this
  * process. If it does not, the difference was the fixtures and item 2353's nomination dissolves.
  *
- * ⚠️ The row counts differ between scan and hop by construction (one row a vertex against one a edge), so
+ * The row counts differ between scan and hop by construction (one row a vertex against one a edge), so
  * the comparison that matters is sum/max WITHIN each pair — not scan against hop.
  */
 import { Graph } from '@lenke/core';
@@ -49,13 +49,13 @@ if (seen.size < NODES * 0.5) {
 }
 
 const TEXTS = {
-  /* ✅ THE SCAN PAIR — `sum` has no streaming fold, `max` has one (items 2335/2336). */
+  /* THE SCAN PAIR — `sum` has no streaming fold, `max` has one (items 2335/2336). */
   scanSum: 'MATCH (a:Person) RETURN sum(a.k) AS c',
   scanMax: 'MATCH (a:Person) RETURN max(a.k) AS c',
-  /* 🔑 THE HOP PAIR, the bench's own two queries, on this same graph. */
+  /* THE HOP PAIR, the bench's own two queries, on this same graph. */
   hopSum: 'MATCH (a:Person)-[:KNOWS]->(b) RETURN sum(b.k) AS c',
   hopMax: 'MATCH (a:Person)-[:KNOWS]->(b) RETURN max(b.k) AS c',
-  /* ✅ A hop COUNT, as the floor showing what the hop costs before any aggregate. */
+  /* A hop COUNT, as the floor showing what the hop costs before any aggregate. */
   hopCount: 'MATCH (a:Person)-[:KNOWS]->(b) RETURN count(b.k) AS c',
 };
 
@@ -96,7 +96,7 @@ for (let r = 0; r < ROUNDS; r += 1) {
 
 const sorted = [...ts].sort((a, b) => a - b);
 const med = sorted[Math.floor(sorted.length / 2)];
-/* ✅ Rows VISITED, which differs between the pairs: a vertex each on the scan, an edge each on the hop. */
+/* Rows VISITED, which differs between the pairs: a vertex each on the scan, an edge each on the hop. */
 const visited = ARM.startsWith('scan') ? NODES : NODES * FAN;
 
 console.log(

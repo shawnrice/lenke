@@ -16,12 +16,12 @@ import { query } from './index.js';
  *   N= 5,000   330.66    -> 46.71    7.1x
  *   N=10,000  1295.16    -> 32.38   40.0x      (the plain `{1,3}` spelling answers the same in 2.23)
  *
- * ⚠️ IT CHANGES ROW ORDER, WHICH IS WHY THESE TESTS COMPARE MULTISETS. The old comment claimed
+ * IT CHANGES ROW ORDER, WHICH IS WHY THESE TESTS COMPARE MULTISETS. The old comment claimed
  * insertion order for determinism against native; that is stricter than the contract. GQL row order
  * without `ORDER BY` is unspecified, and `differential-fuzz` compares rows as a multiset unless
  * `totallyOrdered(q)` admits the query — so endpoint ORDER is free and endpoint SET is not.
  *
- * ⚠️ AND WHAT MUST NOT MOVE IS WHICH PATH EACH ENDPOINT GETS. `ANY SHORTEST` picks one path per
+ * AND WHAT MUST NOT MOVE IS WHICH PATH EACH ENDPOINT GETS. `ANY SHORTEST` picks one path per
  * endpoint from the `pred` tree, filled in BFS discovery order, which this change does not touch. A
  * fixture with TWO equally short routes to one endpoint is therefore the load-bearing case here: the
  * chosen path must be the same one as before, not merely *a* shortest path. Without that fixture a
@@ -37,7 +37,7 @@ const ns = (g: Graph, src: string): unknown[] =>
     .slice()
     .sort((x, y) => Number(x) - Number(y));
 
-describe('⚠️ TWO equally short routes: the CHOSEN path must not move (item 1462)', () => {
+describe('TWO equally short routes: the CHOSEN path must not move (item 1462)', () => {
   /** `a->b->d` and `a->c->d`: two shortest routes to `d`, so `pred` has a real choice to make. */
   const diamond = (): Graph => {
     const g = new Graph();
@@ -93,7 +93,7 @@ describe('the endpoint SET is unchanged by the discovered-set loop (item 1462)',
       g.addEdge({ id: `e${i}`, from: vs[i], to: vs[i + 1], labels: ['E'], properties: {} });
     }
 
-    // ⚠️ THE ISLAND. Unreachable from the seed, so the old whole-graph scan had to skip it by
+    // THE ISLAND. Unreachable from the seed, so the old whole-graph scan had to skip it by
     // `dist === undefined` while the new loop never visits it. If the new loop somehow admitted
     // undiscovered vertices this is what would catch it.
     g.addVertex({ id: 'island', labels: ['P'], properties: { n: 99 } });
@@ -101,7 +101,7 @@ describe('the endpoint SET is unchanged by the discovered-set loop (item 1462)',
     return g;
   };
 
-  test('⚠️ an UNREACHABLE vertex is not an endpoint', () => {
+  test('an UNREACHABLE vertex is not an endpoint', () => {
     const g = chain();
 
     expect(ns(g, 'MATCH ANY SHORTEST (a:S)-[:E]->{1,3}(b:P) RETURN b.n AS n')).toEqual([1, 2, 3]);
@@ -152,7 +152,7 @@ describe('the SEED-CYCLE endpoint, which the seed sits in `dist` at distance 0 f
     return g;
   };
 
-  test('⚠️ the seed IS an endpoint when a cycle closes within the ceiling', () => {
+  test('the seed IS an endpoint when a cycle closes within the ceiling', () => {
     // THE CASE THE DISCOVERED-SET LOOP COULD HAVE LOST. The seed is in `dist` at 0 and was emitted by
     // the old scan only via `isSeedCycle`; the new loop visits it from `queue` and must apply the
     // same rule.
@@ -206,7 +206,7 @@ describe('ALL SHORTEST and SHORTEST k: same fix, same endpoint set (item 1463)',
     return g;
   };
 
-  test('⚠️ ALL SHORTEST: unreachable excluded, ceiling respected', () => {
+  test('ALL SHORTEST: unreachable excluded, ceiling respected', () => {
     const g = chain6();
 
     expect(ns(g, 'MATCH ALL SHORTEST (a:S)-[:E]->{1,3}(b:P) RETURN b.n AS n')).toEqual([1, 2, 3]);
@@ -215,7 +215,7 @@ describe('ALL SHORTEST and SHORTEST k: same fix, same endpoint set (item 1463)',
     ]);
   });
 
-  test('⚠️ SHORTEST 2: unreachable excluded, ceiling respected', () => {
+  test('SHORTEST 2: unreachable excluded, ceiling respected', () => {
     const g = chain6();
 
     expect(ns(g, 'MATCH SHORTEST 2 (a:S)-[:E]->{1,3}(b:P) RETURN b.n AS n')).toEqual([1, 2, 3]);

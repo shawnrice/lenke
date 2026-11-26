@@ -1,7 +1,7 @@
 /**
  * `compile` and `execute` — the GQL executor's ENTRY POINTS, and the top of its module layering.
  *
- * ⚠️ THIS IS A SEPARATE MODULE SO THAT THE PLANNER CAN BE ONE TOO (item 1663). `compile` is the
+ * THIS IS A SEPARATE MODULE SO THAT THE PLANNER CAN BE ONE TOO (item 1663). `compile` is the
  * only caller of `compileLinear` outside the planner family itself. While it lived in
  * `executor/core.ts`, extracting the planner would have made `core.ts` import `compileLinear`
  * UPWARD from `rewrites.ts` while `rewrites.ts` imported 33 helpers back DOWN — a real module
@@ -30,7 +30,7 @@ import { compileLinear } from './rewrites.js';
  * `A UNION B` compiled as `(DISTINCT A) UNION (DISTINCT B)` — the DISTINCT pushed into each arm
  * (item 2147).
  *
- * ⚠️⚠️ **THE SAME QUESTION WRITTEN WITH THE DISTINCT BY HAND WAS 5x FASTER, which makes this an
+ * **THE SAME QUESTION WRITTEN WITH THE DISTINCT BY HAND WAS 5x FASTER, which makes this an
  * EQUIVALENT-SPELLING GAP** — the defect class this repo is organised around. Measured over 200,000
  * vertices projecting a 97-value column:
  *
@@ -41,20 +41,20 @@ import { compileLinear } from './rewrites.js';
  *     INTERSECT      14.82           2.91          5.09x
  * ```
  *
- * Identical answers in every pair. 🔑 The cause is not the COMBINE step, which items 1473/1561/1562
+ * Identical answers in every pair. The cause is not the COMBINE step, which items 1473/1561/1562
  * already optimized (lazy right-keys, one- and two-column keying): it is that each ARM materializes its
  * whole row set — 200,000 and 66,667 rows — before anything dedups. With the DISTINCT inside, each arm
  * yields 97 and the combine sees 194 instead of 266,667.
  *
- * 🔑 SOUND BECAUSE SET UNION IS IDEMPOTENT: `DISTINCT(A ∪ B) = DISTINCT(DISTINCT(A) ∪ DISTINCT(B))`, and
- * likewise for `∩` and `\` — a duplicate changes neither membership nor the deduped result. ⚠️ `UNION ALL`
+ * SOUND BECAUSE SET UNION IS IDEMPOTENT: `DISTINCT(A ∪ B) = DISTINCT(DISTINCT(A) ∪ DISTINCT(B))`, and
+ * likewise for `∩` and `\` — a duplicate changes neither membership nor the deduped result. `UNION ALL`
  * is exactly the case where it does NOT hold, so an `all` operator refuses.
  *
- * ⚠️ **AND A PART IS REWRITTEN ONLY IF EVERY OPERATOR TOUCHING IT IS NON-`ALL`.** Parts are joined
+ * **AND A PART IS REWRITTEN ONLY IF EVERY OPERATOR TOUCHING IT IS NON-`ALL`.** Parts are joined
  * left-associatively, so part `i` is the right operand of `ops[i - 1]` and the left of `ops[i]`; in
  * `A UNION ALL B UNION C`, pushing into `A` would change `UNION ALL`'s multiplicity.
  *
- * ⚠️ `ORDER BY` / `SKIP` / `LIMIT` on an arm also refuse: deduping BEFORE a page changes which rows
+ * `ORDER BY` / `SKIP` / `LIMIT` on an arm also refuse: deduping BEFORE a page changes which rows
  * survive it. So does an arm that already says `DISTINCT` (nothing to do), a `RETURN *` (the items are
  * not known here) and a grouped or aggregated arm (its result is already one row per group).
  */

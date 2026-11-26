@@ -5,7 +5,7 @@ import { deserialize as tsDeserialize } from '@lenke/serialization';
 /**
  * DO THE TWO ENGINES AGREE, POSITIONALLY, ON AN UNORDERED SKIP-ONLY PAGE? (item 1776)
  *
- * ⚠️ WRITTEN BECAUSE `bun run fuzz` GREEN SAYS NOTHING ABOUT THIS SHAPE. Every page the
+ * WRITTEN BECAUSE `bun run fuzz` GREEN SAYS NOTHING ABOUT THIS SHAPE. Every page the
  * differential fuzzer generates rides an `ORDER BY` — `… ORDER BY t SKIP n LIMIT m` from its paged
  * arm, and the statement-position `ORDER BY … OFFSET 1` from the next — so an UNORDERED
  * `RETURN n.k OFFSET k` is outside its corpus entirely. The same blind spot as
@@ -106,7 +106,7 @@ const CASES: ReadonlyArray<readonly [string, string, string]> = [
     `MATCH (a:T)-[:E]->(b) RETURN a.k AS k OFFSET ${Math.floor(NODES / 3)}`,
   ],
   /**
-   * ⚠️ DEPTHS 2-5, ADDED AT ITEM 1885, AND THE CONTROL IS THE LOAD-BEARING HALF HERE. Those depths
+   * DEPTHS 2-5, ADDED AT ITEM 1885, AND THE CONTROL IS THE LOAD-BEARING HALF HERE. Those depths
    * are served UNPAGED by `hop2Projection` and `chainProjection`, both of which decline outright
    * once any window is present (read off `compileLinear` — `skip-chain-route-1885.mjs`), so the
    * paged spelling costs 26.9-59.5 ms against a ~6 ms `rows` twin on `rung-gap-screen.mjs`.
@@ -185,12 +185,12 @@ for (const [name, control, paged] of CASES) {
   }
 
   console.log(
-    `${name.padEnd(18)} unpaged ${ctl.padEnd(26)} paged ${pg.padEnd(26)}${broken ? '  ⚠️ PAGE BREAKS AN AGREEING SHAPE' : ''}`,
+    `${name.padEnd(18)} unpaged ${ctl.padEnd(26)} paged ${pg.padEnd(26)}${broken ? '  PAGE BREAKS AN AGREEING SHAPE' : ''}`,
   );
 }
 
 /**
- * ⚠️ THE SECOND SECTION, ADDED AT ITEM 1885: IS EACH ENGINE'S PAGED ANSWER ITS OWN UNPAGED ANSWER
+ * THE SECOND SECTION, ADDED AT ITEM 1885: IS EACH ENGINE'S PAGED ANSWER ITS OWN UNPAGED ANSWER
  * SLICED? That is the OTHER half of the licence to slice a rung's rows, and it is not implied by
  * the first section. Section one says the two engines agree about the paged answer; this one says
  * the paged answer is positionally the unpaged walk minus its first k rows, in each engine
@@ -200,7 +200,7 @@ for (const [name, control, paged] of CASES) {
 const offsetOf = (paged: string): number => Number(/OFFSET (\d+)/.exec(paged)?.[1] ?? '0');
 
 /**
- * ⚠️ ONE DOCUMENTED EXCEPTION, AND IT IS A FEATURE. `hop proj FAR` paged is deliberately NOT its own
+ * ONE DOCUMENTED EXCEPTION, AND IT IS A FEATURE. `hop proj FAR` paged is deliberately NOT its own
  * unpaged answer sliced in TS: item 1777 forces the START-DRIVEN walk whenever the page is
  * non-zero, because that walk's order is the general path's, where the UNPAGED shape may take the
  * far-driven walk whose order is intentionally different. `offset-order-equiv.mjs`'s SELF section
@@ -228,7 +228,7 @@ for (const [name, control, paged] of CASES) {
   const note = exempt ? '   (EXEMPT — item 1777 forces the start-driven walk when paged)' : '';
 
   console.log(
-    `${name.padEnd(18)} OFFSET ${String(off).padStart(3)}   ts ${tsOk ? 'sliced' : '⚠️ NOT sliced'}   native ${natOk ? 'sliced' : '⚠️ NOT sliced'}${note}`,
+    `${name.padEnd(18)} OFFSET ${String(off).padStart(3)}   ts ${tsOk ? 'sliced' : 'NOT sliced'}   native ${natOk ? 'sliced' : 'NOT sliced'}${note}`,
   );
 }
 

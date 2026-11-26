@@ -8,7 +8,7 @@
  * `fuseEdgeHop`, `fuseUnionBoth`, `fuseUnionSameDir`, `dropVacuousLabels`) with no cache between
  * them and the next call.
  *
- * ⚠️ THE FIXTURE IS DELIBERATELY TINY. Every other probe here uses 200,000+ elements, which is
+ * THE FIXTURE IS DELIBERATELY TINY. Every other probe here uses 200,000+ elements, which is
  * right when measuring a walk and wrong when measuring a per-call constant: at bench scale the
  * graph work swamps it and the answer rounds to zero. These arms use a graph small enough that
  * per-call overhead is the majority of the reading, which is also the regime a serving workload
@@ -118,7 +118,7 @@ console.log(
 for (const name of names) {
   const { build, floor } = SHAPES[name];
   const prebuilt = build();
-  // ⚠️ Every arm must agree, including the floor — an arm that answers a different question prices
+  // Every arm must agree, including the floor — an arm that answers a different question prices
   // a different question, which is the error items 1479/1485/1488 each made.
   const want = toArray(prebuilt, graph);
   const got = floor();

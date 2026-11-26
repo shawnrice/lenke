@@ -1,10 +1,10 @@
 /**
  * ITEM 2220 — does a MID-PATTERN filter prune the second hop, or is it applied after the walk?
  *
- * 🔑 THE TEST IS SELECTIVITY, NOT A PROFILE: if the engine prunes at `b`, time scales with how many
+ * THE TEST IS SELECTIVITY, NOT A PROFILE: if the engine prunes at `b`, time scales with how many
  * middles survive. If it walks all paths and filters late, time is FLAT in selectivity.
  *
- * ⚠️ Rows are printed too, because a shape whose ANSWER is invariant to the thing being varied cannot
+ * Rows are printed too, because a shape whose ANSWER is invariant to the thing being varied cannot
  * validate anything (CLAUDE.md, item 702).
  */
 import { Graph } from '@lenke/core';
@@ -55,9 +55,9 @@ const floor = (pred: (k: number) => boolean): { k: unknown }[] => {
 };
 
 /*
- * ⚠️⚠️ **CONSUME CHEAPLY: `JSON.stringify` INSIDE THE TIMED LOOP DILUTES THE RATIO TOWARD 1.0** (item 2227).
+ * **CONSUME CHEAPLY: `JSON.stringify` INSIDE THE TIMED LOOP DILUTES THE RATIO TOWARD 1.0** (item 2227).
  * A large cost identical in both arms is added to numerator and denominator alike — stringifying 80,000
- * rows per iteration halved a measured gap (1.35x against the true 2.35x). 🔑 It is the mirror of item
+ * rows per iteration halved a measured gap (1.35x against the true 2.35x). It is the mirror of item
  * 2200's dead-code trap: consuming NOTHING lets the JIT delete the work, consuming EXPENSIVELY swamps it.
  */
 const consume = (v: unknown): number => (Array.isArray(v) ? v.length : Number(v) || 1);
@@ -86,7 +86,7 @@ const CASES: ReadonlyArray<readonly [string, string, (k: number) => boolean]> = 
   ['b.k >= 0       (100%)', 'b.k >= 0', (k) => k >= 0],
 ];
 
-/* ⚠️ TWO PASSES IN OPPOSITE ORDER: an in-process table charges the FIRST row for JIT warm-up (item 2214). */
+/* TWO PASSES IN OPPOSITE ORDER: an in-process table charges the FIRST row for JIT warm-up (item 2214). */
 for (const pass of [CASES, [...CASES].reverse()]) {
   console.log(
     `\n  ${'mid filter'.padEnd(24)} ${'engine ms'.padStart(10)} ${'floor ms'.padStart(9)} ${'vs floor'.padStart(9)} ${'rows'.padStart(8)}`,
@@ -101,7 +101,7 @@ for (const pass of [CASES, [...CASES].reverse()]) {
     });
     const fl = ms(() => floor(pred));
     /*
-     * ⚠️⚠️ **THE FIRST VERSION READ `.rows ?? []` AND PRINTED 0 FOR EVERY CASE** — the result of this query
+     * **THE FIRST VERSION READ `.rows ?? []` AND PRINTED 0 FOR EVERY CASE** — the result of this query
      * IS an array, so `.rows` was undefined and the fallback swallowed it. A row count that is invariant to
      * the thing being varied cannot validate the table (CLAUDE.md, item 702), which is exactly what the
      * zeros announced.

@@ -4,7 +4,7 @@
  * An ablation at `buildNodeCount`'s seeded loop priced the whole label test at **1.53x** of the
  * 400-hit seeded count — ~10.5 ns per candidate. Item 1599's first attempt assumed that was
  * DISPATCH (`matchesLabel`'s `undefined` check plus `evalLabelExpr`'s `switch`, re-decided per
- * element at ~70 call sites) and compiled the test to a per-query closure. ⚠️ THAT MEASURED FLAT,
+ * element at ~70 call sites) and compiled the test to a per-query closure. THAT MEASURED FLAT,
  * so the dispatch was already being inlined and the cost is in the test itself.
  *
  * This isolates the three candidate costs over the same 400 vertices, so the next attempt is

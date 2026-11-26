@@ -3,7 +3,7 @@ import { describe, expect, it } from 'bun:test';
 /**
  * NESTED SUBQUERY ANSWERS — a subquery in every structural position the parser can nest one into.
  *
- * ⚠️ THIS FILE DOES NOT GUARD `hasSubquery`, AND SAYING SO IS THE POINT (item 1500). It was written
+ * THIS FILE DOES NOT GUARD `hasSubquery`, AND SAYING SO IS THE POINT (item 1500). It was written
  * to, after a `for...in` change to that walk's recursive step, on the reasoning that a walk which
  * missed a nested subquery would let the planner push a predicate it must not push. Three mutants
  * were built to check that:
@@ -66,7 +66,7 @@ const graph = g();
 /**
  * Sorted projected values, so row order (unspecified without ORDER BY) cannot make a pair disagree.
  *
- * ⚠️ It projects `n.k`, NOT `n.id`. The first version of this file projected `n.id`, which reads
+ * It projects `n.k`, NOT `n.id`. The first version of this file projected `n.id`, which reads
  * back as `null` for every row — so every comparison degenerated to a row COUNT and the file was
  * much weaker than it looked. A reference query that is wrong in the SAME way as the query under
  * test agrees with it for the wrong reason.
@@ -120,7 +120,7 @@ describe('the walk still answers NO for subquery-free predicates', () => {
     ['a CASE with no subquery', 'CASE WHEN n.k = 2 THEN true ELSE false END'],
     ['a list membership', 'n.k IN [1, 2, 3]'],
     [
-      '⚠️ a predicate whose literal is a TEMPORAL',
+      'a predicate whose literal is a TEMPORAL',
       "n.k >= 0 AND DATE '2020-01-01' <= DATE '2020-01-02'",
     ],
   ] as const) {
@@ -136,7 +136,7 @@ describe('the walk still answers NO for subquery-free predicates', () => {
     });
   }
 
-  it('⚠️ a stored TEMPORAL does not look like a subquery to the walk', () => {
+  it('a stored TEMPORAL does not look like a subquery to the walk', () => {
     // `hasSubquery` tests `typeof rec.kind === 'string' && SUBQUERY_KINDS.has(rec.kind)`, and a
     // `LocalDate` carries `kind = 'date'` — the exact collision that cost item 1490 a 2.4x. Here it
     // is harmless because the test is an ALLOWLIST of subquery kinds rather than a denylist, and

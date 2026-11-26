@@ -1,14 +1,14 @@
 // A TS-ONLY WRONG ANSWER in the deferred hop order arm, found at item 1903 and fixed there.
 //
-// ⚠️⚠️ THE SHAPE: a hop whose PROJECTION reads one end and whose SORT KEY reads the other, under a
+// THE SHAPE: a hop whose PROJECTION reads one end and whose SORT KEY reads the other, under a
 // window. `MATCH (n:Q)-[:R]->(m:Q) RETURN n.k AS c ORDER BY m.k LIMIT 3` — an entirely ordinary
 // "top 3, returning the near end, ranked by the far end" query, and `ORDER BY e.w LIMIT 3` ("top 3
 // by edge weight") is the same shape.
 //
-//     TS      [{c:1},{c:2},{c:3}]      ⬅ WRONG: the rows came back in ARRIVAL order
+//     TS      [{c:1},{c:2},{c:3}]      <- WRONG: the rows came back in ARRIVAL order
 //     native  [{c:3},{c:2},{c:1}]          and TS's own general path agreed with native
 //
-// ⚠️ THE CAUSE was three walk-eligibility flags describing the WRONG PROJECTION.
+// THE CAUSE was three walk-eligibility flags describing the WRONG PROJECTION.
 // `detectHopProjection` hands the walk `walkProj` — the deferred arm's reduced copy, whose items
 // are the sort KEYS plus one carrier per endpoint — while `projStartOnly`, `itemsReadStart` and
 // `itemsReadRel` were all derived from `projected`, the analysis of the REAL items.
@@ -17,10 +17,10 @@
 // bound the far variable, every key evaluated to NULL, the sort became a no-op, and the rows came
 // out in the walk's arrival order.
 //
-// ⚠️ FOUR OF FIVE END/KEY COMBINATIONS DIVERGED. Only "projection reads the far end, key reads the
+// FOUR OF FIVE END/KEY COMBINATIONS DIVERGED. Only "projection reads the far end, key reads the
 // start" was right, and that by luck of which variable the walk happened to bind.
 //
-// ⚠️ WHY NOTHING CAUGHT IT: the workload corpus's `withOrder` orders only by the projection's
+// WHY NOTHING CAUGHT IT: the workload corpus's `withOrder` orders only by the projection's
 // ALIAS, so no generated query ever puts a bare variable read in a sort key — the blind spot item
 // 1902 found one item earlier and fixed for the NODE shape. This file is the hop half of that.
 import { describe, expect, test } from 'bun:test';
@@ -45,7 +45,7 @@ const NDJSON = [
 ].join('\n');
 
 /**
- * ⚠️ A FIXTURE WHOSE TIES HIDE THE BUG IS WORSE THAN NO FIXTURE, and the first one did. On the perf
+ * A FIXTURE WHOSE TIES HIDE THE BUG IS WORSE THAN NO FIXTURE, and the first one did. On the perf
  * screen's graph (eight distinct `n` over 200,000 vertices) the broken arm's arrival order and the
  * correct order produce the SAME first ten rows, so the wrong answer measured 7.6x FASTER and
  * looked like a clean win. Here `n` is distinct and each edge points at the vertex that reverses
@@ -83,7 +83,7 @@ describe.if(nativeReady)('a hop sort key reading an end the projection does not'
     'MATCH (n:Q)-[:R]->(m:Q) RETURN n.k AS c ORDER BY m.k DESC LIMIT 3',
     // An ANONYMOUS start, so the fix's `startVarName !== undefined` guard is exercised.
     'MATCH (:Q)-[:R]->(m:Q) RETURN m.k AS c ORDER BY m.k + 1 LIMIT 3',
-    // ⚠️ UNWINDOWED, which item 1903's other half newly routes through the same arm.
+    // UNWINDOWED, which item 1903's other half newly routes through the same arm.
     'MATCH (n:Q)-[:R]->(m:Q) RETURN n.k AS c ORDER BY m.k',
     'MATCH (n:Q)-[e:R]->(m:Q) RETURN n.k AS c ORDER BY e.w',
     'MATCH (n:Q)-[:R]->(m:Q) RETURN n.k AS c ORDER BY m.k, n.k',

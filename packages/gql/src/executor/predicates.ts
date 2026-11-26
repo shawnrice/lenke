@@ -4,14 +4,14 @@
  * `satisfies` is the single hot gate every matcher and every rung passes an element through, which
  * is why four separate modules reached back into `core.ts` for it. It lives below all of them now.
  *
- * ⚠️ IT CAME DOWN TO BREAK `core <-> matching` (item 1666), AND THE CHAIN IS WORTH RECORDING because
+ * IT CAME DOWN TO BREAK `core <-> matching` (item 1666), AND THE CHAIN IS WORTH RECORDING because
  * it is how a one-symbol cycle turns into a five-module question. `core.ts` needed exactly
  * `matchNode` from `matching.ts`; `matchNode` belongs with the other binding-extension functions, so
  * it moved to `bindings.ts`; but it calls `satisfies`, which was in `core.ts`, so `bindings.ts`
  * would then have imported `core.ts` and simply relocated the cycle. Moving `satisfies` down is what
  * makes the first move legal rather than cosmetic.
  *
- * ⚠️ `compareTruth` KEEPS THREE-VALUED LOGIC, AND THAT IS NOT THE SAME AS SORTING. A predicate's
+ * `compareTruth` KEEPS THREE-VALUED LOGIC, AND THAT IS NOT THE SAME AS SORTING. A predicate's
  * comparison yields TRUE, FALSE or UNKNOWN, and NaN is JS-unordered here on purpose; the total order
  * used by sort/min/max lives in `values.ts` as `compareSort`, which puts NaN last and treats
  * `NaN === NaN`. A filter keeps only clean TRUE, so UNKNOWN settles the same way whichever order the
@@ -224,7 +224,7 @@ export const compareTruth = (
 /**
  * Do the lifted `IS [NOT] LABELED` conjuncts hold for this element (item 1289)?
  *
- * ⚠️ READS THE ELEMENT'S LABELS, not a property — the one lifted family with no key. `labelsMatch`
+ * READS THE ELEMENT'S LABELS, not a property — the one lifted family with no key. `labelsMatch`
  * is the SAME function `case 'isLabeled'` goes through, so the lift cannot change what `IS LABELED`
  * means; and `satisfies` is only ever handed an element, so the `isElement` guard that arm needs
  * for an arbitrary expression is not a question here.
@@ -292,7 +292,7 @@ export const pathOf = (element: unknown, path: readonly string[]): unknown => {
   return v;
 };
 /**
- * ❌ PRICED AND NOT BUILT, item 1750: compiling a specialized closure per predicate shape, so that
+ * PRICED AND NOT BUILT, item 1750: compiling a specialized closure per predicate shape, so that
  * only the POPULATED sections below run instead of all eleven.
  *
  * A field census (not an assumption — item 1749 lost a measurement to assuming) shows how little is
@@ -312,7 +312,7 @@ export const pathOf = (element: unknown, path: readonly string[]): unknown => {
  * ~10% this repo requires from a shared harness, against a refactor that would move all eleven
  * sections behind a compile-time dispatch. Declined on that trade, with the number recorded.
  *
- * ⚠️ `hopall` LOOKED like the ideal ceiling row — no predicate at all — and is useless: it is
+ * `hopall` LOOKED like the ideal ceiling row — no predicate at all — and is useless: it is
  * BIMODAL (both arms span ~10.4-10.7 and ~13.7-14.9) and at ~7 us per query too cheap to resolve.
  * Do not reach for it.
  */
@@ -328,14 +328,14 @@ export const pathOf = (element: unknown, path: readonly string[]): unknown => {
  * `truthProps` and `notTruthProps` COERCE through `asTruth`, which raises on a non-boolean, and
  * `where` is the generic evaluator and can raise anything at all.
  *
- * ⚠️ **NOT A SUBSTITUTE FOR `truthCannotRaise`, AND NEITHER SUBSUMES THE OTHER.** This answers a
+ * **NOT A SUBSTITUTE FOR `truthCannotRaise`, AND NEITHER SUBSUMES THE OTHER.** This answers a
  * question about the COMPILED predicate's shape; `truthCannotRaise` answers it about the AST,
  * including the operand side (`b.k > b.s / 2` has a raising VALUE inside a non-raising family). A
  * caller that needs "this predicate cannot raise at runtime" wants BOTH — the compiled families
  * here, and `truthCannotRaise` on the expression they were lifted from. Item 1781 uses it that way
  * and says why at its call site.
  *
- * ⚠️ PURE, and exported for its tests. A route gated on it is answer-equivalent, so no differential
+ * PURE, and exported for its tests. A route gated on it is answer-equivalent, so no differential
  * test can fail when it is wrong (`perf-gate-needs-its-own-test`).
  */
 export const predicateCannotRaise = (pred: CPredicate): boolean =>
@@ -428,7 +428,7 @@ export const satisfies = (
     }
   }
 
-  // ⚠️ THE NON-RAISING FAMILIES RUN **BEFORE** `truthProps`, AND ITEMS 1269/1270 HAD THIS BACKWARDS.
+  // THE NON-RAISING FAMILIES RUN **BEFORE** `truthProps`, AND ITEMS 1269/1270 HAD THIS BACKWARDS.
   // Both placed their family LAST on an explicit argument: "running the non-raising family first
   // would let a FALSE membership return before a sibling conjunct that the generic path would have
   // raised on, changing WHICH queries error. Running it last cannot: every family that can raise
@@ -496,7 +496,7 @@ export const satisfies = (
     }
   }
 
-  // ⚠️ `IS TRUE`/`IS FALSE` RUN **AFTER** `truthProps`, UNLIKE EVERY OTHER NON-RAISING FAMILY, and
+  // `IS TRUE`/`IS FALSE` RUN **AFTER** `truthProps`, UNLIKE EVERY OTHER NON-RAISING FAMILY, and
   // the reason is measured rather than reasoned. This test cannot raise, so the argument above
   // would put it in the hoisted group — but the NATIVE engine does not hoist it, and byte-identity
   // is the contract. `n.s` is a string, so coercing it is a data exception; each tail below is
@@ -564,7 +564,7 @@ export const rejectedByElementDirect = (
   params: Params,
   graph: Graph,
 ): boolean => {
-  // 🛑 EXTENDING THIS TO INLINE `props` WAS TRIED AND REVERTED (item 644). It is NOT a tuning
+  // EXTENDING THIS TO INLINE `props` WAS TRIED AND REVERTED (item 644). It is NOT a tuning
   // question: it changes WHICH QUERIES RAISE.
   //
   // The gap is real and large. `MATCH (a:S), (b:P {k: 7})` evaluates its node predicate once

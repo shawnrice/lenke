@@ -6,7 +6,7 @@
  * but naming is not pricing. Gremlin already has a `countShortcut`, so a seeded count may cost
  * nothing at all, and building a shortcut for it would then be work against noise.
  *
- * ⚠️ MEASURE BEFORE BUILDING. Items 1587, 1589 and 1594 each built something the numbers then
+ * MEASURE BEFORE BUILDING. Items 1587, 1589 and 1594 each built something the numbers then
  * refused, and the cheapest version of that lesson is to price the candidate first.
  *
  * Each row is one question asked both ways over an indexed graph, answers asserted equal.
@@ -113,7 +113,7 @@ const nsPerOp = (fn) => {
 /**
  * Reduce either surface's answer to one comparable, so a row cannot compare different questions.
  *
- * ⚠️ AN ELEMENT NEEDS ITS OWN ARM, and leaving it out produced a FALSE "answers differ" on the
+ * AN ELEMENT NEEDS ITS OWN ARM, and leaving it out produced a FALSE "answers differ" on the
  * element row: `query` returns a ROW OBJECT (`{u: <vertex>}`) while `toArray` returns the BARE
  * vertex, and a Vertex's enumerable own-properties are empty (its state is in private fields), so
  * `Object.values(first)[0]` was `undefined` for Gremlin and the whole vertex for GQL. The timings
@@ -158,7 +158,7 @@ for (const shape of SHAPES) {
     return query(g, text, params);
   };
   const runGrem = (i) => G.toArray(shape.grem(i), g);
-  // ⚠️ Element rows cannot be compared as rendered objects across surfaces — GQL returns a row
+  // Element rows cannot be compared as rendered objects across surfaces — GQL returns a row
   // object and Gremlin a bare element — so the comparable is the COUNT plus the first value, which
   // is what `norm` reduces to.
   const a = norm(runGql(1));
@@ -168,6 +168,6 @@ for (const shape of SHAPES) {
 
   console.log(
     `${shape.name.padEnd(22)} gql ${q.toFixed(0).padStart(6)}  gremlin ${r.toFixed(0).padStart(6)}  ` +
-      `${(r / q).toFixed(2)}x  ${a === b ? 'answers agree' : `⚠ DIFFER gql=${a} grem=${b}`}`,
+      `${(r / q).toFixed(2)}x  ${a === b ? 'answers agree' : `DIFFER gql=${a} grem=${b}`}`,
   );
 }

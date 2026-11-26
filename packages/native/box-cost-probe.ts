@@ -15,7 +15,7 @@
 //     box array would actually cost, and whether it lands near 1.53 or near 7.38 decides whether
 //     the lever is worth its delete bookkeeping.
 //
-// ⚠️ ONE ARM PER PROCESS, because these arms differ exactly in which object shape a load site
+// ONE ARM PER PROCESS, because these arms differ exactly in which object shape a load site
 // sees. Run together, `v.properties` and `boxes[i].bag` share a polymorphic site and the arm
 // measured second is flattered — item 762's trap, where a two-dist in-process A/B moved its
 // CONTROLS 1.23-1.56x in the change's favour. The driver alternates arm order across rounds and

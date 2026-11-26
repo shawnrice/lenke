@@ -1,11 +1,11 @@
 /**
  * DOES `distinct-rows-two-column.test.ts` HAVE TEETH? (item 1886)
  *
- * ⚠️ IT PASSED ON ITS FIRST RUN, AND SO DOES A TEST THAT CHECKS NOTHING. And this area has a
+ * IT PASSED ON ITS FIRST RUN, AND SO DOES A TEST THAT CHECKS NOTHING. And this area has a
  * history: items 1561 and 1562 each shipped a SILENT ANSWER CHANGE in the one-column keyer, so a
  * two-column keyer whose tests were never mutated is exactly the third.
  *
- * ⚠️ EACH MUTANT IS ANCHOR-ASSERTED for its occurrence count (items 1870/1873 each had a mutant
+ * EACH MUTANT IS ANCHOR-ASSERTED for its occurrence count (items 1870/1873 each had a mutant
  * that never applied), and a verdict needs evidence of EXECUTION: `bun test` writes `N pass` to
  * **stderr**, so both streams are concatenated and a result line is required before the exit code
  * is read.
@@ -28,7 +28,7 @@ const TESTS = ['src/distinct-rows-two-column.test.ts', 'src/distinct-rows-one-co
 /** `[name, from, to, expectedOccurrences]` — each a change that must break at least one test. */
 const MUTANTS = [
   /**
-   * ⚠️ THE COLLISION MUTANT, and the FIRST version of it was the wrong mutant — worth recording
+   * THE COLLISION MUTANT, and the FIRST version of it was the wrong mutant — worth recording
    * because it looked right. Replacing the object branch with `if (false)` sends an element to
    * `keys.prims.get(a)`, which keys it by OBJECT IDENTITY rather than by `@id`: no collision with a
    * string, just a different equivalence class, and nothing available discriminates it because this
@@ -91,7 +91,7 @@ const MUTANTS = [
     1,
   ],
   /**
-   * ⚠️ AN EXPECTED SURVIVOR, and item 475's rule is why it is kept rather than deleted: a surviving
+   * AN EXPECTED SURVIVOR, and item 475's rule is why it is kept rather than deleted: a surviving
    * mutant means "redundant" as readily as "untested", and the two have opposite fixes. Here it is
    * REDUNDANT for the answer — a one-column right side keys as `(v, undefined)` pairs, which
    * collapse exactly as their `rowKeyOf` strings do, and a right side of mixed widths is possible
@@ -114,7 +114,7 @@ const MUTANTS = [
 const EXPECTED_SURVIVORS = new Set(['EXPECTED SURVIVOR — union admits a mixed-width right side']);
 
 /**
- * ⚠️ BOTH STREAMS, ALWAYS, AND THAT IS WHY THIS IS `spawnSync`. `execFileSync` returns STDOUT on
+ * BOTH STREAMS, ALWAYS, AND THAT IS WHY THIS IS `spawnSync`. `execFileSync` returns STDOUT on
  * success and only exposes stderr on a throw — and `bun test` writes `N pass` to **stderr**, so the
  * first cut of this file read an empty result on the passing baseline and declared it broken. Item
  * 767 made the same mistake in the other direction.
@@ -122,10 +122,10 @@ const EXPECTED_SURVIVORS = new Set(['EXPECTED SURVIVOR — union admits a mixed-
 /** The three outcomes as a label; a nested ternary is what the linter objects to. */
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
 const run = () => {
@@ -182,7 +182,7 @@ try {
     const ran = /\d+ pass/.test(r.text);
 
     if (!ran && r.code !== 124) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -210,6 +210,6 @@ try {
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

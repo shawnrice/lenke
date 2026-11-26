@@ -4,7 +4,7 @@
  * bucket SIZE is the row count and one `projectRow` serves the whole group.
  * `MATCH (a:P)-[:E]->() RETURN a.k` went from **251 to 117 ns/row (2.15x)** at 1,000,000 edges.
  *
- * ⚠️ THE ROUTE IS ANSWER-EQUIVALENT, so the 3,800 tests in this package cannot see it taken or
+ * THE ROUTE IS ANSWER-EQUIVALENT, so the 3,800 tests in this package cannot see it taken or
  * dropped — `perf-gate-needs-its-own-test`. What they also cannot see is the route taken WRONGLY,
  * and that is a wrong ANSWER rather than a slow one, because this route derives the row COUNT from
  * the bucket size instead of from the edges it walked. Three ways to get it wrong:
@@ -60,7 +60,7 @@ const graph = (): Graph => {
       labels: ['E'],
       from: g.getVertexById(f)!,
       to: g.getVertexById(t)!,
-      // ⚠️ A DISTINCT `w` PER EDGE, and it has to be a real PROPERTY. My first version asserted on
+      // A DISTINCT `w` PER EDGE, and it has to be a real PROPERTY. My first version asserted on
       // `r.id` and read four nulls — `id` is the edge's IDENTITY, not a property, so ISO property
       // access on an absent key gives NULL and the column was uniformly null whether or not the
       // fold had wrongly fired. The test could not have failed for the reason it was written for.
@@ -86,13 +86,13 @@ describe('a start-only projection folds to one row per edge, with the right coun
     expect(col(query(graph(), 'MATCH (a:P)-[:E]->() RETURN a.k AS k'), 'k')).not.toContain(3);
   });
 
-  it('⚠️ a NON-VACUOUS far label changes the count, so the fold must not use the bucket size', () => {
+  it('a NON-VACUOUS far label changes the count, so the fold must not use the bucket size', () => {
     // a→q1, a→q2 survive (k=1 twice); a→p1 does not; b→q1 survives (k=2). THREE rows, not four.
     expect(col(query(graph(), 'MATCH (a:P)-[:E]->(:Q) RETURN a.k AS k'), 'k')).toEqual([1, 1, 2]);
     expect(col(query(graph(), 'MATCH (a:P)-[:E]->(x:Q) RETURN a.k AS k'), 'k')).toEqual([1, 1, 2]);
   });
 
-  it('⚠️ a far PREDICATE changes the count too', () => {
+  it('a far PREDICATE changes the count too', () => {
     expect(col(query(graph(), 'MATCH (a:P)-[:E]->(x) WHERE x.k > 8 RETURN a.k AS k'), 'k')).toEqual(
       [1, 2],
     );
@@ -106,7 +106,7 @@ describe('a start-only projection folds to one row per edge, with the right coun
   });
 });
 
-describe('⚠️ the fold must not apply when the projection reads the far end', () => {
+describe('the fold must not apply when the projection reads the far end', () => {
   it('RETURN a.k, x.k keeps a DISTINCT far value per row', () => {
     const rows = query(graph(), 'MATCH (a:P)-[:E]->(x) RETURN a.k AS k, x.k AS j');
     const pairs = rows.map((r) => `${String(r.k)}/${String(r.j)}`).sort();
@@ -129,7 +129,7 @@ describe('⚠️ the fold must not apply when the projection reads the far end',
   });
 });
 
-describe('⚠️ the copies are distinct objects', () => {
+describe('the copies are distinct objects', () => {
   it('rows in one group are not the same object', () => {
     const rows = query(graph(), 'MATCH (a:P)-[:E]->() RETURN a.k AS k');
     const ones = rows.filter((r) => r.k === 1);
@@ -182,7 +182,7 @@ describe('the neighbouring shapes still answer', () => {
 });
 
 /**
- * ⚠️ ITEM 1527 — the SAME fold under a start-only PREDICATE. The gate rejects the start VERTEX, so
+ * ITEM 1527 — the SAME fold under a start-only PREDICATE. The gate rejects the start VERTEX, so
  * every row a surviving vertex produces is still identical. `WHERE a.age > 5 RETURN a.age` went from
  * 250.7 to 113.6 ns/row (2.21x).
  *
@@ -192,7 +192,7 @@ describe('the neighbouring shapes still answer', () => {
  * to rethrow by asking whether the general path would have reached the vertex at all. The fold sits
  * AFTER that block, and these two tests are what prove it did not disturb it.
  */
-describe('⚠️ the fold under a start-only predicate', () => {
+describe('the fold under a start-only predicate', () => {
   const gated = (): Graph => {
     const g = graph();
 
@@ -212,14 +212,14 @@ describe('⚠️ the fold under a start-only predicate', () => {
     ]);
   });
 
-  it('⚠️ a gate PLUS a non-vacuous far label still counts the surviving edges', () => {
+  it('a gate PLUS a non-vacuous far label still counts the surviving edges', () => {
     // a is kept (k=1 > 0) and has two `Q` edges; b is kept and has one. The fold must NOT fire.
     expect(
       col(query(gated(), 'MATCH (a:P)-[:E]->(:Q) WHERE a.k > 0 RETURN a.k AS k'), 'k'),
     ).toEqual([1, 1, 2]);
   });
 
-  it('⚠️ a gate PLUS a far predicate still rejects per edge', () => {
+  it('a gate PLUS a far predicate still rejects per edge', () => {
     expect(
       col(query(gated(), 'MATCH (a:P)-[:E]->(x) WHERE a.k > 0 AND x.k > 8 RETURN a.k AS k'), 'k'),
     ).toEqual([1, 2]);
@@ -248,18 +248,18 @@ describe('⚠️ the fold under a start-only predicate', () => {
 
   const FAULTY = 'MATCH (a:P)-[:E]->() WHERE CAST(a.s AS INTEGER) > 0 RETURN a.k AS k';
 
-  it('⚠️ RAISE PARITY: a faulting gate on a start with NO edge is suppressed', () => {
+  it('RAISE PARITY: a faulting gate on a start with NO edge is suppressed', () => {
     // The general path would never evaluate the predicate for `bad`, so neither may this one.
     expect(query(faulting(false), FAULTY)).toEqual([{ k: 2 }]);
   });
 
-  it('⚠️ RAISE PARITY: a faulting gate on a start WITH an edge raises', () => {
+  it('RAISE PARITY: a faulting gate on a start WITH an edge raises', () => {
     expect(() => query(faulting(true), FAULTY)).toThrow();
   });
 });
 
 /**
- * ⚠️ ITEM 1529 — `undirectedHopWalk` used to DECLINE any projection reading the start, which put
+ * ITEM 1529 — `undirectedHopWalk` used to DECLINE any projection reading the start, which put
  * `MATCH (a:P)-[:E]-() RETURN a.age` on the general matcher at **741.3 ns/row against the same hop's
  * 197.7 with a far projection — 3.75x**. Admitting it is 3.06x.
  *
@@ -276,7 +276,7 @@ describe('⚠️ the fold under a start-only predicate', () => {
  * Both arms are exercised: a label-free query takes the EDGE PASS (item 1431), a narrowing label
  * takes the TWO-PASS walk.
  */
-describe('⚠️ the undirected hop may project the start (item 1529)', () => {
+describe('the undirected hop may project the start (item 1529)', () => {
   /**
    * `a → b`, `b → q`, `a → a` (a SELF LOOP), `c → z` where `z` is not `P`.
    *
@@ -310,7 +310,7 @@ describe('⚠️ the undirected hop may project the start (item 1529)', () => {
     return g;
   };
 
-  it('⚠️ the EDGE-PASS arm (no labels): one row per end, and a self-loop gives ONE', () => {
+  it('the EDGE-PASS arm (no labels): one row per end, and a self-loop gives ONE', () => {
     // 4 edges: a-b → 2 rows, b-q → 2, a-a → 1 (the loop), c-z → 2. Seven rows.
     expect(col(query(undir(), 'MATCH (a)-[:E]-() RETURN a.k AS k'), 'k')).toEqual([
       1, 1, 2, 2, 3, 4, 9,
@@ -329,7 +329,7 @@ describe('⚠️ the undirected hop may project the start (item 1529)', () => {
     expect(col(query(undir(), 'MATCH (a:P)-[:E]-(:Q) RETURN a.k AS k'), 'k')).toEqual([2]);
   });
 
-  it('⚠️ THE PAIRING: both ends projected must SWAP between the two rows of an edge', () => {
+  it('THE PAIRING: both ends projected must SWAP between the two rows of an edge', () => {
     const rows = query(undir(), 'MATCH (a)-[:E]-(x) RETURN a.k AS k, x.k AS j');
     const pairs = rows.map((r) => `${String(r.k)}-${String(r.j)}`).sort();
 
@@ -351,17 +351,17 @@ describe('⚠️ the undirected hop may project the start (item 1529)', () => {
 });
 
 /**
- * ⚠️ ITEM 1531 — `undirectedHopWalk` now carries a START-ONLY gate, where it used to decline every
+ * ITEM 1531 — `undirectedHopWalk` now carries a START-ONLY gate, where it used to decline every
  * gate and send the query to the general matcher. `MATCH (a:P)-[:E]-(x) WHERE a.age > 5 RETURN
  * x.age` went **1083.4 → 391.2 ns/row (2.77x)**.
  *
- * ⚠️ THE RAISE PARITY SPANS BOTH DIRECTIONS HERE, and that is the one thing this route can get wrong
+ * THE RAISE PARITY SPANS BOTH DIRECTIONS HERE, and that is the one thing this route can get wrong
  * in a way no row assertion sees. The general path produces a row for a vertex if ANY incident edge —
  * out OR in — would have survived, so a fault must rethrow in both cases. Checking only `adjFrom`
  * would SWALLOW a fault that the general path raises, and the `IN-edge only` case below is the one
  * that catches it.
  */
-describe('⚠️ a start-only gate on the undirected hop (item 1531)', () => {
+describe('a start-only gate on the undirected hop (item 1531)', () => {
   const gated = (): Graph => {
     const g = new Graph();
 
@@ -406,7 +406,7 @@ describe('⚠️ a start-only gate on the undirected hop (item 1531)', () => {
   it('a FAR-reading predicate still declines the walk and still answers', () => {
     // `startOnly` is false, so the gate is refused and the general path takes it.
     //
-    // ⚠️ [7, 7, 9] AND NOT [7, 9, 9], which is what I first wrote. `b`(7) is reached twice — once
+    // [7, 7, 9] AND NOT [7, 9, 9], which is what I first wrote. `b`(7) is reached twice — once
     // as `a`'s far end and once as `q`'s — while `q`(9) is reached only from `b`. Checked against a
     // brute-force undirected walk rather than recounted by hand.
     expect(col(query(gated(), 'MATCH (a:P)-[:E]-(x) WHERE x.k > 6 RETURN x.k AS j'), 'j')).toEqual([
@@ -444,38 +444,38 @@ describe('⚠️ a start-only gate on the undirected hop (item 1531)', () => {
   const q = (farLabel: boolean): string =>
     `MATCH (a:P)-[:E]-(x${farLabel ? ':Q' : ''}) WHERE CAST(a.s AS INTEGER) > 0 RETURN x.k AS j`;
 
-  it('⚠️ PARITY: no incident edge at all — the fault is suppressed', () => {
+  it('PARITY: no incident edge at all — the fault is suppressed', () => {
     expect(
       col(query(faulting({ edge: 'none', farQ: false, farLabel: false }), q(false)), 'j'),
     ).toEqual([2, 3]);
   });
 
-  it('⚠️ PARITY: an IN-edge only — the fault must RAISE (checking only adjFrom would swallow it)', () => {
+  it('PARITY: an IN-edge only — the fault must RAISE (checking only adjFrom would swallow it)', () => {
     expect(() => query(faulting({ edge: 'in', farQ: false, farLabel: false }), q(false))).toThrow();
   });
 
-  it('⚠️ PARITY: an IN-edge whose far end fails the label — suppressed', () => {
+  it('PARITY: an IN-edge whose far end fails the label — suppressed', () => {
     expect(col(query(faulting({ edge: 'in', farQ: false, farLabel: true }), q(true)), 'j')).toEqual(
       [3],
     );
   });
 
-  it('⚠️ PARITY: an IN-edge whose far end PASSES the label — raises', () => {
+  it('PARITY: an IN-edge whose far end PASSES the label — raises', () => {
     expect(() => query(faulting({ edge: 'in', farQ: true, farLabel: true }), q(true))).toThrow();
   });
 });
 
 /**
- * ⚠️ ITEM 1532 — `relBoundFilteredHopWalk` now carries a START-ONLY gate (without a rel constraint),
+ * ITEM 1532 — `relBoundFilteredHopWalk` now carries a START-ONLY gate (without a rel constraint),
  * where it declined and sent the query to the general matcher. `MATCH (a:P)-[r:E]->() WHERE
  * a.age > 5 RETURN r.w` went **1082.8 → 367.5 ns/row (2.95x)**.
  *
- * ⚠️ A DROPPED GATE IS THE FAILURE MODE, and it is invisible: admitting the shape without APPLYING
+ * A DROPPED GATE IS THE FAILURE MODE, and it is invisible: admitting the shape without APPLYING
  * the predicate returns the right columns with too many rows, and item 1530 established that nothing
  * covered this shape at all (it declined, so no test reached this walk with it). A half-applied edit
  * during this item did exactly that and the suite still read 3836/0.
  */
-describe('⚠️ a start-only gate on the rel-bound filtered walk (item 1532)', () => {
+describe('a start-only gate on the rel-bound filtered walk (item 1532)', () => {
   const relg = (): Graph => {
     const g = new Graph();
 
@@ -509,7 +509,7 @@ describe('⚠️ a start-only gate on the rel-bound filtered walk (item 1532)', 
     return g;
   };
 
-  it('⚠️ the gate is APPLIED — a start the predicate rejects contributes no row', () => {
+  it('the gate is APPLIED — a start the predicate rejects contributes no row', () => {
     // `a` has k=1 and is rejected, so its edge (w=10) must not appear. b → 20, 40; c → 30.
     expect(col(query(relg(), 'MATCH (a:P)-[r:E]->() WHERE a.k > 2 RETURN r.w AS w'), 'w')).toEqual([
       20, 30, 40,
@@ -522,7 +522,7 @@ describe('⚠️ a start-only gate on the rel-bound filtered walk (item 1532)', 
     ]);
   });
 
-  it('⚠️ a REL CONSTRAINT still declines the gate here, and still answers', () => {
+  it('a REL CONSTRAINT still declines the gate here, and still answers', () => {
     // `relPred` is present, so the walk refuses to gate (the parity check cannot see a rel
     // constraint) and another route answers it.
     expect(
@@ -568,23 +568,23 @@ describe('⚠️ a start-only gate on the rel-bound filtered walk (item 1532)', 
   const fq = (farLabel: boolean): string =>
     `MATCH (a:P)-[r:E]->(x${farLabel ? ':Q' : ''}) WHERE CAST(a.s AS INTEGER) > 0 RETURN r.w AS w`;
 
-  it('⚠️ PARITY: no out-edge — the fault is suppressed', () => {
+  it('PARITY: no out-edge — the fault is suppressed', () => {
     expect(col(query(faulting({ edge: false, farQ: false }), fq(false)), 'w')).toEqual([1]);
   });
 
-  it('⚠️ PARITY: an out-edge — the fault RAISES', () => {
+  it('PARITY: an out-edge — the fault RAISES', () => {
     expect(() => query(faulting({ edge: true, farQ: false }), fq(false))).toThrow();
   });
 
-  it('⚠️ PARITY: an out-edge whose far end fails the label — suppressed', () => {
+  it('PARITY: an out-edge whose far end fails the label — suppressed', () => {
     expect(col(query(faulting({ edge: true, farQ: false }), fq(true)), 'w')).toEqual([1]);
   });
 
-  it('⚠️ PARITY: an out-edge whose far end passes the label — raises', () => {
+  it('PARITY: an out-edge whose far end passes the label — raises', () => {
     expect(() => query(faulting({ edge: true, farQ: true }), fq(true))).toThrow();
   });
 
-  it('⚠️ a REL CONSTRAINT that rejects every edge must SUPPRESS a faulting gate', () => {
+  it('a REL CONSTRAINT that rejects every edge must SUPPRESS a faulting gate', () => {
     // This is the test that justifies the `relPred === undefined` guard. `anyFarMatches` answers
     // the parity question from the far label and far predicate only — it does NOT apply a rel
     // constraint — so a walk that gated here with a `relPred` in play could rethrow for a vertex
@@ -602,11 +602,11 @@ describe('⚠️ a start-only gate on the rel-bound filtered walk (item 1532)', 
 });
 
 /**
- * ⚠️ ITEM 1533 — the last decline in `undirectedHopWalk`: a FAR PREDICATE. It cost **5.70x**
+ * ITEM 1533 — the last decline in `undirectedHopWalk`: a FAR PREDICATE. It cost **5.70x**
  * (1130.1 ns/row against the unfiltered 198.2) and is now applied per edge in both passes, for
  * **2.03x**.
  *
- * ⚠️ IT NEEDS NO RAISE PARITY, unlike the start-only gate of item 1531, and the asymmetry is the
+ * IT NEEDS NO RAISE PARITY, unlike the start-only gate of item 1531, and the asymmetry is the
  * thing to keep straight: a far predicate is evaluated once per COMPLETE match, which is what the
  * general path does, so applying it per edge is the same evaluations in the same places. A start
  * gate runs BEFORE the adjacency, where the general path would not have evaluated it at all.
@@ -615,7 +615,7 @@ describe('⚠️ a start-only gate on the rel-bound filtered walk (item 1532)', 
  * the in-pass are separate code, and item 1410's heading is this file's standing warning that "the
  * row that covered one never covered the other".
  */
-describe('⚠️ a far predicate on the undirected hop (item 1533)', () => {
+describe('a far predicate on the undirected hop (item 1533)', () => {
   const u = (): Graph => {
     const g = new Graph();
 
@@ -644,7 +644,7 @@ describe('⚠️ a far predicate on the undirected hop (item 1533)', () => {
     return g;
   };
 
-  it('⚠️ applies in BOTH passes — the out-pass and the in-pass are separate code', () => {
+  it('applies in BOTH passes — the out-pass and the in-pass are separate code', () => {
     // b is reached from a (OUT-pass of a) and q is reached from b (OUT-pass of b); b is also
     // reached from q (IN-pass of q) and z from c. A predicate applied in only one pass changes this.
     expect(col(query(u(), 'MATCH (a:P)-[:E]-(x) WHERE x.k > 3 RETURN x.k AS j'), 'j')).toEqual([

@@ -6,7 +6,7 @@
 // and the same header records that **items 1561/1562 each found a silent ANSWER change in this
 // area**, warning that a second keyer here "would be the third".
 //
-// 🔑 SO THE ORACLE HAS TO BE ESTABLISHED FIRST, and the generic pipeline is it: whatever a fused arm
+// SO THE ORACLE HAS TO BE ESTABLISHED FIRST, and the generic pipeline is it: whatever a fused arm
 // does, it must reproduce the route that runs today, which is also the route native agrees with.
 // The question a fused arm cannot guess is MISSING KEYS, and there are four cases:
 //
@@ -15,7 +15,7 @@
 //     `k` missing     what does `dedupe().by('k')` do with an element that has no `k`?
 //     both missing    the two interacting
 //
-// ⚠️ AND THE ANSWER IS COMPARED AGAINST NATIVE, because a fused arm has to match the engine
+// AND THE ANSWER IS COMPARED AGAINST NATIVE, because a fused arm has to match the engine
 // contract, not just the TS pipeline. If the two already disagree here, that is a finding of its own
 // and the build stops.
 //
@@ -38,7 +38,7 @@ import { graphFromNdjson } from './src/graph.js';
  *   f6  k=NO k w=14             <- a second k-absent element: is it deduped against f4?
  *   f7  k=2 w=15                <- same k as f3, whose w was absent
  */
-// ⚠️ OBJECTS, NOT TUPLES: a mixed tuple array gives `id` the union `string | object` in a `.mjs`,
+// OBJECTS, NOT TUPLES: a mixed tuple array gives `id` the union `string | object` in a `.mjs`,
 // where there is no annotation to narrow it, and the stringification lint is right to object.
 const FAR = [
   { id: 'f1', props: { k: 1, w: 10 } },
@@ -97,7 +97,7 @@ if (nativeGraph === undefined) {
 } else {
   console.log('');
 
-  // ⚠️ NATIVE TAKES TEXT, so the same shapes are written as Gremlin source. A mismatch between the
+  // NATIVE TAKES TEXT, so the same shapes are written as Gremlin source. A mismatch between the
   // two renderings would compare different questions, so the text mirrors the builders above.
   const TEXTS = [
     ['dedupe.by(k).values(w)', "g.V().out('E').dedupe().by('k').values('w')"],

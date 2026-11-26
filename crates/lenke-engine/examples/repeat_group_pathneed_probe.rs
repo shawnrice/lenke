@@ -5,7 +5,7 @@
 //! even for `RETURN path_length(p)`. It routes through the SAME `var_length` walker, which already
 //! honours the flag, so the field was the only thing missing.
 //!
-//! ⚠️ THE PLAN IS DUMPED BEFORE ANY TIME IS READ. Items 1215-1217 each measured code the query
+//! THE PLAN IS DUMPED BEFORE ANY TIME IS READ. Items 1215-1217 each measured code the query
 //! never reached, and item 1219 found that mistake had HIDDEN a 7x; a marking rewrite is exactly
 //! the kind that can silently not fire, because nothing about the ANSWER changes when it does not.
 //! If the dump does not say `CountOnly`, the timings below are measuring nothing.
@@ -65,7 +65,7 @@ fn main() {
         } else {
             "no path_need in plan"
         };
-        // ⚠️ NAME EVERY path-producing operator, not two of them. The first version of this
+        // NAME EVERY path-producing operator, not two of them. The first version of this
         // classifier knew only RepeatGroup and VarLength, so a NestedGroup printed as "other" —
         // which reads as "no operator" rather than "an operator I did not list". Item 1218 lost a
         // tick to a column whose label had stopped being true.
@@ -83,7 +83,7 @@ fn main() {
 
         println!("  {what:<48} {op:<12} {marked}");
 
-        // ⚠️ THE PLAN SHAPE AND A SAMPLE VALUE, because `nested.rs` contains no `Lineage` at all:
+        // THE PLAN SHAPE AND A SAMPLE VALUE, because `nested.rs` contains no `Lineage` at all:
         // either the path is built somewhere else, or `path_length(p)` is answering with nulls and
         // the question is a CONFORMANCE one rather than a performance one. A substring search for
         // an operator name cannot tell those apart.

@@ -7,7 +7,7 @@
 // isolated off-label vertex makes `T` non-vacuous, `predicatedHopRoute`'s gate drops to the general
 // per-edge closure, and the predicate goes from 200,000 evaluations to 1,000,000.
 //
-// 🔑 SO THE CANDIDATE ARM IS NOT AN EDGE PASS. Staying FAR-driven keeps two things an edge pass
+// SO THE CANDIDATE ARM IS NOT AN EDGE PASS. Staying FAR-driven keeps two things an edge pass
 // throws away:
 //   - the predicate stays at once per far vertex, and
 //   - a far vertex that FAILS it skips its WHOLE bucket — a short-circuit over edges.
@@ -19,7 +19,7 @@
 //     arm C  far-driven, predicate per FAR VERTEX,     — the candidate
 //            start label per edge
 //
-// ⚠️ COVERAGE IS SWEPT, because arm C is O(V_far + E) whatever the start label excludes while arm A
+// COVERAGE IS SWEPT, because arm C is O(V_far + E) whatever the start label excludes while arm A
 // iterates the start BUCKET and is sub-linear for a selective label — the same crossover item 1938
 // measured at 25x against a boolean gate. |E| and the vertex set are held FIXED across the sweep
 // (off-label vertices are ADDED and isolated, never relabelled) so the row count moves only

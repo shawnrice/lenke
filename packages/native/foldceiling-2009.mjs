@@ -1,24 +1,24 @@
 /**
  * WHAT IS THE REAL CEILING FOR A DEPTH-3/4 ORDER-INDEPENDENT FOLD? (item 2009)
  *
- * ⚠️⚠️ **`count(*)` IS THE WRONG CEILING AND I ALMOST USED IT.** At depth 3 `count(*)` reads 0.09 ms
+ * **`count(*)` IS THE WRONG CEILING AND I ALMOST USED IT.** At depth 3 `count(*)` reads 0.09 ms
  * against `min(c.n)`'s 9.63 — a tempting 107x — but `count(*)` is answered by a closed-form DEGREE
  * PRODUCT that visits no endpoint at all, while `min` must see them. Item 1951's rule: **a cheaper
  * sibling is only a ceiling if it does the same work.** 9.63 ms over 625,000 path endpoints is 15 ns
  * each, which is not obviously bad, and quoting 107x would have been the `choose` mistake of item
  * 1999 in reverse.
  *
- * 🔑 **THE REAL QUESTION IS WHETHER THESE FOLDS NEED PER-PATH WORK AT ALL.** `min`, `max` and
+ * **THE REAL QUESTION IS WHETHER THESE FOLDS NEED PER-PATH WORK AT ALL.** `min`, `max` and
  * `count(DISTINCT x)` are SET functions: the answer depends on the SET of reachable endpoints, not on
  * how many paths reach each. So they are computable in O(k·(|V| + |E|)) by a level-wise frontier,
  * not O(paths).
  *
- * ⚠️ `count(x)` IS NOT A SET FUNCTION — it counts one per PATH whose endpoint has a non-null `x`, so
+ * `count(x)` IS NOT A SET FUNCTION — it counts one per PATH whose endpoint has a non-null `x`, so
  * it needs multiplicity. But the level recurrence `varLengthDegreeCount` already runs COMPUTES
  * exactly that: `u_k(v)` is the number of length-k walks ending at `v`. So `count(c.n)` is
  * `sum over v with non-null n of u_3(v)` — also O(k·(|V| + |E|)).
  *
- * ⚠️ AND `sum` IS NOT IN THIS FAMILY: it needs the per-path VALUES summed in a defined ORDER, and
+ * AND `sum` IS NOT IN THIS FAMILY: it needs the per-path VALUES summed in a defined ORDER, and
  * f64 addition is not associative, which is the byte-identity refusal items 1829/1830 record. A
  * multiplicity-weighted sum would be a DIFFERENT arithmetic from the general path's, so it is
  * excluded here by contract rather than by difficulty.
@@ -180,7 +180,7 @@ console.log('fold          engine ms   ceiling ms    ratio   engine      ceiling
 for (const which of ['min', 'max', 'count']) {
   const expr = which === 'count' ? `count(${far}.n)` : `${which}(${far}.n)`;
   /*
-   * ⚠️ The reason, here rather than on the disable line, because `disable-next-line` must sit
+   * The reason, here rather than on the disable line, because `disable-next-line` must sit
    * immediately above the code it guards — a multi-line comment makes its own second line the "next
    * line" and the suppression misses (item 2007 hit this too). `chain(DEPTH)`, `far` and `which`
    * are built from this file's own DEPTH number and a fixed list; nothing is caller- or
@@ -192,11 +192,11 @@ for (const which of ['min', 'max', 'count']) {
   const ev = eng.out[0].x;
 
   /*
-   * ⚠️ EVERY FIELD HOISTED, because an inline `… + ev === hand.out ? 'YES' : 'NO'` PARSES AS
+   * EVERY FIELD HOISTED, because an inline `… + ev === hand.out ? 'YES' : 'NO'` PARSES AS
    * `(string) === hand.out` and the agreement column would have read NO on every row — a probe
    * reporting its own verdict wrongly. `prefer-template` flagged the concatenation that hid it.
    */
-  const agree = ev === hand.out ? 'YES' : 'NO ⚠️';
+  const agree = ev === hand.out ? 'YES' : 'NO';
   const ratio = `${(eng.ms / hand.ms).toFixed(1)}x`;
   const cells = [
     expr.padEnd(13),
@@ -212,8 +212,8 @@ for (const which of ['min', 'max', 'count']) {
 }
 
 console.log(
-  '\n# ⚠️ The ceiling includes the level recurrence from scratch each rep — no cached CSR, no cached\n' +
+  '\n# The ceiling includes the level recurrence from scratch each rep — no cached CSR, no cached\n' +
     '#    levels — so it is the honest cost of the work, not a warm-cache figure.\n' +
-    '# ⚠️ `sum` is deliberately absent: it needs per-path values in a defined ORDER (f64 addition is\n' +
+    '# `sum` is deliberately absent: it needs per-path values in a defined ORDER (f64 addition is\n' +
     '#    not associative), which is the byte-identity refusal items 1829/1830 record.',
 );

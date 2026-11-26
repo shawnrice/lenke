@@ -1,5 +1,5 @@
 /**
- * ⚠️⚠️⚠️ **THE BENCH HAS NO CROSS-ENGINE ANSWER CHECK (item 2236).** Every workload in `bench.ts` is
+ * **THE BENCH HAS NO CROSS-ENGINE ANSWER CHECK (item 2236).** Every workload in `bench.ts` is
  * `void e.query(...)` — the result is DISCARDED — so a ratio in that table says nothing about whether the
  * two engines did the same work. A `ts,wasm` run reads
  * `query: OPTIONAL + GROUP BY, far key [2124]` at **ts 103.1 ms vs wasm 3.7 ms (27.88x)**, and before
@@ -7,9 +7,9 @@
  * answering differently. OPTIONAL is a known divergence area (the 15th registered divergence is
  * `OPTIONAL MATCH` + a raising inline predicate).
  *
- * 🔑 This loads the SAME ndjson into both engines — exactly as `bench.ts` does, via its own backend
+ * This loads the SAME ndjson into both engines — exactly as `bench.ts` does, via its own backend
  * modules — runs each query on both, and compares the answer three ways: ROW COUNT, the TOTAL of
- * `count(*)` across groups, and a hash of the sorted `group=count` multiset. ⚠️ Row ORDER is deliberately
+ * `count(*)` across groups, and a hash of the sorted `group=count` multiset. Row ORDER is deliberately
  * NOT compared: unordered result order is unspecified and comparing it would be a false alarm.
  */
 import { Graph as TsGraph } from '@lenke/core';
@@ -62,7 +62,7 @@ const QUERIES: Array<[string, string]> = [
   ['non-OPTIONAL (ctl)  ', 'MATCH (a:Person)-[:KNOWS]->(b) RETURN b.k AS g, count(*) AS c'],
 ];
 
-/** Row count, total of `count(*)`, and a hash of the sorted `g=c` multiset. ⚠️ Row ORDER is not compared. */
+/** Row count, total of `count(*)`, and a hash of the sorted `g=c` multiset. Row ORDER is not compared. */
 const summarize = (out: unknown): string => {
   const rows = (Array.isArray(out) ? out : ((out as { rows?: unknown[] }).rows ?? [])) as Array<
     Record<string, unknown>

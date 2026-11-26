@@ -1,16 +1,16 @@
 /**
  * MULTI-CLAUSE AND SUBQUERY SHAPES, measured against native with PER-SHAPE FLOORS (item 2202).
  *
- * ⚠️⚠️ **WHY A NEW PROBE: both existing screens are SINGLE-CLAUSE.** `native-ref-screen-2161` varies the
+ * **WHY A NEW PROBE: both existing screens are SINGLE-CLAUSE.** `native-ref-screen-2161` varies the
  * projection and the predicate over one `MATCH`, and the Gremlin screen varies one step chain. Neither can
  * reach the compositions ISO-GQL actually offers — a second `MATCH`, `OPTIONAL MATCH`, a scoped `CALL`, a
  * nested `EXISTS`, `NEXT`, `LET`, `FILTER` — so nothing in this repo has ever priced them.
  *
- * 🔑 **EVERY SHAPE IS PAIRED WITH ITS OWN SINGLE-CLAUSE FLOOR**, which is the discipline items 2168, 2170,
+ * **EVERY SHAPE IS PAIRED WITH ITS OWN SINGLE-CLAUSE FLOOR**, which is the discipline items 2168, 2170,
  * 2175 and 2199 each paid for: a mismatched floor has produced a false nomination FIVE times now. The
  * marginal is what the COMPOSITION costs, not what the underlying scan costs.
  *
- * ⚠️ MIXED labels by default (item 2190): a homogeneous fixture makes every label VACUOUS and unlocks
+ * MIXED labels by default (item 2190): a homogeneous fixture makes every label VACUOUS and unlocks
  * elisions a real schema cannot reach.
  */
 import { Graph as TsGraph } from '@lenke/core';
@@ -36,7 +36,7 @@ const doc = (() => {
 
   let id = 0;
 
-  /* ⚠️ The repeat index `d` is load-bearing — see items 1516/1518. */
+  /* The repeat index `d` is load-bearing — see items 1516/1518. */
   for (let d = 0; d < FANOUT; d += 1) {
     for (let i = 0; i < N; i += 2) {
       lines.push(
@@ -55,7 +55,7 @@ const doc = (() => {
 const SCAN = 'MATCH (a:Person) RETURN count(*) AS c';
 const HOP = 'MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*) AS c';
 /*
- * ⚠️⚠️ **A NESTED `EXISTS` MUST BE FLOORED BY THE SINGLE `EXISTS`, NOT BY A HOP — item 2204, and the SIXTH
+ * **A NESTED `EXISTS` MUST BE FLOORED BY THE SINGLE `EXISTS`, NOT BY A HOP — item 2204, and the SIXTH
  * false nomination from a mismatched floor** (items 2168 x2, 2170, 2175, 2199). Against `HOP` the nested
  * row read **+113.08 / 42.8x**, which sent a whole tick after it; against the single `EXISTS` the honest
  * marginal is ~+102 ms, and the measured CEILING is only **2.3x**:
@@ -66,7 +66,7 @@ const HOP = 'MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*) AS c';
  *     CEILING via set membership    50.01 ms   <- same answer (100000), same walks
  * ```
  *
- * 🔑 And the two mechanisms a reader would reach for are both already in place: the nested form DOES reach
+ * And the two mechanisms a reader would reach for are both already in place: the nested form DOES reach
  * item 2191's rung (verified with a throw probe), and it DOES exit early on the first qualifying `b` —
  * 23.27 ms with the qualifying `b` inserted first against 47.03 ms inserted last, identical answers. The
  * residue is per-pair binding machinery, and `binding-allocation` was built and refused twice (items 2023,

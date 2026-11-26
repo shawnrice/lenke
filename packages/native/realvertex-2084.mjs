@@ -1,6 +1,6 @@
 // Item 2084 — the same loop over REAL engine vertices instead of plain objects.
 //
-// ⚠️⚠️ THE FLOOR MUST USE THE DATA STRUCTURE THE ENGINE USES. Every arm of the decomposition built
+// THE FLOOR MUST USE THE DATA STRUCTURE THE ENGINE USES. Every arm of the decomposition built
 // `{ properties: {...} }` — a plain FIELD read. A real `Vertex` exposes `get properties()`, and that
 // getter was visible in the profile at 3.7%. A floor over plain objects prices a different machine.
 import { Graph } from '@lenke/core';
@@ -59,7 +59,7 @@ const envelope = (source) => () => {
 const arms = {
   // The decomposition's arm: a plain object with a FIELD called `properties`.
   plainobj: envelope(plain),
-  // ⚠️ THE SAME LOOP OVER THE ENGINE'S OWN Vertex INSTANCES, from the same container the engine reads.
+  // THE SAME LOOP OVER THE ENGINE'S OWN Vertex INSTANCES, from the same container the engine reads.
   realvertex: envelope(bucket),
   // Just the getter, nothing else — is `get properties` itself the term?
   getteronly: () => {

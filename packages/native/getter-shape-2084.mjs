@@ -1,7 +1,7 @@
 /*
  * Item 2084 — is the `properties` getter's cost its THREE private-field reads, or the getter call?
  *
- * ⚠️ THE BIG FIX IS DISQUALIFIED, so this prices the small one. Caching `box.bag` in a private field
+ * THE BIG FIX IS DISQUALIFIED, so this prices the small one. Caching `box.bag` in a private field
  * would cut the steady state to one read — but `box.bag = frozen` IS reassigned by the properties
  * setter, and boxes are SHARED BY ID across elements, so a cached bag goes stale when a DIFFERENT
  * element with the same id writes. Same shape as the label-index-vs-setter wrong answer.
@@ -45,7 +45,7 @@ class OneRead {
     this.#box = undefined;
   }
 
-  // ⚠️ `box` IS STILL READ FRESH FROM THE BOX EVERY CALL — only the duplicate #box read is gone, so
+  // `box` IS STILL READ FRESH FROM THE BOX EVERY CALL — only the duplicate #box read is gone, so
   // a reassigned `box.bag` is still seen. This is the change that cannot go stale.
   get properties() {
     const graph = this.#graph;
@@ -107,7 +107,7 @@ if (!(arm in arms)) {
   throw new Error(`ARM must be one of ${Object.keys(arms).join(', ')} — got ${String(arm)}`);
 }
 
-// ⚠️ WARM THE BOX CACHE FIRST. The first read per element populates `#box`, so an unwarmed run prices
+// WARM THE BOX CACHE FIRST. The first read per element populates `#box`, so an unwarmed run prices
 // 200,000 Map lookups that the engine pays once and then never again.
 arms[arm]();
 

@@ -9,7 +9,7 @@ import { query } from '@lenke/gql';
  * interleaved processes per arm, ranges nowhere near overlapping, `count` control flat at 0.001.
  * It is **5.4x at 20,000 and 7.9x at 200,000**, so it grows with N.
  *
- * ⚠️ AND THE SIBLING FINDING WENT THE OTHER WAY, WHICH IS WHY THIS ONE NEEDED A PROFILE RATHER THAN
+ * AND THE SIBLING FINDING WENT THE OTHER WAY, WHICH IS WHY THIS ONE NEEDED A PROFILE RATHER THAN
  * A PATCH. A bare `LIMIT 10` also declines every rung, and there the decline is CORRECT: the general
  * pipeline is lazy, so it stops after ten rows and measures 0.035 ms against the rung's 12.5 on the
  * `ORDER BY … LIMIT` spelling — 360x in the general path's favour. Same decline, opposite verdict,
@@ -25,12 +25,12 @@ import { query } from '@lenke/gql';
  *     PROF_OUT=$D/list.cpuprofile   node offset-rung-profile.mjs list
  *     node runtime-profile-analyze.mjs $D
  *
- * ⚠️ WINDOWED, via the shared `profileWindow`. `--cpu-prof` profiles to exit, so at 200,000 nodes
+ * WINDOWED, via the shared `profileWindow`. `--cpu-prof` profiles to exit, so at 200,000 nodes
  * the fixture build swamps the query and INVERTS the ranking — item 1362 put `getVertexById` and
  * `commitElementLabels` at the top of every shape that way, all of them the load, none of them the
  * query. The fixture is built before the window opens.
  *
- * ⚠️ AND THE ROW COUNT IS ASSERTED INSIDE THE WINDOW, because a profile of an arm that silently
+ * AND THE ROW COUNT IS ASSERTED INSIDE THE WINDOW, because a profile of an arm that silently
  * returned 10 rows instead of 199,990 would be a confident attribution of the wrong work.
  */
 import { profileWindow } from './windowed-profile.mjs';

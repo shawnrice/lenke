@@ -4,17 +4,17 @@
  * `MATCH (a)-[:E]->(b), (b)-[:E]->(c)` is the same walk as the arrow spelling, and used to go to
  * the general multi-pattern path while the arrow took the chain rung.
  *
- * ⚠️ THE ARROW SPELLING IS BOTH AN ARM AND THE TARGET. The claim is not just "faster" but
+ * THE ARROW SPELLING IS BOTH AN ARM AND THE TARGET. The claim is not just "faster" but
  * "converges on the spelling it is equivalent to", so the table prints the arrow's own time beside
  * each comma cell. A comma cell that got faster but still sat well above its arrow twin would mean
  * the splice fired and something else declined.
  *
- * ⚠️ ONE SHAPE PER PROCESS (item 762, and items 1828/1832/1842 in this session). Each cell is its
+ * ONE SHAPE PER PROCESS (item 762, and items 1828/1832/1842 in this session). Each cell is its
  * own `bun` child.
  *
- * ⚠️ ARMS ASSERTED in the built dist via `spliceChainedPatterns`, which exists only in POST.
+ * ARMS ASSERTED in the built dist via `spliceChainedPatterns`, which exists only in POST.
  *
- * ⚠️ THE CONTROL IS A TRUE PRODUCT — two patterns sharing no variable, which the rewrite must
+ * THE CONTROL IS A TRUE PRODUCT — two patterns sharing no variable, which the rewrite must
  * refuse. If it moves, the rewrite is firing where it should not.
  *
  *     bun splice-ab.mjs
@@ -147,7 +147,7 @@ for (const name of Object.keys(SHAPES)) {
   const rPre = rounds[0].PRE[name].rows;
   const rPost = rounds[0].POST[name].rows;
 
-  const warn = rPre === rPost ? '' : `  ⚠️ ROWS DIFFER ${rPre} vs ${rPost}`;
+  const warn = rPre === rPost ? '' : `  ROWS DIFFER ${rPre} vs ${rPost}`;
 
   console.log(
     `${name.padEnd(20)} PRE ${pre.toFixed(1).padStart(8)} ms   POST ${post

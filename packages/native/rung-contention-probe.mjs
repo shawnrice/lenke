@@ -13,7 +13,7 @@ import { compileLinear } from '../gql/src/executor.ts';
  * shapes it reports every one that more than one rung will answer, and names the rung the chain
  * actually picks (the earliest) against the ones it starves (the later ones).
  *
- * ⚠️ CONTENTION IS NOT BY ITSELF A DEFECT. Several pairs overlap deliberately and the earlier rung
+ * CONTENTION IS NOT BY ITSELF A DEFECT. Several pairs overlap deliberately and the earlier rung
  * is the right one — the chain's comments say so case by case, and item 418 measured that moving a
  * branch costs the shape it does not claim 1.12x. A later rung is a SUSPECT, to be timed, not a
  * bug. The output is a worklist.
@@ -26,7 +26,7 @@ import { compileLinear } from '../gql/src/executor.ts';
 // wrong trade. The probe also has to read SRC rather than dist, so it can be run while a rung
 // change is being iterated on, which is before a build has happened.
 //
-// ⚠️ The directive has to be ONE line. Written across several, `eslint-disable-next-line` applies to
+// The directive has to be ONE line. Written across several, `eslint-disable-next-line` applies to
 // the next COMMENT line instead of the import and the rule still fires.
 // eslint-disable-next-line boundaries/no-cross-package-relative-import -- internal planner entry point, read pre-build; see above
 import { parse } from '../gql/src/parser.ts';
@@ -35,7 +35,7 @@ import { parse } from '../gql/src/parser.ts';
  * `runLinear`'s branch order, which is what DECIDES the route — the chain is lazy, so the earliest
  * willing rung answers.
  *
- * ⚠️ Kept in sync with `packages/gql/src/executor/clauses.ts` BY HAND, and asserted below against
+ * Kept in sync with `packages/gql/src/executor/clauses.ts` BY HAND, and asserted below against
  * `compileLinear`'s own field set so a rung added to one and not the other is a loud failure rather
  * than a silently mis-ordered report.
  */

@@ -17,13 +17,13 @@
  * index and the number. If depth is the mechanism, cost rises per level and depth 4-5 lands near
  * 60 ns. If it does not, the hypothesis is dead and item 1770's ceiling needs a sixth candidate.
  *
- * ⚠️ ALL LEVELS FOR ONE ELEMENT ARE ALLOCATED TOGETHER, interleaved across elements. Allocating all
+ * ALL LEVELS FOR ONE ELEMENT ARE ALLOCATED TOGETHER, interleaved across elements. Allocating all
  * bags and then all holders would give each arm a DIFFERENT heap layout, so the comparison would be
  * locality-vs-depth rather than depth alone — and item 1770 already showed locality is worth 2.4x
  * here, which is easily enough to fake this result. Interleaving also matches the engine, where a
  * Vertex and its box are created together.
  *
- * ⚠️ AND THE ANSWER IS ASSERTED PER ARM against a sum computed from the data: an arm that chased to
+ * AND THE ANSWER IS ASSERTED PER ARM against a sum computed from the data: an arm that chased to
  * the wrong place would otherwise be a fast reading rather than a failure.
  */
 const N = Number(process.env.N ?? 2_000_000);
@@ -50,7 +50,7 @@ class EdgeLike {
 }
 
 /**
- * ⚠️ ALLOCATION ORDER IS NOW A VARIABLE, and item 1773 is why. Interleaving every level of one
+ * ALLOCATION ORDER IS NOW A VARIABLE, and item 1773 is why. Interleaving every level of one
  * element was chosen to stop heap layout differing BETWEEN arms — but it also colocates a holder,
  * its box and its bag into neighbouring cache lines, which removes the very effect depth was being
  * tested for. The engine does NOT allocate that way: a box is created by `Graph` and its bag comes
@@ -110,7 +110,7 @@ for (let i = 0; i < COUNT; i += 1) {
   // Depth 4 + accessor: the vertex sits behind a GETTER, which is what `edge.to` and
   // `vertex.properties` actually are — a getter, not a field.
   //
-  // ⚠️ THE GETTER MUST LIVE ON A SHARED PROTOTYPE, and the first version of this arm got that
+  // THE GETTER MUST LIVE ON A SHARED PROTOTYPE, and the first version of this arm got that
   // wrong. Writing `{ get to() {…} }` per element creates 200,000 DISTINCT accessor closures, so
   // the call site goes megamorphic and the arm measured 158.29 ns — 9.1x the whole chase, and a
   // worse number than the engine it was modelling, which is what gave it away. `Edge.prototype`
@@ -138,7 +138,7 @@ for (let i = 0; i < COUNT; i += 1) {
 let seed = 987_654_321;
 
 for (let i = COUNT - 1; i > 0; i -= 1) {
-  // ⚠️ A 32-bit-safe LCG. CLAUDE.md records an f64 LCG whose period collapsed from 2^31 to ~11k
+  // A 32-bit-safe LCG. CLAUDE.md records an f64 LCG whose period collapsed from 2^31 to ~11k
   // draws because `s * 1103515245` passes 2^53 — the defect that made a degenerate fixture read
   // 14x fast. `Math.imul` keeps the multiply in 32 bits.
   seed = (Math.imul(seed, 1_664_525) + 1_013_904_223) >>> 0;

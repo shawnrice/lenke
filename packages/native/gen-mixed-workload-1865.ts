@@ -1,11 +1,11 @@
 /**
  * Emits the mixed workload's query list for `mixed-workload-prof-1865.mjs` — item 1865.
  *
- * ⚠️ IT EXISTS SO THE GENERATORS ARE NOT FORKED. The profiler runs under node (`--cpu-prof`) and
+ * IT EXISTS SO THE GENERATORS ARE NOT FORKED. The profiler runs under node (`--cpu-prof`) and
  * node will not resolve `./src/workload-queries.js` to its `.ts` source; bun will. So bun draws
  * the queries here, from the SAME `WORKLOAD_FAMILIES` the screen uses, and writes them out.
  *
- * ⚠️ `multi-pattern` IS SKIPPED BY DEFAULT: it is 97% of the screen's wall time and item 1864
+ * `multi-pattern` IS SKIPPED BY DEFAULT: it is 97% of the screen's wall time and item 1864
  * closed it as not addressable, so profiling with it in returns its binding loop and nothing else.
  */
 import { writeFileSync } from 'node:fs';
@@ -18,7 +18,7 @@ const SKIP = (process.env.SKIP ?? 'multi-pattern').split(',');
 const OUT = process.env.WORK_FILE ?? './mixed-workload-1865.json';
 
 /**
- * ⚠️⚠️ THE NAME COMES FROM THE GENERATOR, NOT FROM `WORKLOAD_FAMILY_NAMES[i]`, AND THE FIRST
+ * THE NAME COMES FROM THE GENERATOR, NOT FROM `WORKLOAD_FAMILY_NAMES[i]`, AND THE FIRST
  * VERSION OF THIS FILE GOT THAT WRONG IN A WAY THAT INVALIDATED A WHOLE PROFILE.
  *
  * `WORKLOAD_FAMILY_NAMES` is `.sort()`ed; `WORKLOAD_FAMILIES` is in declaration order. The two are
@@ -52,7 +52,7 @@ for (const gen of WORKLOAD_FAMILIES) {
     continue;
   }
 
-  // ⚠️ THE SCREEN'S OWN PER-FAMILY SEEDING, copied rather than invented: `SEED ^ (name.length *
+  // THE SCREEN'S OWN PER-FAMILY SEEDING, copied rather than invented: `SEED ^ (name.length *
   // 2_654_435_761)`. The first version used `SEED + i * 7919` with a different default SEED, so it
   // drew a different workload from the screen it claims to profile — which is how an instrument
   // ends up measuring something its header does not describe.

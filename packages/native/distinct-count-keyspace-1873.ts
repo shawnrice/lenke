@@ -8,7 +8,7 @@
  * projection, just with `distinct: false`, so flipping it would let the fused one-column DISTINCT
  * dedup DURING the walk instead of materializing 20,000 rows for the fold.
  *
- * ⚠️⚠️ BUT THE TWO PATHS KEY DIFFERENTLY, AND THAT MAKES IT A CORRECTNESS QUESTION FIRST.
+ * BUT THE TWO PATHS KEY DIFFERENTLY, AND THAT MAKES IT A CORRECTNESS QUESTION FIRST.
  *
  *   `distinctCountFold`  keys every value through ONE string space: `Set<string>` of `valueKey(v)`.
  *   `addOneColumnKey`    keeps TWO spaces — primitives by SameValueZero, non-primitives by
@@ -32,12 +32,12 @@ import { createFfiEngineBackend } from './src/backend-ffi-engine.js';
 import { graphFromNdjson } from './src/graph.js';
 
 /**
- * ⚠️ THE FIXTURE IS THE WHOLE EXPERIMENT. `v1` is a vertex whose id renders as `@v1`; `s` carries
+ * THE FIXTURE IS THE WHOLE EXPERIMENT. `v1` is a vertex whose id renders as `@v1`; `s` carries
  * the literal STRING `'@v1'`. A single key space collapses them; two spaces keep them apart. Every
  * other row is a control: plain duplicates that both spaces must agree on.
  */
 /**
- * ⚠️ THE FIRST VERSION OF THIS FIXTURE DID NOT CREATE THE COLLISION AT ALL, and the probe answered
+ * THE FIRST VERSION OF THIS FIXTURE DID NOT CREATE THE COLLISION AT ALL, and the probe answered
  * `6 = 6` and looked like agreement. The `CASE` yields the VERTEX when `n = 1` and the STRING
  * otherwise, so to put `v1` and the string `'@v1'` into ONE column they must sit on vertices with
  * DIFFERENT `n`: `v1` has `n = 1` (yields the vertex) and `v9` has `n = 9` with `s = '@v1'` (yields
@@ -48,7 +48,7 @@ const lines = [
   // n = 1 → the CASE yields the VERTEX. `v1` renders as `@v1`.
   '{"type":"node","id":"v1","labels":["L"],"properties":{"s":"zz","n":1}}',
   '{"type":"node","id":"v2","labels":["L"],"properties":{"s":"zz","n":1}}',
-  // ⬇ THE COLLISION: n != 1 so the CASE yields the STRING, and that string is `@v1` — exactly what
+  // THE COLLISION: n != 1 so the CASE yields the STRING, and that string is `@v1` — exactly what
   // `valueKey` renders the vertex above as.
   '{"type":"node","id":"v9","labels":["L"],"properties":{"s":"@v1","n":9}}',
   '{"type":"node","id":"v3","labels":["L"],"properties":{"s":"other","n":2}}',
@@ -79,7 +79,7 @@ const LIB = new URL(
 const nat = graphFromNdjson(createFfiEngineBackend(LIB), doc);
 
 /**
- * ⚠️ MIXING A STRING COLUMN WITH AN ELEMENT COLUMN NEEDS ONE EXPRESSION THAT YIELDS BOTH, which a
+ * MIXING A STRING COLUMN WITH AN ELEMENT COLUMN NEEDS ONE EXPRESSION THAT YIELDS BOTH, which a
  * plain property read cannot do. `CASE` is how item 1843 built the same fixture for the fused
  * DISTINCT: the vertex itself for one half of the rows, the string for the other.
  */
@@ -104,7 +104,7 @@ const CASES: readonly (readonly [string, string])[] = [
 ];
 
 /**
- * ⚠️ THE ROW RENDERING IS TYPE-TAGGED, and the first version was not — it `JSON.stringify`d the
+ * THE ROW RENDERING IS TYPE-TAGGED, and the first version was not — it `JSON.stringify`d the
  * values, so a TS vertex printed as `{"id":"v1",...}` and native's as something else entirely, and
  * the probe reported a "divergence" that was its own formatting. What matters here is the SHAPE of
  * the distinct set, so each value is rendered as `<type>:<key>` with elements reduced to their id.
@@ -152,7 +152,7 @@ for (const [name, text] of CASES) {
 
   console.log(
     `${name.padEnd(33)} ${ts.slice(0, 17).padEnd(18)} ${native.slice(0, 17).padEnd(18)} ${
-      agree ? 'yes' : '⚠️  NO'
+      agree ? 'yes' : ' NO'
     }`,
   );
 }
@@ -161,5 +161,5 @@ console.log('');
 console.log(
   disagreements === 0
     ? '# the engines agree on every case — the key spaces are reconcilable here.'
-    : `# ⚠️ ${String(disagreements)} DISAGREEMENT(S) — a cross-engine divergence, not an optimization question.`,
+    : `# ${String(disagreements)} DISAGREEMENT(S) — a cross-engine divergence, not an optimization question.`,
 );

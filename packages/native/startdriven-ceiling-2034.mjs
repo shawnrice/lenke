@@ -4,14 +4,14 @@
 // rows**: `tallyHopCount` walks all 60,000 edges and tests both endpoints' labels per edge, while the
 // start predicate selects 207 of 20,001 vertices — about 1%.
 //
-// ⚠️⚠️ **AND I OWE A CORRECTION TO MY OWN ITEM 2033 FRAMING BEFORE MEASURING ANYTHING.** That item said
+// **AND I OWE A CORRECTION TO MY OWN ITEM 2033 FRAMING BEFORE MEASURING ANYTHING.** That item said
 // a start-driven walk visits "621 edges, ~100x fewer than 60,000", which is true of EDGES and
 // misleading about the SPEEDUP: `k` is unindexed, so a start-driven arm still scans all 20,001
 // vertices to find the 207. Its total work is ~20,622 visits against the edge arm's 60,000 edges and
 // 120,000 label tests — a single-digit ratio, not 100x. This probe measures the arm rather than
 // arguing about it, which is the whole point.
 //
-// 🔑 THE ROUTE MAP (item 1942) IS INDEXED BY **LABEL** SELECTIVITY ONLY:
+// THE ROUTE MAP (item 1942) IS INDEXED BY **LABEL** SELECTIVITY ONLY:
 //
 //     start label        far label         arm
 //     vacuous/absent     vacuous/absent    CSR, counting
@@ -23,11 +23,11 @@
 // right answer to the question the gate ASKS. The unweighed term is the start PREDICATE's
 // selectivity, which no row considers.
 //
-// ⚠️ HAND ARMS ARE THE ESTABLISHED COMPARATOR for this family (item 1936 measured the edge-driven
+// HAND ARMS ARE THE ESTABLISHED COMPARATOR for this family (item 1936 measured the edge-driven
 // hand shape at 34 ns a row; item 1942 asked what the arm costs against it). A hand arm is a CEILING,
 // not a candidate: it knows the query at author time and the engine cannot.
 //
-// ⚠️ EVERY ARM ASSERTS 621 against an INDEPENDENT closed-form oracle, because an arm that answers
+// EVERY ARM ASSERTS 621 against an INDEPENDENT closed-form oracle, because an arm that answers
 // differently is not a faster route, it is a wrong one.
 //
 //     bun startdriven-ceiling-2034.mjs
@@ -40,7 +40,7 @@ const FANOUT = Number(process.env.FANOUT ?? 3);
 const REPS = Number(process.env.REPS ?? 7);
 const OPS = Number(process.env.OPS ?? 200);
 /*
- * ⚠️⚠️ **SEL IS THE TERM THE GATE CANNOT SEE, AND THE WORST CASE DECIDES THE POLICY** (item 2035).
+ * **SEL IS THE TERM THE GATE CANNOT SEE, AND THE WORST CASE DECIDES THE POLICY** (item 2035).
  * `k = 5` keeps 1% of starts; `k >= 0` keeps ALL of them. A start-driven arm visits |V| vertices and
  * THEN their edges, so against the tally's |E| it wins by skipping edges and loses by scanning
  * vertices. At SEL=all it can only lose, and by how much is what says whether "prefer start-driven
@@ -60,7 +60,7 @@ for (let i = 0; i < NODES; i += 1) {
 }
 
 /*
- * ⚠️ ONE ISOLATED OFF-LABEL VERTEX — the realistic mode, and the whole reason this shape is slow.
+ * ONE ISOLATED OFF-LABEL VERTEX — the realistic mode, and the whole reason this shape is slow.
  * `vacuousLabel` is an EXACT equality against `vertexCount`, so this single vertex moves the query
  * off the eliding arm permanently. It has no edges, so every answer is unchanged.
  */
@@ -73,7 +73,7 @@ for (let e = 0; e < NODES * FANOUT; e += 1) {
   g.addEdge({
     id: `e${e}`,
     from: g.getVertexById(`v${i}`),
-    // ⚠️ SPLIT ON THE REPEAT INDEX: `to = (a*k + b) % N` is invariant under `k -> k + N`, so without
+    // SPLIT ON THE REPEAT INDEX: `to = (a*k + b) % N` is invariant under `k -> k + N`, so without
     // the `hop` term all of one vertex's FANOUT edges land on the SAME target and the graph is
     // FUNCTIONAL while out-degree looks perfect (CLAUDE.md's generator trap, found in six generators
     // at items 1516/1518).
@@ -85,7 +85,7 @@ for (let e = 0; e < NODES * FANOUT; e += 1) {
 
 // The oracle: recomputed from the fixture's closed form, with no Graph and no engine call.
 /*
- * ⚠️⚠️ **INDEXED=1 IS THE ARM THAT MATTERS, and the SEL grid is why** (item 2035). Start-driven is
+ * **INDEXED=1 IS THE ARM THAT MATTERS, and the SEL grid is why** (item 2035). Start-driven is
  * 3.13x BETTER at 1% selectivity and 3.46x WORSE at 100%, so "prefer it when the far end is
  * labelled" is unsafe and the gate needs a real selectivity SIGNAL. An unindexed `k` offers none.
  * An INDEX does: `hopSeek` returns a narrow seed, and the engine then knows the candidate set is
@@ -109,7 +109,7 @@ const expected = (() => {
   return rows;
 })();
 
-// ⚠️ DISTINCT ENDPOINTS, because out-degree cannot see the collapse above.
+// DISTINCT ENDPOINTS, because out-degree cannot see the collapse above.
 const reach = new Set();
 
 for (let e = 0; e < NODES * FANOUT; e += 1) {
@@ -198,7 +198,7 @@ for (const [name, fn] of Object.entries(ARMS)) {
   }
 
   /*
-   * ⚠️ MEDIAN OF THE PLATEAU, not min-of-N: the TS paths tier up visibly over the first reps and a
+   * MEDIAN OF THE PLATEAU, not min-of-N: the TS paths tier up visibly over the first reps and a
    * rare fast rep makes `min` report a mode the arm does not hold (CLAUDE.md's estimator note). The
    * series is printed so the reader can check the plateau rather than trust the summary.
    */

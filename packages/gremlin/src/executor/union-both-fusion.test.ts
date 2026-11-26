@@ -2,7 +2,7 @@
  * `union(out(T), in(T)).count()` fuses to `both(T).count()` (item 1311) — the rewrite, the tail
  * condition that makes it sound, and the branch shapes it refuses.
  *
- * ⚠️ THE TAIL CONDITION IS THE WHOLE ARGUMENT. `both` and `union(out, in)` are multiset-equal but
+ * THE TAIL CONDITION IS THE WHOLE ARGUMENT. `both` and `union(out, in)` are multiset-equal but
  * NOT sequence-equal — item 1308 measured that directly — so this may only fire where the order is
  * not observable. The row-returning cases below are therefore DECLINE tests, and one of them
  * asserts that the union still emits the union's own order, which is the property that would be

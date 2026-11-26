@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2017 — mutation round on the ORDER BY overlay gate.
 #
-# ⚠️⚠️ **NOT A ROUTE CHOICE: A WRONG GATE HERE IS A WRONG ANSWER**, so unlike items 2014-2016 the
+# **NOT A ROUTE CHOICE: A WRONG GATE HERE IS A WRONG ANSWER**, so unlike items 2014-2016 the
 # broad suite can see some of these. That is exactly why the round must run the WIDE filter as well
 # as the narrow one — a mutant caught only by `sort-overlay-gate.test.ts` tells me that file has
 # teeth; a mutant caught by NEITHER tells me the engine has a hole.
@@ -15,7 +15,7 @@
 #   - PER-MUTANT `timeout`; exit 124 IS the catch.
 #   - FIELD SEPARATOR `@@`; a `|` separator chops a sed expression containing `||`.
 #   - THE REPLACEMENT MUST NOT CONTAIN THE ANCHOR, or `n == after` reads as not-applied.
-#   - ⚠️ AND `grep -F` COUNTS LINES CONTAINING THE PATTERN, so a LESS-indented anchor matches a
+#   - AND `grep -F` COUNTS LINES CONTAINING THE PATTERN, so a LESS-indented anchor matches a
 #     MORE-indented line (item 2016 corrected item 2015's comment, which had this backwards).
 #   - A VERDICT NEEDS EVIDENCE OF EXECUTION, and `bun test` reports to STDERR.
 set -u
@@ -48,7 +48,7 @@ fi
 print -- "baseline green, both filters. mutating.\n"
 
 MUTANTS=(
-  # ⚠️ NO `&&` IN AN ANCHOR. zsh keeps `\&` literal inside double quotes, so an anchor containing
+  # NO `&&` IN AN ANCHOR. zsh keeps `\&` literal inside double quotes, so an anchor containing
   # `&&` never matches and SIX mutants reported ANCHOR-DID-NOT-APPLY on the first round. Anchor on
   # the `?`-expression instead, which is unique to each branch by its `b`/`rep` names.
   # ---- THE GATE, non-aggregating branch ----

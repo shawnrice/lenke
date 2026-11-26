@@ -47,7 +47,7 @@ for (let i = 0; i < N; i++) {
 }
 
 /**
- * ⚠️ `vacuous` IS `n.age > -1`, NOT `WHERE true`, and the difference invalidated this probe's first
+ * `vacuous` IS `n.age > -1`, NOT `WHERE true`, and the difference invalidated this probe's first
  * run. `WHERE true` is a CONSTANT the planner can fold away, so it measures a scan with no
  * predicate machinery at all — while the Gremlin arm below still reads the property and compares.
  * The two were not the same experiment, and `real - vacuous` was not comparable across surfaces:

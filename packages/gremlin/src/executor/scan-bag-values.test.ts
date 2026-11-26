@@ -1,12 +1,12 @@
 /*
  * Item 2078 — `V().aggregate(k).values(key)`, the barrier BEFORE the projection.
  *
- * ⚠️⚠️ **THE BAG IS NOT THE ROW SET, AND THAT IS THE ONE THING THIS FUSION COULD GET WRONG.** The
+ * **THE BAG IS NOT THE ROW SET, AND THAT IS THE ONE THING THIS FUSION COULD GET WRONG.** The
  * `aggregate` runs before `values`, so it banks EVERY vertex — including those `values` then drops for
  * lacking the key. A fusion that bagged only the emitted rows would answer correctly and lose exactly
  * those vertices, which no row-count test could see.
  *
- * ⚠️ This is the mirror of item 2070, where the barrier sat AFTER the projection and banked the
+ * This is the mirror of item 2070, where the barrier sat AFTER the projection and banked the
  * already-projected VALUES. Same step kinds, opposite order, different bag contents.
  */
 import { describe, expect, test } from 'bun:test';
@@ -27,7 +27,7 @@ const build = (): Graph => {
   g.addVertex({ id: 'a', labels: ['T'], properties: { n: 10 } });
   g.addVertex({ id: 'b', labels: ['T'], properties: { n: 20 } });
   /*
-   * ⚠️ `c` IS THE WHOLE POINT: no `n`, so `values('n')` drops it — but `aggregate` ran FIRST, so the
+   * `c` IS THE WHOLE POINT: no `n`, so `values('n')` drops it — but `aggregate` ran FIRST, so the
    * bag must hold it. Two rows out, three vertices banked.
    */
   g.addVertex({ id: 'c', labels: ['T'], properties: { other: 1 } });
@@ -44,7 +44,7 @@ describe('scan-bag values fusion (item 2078)', () => {
     ).toBeDefined();
   });
 
-  test('⚠️⚠️ THE BAG HOLDS EVERY VERTEX, including the one with no projected key', () => {
+  test('THE BAG HOLDS EVERY VERTEX, including the one with no projected key', () => {
     const ctx = ctxOf();
     const claimed = scanBagValuesShortcut(
       traversal(V(), aggregate('x'), values('n')),
@@ -83,19 +83,19 @@ describe('scan-bag values fusion (item 2078)', () => {
     expect(ctxA.sideEffects.get('x')).toStrictEqual(ctxB.sideEffects.get('x'));
   });
 
-  test('⚠️⚠️ `store` IS ADMITTED SINCE ITEM 2113 — and its laziness is PRESERVED, not traded away', () => {
+  test('`store` IS ADMITTED SINCE ITEM 2113 — and its laziness is PRESERVED, not traded away', () => {
     /*
-     * ⚠️⚠️ **THIS ASSERTED `toBeUndefined()` UNTIL ITEM 2113.** The reasoning below was item 2070's and it
+     * **THIS ASSERTED `toBeUndefined()` UNTIL ITEM 2113.** The reasoning below was item 2070's and it
      * is about a DRAINED result (`barrierProjectedBag` returns the drained array, so every consumer gets
-     * an eager one). 🔑 `scanBagValuesWalk` is a GENERATOR: it banks a vertex and yields it, so a caller
+     * an eager one). `scanBagValuesWalk` is a GENERATOR: it banks a vertex and yields it, so a caller
      * that `break`s out stops the walk and only the pulled vertices are banked. It was already exactly as
      * lazy as `store` requires.
      *
-     * ⚠️ WHAT DID HAVE TO CHANGE is the RESULT, not the walk. `[Symbol.iterator]` was a FACTORY and
+     * WHAT DID HAVE TO CHANGE is the RESULT, not the walk. `[Symbol.iterator]` was a FACTORY and
      * `drain` built another generator, so iterate-part-way-then-drain banked the prefix TWICE — item
      * 2098's demonstrated doubling. `store` now gets a SINGLE-PASS result over one shared generator.
      *
-     * 🔑 The laziness this test was named for is asserted behaviourally in `scan-bag-store.test.ts`,
+     * The laziness this test was named for is asserted behaviourally in `scan-bag-store.test.ts`,
      * across all four consumption patterns; a `toBeUndefined()` could never have expressed it.
      */
     expect(
@@ -109,7 +109,7 @@ describe('scan-bag values fusion (item 2078)', () => {
     expect(toArray(traversal(V(), aggregate('x'), values('n')), fresh)).toStrictEqual([10, 20]);
     expect(toArray(traversal(V(), store('y'), values('n')), fresh)).toStrictEqual([10, 20]);
 
-    // ⚠️ The bag read back through a `cap`, which is four steps and so declines this fusion: the
+    // The bag read back through a `cap`, which is four steps and so declines this fusion: the
     // GENERIC path's bag is the reference, and it holds all three vertices too.
     const capped = toArray(traversal(V(), aggregate('x'), values('n'), cap('x')), fresh);
 
@@ -146,9 +146,9 @@ describe('scan-bag values fusion (item 2078)', () => {
     ).toBeUndefined();
   });
 
-  test('⚠️ a `limit(0)` after the barrier still collects — the contract the refusal protects', () => {
+  test('a `limit(0)` after the barrier still collects — the contract the refusal protects', () => {
     /*
-     * ⚠️ FOUR STEPS, so the fusion declines and this is the GENERIC path — asserted here anyway,
+     * FOUR STEPS, so the fusion declines and this is the GENERIC path — asserted here anyway,
      * because it is the behaviour that makes `aggregate` safe to drain and `store` not. The eager
      * barrier banked the graph before `limit(0)` could cancel it.
      */

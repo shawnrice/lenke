@@ -4,7 +4,7 @@
 // LACK the key, so an index made the count drop by exactly those. The inline reading matches a
 // stored null AND an absent key (item 260), so the right answer is the union.
 //
-// ⚠️ THIS ASKS NATIVE WHICH ENGINE WAS RIGHT, which no TS-only test can. If native had agreed with
+// THIS ASKS NATIVE WHICH ENGINE WAS RIGHT, which no TS-only test can. If native had agreed with
 // the pre-fix TS behaviour the fix would have been a new DIVERGENCE rather than a repair, and that
 // is worth a test rather than an assumption.
 //

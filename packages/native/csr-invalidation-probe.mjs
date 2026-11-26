@@ -13,12 +13,12 @@
  * than inferring it, and finds the write RATE at which the arm breaks even — which is the number
  * that decides whether the shipped arms are safe for a serving workload.
  *
- * ⚠️ THE FIXTURE IS SCATTERED, like `bench-gremlin.ts`'s and unlike every probe in items 1691-1693.
+ * THE FIXTURE IS SCATTERED, like `bench-gremlin.ts`'s and unlike every probe in items 1691-1693.
  * Item 1694 measured edge insertion order at 2.26x on the same graph, and a grouped build is the
  * best case for the pointer-chasing walk this arm replaces — so a grouped fixture would understate
  * both the win and the rebuild cost.
  *
- * ⚠️ AND THE WRITE IS AN `addEdge`, WHICH IS THE CHEAP CASE FOR THE WRITE ITSELF AND THE WORST CASE
+ * AND THE WRITE IS AN `addEdge`, WHICH IS THE CHEAP CASE FOR THE WRITE ITSELF AND THE WORST CASE
  * FOR THE CACHE: it bumps `topologyVersion` (items 1674/1675) for a few microseconds of work, so
  * essentially all of the measured cost is the rebuild, not the write.
  *
@@ -41,7 +41,7 @@ for (let i = 0; i < N; i += 1) {
   vs.push(g.addVertex({ id: `v${i}`, labels: ['Person'], properties: { age: i % 90 } }));
 }
 
-// ⚠️ `bench-gremlin.ts`'s own edge expression, including item 1632's repeat-index split. The
+// `bench-gremlin.ts`'s own edge expression, including item 1632's repeat-index split. The
 // `from` scatter is the point: each vertex's five edges land ~200,000 insertions apart.
 let e = 0;
 
@@ -135,7 +135,7 @@ for (let r = 0; r < REPS; r += 1) {
   series.push((performance.now() - t0) / READS);
 }
 
-/** ⚠️ MEDIAN of the warm reps, per READ: `min` has reversed a verdict's sign in this repo. */
+/** MEDIAN of the warm reps, per READ: `min` has reversed a verdict's sign in this repo. */
 const warm = series.slice(3).sort((a, b) => a - b);
 
 console.log(

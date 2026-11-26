@@ -11,7 +11,7 @@ import { seenBefore } from './second-ask.js';
 /**
  * `V().coalesce(<one hop>, <one hop>).values(k)` answered WHOLESALE (item 1998).
  *
- * ⚠️⚠️ **THE WHOLE GAP IS THAT THIS SHAPE WAS THE ONLY ONE OF ITS NEIGHBOURS NOT FUSED, and it took
+ * **THE WHOLE GAP IS THAT THIS SHAPE WAS THE ONLY ONE OF ITS NEIGHBOURS NOT FUSED, and it took
  * five items and a route counter to establish that.** Items 1993-1996 priced it against three hop
  * "controls" and attributed the difference to a per-row toll, a sub-plan contract, closure size and a
  * step-specific residual in turn. Item 1997 counted `applyStep` calls:
@@ -20,23 +20,23 @@ import { seenBefore } from './second-ask.js';
  *     out(E).values(n)              0 calls   FULLY FUSED
  *     out(E,F).values(n)            0 calls   FULLY FUSED
  *     both(E).values(n)             0 calls   FULLY FUSED
- *     coalesce(out,in).values(n)    2 calls   coalesce values   ⬅ the general stream
+ *     coalesce(out,in).values(n)    2 calls   coalesce values   <- the general stream
  * ```
  *
  * Every control was fused. There is no residual and no fifth mechanism — one shape of the four runs
  * the general stream, and this module is that shape's route.
  *
- * ⚠️ `coalesce(X, identity())` DOES NOT COME HERE: item 1990 normalizes it to `optional(X)`, which
+ * `coalesce(X, identity())` DOES NOT COME HERE: item 1990 normalizes it to `optional(X)`, which
  * `optional-hop-values.ts` already answers. This rung is for the form with no identity arm, which no
  * normalization can reach because there is no equivalent spelling to rewrite into (item 1995).
  *
- * 🔑 **THE SEMANTICS, AND THE ONE THING A FIXTURE CAN HIDE.** `coalesce` emits the first arm that
+ * **THE SEMANTICS, AND THE ONE THING A FIXTURE CAN HIDE.** `coalesce` emits the first arm that
  * produces anything, per traverser. On a graph where every vertex has an arm-0 edge the answer is
  * arm 0's alone — item 1995 verified that `coalesce(out(E), in_(E))` is then POSITIONALLY IDENTICAL
- * to a bare `out(E)` hop. ⚠️ So a fixture without a vertex that MISSES arm 0 cannot tell this route
+ * to a bare `out(E)` hop. So a fixture without a vertex that MISSES arm 0 cannot tell this route
  * from a plain hop, and the test for it carries a sink deliberately.
  *
- * ⚠️ `any` IS SET PER EDGE, BEFORE THE PROJECTION — `walk`'s own order in
+ * `any` IS SET PER EDGE, BEFORE THE PROJECTION — `walk`'s own order in
  * `optional-hop-values.ts`, and `coalesceStep`'s. A vertex whose arm-0 edges all lack the projected
  * key has still MATCHED arm 0, so it emits nothing rather than falling through to arm 1. Setting
  * `any` after the `drops` check would silently change the answer on a graph with missing properties.
@@ -49,10 +49,10 @@ type CoalesceSpec = {
 };
 
 /**
- * ⚠️ ONE LOOP, PARAMETERIZED, AT MODULE SCOPE — [[ts-closure-size-is-load-bearing]], where a walk
+ * ONE LOOP, PARAMETERIZED, AT MODULE SCOPE — [[ts-closure-size-is-load-bearing]], where a walk
  * defined inside a returned closure gave unrelated queries a new slow mode at 4x.
  *
- * ⚠️ AND THE TWO EDGE SOURCES ARE `walk`'s TWO ARMS, for item 1628's reason: `soleTypeBucket` is a
+ * AND THE TWO EDGE SOURCES ARE `walk`'s TWO ARMS, for item 1628's reason: `soleTypeBucket` is a
  * cached `Map.get` priced at **16.1 ns** (items 162/321) and refuses `both`, a multi-type hop and an
  * untyped one — those keep `adjacentEdges`, which delegates through `iterByLabel`/`iterLabeled` and
  * allocates a `{edge, node}` per edge. Picking per arm rather than for the whole walk matters because
@@ -138,10 +138,10 @@ const pickFor = (
   }
 
   /*
-   * 🔑 A TERMINAL THIS WALK DOES NOT PROJECT STILL GETS THE WALK (item 2028) — item 1956's decision,
+   * A TERMINAL THIS WALK DOES NOT PROJECT STILL GETS THE WALK (item 2028) — item 1956's decision,
    * applied here after a `pickFor` audit found four rungs still carrying the gap.
    *
-   * ⚠️⚠️ **AND THIS ONE WAS MEASURED SEPARATELY BECAUSE OPENING THE GATE IS NOT THE SAME AS THE ROUTE
+   * **AND THIS ONE WAS MEASURED SEPARATELY BECAUSE OPENING THE GATE IS NOT THE SAME AS THE ROUTE
    * BEING BETTER.** `coalesce`'s generic count path costs only TWO `applyStep` calls (the census
    * said so) where `choose`'s and `branch`'s cost 4002, so it was already cheap: 41.22 ms against
    * its own `values` twin's 46.37 — the count was ALREADY faster than projecting. Fusing it makes
@@ -155,24 +155,24 @@ const pickFor = (
 /**
  * ARM 0 OVER THE CSR, with arm 1 kept on the bucket walk (item 1998).
  *
- * ⚠️⚠️ **THE BUCKET WALK ALONE IS ONLY 1.20x, AND THAT IS WHY THIS EXISTS.** Measured:
+ * **THE BUCKET WALK ALONE IS ONLY 1.20x, AND THAT IS WHY THIS EXISTS.** Measured:
  * `coalesce: two hops` 209.55 -> 174.20 ms with `coalesceWalk` below. Item 1629's fast arm inside
  * `coalesceStep` is ALREADY a bucket walk, so a fused bucket walk only removes the step plumbing.
  * The control it is judged against (`hop1: values`, 46.65) is on item 1889's CSR, which that item
  * prices at **16 ns a row against a bucket walk's 102** — so the CSR is the gap, not the plumbing.
  *
- * 🔑 **ARM 1 NEEDS NO CSR, AND THE CSR ITSELF SAYS WHEN TO RUN IT.** `coalesce` reaches arm 1 only
+ * **ARM 1 NEEDS NO CSR, AND THE CSR ITSELF SAYS WHEN TO RUN IT.** `coalesce` reaches arm 1 only
  * for a vertex arm 0 missed, and an empty arm-0 bucket is exactly `memo.len[slot] === 0` — the same
  * test `csrOneHop` uses to decide it should emit the input. So the hot path is pure flat-array
  * reads and the cold path keeps `coalesceWalk`'s per-vertex logic, which costs nothing on a graph
  * where arm 0 matches everywhere and is correct on one where it does not.
  *
- * ⚠️ BEHIND `seenBefore`, item 1889's second-ask policy, for its reasons verbatim: a ONE-SHOT query
+ * BEHIND `seenBefore`, item 1889's second-ask policy, for its reasons verbatim: a ONE-SHOT query
  * never builds, a WRITE-EVERY-READ workload never reaches a second ask on one topology version so
  * it never builds either, and a repeated read pays the build once. Item 1983 measured those three
  * modes directly when it gave the two-hop count the same treatment.
  *
- * ⚠️ AND THE KEY IS REUSED, NOT RE-KEYED — `chainCsrFor(graph, forward, [type])` is the same cache
+ * AND THE KEY IS REUSED, NOT RE-KEYED — `chainCsrFor(graph, forward, [type])` is the same cache
  * entry every single-hop caller warms, so a graph where `V().out(T)` has been asked hands this route
  * a CSR it need not build.
  */
@@ -205,14 +205,14 @@ const csrArm0 = (
     }
   },
   /*
-   * ⚠️⚠️ THE EAGER `drain` IS NOT OPTIONAL, AND OMITTING IT COST THIS ITEM MOST OF ITS WIN BEFORE
+   * THE EAGER `drain` IS NOT OPTIONAL, AND OMITTING IT COST THIS ITEM MOST OF ITS WIN BEFORE
    * IT WAS NOTICED — exactly as `csrOneHop`'s own note says it cost item 1889. `toArray` PREFERS
    * `drain` when a walk offers one (item 1412), so a walk without it is measured against controls
    * that have it with its generator hand tied: this route read **72.70 ms** generator-only against
    * the bare hop's 47.05, and the remaining 1.55x was the missing drain rather than anything about
    * `coalesce`.
    *
-   * ⚠️ THE TWO FILLS ARE THE SAME LOOP WRITTEN TWICE — item 169's rule, and Gremlin results are
+   * THE TWO FILLS ARE THE SAME LOOP WRITTEN TWICE — item 169's rule, and Gremlin results are
    * compared ORDERED, so a reordering between them is a cross-engine failure rather than a style
    * question. The three-ask battery in `battery-1998.mjs` compares them positionally.
    */

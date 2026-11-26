@@ -6,7 +6,7 @@
 # (GENERIC, the tree as it stood before this item). The gate, the reducer and the bail are identical
 # in both, so a difference is the ROUTE and nothing else.
 #
-# ⚠️ BOTH FILES MUST SWAP TOGETHER, which is why this script carries a file list rather than one
+# BOTH FILES MUST SWAP TOGETHER, which is why this script carries a file list rather than one
 # `SRC`. The anchor is textually identical in the two modules — a swap that hit only one would leave
 # the three-hop arms toggled and the two-hop arms not, and the readings would be a blend.
 #
@@ -14,7 +14,7 @@
 # by 1.44-1.73x — the machine drifts over minutes. Arms alternate order by round and the reported
 # figure is the MIN OF THE PER-ROUND MEDIANS.
 #
-# ⚠️ ONE SHAPE PER PROCESS (CLAUDE.md's two-dist warning, item 762), and PER-ARM ASSERTION BEFORE ANY
+# ONE SHAPE PER PROCESS (CLAUDE.md's two-dist warning, item 762), and PER-ARM ASSERTION BEFORE ANY
 # TIMING — item 2408 lost a whole run to an anchor that matched twice. Python does the counting and
 # the swapping because the anchor is long and `grep -c` is line-based.
 set -uo pipefail
@@ -28,7 +28,7 @@ MODS="${MODS:-labelexpr union neararg}"
 SHAPES="${SHAPES:-sum countx rows}"
 
 LIVE='const sumAgg = folded === undefined ? pathSumAggFor(proj, ret.projection.items[0]?.expr) : null;'
-# ⚠️ THE GENERIC ARM KEEPS THE CALL REACHABLE behind `&& false` rather than deleting it: a bare
+# THE GENERIC ARM KEEPS THE CALL REACHABLE behind `&& false` rather than deleting it: a bare
 # `null` makes `pathSumAggFor` an unused import and the build's typecheck fails, which would read as
 # a broken arm rather than a disabled one.
 OFF='const sumAgg = folded === undefined && false ? pathSumAggFor(proj, ret.projection.items[0]?.expr) : null;'
@@ -61,13 +61,13 @@ PY
 }
 
 restore_live() {
-  # ⚠️ A KILL BETWEEN THE SWAP AND THE SWAP BACK WOULD LEAVE THE TREE ON THE WRONG ARM — still
+  # A KILL BETWEEN THE SWAP AND THE SWAP BACK WOULD LEAVE THE TREE ON THE WRONG ARM — still
   # compiling, still green, feature silently OFF ([[ab-scripts-need-a-restore-trap]]).
   if [ "$(count_of "$OFF")" = "2" ]; then
     swap "$OFF" "$LIVE" && echo "restored LIVE arm"
   fi
 
-  # ⚠️⚠️ AND IT MUST REBUILD. Restoring the SOURCE while leaving `packages/gql/dist` on whichever arm
+  # AND IT MUST REBUILD. Restoring the SOURCE while leaving `packages/gql/dist` on whichever arm
   # was built last is worse than not restoring: the tree reads LIVE, `git diff` is empty, and every
   # later probe silently measures the OTHER arm ([[fuzzers-read-built-dists]]). That cost item 2409
   # four readings, each of which looked like the fold had stopped working.

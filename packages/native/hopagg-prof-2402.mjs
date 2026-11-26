@@ -6,7 +6,7 @@
  * left `max` at 82.0 on the identical clause — 4x the same floor, and `max` is IDEMPOTENT, so it may
  * dedup far vertices where `sum` must visit every edge. It should be the cheaper of the two.
  *
- * ⚠️ TWO HYPOTHESES ALREADY REFUTED BY MEASUREMENT, which is why this profiles instead of reasoning:
+ * TWO HYPOTHESES ALREADY REFUTED BY MEASUREMENT, which is why this profiles instead of reasoning:
  *
  *   1. "`max` takes the slower dedup walk."  For a DIRECTED hop `idempotent` only sets `noSelfLoops`;
  *      both spellings call the same `detectHopProjection(..., forceStartDriven)`. And `routes()` says
@@ -24,7 +24,7 @@
  *   count  `count(*)`, which takes `countShortcut` instead — present so a frame common to all FOUR is
  *          recognisable as fixture or harness rather than as this question.
  *
- * ⚠️ Run with `node`, not `bun`: this uses `node:inspector`'s Session to WINDOW the profile to the
+ * Run with `node`, not `bun`: this uses `node:inspector`'s Session to WINDOW the profile to the
  * query loop. That is load-bearing — every profile in this package otherwise surfaces the fixture
  * build (`indexEdgeLabel`, `commitElementLabels`, `#commitNormalized`), all closed targets. Starting
  * the profiler after the build makes them structurally absent rather than something to remember to
@@ -49,7 +49,7 @@ const QUERIES = {
   proj: 'MATCH (a:Person)-[:KNOWS]->(b) RETURN b.k AS c',
   count: 'MATCH (a:Person)-[:KNOWS]->(b) RETURN count(*) AS c',
   /*
-   * ⚠️ THE `age` ARMS EXIST BECAUSE THE BENCH'S OWN ROWS ARE DEGENERATE (item 2402). `graphDoc`
+   * THE `age` ARMS EXIST BECAUSE THE BENCH'S OWN ROWS ARE DEGENERATE (item 2402). `graphDoc`
    * carries ONLY `age`, and the bench's `sum over a hop` / `max over a hop` rows aggregate `b.k`,
    * which is absent on every vertex — verified: `sum(b.k)` answers 0 and `max(b.k)` answers null
    * there. So those rows measure an aggregate whose every value is filtered by `nonNull`, and any
@@ -63,7 +63,7 @@ const QUERIES = {
    * The owner's ruling frees them, and these measure whether that buys anything before the
    * contract moves: "if we can get gains, then it doesn't matter the order they're in".
    *
-   * ⚠️ `size(collect(...))` rather than bare `collect(...)`: the bare form returns a 1,000,000
+   * `size(collect(...))` rather than bare `collect(...)`: the bare form returns a 1,000,000
    * element list and the probe would measure the ARRAY RETURN as much as the walk. `size()` keeps
    * the aggregate on the same route while the result stays one number.
    */
@@ -81,7 +81,7 @@ const g = new Graph();
 
 for (let i = 0; i < N; i += 1) {
   /*
-   * ⚠️ PROPS IS LOAD-BEARING FOR THE CROSSOVER, not a detail (item 2402). The endpoint fold's cost is
+   * PROPS IS LOAD-BEARING FOR THE CROSSOVER, not a detail (item 2402). The endpoint fold's cost is
    * per CANDIDATE VERTEX and independent of property count; the row walk's is per EDGE and scales
    * with it. So a wide fixture makes the walk slow and the fold cross EARLY, and a narrow one pushes
    * the crossover up. `graphDoc` carries ONE property and shows the fold losing 3.33x at degree 5,

@@ -8,13 +8,13 @@
  *     edge: outE.has(w).inV.count    drain 12.67   iterate 37.94
  *     edge: outE.has(w).count        drain 10.89   iterate 38.88
  *
- * ⚠️⚠️ **PRICE BEFORE BUILDING.** A `drain().length` still materializes every row, which is what made
+ * **PRICE BEFORE BUILDING.** A `drain().length` still materializes every row, which is what made
  * the scan row worth 1.64x — but this walk's drain is a tight array fill that item 1893 already
  * measured against a hand walk, and `pick(edge)` may be most of its cost. If the drain is already
  * near the floor there is nothing here, and that is the likely answer for `… .count()` where the
  * projection is the element itself.
  *
- * ⚠️ THE FLOORS MUST ANSWER THE SAME NUMBER as the engine, or they price a different query.
+ * THE FLOORS MUST ANSWER THE SAME NUMBER as the engine, or they price a different query.
  */
 import { Graph } from '@lenke/core';
 import { count, gt, has, inV, outE, toArray, traversal, V } from '@lenke/gremlin';
@@ -69,13 +69,13 @@ const handEdgeCount = () => {
 };
 
 /*
- * ⚠️⚠️ **THE BUCKET FLOOR ABOVE IS NOT A FLOOR — THE ENGINE BEATS IT 0.63x.** `flatDrain` iterates a
+ * **THE BUCKET FLOOR ABOVE IS NOT A FLOOR — THE ENGINE BEATS IT 0.63x.** `flatDrain` iterates a
  * CONTIGUOUS array of edges (`edgeFlatFor`), losing the 200,000 `adjFrom.get(type)` lookups and the
  * 200,000 `Set` iterators that the hand walk pays. So the comparison that matters uses the SAME
  * layout: a flat array, built ONCE outside the timed region exactly as the engine's is cached by the
  * second-ask policy.
  *
- * 🔑 What a tight-loop count could still save over `flatDrain` is then only two things: the array
+ * What a tight-loop count could still save over `flatDrain` is then only two things: the array
  * allocation and its 1,000,000 pushes, and `pick(edge)` where `drops` is false.
  */
 const flatEdges = [];
@@ -117,7 +117,7 @@ const handFlatDrain = () => {
 };
 
 /*
- * ⚠️ THE `inV()` FLOOR IS THE SAME NUMBER BY A DIFFERENT ROUTE: every surviving edge has exactly one
+ * THE `inV()` FLOOR IS THE SAME NUMBER BY A DIFFERENT ROUTE: every surviving edge has exactly one
  * head, so counting heads is counting edges. Stated rather than assumed, because if it were ever
  * false this floor would price a different query — the assertion below is what holds it.
  */
@@ -168,7 +168,7 @@ const flatDrainMs = time('HAND flat drain+length', handFlatDrain);
 
 console.log(
   `\n  engine outE.has.inV.count / bucket floor = ${(eInV / floor).toFixed(2)}x` +
-    `\n  ⚠️ THE BUCKET FLOOR IS NOT A FLOOR: the engine is ${(floor / eEdge).toFixed(2)}x FASTER than it,` +
+    `\n  THE BUCKET FLOOR IS NOT A FLOOR: the engine is ${(floor / eEdge).toFixed(2)}x FASTER than it,` +
     `\n     because \`flatDrain\` walks a contiguous array where the hand walk walks ${String(NODES)} Sets.` +
     `\n\n  SAME-LAYOUT COMPARISON (both over the pre-built flat array):` +
     `\n    flat drain + length   ${flatDrainMs.toFixed(2)} ms` +

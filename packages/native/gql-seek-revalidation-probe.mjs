@@ -5,7 +5,7 @@
  * 948 ns. The obvious story is "the count shortcut does not use the index", which `buildNodeCount`
  * invites: it is O(1) only when UNCONSTRAINED and otherwise tallies.
  *
- * ⚠️ THAT STORY IS WRONG, and this probe is what rules it out. Item 149's own tell for a lost index
+ * THAT STORY IS WRONG, and this probe is what rules it out. Item 149's own tell for a lost index
  * is two identical `bench:usage` columns, so the test is the same query with and without the index.
  * It seeks: 10.78x at 400 hits and 142.78x at one. What it pays is AFTER the seek — a profile puts
  * ~75% in predicate evaluation per candidate and ~9% in `evalLabelExpr`, while `countEquals` (the
@@ -100,9 +100,9 @@ for (const shape of SHAPES) {
   const u = nsPerOp(plain, shape.text, shape.paramsOf);
   const s = nsPerOp(indexed, shape.text, shape.paramsOf);
 
-  // ⚠️ An index may change the cost and must NEVER change the count — item 149's contract — so a
+  // An index may change the cost and must NEVER change the count — item 149's contract — so a
   // ratio near 1 is the tell for a LOST index, and a disagreement is a far worse bug than either.
-  const verdict = a === b ? 'answers agree' : `⚠ DIFFER ${a} vs ${b}`;
+  const verdict = a === b ? 'answers agree' : `DIFFER ${a} vs ${b}`;
   const lost = u / s < 1.2 ? '   <-- INDEX NOT USED' : '';
 
   console.log(

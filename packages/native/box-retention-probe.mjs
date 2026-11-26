@@ -7,7 +7,7 @@
  * without bound under remove-churn, which is a memory question rather than a speed one and is not
  * something any existing probe looks at.
  *
- * ⚠️ IT IS NOT A WRONG ANSWER, checked first: `#commitNormalized` always REPLACES `box.bag`, so an
+ * IT IS NOT A WRONG ANSWER, checked first: `#commitNormalized` always REPLACES `box.bag`, so an
  * id that is removed and re-added overwrites the stale bag rather than inheriting it. So this is
  * about retention, not correctness — which is exactly why no correctness test would ever see it.
  *
@@ -22,7 +22,7 @@ const ROUNDS = Number(process.env.ROUNDS ?? 3);
 const sizeOf = (m) => (m instanceof Map ? m.size : -1);
 
 // Heap is reported alongside the counts so the retention has a SIZE and not just a cardinality.
-// ⚠️ `--expose-gc` makes this meaningful; without it the reading includes uncollected garbage and
+// `--expose-gc` makes this meaningful; without it the reading includes uncollected garbage and
 // overstates retention. The probe says which mode it ran in rather than pretending.
 const heapMb = () => {
   if (typeof globalThis.gc === 'function') {

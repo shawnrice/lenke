@@ -8,7 +8,7 @@ import { describe, expect, test } from 'bun:test';
  * against 3.0 with `ORDER BY` deleted, item 1866). The refused spelling is the one every paginated
  * endpoint sends; the admitted one is one no application writes.
  *
- * ⚠️ THE REASON IT GAVE WAS HALF RIGHT, AND THE HALF THAT IS RIGHT IS WHY THE TOP-K RUNGS STILL
+ * THE REASON IT GAVE WAS HALF RIGHT, AND THE HALF THAT IS RIGHT IS WHY THE TOP-K RUNGS STILL
  * REFUSE. `planCache` is a `WeakMap<Query, Plan>` keyed on the AST, which `parseCache` keys by
  * TEXT — so one compiled plan really is reused across different `$n` values, and a route that
  * depended on the value would be wrong for the next page. It does not: this route is
@@ -16,7 +16,7 @@ import { describe, expect, test } from 'bun:test';
  * real row count. `deferredRoute` is the one that picks a heap at COMPILE time and sizes it from
  * the bound, and its `typeof limit !== 'number'` stays.
  *
- * ⚠️ SO THE LOAD-BEARING TEST IS NOT "DOES IT ANSWER" BUT "DOES IT ANSWER THE SAME ACROSS TWO
+ * SO THE LOAD-BEARING TEST IS NOT "DOES IT ANSWER" BUT "DOES IT ANSWER THE SAME ACROSS TWO
  * DIFFERENT BINDINGS OF ONE PLAN". A per-call resolution that leaked the first page's bound into
  * the second would pass every single-query test in this file and fail only that one.
  */
@@ -30,7 +30,7 @@ import { parse } from './parser.js';
 /**
  * The `page` field of the plan `outputColumnSorts` builds, as plain data.
  *
- * ⚠️ IT HAS ITS OWN TEST BECAUSE ROUTING A LITERAL WINDOW THROUGH `page` IS ANSWER-EQUIVALENT, so
+ * IT HAS ITS OWN TEST BECAUSE ROUTING A LITERAL WINDOW THROUGH `page` IS ANSWER-EQUIVALENT, so
  * no answer test can see it — and a mutant that does exactly that SURVIVED the first run. It is not
  * harmless: the re-entry it causes is what measured the literal `OFFSET 100 LIMIT 20` control at
  * **0.68 -> 1.00 ms (1.47x SLOWER)** before `sortRowsByColumns` was restructured to branch once.
@@ -102,7 +102,7 @@ describe('a parameterized page takes the rung', () => {
   });
 
   /**
-   * ⚠️ ONLY A PARAMETERIZED WINDOW TRAVELS ON `page`. A literal one must resolve at compile time
+   * ONLY A PARAMETERIZED WINDOW TRAVELS ON `page`. A literal one must resolve at compile time
    * and carry none, so `sortRowsByColumns` runs its original body with no re-entry — see the note
    * on `planPage` for the 1.47x that costs when it does not.
    */
@@ -122,7 +122,7 @@ describe('a parameterized page takes the rung', () => {
   });
 
   /**
-   * ⚠️ THE ONE THAT CATCHES A LEAKED BOUND. The same compiled plan is driven twice with different
+   * THE ONE THAT CATCHES A LEAKED BOUND. The same compiled plan is driven twice with different
    * params — the parse and plan caches are keyed on the TEXT, so the second call reuses the first
    * call's plan — and the two answers must differ exactly as the bounds do.
    */
@@ -137,7 +137,7 @@ describe('a parameterized page takes the rung', () => {
   });
 
   /**
-   * ⚠️ THE PAGINATION PROPERTY, which is what an application actually relies on: walking the pages
+   * THE PAGINATION PROPERTY, which is what an application actually relies on: walking the pages
    * must reconstruct the whole ordered result exactly once. A dropped or duplicated row at a page
    * boundary is the classic failure and no single-page assertion sees it.
    */
@@ -181,7 +181,7 @@ describe('a parameterized page takes the rung', () => {
   });
 
   /**
-   * ⚠️ THE NULL CONTROL the build was required to show (item 1866's third condition): the LITERAL
+   * THE NULL CONTROL the build was required to show (item 1866's third condition): the LITERAL
    * spelling must be UNCHANGED, because this touched a gate every projection rung reads. A param
    * page that worked while silently moving the literal page's answer is a regression, not a win.
    */
@@ -199,7 +199,7 @@ describe('a parameterized page takes the rung', () => {
   });
 
   /**
-   * ⚠️ A BAD BOUND MUST STILL RAISE, on this route as on the general one. `compileProjection` calls
+   * A BAD BOUND MUST STILL RAISE, on this route as on the general one. `compileProjection` calls
    * `noteCountParam` for both bounds, so the check is route-independent — but "route-independent"
    * is a claim about code I did not write, so it is tested rather than cited. A negative bound
    * reaching `rows.slice()` unchecked would silently return the LAST k rows.

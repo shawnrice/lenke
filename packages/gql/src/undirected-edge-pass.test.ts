@@ -13,7 +13,7 @@ import { query } from './index.js';
  * row counts and digests. Item 1430 priced it at ~12.5x against a hand-written floor before it was
  * built.
  *
- * ⚠️ THE GATE IS THE ONLY THING STANDING BETWEEN THIS AND WRONG ROWS, AND THE BENCH CANNOT TEST IT.
+ * THE GATE IS THE ONLY THING STANDING BETWEEN THIS AND WRONG ROWS, AND THE BENCH CANNOT TEST IT.
  * `isolated-row-bench.mjs`'s `MULTILABEL` knob varies EDGE labels; every vertex in it is always `P`,
  * so the route always fires there and a broken gate would never show up in a measurement. These
  * tests are the guard.
@@ -24,7 +24,7 @@ import { query } from './index.js';
  * ENDPOINT per edge. `vacuousLabel` is FALSE for `undefined`, so the absent case needs its own test
  * — a detail that would otherwise silently route every unlabelled hop down the slow path.
  *
- * ⚠️ AND THE DECISION IS PER CALL, because vacuity is a property of the GRAPH. The same query text
+ * AND THE DECISION IS PER CALL, because vacuity is a property of the GRAPH. The same query text
  * is correct on one graph and wrong on another if it is mis-decided, which the last describe block
  * pins by running one query against both fixtures in both orders.
  */
@@ -93,7 +93,7 @@ describe('both labels free: the edge route fires and the rows are right (item 14
 });
 
 describe('a FILTERING label declines the edge route and still answers correctly (item 1431)', () => {
-  test('⚠️ a filtering FAR label keeps only the matching endpoints', () => {
+  test('a filtering FAR label keeps only the matching endpoints', () => {
     // `d` is `Q`. On `F` the two rows are (a, far d) and (d, far a); `y:P` keeps only the second.
     // If the gate were ignored and the edge route taken regardless, both would come back.
     expect(ns(build(false), 'MATCH (x)-[:F]-(y:P) RETURN y.n AS n')).toEqual([1]);
@@ -192,7 +192,7 @@ describe('PARALLEL edges each contribute (item 1431)', () => {
 });
 
 describe('the route decision is PER CALL, not per compile (item 1431)', () => {
-  test('⚠️ one query text, two graphs, two different correct answers', () => {
+  test('one query text, two graphs, two different correct answers', () => {
     // THE PER-COMPILE GUARD. A decision cached across calls would answer the second graph with the
     // first graph's route. Asserted in both orders so neither can be the lucky one.
     const Q = 'MATCH (x)-[:F]-(y:P) RETURN y.n AS n';

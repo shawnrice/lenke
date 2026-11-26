@@ -6,7 +6,7 @@
 // a.n = $p0` puts `Array.from` at **13.1%** and `flatAdj` at 5.2%; an existing note in
 // `var-length-count.ts` independently records `flatAdj` at **36.6%** on a declined depth-4 shape.
 //
-// ⚠️ PRICE IT BEFORE BUILDING IT, because this area has already resisted: the comment above
+// PRICE IT BEFORE BUILDING IT, because this area has already resisted: the comment above
 // `flatAdj` records a previous change measured at ~1.04x against a BIMODAL before-arm and
 // withdrawn, and item 735's ablation found the walk is only ~20% of depth-5 enumeration with ~80%
 // downstream of the yield. Item 1893's method — a hand arm's number is the whole decision.
@@ -43,7 +43,7 @@ for (let e = 0; e < N * FANOUT; e += 1) {
 }
 
 /**
- * ⚠️ THE VISIT LIST IS THE REAL ONE, not a uniform sample. The walk visits the 25,000 seeds
+ * THE VISIT LIST IS THE REAL ONE, not a uniform sample. The walk visits the 25,000 seeds
  * (`a.n = 3`) at depth 0 and each of their E-neighbours at depth 1, so the bucket sizes it copies
  * follow the fixture's actual out-degree distribution. Building the list from the graph rather than
  * assuming it is what keeps this a ceiling for the real shape.
@@ -150,7 +150,7 @@ console.log(
     `(${(results.copy / results.iter).toFixed(2)}x on this slice alone)`,
 );
 console.log(
-  `⚠️ READ THIS AS A CEILING, NOT A PREDICTION: the real walk also pays the DFS frame, the mark set,\n` +
+  `READ THIS AS A CEILING, NOT A PREDICTION: the real walk also pays the DFS frame, the mark set,\n` +
     `   the per-row yield object and everything downstream of it. Against the measured 513.78 ms of\n` +
     `   MATCH (a:T)-[:E]->{2,2}(b:T) WHERE a.n = $p0, this slice is ` +
     `${((saved / 513.78) * 100).toFixed(1)}% of the row.`,

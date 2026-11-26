@@ -29,7 +29,7 @@ const graph = new Graph();
 /**
  * `Person` on every vertex, `Employee` on every other, `Mgr` on every third.
  *
- * ⚠️ `Mgr` EXISTS BECAUSE `dropVacuousLabels` (item 540) DELETES A `hasLabel` WHOSE BUCKET HOLDS
+ * `Mgr` EXISTS BECAUSE `dropVacuousLabels` (item 540) DELETES A `hasLabel` WHOSE BUCKET HOLDS
  * EVERY LIVE ELEMENT. The start-filtered arm was first written as `hasLabel('Person')` on a fixture
  * where every vertex was a `Person`, so the step was removed from the plan and the arm silently
  * measured the BARE shape — the two arms agreeing to within 3% was the giveaway. A start label must
@@ -73,7 +73,7 @@ for (let i = 0; i < N; i++) {
 }
 
 const ARMS: Record<string, () => number> = {
-  // ⚠️ THE ONE SHAPE THAT PAYS NEW PER-EDGE WORK. `bothFilteredHopCount` walks EDGES via
+  // THE ONE SHAPE THAT PAYS NEW PER-EDGE WORK. `bothFilteredHopCount` walks EDGES via
   // `tallyFarEnds`, which now checks `labelSets.length !== 0` per edge — so a both-sides query with
   // NO far label is where the change can only cost. Measured because "obviously cheap so it must be
   // free" is not evidence in this repo.

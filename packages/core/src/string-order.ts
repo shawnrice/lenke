@@ -1,14 +1,14 @@
 /**
  * UNICODE CODE-POINT STRING ORDERING, SHARED BY BOTH ENGINES (item 1712).
  *
- * ⚠️ IT LIVES IN `core` BECAUSE IT IS AN ENGINE-WIDE CONTRACT, NOT A LANGUAGE ONE. The Rust side
+ * IT LIVES IN `core` BECAUSE IT IS AN ENGINE-WIDE CONTRACT, NOT A LANGUAGE ONE. The Rust side
  * has no per-language string order: `exec/order.rs` compares a `Col::Str` with `v[a].cmp(&v[b])`
  * (Rust `str::cmp`, byte-wise UTF-8 = code point) and `ir.rs`'s `SortKey` doc states that BOTH
  * languages order non-nulls by `cmp_total`, with only null PLACEMENT differing — GQL last,
  * Gremlin first. So TS needs one string order too, and `temporalCmpTotal` next door is the exact
  * precedent for putting a shared total-order primitive here.
  *
- * ⚠️ IT IS HERE BECAUSE GREMLIN DID NOT HAVE IT, AND THAT WAS A CONFIRMED BYTE-IDENTITY BREAK
+ * IT IS HERE BECAUSE GREMLIN DID NOT HAVE IT, AND THAT WAS A CONFIRMED BYTE-IDENTITY BREAK
  * (the 15th open value divergence, found at item 1711 and fixed at 1712). Gremlin's `cmpOrd` was a
  * plain `x < y ? -1 : x > y ? 1 : 0`, so `g.V().values('s').order()` disagreed with the engine on
  * any column mixing an astral char with U+E000..U+FFFF. Measured on one fixture, three legs:
@@ -19,13 +19,13 @@
  *     gremlin TS    a  z  U+1F600  U+E000      the outlier: code UNIT
  * ```
  *
- * ⚠️ NO FUZZER COULD HAVE FOUND IT: `gremlin-fuzz.test.ts` calls `order(` 59 times and generates
+ * NO FUZZER COULD HAVE FOUND IT: `gremlin-fuzz.test.ts` calls `order(` 59 times and generates
  * ZERO astral and ZERO U+E000..U+FFFF characters, so the dangerous case is never CONSTRUCTED. That
  * is item 921's own rule firing in the other engine; the GQL differential fuzzer DOES build it
  * (`STR_CHARS` carries `\uE000`, and 20% of its strings splice an astral char), which is exactly
  * why GQL's side was already right.
  */
-// ⚠️ ONE DEFINITION OF "CAN CODE-UNIT ORDER DISAGREE WITH CODE-POINT ORDER", and it now has
+// ONE DEFINITION OF "CAN CODE-UNIT ORDER DISAGREE WITH CODE-POINT ORDER", and it now has
 // THREE callers: GQL's `compareValues`, GQL's ORDER BY column specialization, and Gremlin's
 // `cmpSameType` (item 1712). A copy in any of them could drift. It tests HIGH surrogates only,
 // which is correct and load-bearing: a string holding only LONE LOW surrogates has

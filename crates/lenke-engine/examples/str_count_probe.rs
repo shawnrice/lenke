@@ -11,12 +11,12 @@
 //! which pays an iterator plus a closure per row for what is, in the overwhelmingly common case, one
 //! comparison against one literal.
 //!
-//! ⚠️ THE FIXTURE HAS TO MAKE THE COLUMN A `Str` AND NOT A `Dict`, which is the whole difficulty:
+//! THE FIXTURE HAS TO MAKE THE COLUMN A `Str` AND NOT A `Dict`, which is the whole difficulty:
 //! `seek_crossover_probe` uses eight distinct values and is dictionary-encoded, so it exercises the
 //! branch item 1219 already fixed and says NOTHING about this one. Here every node gets a distinct
 //! `name`, so the column cannot be dictionary-encoded.
 //!
-//! ⚠️ AND THE PROBE ASSERTS WHICH BRANCH SERVED IT, rather than assuming. Items 1215, 1216 and 1217
+//! AND THE PROBE ASSERTS WHICH BRANCH SERVED IT, rather than assuming. Items 1215, 1216 and 1217
 //! each measured code the query never reached, and item 1219 found that mistake had HIDDEN a 7x.
 //! `LENKE_PROBE_ARM=1` makes the engine print the serving arm; run it once before trusting a number.
 //!

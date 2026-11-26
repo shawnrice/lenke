@@ -15,7 +15,7 @@ import { query } from '@lenke/gql';
  * bare `LIMIT` is the shape that should be CHEAPEST — it may stop after ten rows — and it is the
  * one on the general pipeline. The same holds for the one-hop projection rung.
  *
- * ⚠️ WHETHER THAT COSTS ANYTHING IS THE OPEN QUESTION, and the reason is specific: the general path
+ * WHETHER THAT COSTS ANYTHING IS THE OPEN QUESTION, and the reason is specific: the general path
  * may well short-circuit on the limit and never materialize the other 199,990 rows, in which case
  * the route is irrelevant and this is a finding about a comment, not about speed. That is what this
  * measures. A route difference is NOT a perf finding until timed — `CLOSED.md` records a 5000x
@@ -54,7 +54,7 @@ for (let i = 0; i < NODES; i += 1) {
 
 // One out-edge per node, so the hop shapes have a fixed row count equal to NODES.
 //
-// ⚠️ THE TARGET IS `Math.floor(i / 7)`-SHIFTED, NOT `(i * 7) % NODES`. CLAUDE.md records the
+// THE TARGET IS `Math.floor(i / 7)`-SHIFTED, NOT `(i * 7) % NODES`. CLAUDE.md records the
 // mechanical defect that `to = (a*k + b) % N` is invariant under `k -> k + N`, so a whole family of
 // this repo's generators piled every one of a vertex's edges onto one target. At FANOUT 1 that is
 // harmless (degree 1 cannot branch), but writing it the safe way costs nothing and the probe asserts
@@ -106,7 +106,7 @@ const SHAPES = {
   /**
    * --- group "offset": THE BEFORE/AFTER PAIR, IN ONE BUILD (item 1776) ------
    *
-   * ⚠️ `offsetparam` WAS THE "BEFORE" ARM AND IS NOW THE SPELLING TWIN. Item 1776 gave the literal
+   * `offsetparam` WAS THE "BEFORE" ARM AND IS NOW THE SPELLING TWIN. Item 1776 gave the literal
    * skip-only page to the node-projection rung and left the PARAMETERIZED spelling on the general
    * path, so `OFFSET 10` and `OFFSET $s` with `s = 10` were the same query down the two routes and
    * both measurable in one build — which is how items 1776/1777's before/after figures were taken

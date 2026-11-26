@@ -6,7 +6,7 @@
 // `detectGroupedHopAggregate` (grouped), and NOTHING for the ungrouped hop. Item 1244's sweep
 // measured the three rows at 131-165 ms against native's 2.4-3.4.
 //
-// ⚠️ THE ALGEBRA THAT MAKES A FAST PATH POSSIBLE, and the reason it does not generalize:
+// THE ALGEBRA THAT MAKES A FAST PATH POSSIBLE, and the reason it does not generalize:
 // min/max over a MULTISET equals min/max over its distinct support, so the extremum can be folded
 // over the ~200,000 DISTINCT endpoints instead of the ~1,000,000 edges — and no endpoint has to be
 // resolved per edge. `count(*)` cannot do this; it needs the multiplicity. `sum`/`avg` cannot
@@ -192,7 +192,7 @@ console.log(`  B answer: ${perEdge.answer}`);
 console.log(`  D answer: ${perEndpointUniversal.answer}`);
 console.log(`  C answer: ${perEndpoint.answer}`);
 
-// ⚠️ THE ANSWERS MUST AGREE, or the cheaper arm is measuring a different question. Item 702's
+// THE ANSWERS MUST AGREE, or the cheaper arm is measuring a different question. Item 702's
 // lesson: a fixture whose answer is invariant to the thing being varied cannot validate anything.
 const a = JSON.parse(engine.answer) as { lo: unknown; hi: unknown }[];
 const b = JSON.parse(perEdge.answer) as { lo: unknown; hi: unknown }[];

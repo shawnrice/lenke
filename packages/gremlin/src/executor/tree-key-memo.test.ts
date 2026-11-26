@@ -16,11 +16,11 @@ import { newContext } from './runtime.js';
  * Measured at 200,000 vertices / 800,000 edges, with `tree().by(k)` — the same shape with `treeKey`
  * skipped — as the control:
  *
- *     tree()         1013.61 -> 547.01 ms   ⬅ 1.85x
+ *     tree()         1013.61 -> 547.01 ms   <- 1.85x
  *     tree().by(k)    269.67 -> 267.90       flat, never calls treeKey
  *     path()            8.66                 the same 600,000 paths, no keys at all
  *
- * ⚠️⚠️ THE MEMO IS GATED ON A CORRECTNESS CONDITION, NOT A TUNING KNOB, and the gate is the reason
+ * THE MEMO IS GATED ON A CORRECTNESS CONDITION, NOT A TUNING KNOB, and the gate is the reason
  * this file exists. The stream is pulled LAZILY, so a mutation step upstream of `tree()` runs
  * INTERLEAVED with the tree insertion — an element can be keyed, then mutated, then keyed again, and
  * the two keys legitimately differ. A memo would answer from the stale side, which native does not.
@@ -36,7 +36,7 @@ const fixture = (): Graph => {
 
   g.addEdge({ id: 'e1', from: vx('a'), to: vx('b'), labels: ['E'], properties: {} });
   g.addEdge({ id: 'e2', from: vx('b'), to: vx('c'), labels: ['E'], properties: {} });
-  // ⚠️ `b` IS BOTH A FAR END (of e1) AND A NEAR END (of e2), so it is keyed TWICE in one build.
+  // `b` IS BOTH A FAR END (of e1) AND A NEAR END (of e2), so it is keyed TWICE in one build.
   // That alone does NOT make a stale memo observable — see `cyclic()` below for the shape that does.
 
   return g;
@@ -45,7 +45,7 @@ const fixture = (): Graph => {
 /**
  * The tree built OUTSIDE the engine, from `path()`'s own output.
  *
- * ⚠️ THIS IS THE ORACLE AND IT MUST NOT SHARE CODE WITH THE SUBJECT. `tree()` and this differ in
+ * THIS IS THE ORACLE AND IT MUST NOT SHARE CODE WITH THE SUBJECT. `tree()` and this differ in
  * every respect except the key function's definition, which is the contract (`toJSON()` stringified)
  * rather than an implementation detail — so a memo that returned a wrong key fails here, and so
  * would a tree that nested wrongly.
@@ -73,7 +73,7 @@ const oracleTree = (paths: readonly unknown[]): Record<string, unknown> => {
 };
 
 /**
- * ⚠️ A CYCLE, which is what makes a stale memo OBSERVABLE. On an acyclic chain a mutation step
+ * A CYCLE, which is what makes a stale memo OBSERVABLE. On an acyclic chain a mutation step
  * upstream of `tree()` always reaches an element before its first keying, so a memo stores the
  * already-mutated key and answers identically. Here `a` is keyed clean in the first traverser and
  * again, after its own mutation, in the last.
@@ -120,7 +120,7 @@ describe('the tree key memo', () => {
   });
 
   /**
-   * ⚠️ A `by(...)` MODULATOR BYPASSES `treeKey` ENTIRELY, so the memo must not touch it — the keys
+   * A `by(...)` MODULATOR BYPASSES `treeKey` ENTIRELY, so the memo must not touch it — the keys
    * are the modulator's stringified values, not canonical renderings.
    */
   it('a by() modulator keys by the modulator value, not the element', () => {
@@ -131,7 +131,7 @@ describe('the tree key memo', () => {
   });
 
   /**
-   * ⚠️ A SCALAR PATH POSITION IS NOT MEMOIZED, by design: it stringifies in one operation, so a memo
+   * A SCALAR PATH POSITION IS NOT MEMOIZED, by design: it stringifies in one operation, so a memo
    * entry per distinct value would be the cost it was meant to remove. The answer must be unchanged.
    */
   it('a scalar in the path still keys by String(node)', () => {
@@ -153,7 +153,7 @@ describe('the tree key memo', () => {
 });
 
 /**
- * ⚠️ THE GATE. `planMutates` is what turns the memo off, and these are the shapes it must catch —
+ * THE GATE. `planMutates` is what turns the memo off, and these are the shapes it must catch —
  * a missed one is a WRONG ANSWER rather than a lost optimisation, which is why the consumer defaults
  * to "not stable" and only this set turns it on.
  */
@@ -165,7 +165,7 @@ describe('the mutation gate', () => {
   });
 
   /**
-   * ⚠️ AND INSIDE A SUB-PLAN, which is why `planMutates` recurses: a mutation in a `union` arm
+   * AND INSIDE A SUB-PLAN, which is why `planMutates` recurses: a mutation in a `union` arm
    * changes elements exactly as a top-level one does, and `SUBPLAN_FIELDS` does not include the
    * `plans` array or `bys`, so both are walked explicitly.
    */
@@ -183,7 +183,7 @@ describe('the mutation gate', () => {
   });
 
   /**
-   * ⚠️ THE INTERLEAVED CASE, PINNED. `treekey-mutation-probe-1922.mjs` found
+   * THE INTERLEAVED CASE, PINNED. `treekey-mutation-probe-1922.mjs` found
    * `V().out(E).property(z,2).tree()` keying ONE of its two top-level entries WITH the new property
    * and the other without — the same element keyed on both sides of its own mutation. With the gate
    * the memo is off and that stays true; a memo would collapse them.
@@ -196,17 +196,17 @@ describe('the mutation gate', () => {
     const c = g.getVertexById('c') as Vertex;
 
     /*
-     * ⚠️⚠️ THIS IS THE ASSERTION FOUR GATE MUTANTS SURVIVED WITHOUT, and the first version of it
+     * THIS IS THE ASSERTION FOUR GATE MUTANTS SURVIVED WITHOUT, and the first version of it
      * could not have caught them. It asserted "1 of 2 top-level keys mentions z" on an acyclic
      * `a->b, b->c` fixture — but there the property runs on the FAR end BEFORE `tree` keys it, so
      * every element is mutated before its FIRST keying and a memo stores the already-mutated key.
      * Same answer either way; the "1 of 2" was only "`a` was never mutated".
      *
-     * 🔑 THE DISCRIMINATING SHAPE NEEDS A CYCLE, so an element is keyed CLEAN, then mutated, then
+     * THE DISCRIMINATING SHAPE NEEDS A CYCLE, so an element is keyed CLEAN, then mutated, then
      * keyed AGAIN. Traverser order is `[a,b]`, `[b,c]`, `[c,a]`: `a` is keyed at the TOP in the
      * first and, after `property` mutates it in the third, keyed again UNDER `c`.
      *
-     * ⚠️ AND IT IS A NESTED KEY, NOT A TOP-LEVEL ONE — the second thing the first version missed.
+     * AND IT IS A NESTED KEY, NOT A TOP-LEVEL ONE — the second thing the first version missed.
      * Every vertex here has exactly one out-edge, so the top level is always three keys whatever
      * happens. `treememo-stale-probe-1922.mjs` printed the whole tree to find this.
      */
@@ -228,7 +228,7 @@ describe('the mutation gate', () => {
   });
 
   /**
-   * ⚠️ THE CONSERVATIVE DEFAULT IS THE WHOLE SAFETY STORY, so it is asserted rather than trusted: a
+   * THE CONSERVATIVE DEFAULT IS THE WHOLE SAFETY STORY, so it is asserted rather than trusted: a
    * mutant flipping `newContext`'s `keysStable` default to `true` survived the first battery because
    * nothing looked at it. A context built without the flag — sub-plan evaluation, a hand-made call —
    * must never memoize.

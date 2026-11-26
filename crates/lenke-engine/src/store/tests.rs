@@ -2533,7 +2533,7 @@ fn batch_delete_keeps_every_label_bucket_exact_sorted_and_restorable() {
 /// single-node delete O(1) in the node count instead of O(total) — deleting one `Tmp` node used
 /// to rewrite the whole `User` bucket too (0.130 us against 65.180 at 200,000 nodes).
 ///
-/// ⚠️ MUTATION FOUND THIS CASE MISSING, and the reason is a fixture subtlety worth stating.
+/// MUTATION FOUND THIS CASE MISSING, and the reason is a fixture subtlety worth stating.
 /// `batch_delete_keeps_every_label_bucket_exact_sorted_and_restorable` deletes `[0, 3, 6, 9]`,
 /// and victim `0` happens to carry EVERY label in that fixture — so a mutant that checked only
 /// `ids[0]` still touched every bucket and the test passed. The membership test is only
@@ -2588,7 +2588,7 @@ fn a_batch_delete_cleans_a_bucket_only_a_later_victim_is_in() {
 /// nodes cost 7.37 ms. It now pops only when the bucket's LAST element is that id, which is exact
 /// because the popped node holds the highest id and the buckets are sorted ascending.
 ///
-/// ⚠️ MUTATION FOUND THIS CASE MISSING, and it is the CORRUPTION one. Replacing the guarded pop
+/// MUTATION FOUND THIS CASE MISSING, and it is the CORRUPTION one. Replacing the guarded pop
 /// with an unconditional `b.pop()` SURVIVED the whole suite: every existing rollback test inserts
 /// a node carrying the same label as the nodes already there, so every bucket contains the new id
 /// and popping unconditionally happens to be right.

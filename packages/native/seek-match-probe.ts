@@ -5,7 +5,7 @@
 //   SEEK_MATCHES=200 SEEK_OPS=300 SHAPE=inline bun seek-match-probe.ts
 //   SEEK_INDEXED=0 SHAPE=clause bun seek-match-probe.ts   # the ROUTE CHECK, see below
 //
-// ⚠️ IT IMPORTS `@lenke/gql`, WHICH IS THE BUILT DIST — so `bun run build` first, or this measures
+// IT IMPORTS `@lenke/gql`, WHICH IS THE BUILT DIST — so `bun run build` first, or this measures
 // the previous build. The relative `../gql/src/index.js` reach-in that an uncommitted A/B wants is
 // a lint error here for a good reason (it hides the edge from the project graph), and item 1284
 // is what a src-vs-dist mix-up costs: two pricing runs reported "nothing moved" because both arms
@@ -15,7 +15,7 @@
 // 1.56x the 0.2238 it reads once built. A reading from this file with no build before it is a
 // reading of whatever was built last.
 //
-// ⚠️ THE ANSWER IS: THEY CONVERGE, 1.02x. Item 578's recorded 1.41x does not reproduce, and this
+// THE ANSWER IS: THEY CONVERGE, 1.02x. Item 578's recorded 1.41x does not reproduce, and this
 // probe exists so that is checkable rather than re-derived. Min of three order-alternated rounds,
 // one shape per process, 200,000 vertices, 1000 matches a seek, all answering 1000:
 //
@@ -33,18 +33,18 @@
 //   - `bench:usage`'s `read: keyed dedup lookup` pair has only ~200 matches, where its own note
 //     records three runs swinging 3.3x and 3.6x WITH THE DIRECTION DISAGREEING.
 //
-// ⚠️⚠️ AND AT `SEEK_OPS=40` THIS PROBE ITSELF SAID 2.27x, IN THE OPPOSITE DIRECTION TO 578. Its
+// AND AT `SEEK_OPS=40` THIS PROBE ITSELF SAID 2.27x, IN THE OPPOSITE DIRECTION TO 578. Its
 // per-shape MEDIAN swung 1.7x between otherwise identical rounds — larger than the effect — and
 // clause/inline/seekonly all moved independently. 300 ops a rep collapses that to 1-2%. An
 // instrument whose own variance exceeds the effect does not return a weak result, it returns a
 // CONFIDENT WRONG ONE, which is how 1.41x and 2.27x both got measured.
 //
-// ⚠️ THE ROUTE CHECK IS NOT OPTIONAL — "every member must SEEK; one that scans instead is the bug
+// THE ROUTE CHECK IS NOT OPTIONAL — "every member must SEEK; one that scans instead is the bug
 // this exists for" (`spelling-probe`). `SEEK_INDEXED=0` is the discriminator: indexed 0.1945ms
 // against unindexed 4.3701ms is 22.5x, so the seek is real. A spelling that quietly scanned would
 // read ~4.4ms and could not be mistaken for one that seeks.
 //
-// ⚠️ THE SECOND CONJUNCT IS VACUOUS BY DESIGN: `active = true` holds for every row, so the seek's
+// THE SECOND CONJUNCT IS VACUOUS BY DESIGN: `active = true` holds for every row, so the seek's
 // row count stays at 1000 and a per-row gap stays visible. A SELECTIVE second conjunct measures the
 // filter instead — the trap item 578's own note names, and the reason its `u.active = true` kept a
 // third of the rows rather than a fiftieth.
@@ -94,7 +94,7 @@ let ans = -1;
 // Each rep runs the query OPS times with a DIFFERENT param, so the measurement is per-operation
 // (the serving question) rather than one big scan, and no single value's result can be cached.
 //
-// ⚠️ OPS IS 300, NOT 40, AND THAT IS THE INSTRUMENT RATHER THAN A PREFERENCE. At 40 the measured
+// OPS IS 300, NOT 40, AND THAT IS THE INSTRUMENT RATHER THAN A PREFERENCE. At 40 the measured
 // unit was ~0.1ms and the per-shape MEDIAN swung 1.7x between otherwise identical rounds — bigger
 // than the between-shape gap being measured, so no comparison was possible. 300 puts each rep in
 // the tens of milliseconds, well clear of timer and JIT jitter.

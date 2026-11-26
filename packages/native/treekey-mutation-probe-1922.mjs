@@ -5,7 +5,7 @@
 // is **744 ms of a 1013 ms shape** (measured: `tree().by(k)`, which skips `treeKey`, is 269.67), and
 // a per-element MEMO would collapse 1,200,000 serializations into ~200,000 distinct ones.
 //
-// ⚠️ BUT A MEMO IS ONLY SOUND IF THE ELEMENT CANNOT CHANGE MID-BUILD. The stream is pulled lazily,
+// BUT A MEMO IS ONLY SOUND IF THE ELEMENT CANNOT CHANGE MID-BUILD. The stream is pulled lazily,
 // so a mutation step UPSTREAM of `tree()` runs interleaved with the tree insertion: an element keyed
 // early, then mutated, then keyed again would get a STALE key from a memo and a fresh one without.
 // `Graph` has no synchronous mutation counter (`version`/`epoch` advance on a microtask DRAIN —
@@ -30,7 +30,7 @@ const build = () => {
   g.addEdge({ id: 'e2', from: vx('b'), to: vx('c'), labels: ['E'], properties: {} });
   // `b` is both a FAR end (of e1) and a NEAR end (of e2).
   //
-  // ⚠️ THAT IS NOT ENOUGH TO SEE A STALE MEMO, which item 1922's mutation run proved the hard way:
+  // THAT IS NOT ENOUGH TO SEE A STALE MEMO, which item 1922's mutation run proved the hard way:
   // on an acyclic chain the property step reaches the far end BEFORE `tree` keys it, so every
   // element is mutated before its FIRST keying and a memo stores the already-mutated key.
   // `treememo-stale-probe-1922.mjs` has the cyclic fixture that CAN discriminate.
@@ -68,7 +68,7 @@ for (const [name, make] of CASES) {
 }
 
 console.log(
-  '\n⚠️ IF A MUTATION STEP CAN SIT UPSTREAM AND THE KEYS STRADDLE IT, a memo must be gated on the\n' +
+  '\nIF A MUTATION STEP CAN SIT UPSTREAM AND THE KEYS STRADDLE IT, a memo must be gated on the\n' +
     '   plan having no mutation step. If the engine refuses such plans, or the keys are uniform, the\n' +
     '   memo is unconditional and the gate would be dead code.',
 );

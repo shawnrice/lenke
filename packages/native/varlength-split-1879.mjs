@@ -1,18 +1,18 @@
 /**
  * WHERE ARE THE `var-length` FAMILY'S MILLISECONDS? (item 1879)
  *
- * ⚠️ FLOOR FIRST, FRAMES LATER — item 1878's lesson. That item spent a whole tick confirming a 4.7x
+ * FLOOR FIRST, FRAMES LATER — item 1878's lesson. That item spent a whole tick confirming a 4.7x
  * that was 2 microseconds, because it started from a ratio. This starts from the workload screen's
  * ABSOLUTES: after `multi-pattern` (closed at item 1864 as a genuine product), `chain-rows` 583 ms
  * and `var-length` 543 ms are 54% of the addressable screen time, and `chain-rows` is already at its
  * layout ceiling (item 1859). So `var-length`'s 543 ms is the biggest unexamined number there is.
  *
- * ⚠️ AND THE FAMILY IS SEVEN SHAPES, NOT ONE. It draws four row-returning bodies and three counting
+ * AND THE FAMILY IS SEVEN SHAPES, NOT ONE. It draws four row-returning bodies and three counting
  * ones, crossed with four bounds and three selectors (none / `TRAIL` / `ACYCLIC`). A profile of "the
  * family" would be a profile of whichever shape happens to dominate, so this splits the 543 ms
  * BEFORE anything is profiled.
  *
- * ⚠️ THE SELECTOR MATTERS AND IS THE POINT. Item 1848's bounded-reach rung records `ACYCLIC {1,3}`
+ * THE SELECTOR MATTERS AND IS THE POINT. Item 1848's bounded-reach rung records `ACYCLIC {1,3}`
  * at 1.00x — REFUSED on purpose, because the rung counts trails and cannot answer acyclic paths. So
  * the acyclic arms go to path ENUMERATION in the general matcher. If they own most of the 543 ms,
  * the family's cost is a deliberate refusal rather than a gap.

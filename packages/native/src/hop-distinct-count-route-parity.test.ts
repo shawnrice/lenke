@@ -10,7 +10,7 @@
 // what this file is for. The oracle is NATIVE, which is unaffected by a TS route change, so any
 // disagreement introduced by the reroute shows up as a TS-vs-native failure here.
 //
-// ⚠️ And `bun run fuzz` cannot stand in for this: `genQuery` in `backend-parity-fuzz` generates no
+// And `bun run fuzz` cannot stand in for this: `genQuery` in `backend-parity-fuzz` generates no
 // `count(DISTINCT …)` over a hop at all, the same blind spot item 1582 found for the one-column
 // grouped count. A green sweep over a shape nobody generates is not evidence.
 import { describe, expect, test } from 'bun:test';
@@ -53,7 +53,7 @@ suite('hop count(DISTINCT …) after the item 1583 reroute: TS vs native', () =>
     // The rerouted shapes: dedup on each end, by identity and by property.
     'MATCH (a:P)-[:E]->(b) RETURN count(DISTINCT b) AS c',
     'MATCH (a:P)-[:E]->(b) RETURN count(DISTINCT a) AS c',
-    // ⚠️ THE NULL CASES, which are the reason this file exists.
+    // THE NULL CASES, which are the reason this file exists.
     'MATCH (a:P)-[:E]->(b) RETURN count(DISTINCT b.k) AS c',
     'MATCH (a:P)-[:E]->(b) RETURN count(DISTINCT a.k) AS c',
     // A property NO vertex has, so every value is null and the answer must be 0 and not 1.

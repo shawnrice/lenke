@@ -6,16 +6,16 @@
  *
  *     countProjectedWalk = (values) => [values.drain === undefined ? countIterable(values) : values.drain().length]
  *
- * ⚠️⚠️ **WHETHER `countIterable` IS BETTER IS GENUINELY OPEN, which is why this starts with a census
+ * **WHETHER `countIterable` IS BETTER IS GENUINELY OPEN, which is why this starts with a census
  * and not a patch.** Item 1998 measured a walk WITHOUT a drain at **1.55x** — a generator's per-yield
  * cost can lose to a tight drain loop even though the drain allocates an array. So the question is
  * per-SHAPE, and the first thing needed is the list of shapes that actually arrive here.
  *
- * ⚠️ GUESSING FROM ROW NAMES WOULD BE WRONG IN BOTH DIRECTIONS: `scan: count` is answered in closed
+ * GUESSING FROM ROW NAMES WOULD BE WRONG IN BOTH DIRECTIONS: `scan: count` is answered in closed
  * form from a bucket `size` (O(1), 0.00 ms on the screen) and never reaches this function, while a
  * row whose name says nothing about counting may still land here through a residual.
  *
- * ⚠️ IT IS A MUTATION RUN — pristine copy under `target/`, restore in a `finally`, and the patch is
+ * IT IS A MUTATION RUN — pristine copy under `target/`, restore in a `finally`, and the patch is
  * ASSERTED PRESENT before any shape is measured, because a silently-unpatched build would report
  * "nothing reaches it" indistinguishably from the truth (item 2033 made exactly that mistake).
  *
@@ -118,7 +118,7 @@ try {
   build();
 
   /*
-   * ⚠️ THE PATCH IS ASSERTED TO BE LIVE IN THE BUILT DIST before anything is measured. An absent
+   * THE PATCH IS ASSERTED TO BE LIVE IN THE BUILT DIST before anything is measured. An absent
    * global and zero calls are indistinguishable (item 2033), so a shape KNOWN to reach the function
    * must report a call, or the whole census is meaningless.
    */

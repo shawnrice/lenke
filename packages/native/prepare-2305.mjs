@@ -1,16 +1,16 @@
 /**
- * ⚠️⚠️ **WHAT DOES `prepare()` SAVE ON A WARM, CACHED QUERY? (item 2305)**
+ * **WHAT DOES `prepare()` SAVE ON A WARM, CACHED QUERY? (item 2305)**
  *
  * `@lenke/gql` exports `prepare(text)` — *"Parse + compile a query string into a reusable Plan. Do this
- * once for a hot query, then call the plan with just (graph, params)"*. 🔑 The guide has a rule for
+ * once for a hot query, then call the plan with just (graph, params)"*. The guide has a rule for
  * hoisting a GREMLIN traversal (18%) and says nothing about the GQL equivalent.
  *
- * ⚠️ The honest question is NOT "does it beat an interpolating caller" — item 1502 already shipped
+ * The honest question is NOT "does it beat an interpolating caller" — item 1502 already shipped
  * `normalizeLiterals` for that, 1.46-2.07x. It is: **on a cache HIT, with a constant text and params,
  * what is left to save?** `query()` still has to hash the text, hit the parse cache, and look the plan up
  * in a `WeakMap` on every call.
  *
- * ✅ INNER-ITERATION CALIBRATION, because these arms are microseconds and items 2302/2303 cost two
+ * INNER-ITERATION CALIBRATION, because these arms are microseconds and items 2302/2303 cost two
  * published numbers to a single-call timer. One shape per process.
  */
 import { Graph } from '@lenke/core';

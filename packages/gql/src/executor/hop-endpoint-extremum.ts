@@ -1,6 +1,6 @@
 // Item 1246's per-ENDPOINT extremum fold for a one-hop aggregate.
 //
-// ⚠️ ITS OWN MODULE FOR A MEASURED REASON, not a stylistic one. Living in `hop-projection.ts` —
+// ITS OWN MODULE FOR A MEASURED REASON, not a stylistic one. Living in `hop-projection.ts` —
 // module scope, ~180 lines beside a 4,400-line file — cost an UNRELATED shape 1.08x with disjoint
 // ranges: `min(a.name), max(a.name)`, which this fold refuses outright, read 239406 -> 258617 us
 // over three alternated rounds. Returning the bare walk closure for a declining shape did NOT fix
@@ -55,12 +55,12 @@ const MIN_EDGES_PER_VERTEX = 6;
 /**
  * Does the per-endpoint fold beat the per-row walk on a graph of this shape?
  *
- * ⚠️ A PURE FUNCTION, EXPORTED, AND THAT IS THE POINT. This gate picks between two routes that
+ * A PURE FUNCTION, EXPORTED, AND THAT IS THE POINT. This gate picks between two routes that
  * return IDENTICAL rows, so no differential or answer test can see it being wrong — the repo's
  * `perf-gate-needs-its-own-test` rule, learned from a gate whose every mutant survived the suite.
  * The arithmetic is therefore unit-tested directly in `endpoint-fold-degree-gate.test.ts`.
  *
- * ⚠️ IT IS A PROXY, NOT THE QUANTITY IT WANTS. The relevant ratio is edges OF THE WANTED TYPES per
+ * IT IS A PROXY, NOT THE QUANTITY IT WANTS. The relevant ratio is edges OF THE WANTED TYPES per
  * CANDIDATE endpoint; `Graph` carries no per-type edge count, and both `edgeCount` and
  * `vertexCount` are O(1) (`edgesById.size` / `verticesById.size`), which is why they are used. On a
  * single-edge-type graph with one label the proxy is EXACT. Where it is not, it errs in both
@@ -77,13 +77,13 @@ export const endpointFoldBeatsRowWalk = (edgeCount: number, vertexCount: number)
  * `MATCH (a)-[:T]->(x) RETURN min(<x expr>), max(<x expr>)` folded ONCE PER DISTINCT ENDPOINT
  * rather than once per ROW (item 1246).
  *
- * ⚠️ THE IDENTITY THAT LICENSES THIS IS EXTREMUM-ONLY: min/max over a multiset equal min/max over
+ * THE IDENTITY THAT LICENSES THIS IS EXTREMUM-ONLY: min/max over a multiset equal min/max over
  * its distinct SUPPORT, so the ~200,000 endpoints of a 1,000,000-edge hop answer what the rows are
  * asked. `count(*)` cannot ride it (it needs the multiplicity) and neither can `sum`/`avg`, which
  * is exactly what `allExtrema` already distinguishes — note that flag is reused here for a SECOND
  * purpose and keeps its first (self-loop safety across two undirected walks).
  *
- * ⚠️ AND HALF OF IT IS A REGRESSION. Item 1245 priced the parts separately in one process on the
+ * AND HALF OF IT IS A REGRESSION. Item 1245 priced the parts separately in one process on the
  * bench fixture, before any of this was written:
  *
  * ```text
@@ -165,7 +165,7 @@ export const primedEndpointExtremum = (
   const startLabel = start.label;
   const farLabel = far.label;
   const outward = rel.direction === 'out';
-  // ⚠️ UNDIRECTED NEEDS NO SELF-LOOP CORRECTION HERE, which is why it is admitted (item 1248)
+  // UNDIRECTED NEEDS NO SELF-LOOP CORRECTION HERE, which is why it is admitted (item 1248)
   // after item 1246 declined it for lacking one. The counting paths need the arithmetic items
   // 480-483 built because a loop sits in BOTH adjacency maps and would be counted twice. This
   // fold asks only "is x reached at all" — a BOOLEAN — and then folds x's value ONCE. A loop
@@ -260,7 +260,7 @@ export const primedEndpointExtremum = (
  * Wrap a per-ROW walk so the per-ENDPOINT fold is consulted first, for the SINGLE-aggregate rung
  * (item 1247).
  *
- * ⚠️ A FUNCTION RATHER THAN FOUR LINES AT THE CALL SITE, because `detectHopAggregate` is already
+ * A FUNCTION RATHER THAN FOUR LINES AT THE CALL SITE, because `detectHopAggregate` is already
  * at the complexity cap and this pushed it to 37 of 35. That cap has been right here before — the
  * file records `hopAccFor` being extracted for the same reason — so the branching lives here and
  * the detector gains one call.

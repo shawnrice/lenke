@@ -11,7 +11,7 @@
 //! closure call, and `num_pred`'s six-way match on `op`. A single bound now matches the operator
 //! ONCE and sweeps with a monomorphic comparison.
 //!
-//! ⚠️ TWO FIXTURES, PERIODIC AND RANDOM, BECAUSE THE CHANGE HAS TWO PARTS AND ONLY ONE OF THEM IS
+//! TWO FIXTURES, PERIODIC AND RANDOM, BECAUSE THE CHANGE HAS TWO PARTS AND ONLY ONE OF THEM IS
 //! VISIBLE ON EACH. Removing the per-edge dispatch is unconditional work either way. Making the
 //! accumulation branchless is worth whatever the MISPREDICTIONS cost — and `social_store`'s
 //! `age = i % 100` is periodic, which the harness's own note records as having hidden a 6.7x for as
@@ -24,7 +24,7 @@
 //!   - the same hop count with NO filter, a different function entirely;
 //!   - a SCAN filter count, which goes through `sweep_num_count` (item 1220) and never enters this.
 //!
-//! ⚠️ THE TWO ROWS SWAPPED ROLES AT ITEM 1227, and the labels were changed with them. Item 1224
+//! THE TWO ROWS SWAPPED ROLES AT ITEM 1227, and the labels were changed with them. Item 1224
 //! hoisted the operator for a SINGLE bound and used the two-bound spelling as its control; item 1227
 //! then reduced two or more bounds to one range through `canonical_num_conj`, which makes the
 //! two-bound row the TARGET and the one-bound row — whose arm 1227 does not touch — the control.

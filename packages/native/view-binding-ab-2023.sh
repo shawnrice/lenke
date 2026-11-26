@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2023 — the no-copy binding VIEW, in situ, with the ITERATING consumers as controls.
 #
-# ⚠️⚠️ **THE WHOLE-SCREEN SWEEP CANNOT SHOW THIS WIN, and that is a property of the screen rather
+# **THE WHOLE-SCREEN SWEEP CANNOT SHOW THIS WIN, and that is a property of the screen rather
 # than of the change.** The merge fires only on an UNCORRELATED product — a comma pattern of
 # independent legs, or a second MATCH clause sharing no names — and the one screen family that has
 # those is `multi-pattern`, which the screen caps at its 15 s BUDGET ("1/100 queries in 15000 ms") in
@@ -11,7 +11,7 @@
 # So the target is measured on `crossproduct-sort-2017.mjs`, which drives the same shape without a
 # budget, and the screen's flat families are reported alongside as the controls.
 #
-# ⚠️ ONE ARM PER PROCESS, order-alternated, trap-restored — items 762, 2018, 2020.
+# ONE ARM PER PROCESS, order-alternated, trap-restored — items 762, 2018, 2020.
 set -u
 
 ROOT=/home/shawn/projects/pl-graph
@@ -50,7 +50,7 @@ round() {
   done
 }
 
-# ⚠️ NAMED `COPY` AND `VIEW`, NOT `PRE`/`POST`, AND THAT IS NOT CosMETIC: with PRE/POST the first run
+# NAMED `COPY` AND `VIEW`, NOT `PRE`/`POST`, AND THAT IS NOT CosMETIC: with PRE/POST the first run
 # of this script installed the VIEW under the label "PRE", because `round PRE "$DEAD" …` sets the
 # DEAD arm — and the DEAD arm here IS the experiment. Reading 186.7 ms as the baseline would have
 # inverted the whole conclusion. An A/B whose arms are not named for WHAT THEY ARE invites exactly
@@ -58,7 +58,7 @@ round() {
 case "${ROUND:-}" in
   COPY) round COPY "$LIVE" "$DEAD" ;;
   VIEW) round VIEW "$DEAD" "$LIVE" ;;
-  # ⚠️ RUN THIS LAST, OR THE TREE KEEPS WHICHEVER ARM RAN. The trap above only acts when the arm is
+  # RUN THIS LAST, OR THE TREE KEEPS WHICHEVER ARM RAN. The trap above only acts when the arm is
   # NEITHER — a round that deliberately installed VIEW leaves VIEW, which is correct for the sweep
   # and wrong for the tree. Ending on VIEW and then deleting the view function left the call site
   # referring to a name that no longer existed (caught by tsc, but only after the fact).

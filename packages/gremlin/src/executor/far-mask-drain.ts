@@ -18,13 +18,13 @@
  *    perVertexCsrPlusMask       2.9      ~46x      CSR + an EAGER mask over all V
  * ```
  *
- * ⚠️ AN EAGER MASK OVER ALL V, AND THE THREE-PASS FORM THAT PRECEDED IT WAS JUSTIFIED BY THE WRONG
+ * AN EAGER MASK OVER ALL V, AND THE THREE-PASS FORM THAT PRECEDED IT WAS JUSTIFIED BY THE WRONG
  * ENGINE'S RULE. The draft marked which slots an edge reaches and resolved the predicate only for
  * those, to keep the evaluated set exactly the walk's — because in GQL a predicate can THROW (a
  * string-vs-temporal `<=` does, settled policy there) and gating an unreached vertex would raise an
  * error the walk does not.
  *
- * ⚠️ THAT DOES NOT HOLD HERE, and `predicates.ts` says so in terms: for ordering predicates "a
+ * THAT DOES NOT HOLD HERE, and `predicates.ts` says so in terms: for ordering predicates "a
  * cross-type pair is `NaN`, so every comparison against it is false and the predicate FILTERS the
  * value out rather than throwing — `g.V().has('name', gte(0))` returns nothing, exactly as
  * TinkerPop (verified on createModern())". And this arm only runs when `specializePredicate`
@@ -42,7 +42,7 @@
  * against reasoning about GQL from Cypher; the same applies between lenke's own two engines, whose
  * comparison policies differ deliberately.)
  *
- * ⚠️ IT SERVES `drain` ONLY, AND THAT IS THE DESIGN RATHER THAN A GAP. A mark pass runs O(V+E)
+ * IT SERVES `drain` ONLY, AND THAT IS THE DESIGN RATHER THAN A GAP. A mark pass runs O(V+E)
  * before the first row, so wiring it into the LAZY iterator would destroy early exit — the
  * 473x/3680x failure the eager-tail-cache entry records for both engines. `drain` is already eager
  * and is read only by `toArray` when `rest` is empty (item 1412), so a plan carrying `limit(1)` puts
@@ -51,7 +51,7 @@
  * dedicated single-gate LOOP measured WORSE there (719.7 -> 731, `both` 458 -> 507) and items
  * 1441/1466 measured an edit to a hot values walk at up to 16% on unrelated rows.
  *
- * ⚠️ ORDER IS PRESERVED BY CONSTRUCTION, WHICH THIS ROUTE REQUIRES ABSOLUTELY. Gremlin streams are
+ * ORDER IS PRESERVED BY CONSTRUCTION, WHICH THIS ROUTE REQUIRES ABSOLUTELY. Gremlin streams are
  * compared ORDERED by the differential fuzzer (unlike GQL rows, whose order is unspecified), and
  * `start-filtered-hop-values.ts` states the limit in terms: "any cleverer structure — walking the
  * edge index once, hoisting the far side — is a cross-engine failure and not an optimization".
@@ -64,7 +64,7 @@ import type { Graph, Vertex } from '@lenke/core';
 import { chainCsrFor } from './count-shortcut.js';
 
 /**
- * ⚠️ A LEAF MODULE, which is why `Gate` is declared here rather than imported. The obvious import is
+ * A LEAF MODULE, which is why `Gate` is declared here rather than imported. The obvious import is
  * `survives`/`Gate` from `start-filtered-hop-values.ts` — and that file imports THIS one, so the
  * import is a cycle and `import/no-cycle` is an error here. Same shape as `csr-cache.ts` on the GQL
  * side, which `var-length-count.ts` forced into a leaf for the same reason. The gate loop is four
@@ -83,7 +83,7 @@ const allPass = (v: Vertex, tests: readonly Gate[]): boolean => {
 };
 
 /**
- * ⚠️ THERE IS NO ELIGIBILITY PREDICATE HERE, AND ITS ABSENCE IS THE POINT.
+ * THERE IS NO ELIGIBILITY PREDICATE HERE, AND ITS ABSENCE IS THE POINT.
  *
  * The first draft had one, `farMaskDrainApplies({ both, fastKey })`, with its own unit test — and a
  * mutation that made it ALWAYS APPLY survived, because the call site passed two literal constants:

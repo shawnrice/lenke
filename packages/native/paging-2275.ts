@@ -1,10 +1,10 @@
 /**
- * ⚠️⚠️ **WHAT DOES WALKING EVERY PAGE COST? (item 2275)** The `page/` screen family and items 1866/1867/1885
+ * **WHAT DOES WALKING EVERY PAGE COST? (item 2275)** The `page/` screen family and items 1866/1867/1885
  * all measure ONE page; item 2148 closed a single deep `SKIP` as "correctly routed and at its floor". But an
  * application walks the WHOLE result, one page per request — and `"all pages"`, `"page through"` and
  * `"keyset"` appear ZERO times in the review file.
  *
- * 🔑 **THE QUESTION IS CUMULATIVE, NOT PER-PAGE.** If each `ORDER BY … SKIP k LIMIT P` re-scans and
+ * **THE QUESTION IS CUMULATIVE, NOT PER-PAGE.** If each `ORDER BY … SKIP k LIMIT P` re-scans and
  * re-sorts from scratch, then walking `R/P` pages repeats the whole sort `R/P` times — total work quadratic
  * in the result size where one fetch is linear. The per-page cost can be "at its floor" and the walk still
  * be disastrous.
@@ -13,7 +13,7 @@
  *     paged     SKIP k LIMIT P for every page          — what an application does
  *     firstonly ONE page, repeated the same number of times — isolates "is a later page dearer?"
  *
- * ⚠️ `onepass` and `paged` are asserted to yield the SAME number of rows in total, so the arms cannot differ
+ * `onepass` and `paged` are asserted to yield the SAME number of rows in total, so the arms cannot differ
  * in work delivered. `firstonly` deliberately returns the same rows repeatedly and is a control, not a
  * comparison — its job is to show whether the SKIP depth itself costs anything.
  */
@@ -34,14 +34,14 @@ for (let i = 0; i < N; i += 1) {
 const PAGES = Math.ceil(N / PAGE);
 
 /*
- * 🔑🔑 **THE INDEX ARM.** Keyset paging removes the SKIP-DEPTH cost but each page still SCANS and SORTS all
+ * **THE INDEX ARM.** Keyset paging removes the SKIP-DEPTH cost but each page still SCANS and SORTS all
  * N rows — ~323 us a page. The engine has property indexes, so `WHERE n.k > $last ORDER BY k LIMIT P` ought
  * to be able to SEEK instead. `ARM=keysetIdx` is `keyset` with an index on `k` created first; if the index
  * is reached, the per-page cost should collapse toward the page size rather than the result size.
  */
 if (ARM === 'keysetIdx') {
   /*
-   * ⚠️⚠️ **`'ordered'` IS NOT AN `IndexKind` AND THE FIRST VERSION USED IT** — the kinds are
+   * **`'ordered'` IS NOT AN `IndexKind` AND THE FIRST VERSION USED IT** — the kinds are
    * `'hash' | 'range' | 'interval' | 'type'`. bun erases types and ran it anyway, so the arm created NO
    * index and read 153.2 ms; I was one step from reporting "an index does not help" from an arm with no
    * index. **The typecheck is what caught it** — the "assert each A/B arm IS the code it claims" rule,
@@ -67,9 +67,9 @@ for (let r = 0; r < REPS; r += 1) {
     got = query(g, 'MATCH (n:T) RETURN n.k AS k ORDER BY k', {}).length;
   } else if (ARM === 'keyset' || ARM === 'keysetIdx') {
     /*
-     * 🔑🔑 **KEYSET PAGING IS EXPRESSIBLE IN ISO GQL TODAY**, so the offset cost below is a choice rather
+     * **KEYSET PAGING IS EXPRESSIBLE IN ISO GQL TODAY**, so the offset cost below is a choice rather
      * than a limit — if this arm is fast. Resume from the last key instead of counting past rows:
-     * `WHERE n.k > $last ORDER BY k LIMIT P`. ⚠️ The fixture's `k` has ties (`i % 9973` over 20,000 rows),
+     * `WHERE n.k > $last ORDER BY k LIMIT P`. The fixture's `k` has ties (`i % 9973` over 20,000 rows),
      * so a strict `>` on the key alone SKIPS tied rows — a correctness trap real keyset paging solves with
      * a tiebreak column. This arm therefore does NOT assert the row total; it measures the COST SHAPE of a
      * resumable scan, and the row count it delivers is printed so the shortfall is visible rather than
@@ -94,7 +94,7 @@ for (let r = 0; r < REPS; r += 1) {
     }
   } else if (ARM === 'offsetParam') {
     /*
-     * 🔑🔑 **`OFFSET $s LIMIT $n` IS ACCEPTED WHERE `SKIP $s` IS A SYNTAX ERROR (item 2278)** — they are
+     * **`OFFSET $s LIMIT $n` IS ACCEPTED WHERE `SKIP $s` IS A SYNTAX ERROR (item 2278)** — they are
      * ISO-GQL synonyms, so that asymmetry is a parser inconsistency, and it matters: with the offset BOUND
      * the whole walk is ONE query text, so the parse cache serves every page. The literal `SKIP k` form
      * below makes every page a distinct text, which defeats it by construction.
@@ -122,7 +122,7 @@ for (let r = 0; r < REPS; r += 1) {
   rows = got;
 }
 
-/* ⚠️ `onepass` and `paged` must deliver the SAME rows in total, or the comparison is meaningless. */
+/* `onepass` and `paged` must deliver the SAME rows in total, or the comparison is meaningless. */
 if (ARM !== 'firstonly' && !ARM.startsWith('keyset') && rows !== N) {
   throw new Error(`${ARM}: delivered ${rows} rows, expected ${N}`);
 }

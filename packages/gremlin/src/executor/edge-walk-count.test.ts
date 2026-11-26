@@ -1,7 +1,7 @@
 /*
  * Item 2063 — the edge-filtered walk's tight-loop `count()`.
  *
- * ⚠️⚠️ **THE WHOLE RISK IS THAT THE COUNT DISAGREES WITH THE WALK IT COUNTS.** `walkCount` is a second
+ * **THE WHOLE RISK IS THAT THE COUNT DISAGREES WITH THE WALK IT COUNTS.** `walkCount` is a second
  * implementation of the walk's predicate, and the hinge is `drops`: a `values(k)` projection sets
  * `drops: true` and omits a row whose value is `undefined`, so the count MUST call `pick` and repeat
  * that test, while `elementPick`/`idPick` set `drops: false` and always yield. A count that skipped
@@ -27,12 +27,12 @@ const build = (): Graph => {
 
   for (let e = 0; e < 40; e += 1) {
     /*
-     * ⚠️ HALF THE EDGES CARRY NO `k`, which is what makes the `drops: true` case real: a
+     * HALF THE EDGES CARRY NO `k`, which is what makes the `drops: true` case real: a
      * `values('k')` walk omits them while the edge still passes `has('w', gt(2))`. Without such
      * edges, a count that ignored `drops` would agree with the walk and the mutant would survive.
      */
     /*
-     * ⚠️⚠️ **`% 3`, NOT `% 2`, AND THAT IS LOAD-BEARING.** With half the edges carrying `k`, the 22
+     * **`% 3`, NOT `% 2`, AND THAT IS LOAD-BEARING.** With half the edges carrying `k`, the 22
      * edges passing `has('w', gt(2))` split 11/11 — so a mutant INVERTING the `pick(edge) !== undefined`
      * test counted the complement and got the SAME NUMBER. It survived on arithmetic coincidence, not
      * on correctness. A third makes the two sides unequal, so the inversion is visible.
@@ -73,9 +73,9 @@ describe('edge-filtered walk count (item 2063)', () => {
     expect(agrees(g, traversal(V(), outE('E'), has('w', gt(2)), inV()))).toBeGreaterThan(0);
   });
 
-  test('⚠️⚠️ a VALUES projection (drops: TRUE) — the count must call `pick` and drop the same rows', () => {
+  test('a VALUES projection (drops: TRUE) — the count must call `pick` and drop the same rows', () => {
     /*
-     * 🔑 THE DECISIVE CASE. Half the edges have no `k`, so the walk drops them; a count that ignored
+     * THE DECISIVE CASE. Half the edges have no `k`, so the walk drops them; a count that ignored
      * `drops` would return the number of edges passing `has('w', gt(2))` instead. The two numbers are
      * asserted equal AND the count is asserted strictly less than the unfiltered edge count, so an
      * over-counting mutant cannot pass by coincidence.
@@ -87,7 +87,7 @@ describe('edge-filtered walk count (item 2063)', () => {
     expect(counted).toBeGreaterThan(0);
 
     /*
-     * 🔑 THE COMPLEMENT MUST DIFFER, or an INVERTED undefined-test passes by coincidence — which is
+     * THE COMPLEMENT MUST DIFFER, or an INVERTED undefined-test passes by coincidence — which is
      * exactly what happened at `% 2`. This asserts the fixture keeps that asymmetry, so the test
      * cannot quietly become vacuous again.
      */
@@ -98,18 +98,18 @@ describe('edge-filtered walk count (item 2063)', () => {
     expect(agrees(g, traversal(V(), outE('E'), has('w', gt(2)), inV(), id()))).toBeGreaterThan(0);
   });
 
-  test('⚠️ a genuinely INWARD hop (inE + outV) counts the same way', () => {
+  test('a genuinely INWARD hop (inE + outV) counts the same way', () => {
     /*
-     * ⚠️⚠️ THIS TEST WAS MISNAMED AND DUPLICATED THE OUTWARD CASE — it ran `outE … inV()` under a name
+     * THIS TEST WAS MISNAMED AND DUPLICATED THE OUTWARD CASE — it ran `outE … inV()` under a name
      * claiming inward. A mutant forcing the bucket arm to read `adjTo` unconditionally therefore
      * SURVIVED: nothing here chose `adjFrom` over `adjTo`.
      */
     expect(agrees(g, traversal(V(), inE('E'), has('w', gt(2)), outV()))).toBeGreaterThan(0);
   });
 
-  test('⚠️⚠️ the BUCKET arm is exercised on a FRESH graph, where no flat array exists yet', () => {
+  test('the BUCKET arm is exercised on a FRESH graph, where no flat array exists yet', () => {
     /*
-     * ⚠️⚠️ **WITHOUT THIS, HALF OF `walkCount` IS DEAD CODE IN THE TESTS.** `spec.flat` is chosen by
+     * **WITHOUT THIS, HALF OF `walkCount` IS DEAD CODE IN THE TESTS.** `spec.flat` is chosen by
      * the second-ask policy, and every assertion above ran against a graph that had already been
      * asked — so all of them took the FLAT arm, and a wrong-direction mutant in the BUCKET arm was
      * invisible to the whole file. A graph asked for the first time takes the bucket route.
@@ -123,7 +123,7 @@ describe('edge-filtered walk count (item 2063)', () => {
     expect(inward).toBeGreaterThan(0);
 
     /*
-     * ⚠️ THE TWO DIRECTIONS MUST DIFFER ON THIS FIXTURE, or a mutant that swaps them passes. The
+     * THE TWO DIRECTIONS MUST DIFFER ON THIS FIXTURE, or a mutant that swaps them passes. The
      * out-degree is uniform (one edge per vertex) but the IN-degree is not — `(e * 7 + 3) % 40`
      * concentrates heads — so a `has('w', gt(2))` filter sees different edge multisets each way.
      * Asserted rather than assumed, because if it ever became false this test would be vacuous.
@@ -134,9 +134,9 @@ describe('edge-filtered walk count (item 2063)', () => {
     expect(outwardAll).toBe(inwardAll);
   });
 
-  test('⚠️ the count survives the SECOND-ASK flat route, and agrees on both', () => {
+  test('the count survives the SECOND-ASK flat route, and agrees on both', () => {
     /*
-     * ⚠️ `spec.flat` is chosen by the second-ask policy, so the FIRST call takes the bucket route and
+     * `spec.flat` is chosen by the second-ask policy, so the FIRST call takes the bucket route and
      * a later one may take the flat array. `walkCount` mirrors that split; counting over buckets when
      * the flat array exists would throw away the 1.61x that layout is worth. Asking repeatedly is
      * what exercises both.

@@ -4,7 +4,7 @@
  * The body split put the `grouped` family's cost in two places: a 2-hop `chain count` at **55.74 ms**
  * and a 1-hop `hop count` at **18.59**, against scan bodies at 0.09-0.35.
  *
- * 🔑 **NEITHER NEEDS TO VISIT A ROW.** Both group by a property of the START vertex, so every path
+ * **NEITHER NEEDS TO VISIT A ROW.** Both group by a property of the START vertex, so every path
  * out of one source lands in that source's own group:
  *
  *   - `MATCH (a)-[:E]->(b) … GROUP BY a.n` — source `a` contributes `degree(a)` to group `a.n`. One
@@ -12,12 +12,12 @@
  *   - `MATCH (a)-[:E]->(b)-[:E]->(c) … GROUP BY a.n` — source `a` contributes
  *     `sum over b in N(a) of degree(b)`. One pass over the edges. O(|E|).
  *
- * ⚠️ THE CEILING USES ADJACENCY SIZES, NOT A CSR, and that is the honest choice here rather than the
+ * THE CEILING USES ADJACENCY SIZES, NOT A CSR, and that is the honest choice here rather than the
  * faster-looking one: `soleTypeBucket`-style `Map.get` on the type box is what the engine's own
  * grouped rungs read, and item 1999's lesson is that a ceiling must use the structure the cure would
  * use. A CSR would make the ceiling look better and the ratio bigger.
  *
- * ⚠️ ANSWERS CHECKED AGAINST THE ENGINE as sorted (group, count) pairs — a ceiling that answers
+ * ANSWERS CHECKED AGAINST THE ENGINE as sorted (group, count) pairs — a ceiling that answers
  * something else is not a ceiling, and a grouped count is easy to get subtly wrong (the group of a
  * vertex with a missing property, an empty group).
  *
@@ -143,7 +143,7 @@ for (const [name, text, hand] of CASES) {
     h.ms.toFixed(2).padStart(12),
     `${(eng.ms / h.ms).toFixed(1)}x`.padStart(9),
     String(eng.out.length).padStart(8),
-    (agree ? 'YES' : 'NO ⚠️').padStart(7),
+    (agree ? 'YES' : 'NO').padStart(7),
   ];
 
   console.log(cells.join(' '));
@@ -155,6 +155,6 @@ for (const [name, text, hand] of CASES) {
 }
 
 console.log(
-  "\n# ⚠️ The ceiling reads adjacency SIZES — the structure the engine's own grouped rungs read —\n" +
+  "\n# The ceiling reads adjacency SIZES — the structure the engine's own grouped rungs read —\n" +
     '#    rather than a CSR, which would make the ratio look bigger than a cure could deliver.',
 );

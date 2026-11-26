@@ -33,7 +33,7 @@ import type { HopValues } from './hop-values.js';
  * 7.2%), plus the traverser machinery `isVertexShaped`/`traverseToVertex`/`startTraverser`.
  * `hop-values.ts`'s own header prices that chain at 375.6 ms against 251.
  *
- * ⚠️ WHY THIS IS A NEW MODULE RATHER THAN A GUARD RELAXED IN `hop-values.ts`. Items 1441 and 1466
+ * WHY THIS IS A NEW MODULE RATHER THAN A GUARD RELAXED IN `hop-values.ts`. Items 1441 and 1466
  * measured an edit to that file at up to 16% on UNRELATED rows, arbitrarily signed, and item 1466
  * declined a 3.3x win on exactly that basis. Item 1482 is the precedent for the way out — it took
  * the no-hop sibling (`V().hasLabel(L).values(k)`, 2.39x) into its own module. So `hop-values.ts`
@@ -79,7 +79,7 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
     return undefined;
   }
 
-  // ⚠️ `at === 1` — NO leading filter — IS NO LONGER A DECLINE (item 1603), and the reason the old
+  // `at === 1` — NO leading filter — IS NO LONGER A DECLINE (item 1603), and the reason the old
   // guard existed no longer covers the case. It read "at `length === 3` with no filter,
   // `hopValuesShortcut` already owns the plan and this one is never consulted", which is true only
   // when the hop is immediately followed by the projection: that shortcut destructures exactly
@@ -111,7 +111,7 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
     return undefined;
   }
 
-  // ⚠️ ITEM 1603: a FAR-SIDE filter run between the hop and the projection. `V().out(T).has(k,p)
+  // ITEM 1603: a FAR-SIDE filter run between the hop and the projection. `V().out(T).has(k,p)
   // .values(j)` reached NEITHER values shortcut — `hopValuesShortcut` destructures exactly
   // `[source, hop, proj]` and this module scanned only the steps BEFORE the hop — so it fell to the
   // traverser pipeline at **15.7-16.4 ms** on 20,000 vertices / 80,000 edges, where its own count
@@ -171,7 +171,7 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
   /**
    * The far filters FOLDED INTO `pick`, which is what keeps every walk below byte-identical.
    *
-   * ⚠️ NOT A TEST ADDED TO THE LOOPS. There are three of them (the `both` iterator, its `drain`,
+   * NOT A TEST ADDED TO THE LOOPS. There are three of them (the `both` iterator, its `drain`,
    * and the `out`/`in` arm), and this module exists because items 1441/1466 measured an edit to a
    * hot values walk at up to 16% on UNRELATED rows — item 1466 declined a 3.3x win on that basis.
    * Composing `pick` once per QUERY leaves all three loop bodies exactly the code they were, and a
@@ -198,24 +198,24 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
      * This arm is two — `pick` and `fast` — reading the property directly, which is exactly what
      * the gate's own body would have done.
      *
-     * ⚠️ PRICED FIRST, and the headroom is narrow (`far-filter-one-shape.ts`, 200,000 vertices /
+     * PRICED FIRST, and the headroom is narrow (`far-filter-one-shape.ts`, 200,000 vertices /
      * 999,996 edges, median of **12** reps less three warm-up): the engine's filtered walk is
      * **86.7 ms against a hand floor of 57.44 — 1.51x**, so 30 ns/edge is the whole budget and no
      * part of this can be worth more than that. It recovers ~7, for **1.06-1.077x** with every POST
      * reading below every PRE reading across five processes an arm on three shapes.
      *
-     * ⚠️ TWELVE REPS, NOT NINE, AND THAT CHANGED THE VERDICT'S SIGN. At `REPS=9, DROP=3` the
+     * TWELVE REPS, NOT NINE, AND THAT CHANGED THE VERDICT'S SIGN. At `REPS=9, DROP=3` the
      * always-true arm read a POST median of 162-164 against a PRE of 123-128 — a 1.30x REGRESSION
      * that does not exist. This arm's JIT settles in 3-7 reps where the PRE arm's settles in 1-3, so
      * a 9-rep window was measuring the warm-up as the steady state. At 12 reps it is 1.08x BETTER.
      *
-     * ⚠️ AND THE 1.67x THAT NOMINATED IT WAS MY OWN INSTRUMENT. `far-filter-values-floor.ts` runs
+     * AND THE 1.67x THAT NOMINATED IT WAS MY OWN INSTRUMENT. `far-filter-values-floor.ts` runs
      * eight arms in ONE process and read `id()` at 144.15 ms against `values(n)`'s 86.48 on the
      * identical route — but `pick` is called through a closure VARIABLE in the loops below, so
      * several arms in one process make that call site polymorphic. Isolated, one shape per process,
      * the two are 86.7 and 88.03: within 1.5%. Item 1558 is the same error on a GQL spelling.
      *
-     * ⚠️ NOT A TEST ADDED TO THE LOOPS, and not a dedicated loop either. This file's header records
+     * NOT A TEST ADDED TO THE LOOPS, and not a dedicated loop either. This file's header records
      * a dedicated single-gate LOOP measuring WORSE (719.7 -> 731, and `both` 458 -> 507), and items
      * 1441/1466 measured an edit to a hot values walk at up to 16% on unrelated rows. Composing
      * `pick` once per QUERY is the sanctioned place to change: all three loop bodies stay byte for
@@ -231,7 +231,7 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
     if (fastOne !== undefined && only?.kind === 'has') {
       const { key } = only;
 
-      // ⚠️ KEPT FOR THE DRAIN ARM (item 1692), which applies this filter from a per-slot MASK
+      // KEPT FOR THE DRAIN ARM (item 1692), which applies this filter from a per-slot MASK
       // instead of once per edge. `pick` below is unchanged, so the lazy walks stay byte for byte
       // what they were — the arm serves `drain` only, because a mark pass before the first row
       // would destroy early exit.
@@ -246,7 +246,7 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
 
   const [type] = hop.labels;
   const rest = steps.slice(consumed);
-  // ⚠️ WALK `graph.vertices` AND TEST THE LABEL. Seeding from `graph.verticesByLabel.get(L)` is
+  // WALK `graph.vertices` AND TEST THE LABEL. Seeding from `graph.verticesByLabel.get(L)` is
   // what `count-shortcut.ts`'s `startFilteredHopCount` does, it is one line, and it is WRONG here —
   // for two reasons that a count cannot observe and a yielded stream can:
   //
@@ -371,7 +371,7 @@ export const startFilteredHopValues = (plan: Plan, graph: Graph): HopValues | un
       // The same loop, eager. Read only by `toArray`, and only when `rest` is empty (item 1412).
       drain() {
         /**
-         * ⚠️ THE FLAT-ARRAY ARM (item 1692), priced by item 1691 at ~42x on the widest Gremlin
+         * THE FLAT-ARRAY ARM (item 1692), priced by item 1691 at ~42x on the widest Gremlin
          * ratio. It serves `drain` and NOT the iterator above: a mark pass runs O(V+E) before the
          * first row, so wiring it into the lazy path would destroy early exit. A plan carrying
          * `limit(1)` puts a step in `rest`, takes the iterator, and never reaches here.
@@ -434,7 +434,7 @@ const isHop = (step: Step): boolean =>
  * admissible (and whether a seekable `has` defers to the index) is `collectVertexFilters`'s
  * judgement, which this must not restate. It exists to find the far run's BOUNDARY (item 1603).
  *
- * ⚠️ `values` IS NOT ON THIS LIST, where `count-shortcut.ts`'s `farFilters` treats a trailing
+ * `values` IS NOT ON THIS LIST, where `count-shortcut.ts`'s `farFilters` treats a trailing
  * single-key `values(k)` as a PRESENCE filter (item 1141). On this module's shape a trailing
  * `values(k)` is the PROJECTION, so reusing that reader would consume the projection as a filter
  * and then find nothing to project.
@@ -457,7 +457,7 @@ export type Gate = (v: Vertex) => boolean;
 /**
  * The start filters as closures, compiled ONCE per plan.
  *
- * ⚠️ THIS IS WORTH 1.93x AND IT IS NOT AN OBVIOUS COST (item 1536). The straightforward per-vertex
+ * THIS IS WORTH 1.93x AND IT IS NOT AN OBVIOUS COST (item 1536). The straightforward per-vertex
  * form — `step.labels.some((l) => v.labels.has(l))` with a `matches` call beside it — allocates a
  * closure and makes a megamorphic call PER VERTEX, over the whole graph rather than over the
  * survivors. On the 200,000-vertex fixture that measured `hasLabel(Q).out(E).values(k)` at 732
@@ -470,7 +470,7 @@ export type Gate = (v: Vertex) => boolean;
  * `Set.has` on the label box needs no closure at all.
  */
 /**
- * ⚠️ THREE CURES FOR THE RESIDUAL GAP, ALL REFUTED WITH NUMBERS (item 1537). Do not re-attempt
+ * THREE CURES FOR THE RESIDUAL GAP, ALL REFUTED WITH NUMBERS (item 1537). Do not re-attempt
  * without reading the scaling study in that entry.
  *
  * `hasLabel(Q).out(E).values(k)` costs 719.7 ns/row against the unfiltered `out(E).values(k)`'s
@@ -503,7 +503,7 @@ export type Gate = (v: Vertex) => boolean;
  * `compileGates` is kept because it IS a win on the predicate shape — `has(k, gt(48))` went
  * 701.3 -> 606.6 with every control flat — not because it closed the gap it was written for.
  *
- * ⚠️ EVERY NUMBER ABOVE IS THE START SIDE — one test per VERTEX — and item 1631 found the FAR side
+ * EVERY NUMBER ABOVE IS THE START SIDE — one test per VERTEX — and item 1631 found the FAR side
  * behaves differently for a structural reason: a far filter runs one test per EDGE, so at fanout 5
  * the same composition is invoked 1,000,000 times rather than 200,000. Collapsing `survives` plus
  * the gate into one closure there is worth **1.06-1.077x** where the start-side levers listed above

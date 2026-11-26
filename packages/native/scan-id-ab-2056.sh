@@ -1,16 +1,16 @@
 #!/bin/zsh
 # Item 2056 — the scan rung's `id()` arm, LIVE against a KILLED gate.
 #
-# ⚠️ THE CONTROL IS THE POINT. `scan: values` already rode this rung, and the change added a SECOND
+# THE CONTROL IS THE POINT. `scan: values` already rode this rung, and the change added a SECOND
 # closure beside its loop; the walk is selected once, not per row, so it should be free — but this
 # file's own record is that "a branch in that inner loop" cost 1.6x (item 159), and `scan: values`
 # read 4.42 before the change and 5.69 after in single runs. Alternated rounds settle whether that is
 # the change or the row.
 #
-# ⚠️ THE KILL SWITCH removes only the `id` clause from `matchShape`, so the KILLED arm is exactly the
+# THE KILL SWITCH removes only the `id` clause from `matchShape`, so the KILLED arm is exactly the
 # rung as it shipped before this item — not "no rung at all".
 #
-# ⚠️ ARMS NAMED FOR WHAT THEY ARE (LIVE/KILLED), not PRE/POST (item 2023), and RESTORE REBUILDS
+# ARMS NAMED FOR WHAT THEY ARE (LIVE/KILLED), not PRE/POST (item 2023), and RESTORE REBUILDS
 # (item 2031: a restored SOURCE with a stale DIST measures the experiment under the control's name).
 set -u
 

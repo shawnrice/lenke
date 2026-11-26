@@ -1,11 +1,11 @@
 // `V().branch(values(k)).option(m, <arm>)….none(<arm>)` fused (item 2015).
 //
-// ⚠️⚠️ **A ROUTE CHOICE, SO ANSWER-EQUIVALENT — the whole Gremlin suite passes either way.** The route
+// **A ROUTE CHOICE, SO ANSWER-EQUIVALENT — the whole Gremlin suite passes either way.** The route
 // assertions here are the only thing that can see a gate mutant ([[perf-gate-needs-its-own-test]]),
 // and the answer assertions the only thing that can see a walk mutant, because the general
 // `branchStep` answers identically.
 //
-// 🔑 THE FIXTURE'S THREE REQUIREMENTS, each because one semantic turns on it and the pricing fixture
+// THE FIXTURE'S THREE REQUIREMENTS, each because one semantic turns on it and the pricing fixture
 // (`coalesce-vs-optional-1990.mjs`, where every vertex carries `n`) satisfies none of them:
 //
 //     1. THE TEST KEY IS MISSING on some vertex   -> `values(k)` yields NOTHING, so `sawResult` is
@@ -44,7 +44,7 @@ const build = (): Graph => {
   const g = new Graph();
 
   /*
-   * ⚠️ `t` IS THE TEST KEY AND IT IS SPARSE; `p` IS THE PROJECTED KEY AND IT IS SPARSER.
+   * `t` IS THE TEST KEY AND IT IS SPARSE; `p` IS THE PROJECTED KEY AND IT IS SPARSER.
    *
    *     a  t=0  p=10    takes option(0) -> out(E)
    *     b  t=1  p=11    takes option(1) -> in_(E)
@@ -54,7 +54,7 @@ const build = (): Graph => {
    *     f  t=0          option(0) with NO out-edge at all, so an empty hop arm
    *     j  t=9          matches no option AND has no `p` — the IDENTITY arm's own drop
    *
-   * ⚠️⚠️ **`j` IS HERE BECAUSE A MUTANT SURVIVED WITHOUT IT.** Removing the identity arm's
+   * **`j` IS HERE BECAUSE A MUTANT SURVIVED WITHOUT IT.** Removing the identity arm's
    * `!drops || own !== undefined` guard changed no answer, because every vertex that reached
    * `none(identity())` happened to carry `p`. So the fixture could see the HOP arm's drop (`a` hops
    * to `d`, which lacks `p`) and not the IDENTITY arm's, which is a different line of code.
@@ -129,7 +129,7 @@ describe('branchValueHop: the route', () => {
 
   test('DECLINES an option key a raw Map cannot key the way `tupleKey` does', () => {
     /*
-     * ⚠️⚠️ A MUTANT HERE IS A WRONG ANSWER, NOT A SLOW ONE. `branchStep` matches through
+     * A MUTANT HERE IS A WRONG ANSWER, NOT A SLOW ONE. `branchStep` matches through
      * `tupleKey([match])`, which compares a list/map STRUCTURALLY and renders `NaN` as `"null"`;
      * this rung's `Map` compares by SameValueZero, which does neither. So both shapes must stay on
      * the general loop, where `tupleKey` still does the structural thing.
@@ -170,7 +170,7 @@ describe('branchValueHop: the route', () => {
 
   test('DECLINES an arm shape it cannot serve, in an option OR in none()', () => {
     /*
-     * ⚠️⚠️ A REFUSED `none()` MUST DECLINE THE WHOLE SHAPE, NOT BE READ AS AN ABSENT ONE. An absent
+     * A REFUSED `none()` MUST DECLINE THE WHOLE SHAPE, NOT BE READ AS AN ABSENT ONE. An absent
      * `none()` DROPS an unmatched traverser, so `?? undefined` on a refused arm would silently
      * delete every row the engine routes there. That is the mirror of item 2014's else-arm mutant,
      * which was also a wrong answer rather than a slow one.
@@ -224,7 +224,7 @@ describe('branchValueHop: the answers', () => {
 
   test('a MISSING test key routes to none(), not to option(undefined)', () => {
     /*
-     * ⚠️ THE CENTRAL ASSERTION FOR THE TEST SIDE. `e` has no `t`, so `values('t')` yields nothing,
+     * THE CENTRAL ASSERTION FOR THE TEST SIDE. `e` has no `t`, so `values('t')` yields nothing,
      * `branchStep`'s `sawResult` stays false and no option can match — it takes `none()`. A route
      * reading `props['t']` as `undefined` and looking THAT up would agree here only because no
      * option is keyed `undefined`; the `option(undefined)` form is declined by the gate (`null` and
@@ -249,7 +249,7 @@ describe('branchValueHop: the answers', () => {
 
   test('DECLINES `option(undefined)`, which the walk DEPENDS on rather than merely tolerating', () => {
     /*
-     * ⚠️⚠️ THIS PINS A COUPLING, NOT A PREFERENCE. `branchWalk` has NO `testKey in props` check — a
+     * THIS PINS A COUPLING, NOT A PREFERENCE. `branchWalk` has NO `testKey in props` check — a
      * vertex lacking the test key reads as `undefined` and falls to the fallback, which is right
      * ONLY because no option can be keyed `undefined`. Widen `keyable` to admit it and the walk
      * silently answers the fallback where the engine answers that option.
@@ -276,12 +276,12 @@ describe('branchValueHop: the answers', () => {
 
   test('`values(k)` on the projection DROPS a far vertex lacking k', () => {
     /*
-     * ⚠️ `a` hops to `b` (p=11) and `d` (NO p). So the `out(E)` arm contributes ONE row, not two —
+     * `a` hops to `b` (p=11) and `d` (NO p). So the `out(E)` arm contributes ONE row, not two —
      * `projectValues`' own `k in props` rule, which `drops` carries. A route emitting `undefined`
      * would give an extra row here and nowhere else in this file.
      */
     /*
-     * ⚠️⚠️ **`toStrictEqual`, NOT `toEqual`, AND A SURVIVING MUTANT IS WHY.** `expect([11, 12,
+     * **`toStrictEqual`, NOT `toEqual`, AND A SURVIVING MUTANT IS WHY.** `expect([11, 12,
      * undefined]).toEqual([11, 12])` PASSES in bun — `toEqual` treats a trailing `undefined` as
      * equal to its absence. So `toEqual` is structurally blind to a route that emits `undefined`
      * where the engine drops the row, which is the ONE thing `values(k)` semantics turn on, and it
@@ -321,7 +321,7 @@ describe('branchValueHop: the answers', () => {
 
   test('THE GENERATOR AND THE DRAIN AGREE, positionally, on every shape', () => {
     /*
-     * ⚠️⚠️ **WITHOUT THIS, EVERY ASSERTION IN THIS FILE TESTS THE `drain` AND NOT THE GENERATOR.**
+     * **WITHOUT THIS, EVERY ASSERTION IN THIS FILE TESTS THE `drain` AND NOT THE GENERATOR.**
      * `toArray` prefers `drain` when the walk offers one and `rest` is empty (item 1412), so the
      * `[Symbol.iterator]` body — the one a lazy consumer and any trailing step actually reach — is
      * UNEXERCISED by `rows()` above. The two fills are the same loop written twice (item 169's
@@ -372,18 +372,18 @@ describe('branchValueHop: the answers', () => {
 
 describe('a residual count() rides the walk (item 2028)', () => {
   /*
-   * ⚠️⚠️ **`count()` USED TO DECLINE THE ENTIRE PLAN**, so the route census read this family's count
+   * **`count()` USED TO DECLINE THE ENTIRE PLAN**, so the route census read this family's count
    * shape GENERIC — and for `choose`/`branch` with **4002 `applyStep` calls**, the sub-plan
    * re-dispatched per traverser, which is the exact cost the rung exists to remove. A `pickFor` audit
    * found FOUR rungs carrying the gap item 1956 closed for the edge-filter rung and item 2027 for
    * the `optional` one.
    *
-   * ⚠️ ANSWER-EQUIVALENT, so the route assertion is the only thing that can see the rung declining
+   * ANSWER-EQUIVALENT, so the route assertion is the only thing that can see the rung declining
    * ([[perf-gate-needs-its-own-test]]) — and the RESIDUAL'S CONTENT is asserted, not its presence
    * (item 2021: a wrong `rest` still returns an object, then declines downstream with the same
    * answer).
    *
-   * ⚠️ THE GATE NEED NOT CHECK `count`'s SCOPE, where item 2020's FUSED count must: an unconsumed
+   * THE GATE NEED NOT CHECK `count`'s SCOPE, where item 2020's FUSED count must: an unconsumed
    * terminal is still run by its own step, so `Scope.local` is honoured by `countStep` itself.
    */
   const g = build();
@@ -408,7 +408,7 @@ describe('a residual count() rides the walk (item 2028)', () => {
 
   test('the `id()` shape CONSUMES its projection — a perf contract with no answer to see', () => {
     /*
-     * ⚠️⚠️ **A MUTANT MARKING `id` UNCONSUMED SURVIVED BOTH THIS FILE AND THE WHOLE SUITE.** Leaving
+     * **A MUTANT MARKING `id` UNCONSUMED SURVIVED BOTH THIS FILE AND THE WHOLE SUITE.** Leaving
      * `id` in `rest` still answers correctly: the step simply runs over the walk's ELEMENTS and maps
      * them to ids, which is the same result by a slower route. So only the residual's emptiness can
      * see it — the same shape as item 2021's three wrong-residual mutants.
@@ -423,7 +423,7 @@ describe('a residual count() rides the walk (item 2028)', () => {
 
   test('a projection kind the walk cannot serve DECLINES', () => {
     /*
-     * ⚠️ A MUTANT ADMITTING ANY KIND (`return true ? …`) SURVIVED: an element pick plus a residual is
+     * A MUTANT ADMITTING ANY KIND (`return true ? …`) SURVIVED: an element pick plus a residual is
      * broadly answer-equivalent, because the leftover step just runs over elements. It is still a
      * route this item never measured, and the gate is meant to name exactly what it serves — so the
      * decline is asserted rather than left to the next reader to discover.
@@ -438,7 +438,7 @@ describe('a residual count() rides the walk (item 2028)', () => {
 
   test('the count equals the row count of the same walk without it', () => {
     /*
-     * 🔑 THE ORACLE IS THE SHAPE WITHOUT `count()`: its `rest` is empty, so it takes the walk
+     * THE ORACLE IS THE SHAPE WITHOUT `count()`: its `rest` is empty, so it takes the walk
      * directly and does not share the code under test. A non-empty row list is asserted first,
      * because 0 === 0 agrees trivially.
      */

@@ -4,7 +4,7 @@
  * `distinctHopCount` answered ONE hop from an index key count; two hops reached nothing and fell
  * to the traverser pipeline. `dedupedHopChainCount` expands a SET per level instead.
  *
- * ⚠️ ONE SHAPE PER PROCESS; arms asserted by a ROUTE probe (does `countShortcut` claim the
+ * ONE SHAPE PER PROCESS; arms asserted by a ROUTE probe (does `countShortcut` claim the
  * two-hop shape?) rather than a dist grep, for item 1852's reason: a marker in a comment is
  * stripped by the bundler.
  */
@@ -146,6 +146,6 @@ for (const name of Object.keys(SHAPES)) {
   console.log(
     `${name.padEnd(28)} PRE ${pre.toFixed(2).padStart(9)} ms   POST ${post
       .toFixed(2)
-      .padStart(9)} ms   ${(pre / post).toFixed(2)}x${same ? '' : '   ⚠️ ANSWER DIFFERS'}`,
+      .padStart(9)} ms   ${(pre / post).toFixed(2)}x${same ? '' : '   ANSWER DIFFERS'}`,
   );
 }

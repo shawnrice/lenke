@@ -1011,11 +1011,11 @@ impl Parser {
     /// `(` an optional vertex label `)` followed by inline literal `.property(k, v)` modulators —
     /// the 29-line prologue THREE `addV` spellings parsed identically (item 2406).
     ///
-    /// ⚠️ A PARSER METHOD, so this is the safe kind of sharing: it runs once per `addV` in the
+    /// A PARSER METHOD, so this is the safe kind of sharing: it runs once per `addV` in the
     /// query TEXT, not once per element, which is the distinction `clause-shape.ts`'s header draws
     /// and `ts-closure-size-is-load-bearing` measured the wrong side of. Nothing here is on a walk.
     ///
-    /// 🔑 The `self.pos += 2 … -= 2` dance in the loop guard is a two-token LOOKAHEAD, not a
+    /// The `self.pos += 2 … -= 2` dance in the loop guard is a two-token LOOKAHEAD, not a
     /// mistake: `property_is_literal` has to inspect the arguments to decide whether this
     /// modulator belongs to the write (a literal) or is a traversal the general path must handle,
     /// and the guard has to leave the cursor untouched either way so the `while` can decline.
@@ -7620,7 +7620,7 @@ impl Parser {
                 plan
             });
         }
-        // 🛑 UNROLLING A PLAIN FIXED `times(n)` INTO n HOPS WAS TRIED AND REVERTED (item 711).
+        // UNROLLING A PLAIN FIXED `times(n)` INTO n HOPS WAS TRIED AND REVERTED (item 711).
         // `repeat(out('K')).times(2)` costs 3.76 ms against the chain's 2.69 on 200,000 vertices
         // / 1,000,000 edges, in both list positions, and the two ARE the same traversal — settled
         // against a real TinkerPop console at item 574, and re-checked as a multiset on 24 cases

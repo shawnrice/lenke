@@ -1,12 +1,12 @@
 /*
  * Item 2093 — the CSR arming's cost as a function of READS PER TOPOLOGY VERSION.
  *
- * ⚠️⚠️ `csrAskedBefore` builds on the SECOND ask of a topology version, so a one-shot reader never
+ * `csrAskedBefore` builds on the SECOND ask of a topology version, so a one-shot reader never
  * pays for a build. The hypothesis was that reading TWICE recovers the cached speed. It does the
  * OPPOSITE — 17.33 ms/read against one-read's 7.03 — because the second ask BUILDS and the next write
  * DISCARDS it unused. This sweeps the ratio to find the shape of that curve.
  *
- * 🔑 EVERY ARM DOES THE SAME NUMBER OF READS (`TOTAL`), so only the write frequency varies. An arm
+ * EVERY ARM DOES THE SAME NUMBER OF READS (`TOTAL`), so only the write frequency varies. An arm
  * doing more reads would measure more work and hide the per-read figure that matters.
  */
 import { Graph } from '@lenke/core';
@@ -54,13 +54,13 @@ for (const perVersion of [1, 2, 3, 4, 6, 12, 24]) {
   query(g, READ);
 
   /*
-   * ⚠️⚠️ **AT LEAST `MIN_WRITES` TOPOLOGY VERSIONS PER ARM, AND ITEM 2094 IS WHY.** With `TOTAL`
+   * **AT LEAST `MIN_WRITES` TOPOLOGY VERSIONS PER ARM, AND ITEM 2094 IS WHY.** With `TOTAL`
    * reads split by `perVersion`, the 24-reads arm got exactly ONE write — so a policy that predicts
    * from the PREVIOUS version's ask count never converged, and its figure was the 2-ask warm-up's
    * verdict rather than the policy's. A fixed-threshold policy has no state and cannot show that, so
    * the old shape was adequate for item 2093 and silently wrong for this one.
    *
-   * 🔑 The read count per arm is therefore `MIN_WRITES * perVersion` where that exceeds `TOTAL`, and
+   * The read count per arm is therefore `MIN_WRITES * perVersion` where that exceeds `TOTAL`, and
    * the per-READ figure is what is compared — so more reads in an arm do not flatter it.
    */
   const MIN_WRITES = Number(process.env.MIN_WRITES ?? 5);

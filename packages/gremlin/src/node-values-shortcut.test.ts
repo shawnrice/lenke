@@ -13,7 +13,7 @@ import { traversal } from './traversal.js';
  * never covered these. Item 1481 measured the gap to ISO-GQL's `MATCH (n:P) RETURN n.k` at 1.63x and
  * profiled it as traverser construction (~29%).
  *
- * ⚠️ A SHORTCUT IS AN ANSWER PATH, NOT A REWRITE, so a mistake here is a wrong ANSWER rather than a
+ * A SHORTCUT IS AN ANSWER PATH, NOT A REWRITE, so a mistake here is a wrong ANSWER rather than a
  * slower one — and the tests are mostly about which plans it must REFUSE. Every refusal below is a
  * plan the shortcut would answer incorrectly or incompletely if its gate were loosened.
  */
@@ -98,7 +98,7 @@ describe('…and REFUSES every plan it would answer wrongly', () => {
 
 describe('the two spellings agree, and so do the shortcut and the pipeline', () => {
   /**
-   * ⚠️ `drain` AND THE ITERATOR MUST AGREE. They are one loop body in the implementation precisely
+   * `drain` AND THE ITERATOR MUST AGREE. They are one loop body in the implementation precisely
    * so they cannot diverge, and Gremlin results are compared ORDERED by the differential fuzzer, so
    * a reordering between them would be a cross-engine failure rather than an unspecified-order
    * liberty.
@@ -111,7 +111,7 @@ describe('the two spellings agree, and so do the shortcut and the pipeline', () 
   });
 
   /**
-   * ⚠️ THE WIRING, not just the shortcut. A mutant that leaves `nodeValuesShortcut` correct but stops
+   * THE WIRING, not just the shortcut. A mutant that leaves `nodeValuesShortcut` correct but stops
    * `run` CALLING it answers identically by the traverser pipeline, so every behavioural test above
    * passes — it survived all 1,291 of them. `run` returns the shortcut object itself, and that object
    * carries a `drain`, so its presence is the observable that says which route answered.

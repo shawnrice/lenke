@@ -9,7 +9,7 @@ import { describe, expect, it } from 'bun:test';
  * `Expr`, so `{ kind: 'lit', value: <LocalDate> }` — what the parser lowers `DATE '…'` to — was
  * handed to `rowLocal` as an expression of kind `'date'`, missed the allowlist, and declined.
  *
- * ⚠️ THE ROUTE IS ANSWER-EQUIVALENT, so the differential suites cannot see a mutant in it — every
+ * THE ROUTE IS ANSWER-EQUIVALENT, so the differential suites cannot see a mutant in it — every
  * query below answers identically on both routes, which is exactly why the bug survived. That is
  * `perf-gate-needs-its-own-test`: the first half of this file tests the PURE PREDICATES directly,
  * where a wrong answer IS observable. The second half is the behavioural backstop.
@@ -93,7 +93,7 @@ describe('the route predicates admit a literal whatever it holds', () => {
   });
 
   it('STILL DESCENDS into an allowlisted node — a NESTED refusal is still refused', () => {
-    // ⚠️ THIS CASE EXISTS BECAUSE A MUTANT SURVIVED WITHOUT IT. Replacing the `lit` stop with
+    // THIS CASE EXISTS BECAUSE A MUTANT SURVIVED WITHOUT IT. Replacing the `lit` stop with
     // `if (e.kind !== undefined) return true;` — admit anything that got past the allowlist,
     // without descending — left all 17 of the other tests green, because every decline they
     // check is refused by the allowlist at the TOP level, before the stop is ever reached. The

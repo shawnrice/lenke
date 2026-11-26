@@ -13,7 +13,7 @@
  * vertices against `V().values(n)`'s 4.17, with the filter alone at **404 ns a vertex**), so the
  * question is not whether a fusion exists but whether what remains is the floor.
  *
- * ⚠️ A BUCKET LOOKUP IS PRICED AT ~16 ns IN THIS REPO (`soleTypeBucket`'s `Map.get`, items
+ * A BUCKET LOOKUP IS PRICED AT ~16 ns IN THIS REPO (`soleTypeBucket`'s `Map.get`, items
  * 162/321), so 89 ns is ~5x that — enough of a gap to be worth a floor rather than an assumption.
  *
  * The arms separate the three things the shape does:
@@ -25,12 +25,12 @@
  *     handtest    the test alone, counting      — the bucket test with no projection
  * ```
  *
- * ⚠️ EVERY VERTEX HAS AN OUT-EDGE IN THIS FIXTURE, so the filter keeps every row and the arms are
+ * EVERY VERTEX HAS AN OUT-EDGE IN THIS FIXTURE, so the filter keeps every row and the arms are
  * comparable on ROW COUNT as well as on vertices visited. A fixture where the filter dropped rows
  * would make `engine` look cheaper per row for doing less work — item 1858's trap, which declined a
  * target because "it visits the same 200,000 vertices and emits 7x fewer rows".
  *
- * ⚠️ ONE ARM PER PROCESS (item 762).
+ * ONE ARM PER PROCESS (item 762).
  *
  *     ARM=engine bun where-exists-floor-2025.mjs
  */
@@ -46,7 +46,7 @@ for (let i = 0; i < N; i += 1) {
   g.addVertex({ id: String(i + 1), labels: ['P'], properties: { n: i % 97 } });
 }
 
-// ⚠️ ONE EDGE PER VERTEX, so EVERY vertex passes the filter — see the note above.
+// ONE EDGE PER VERTEX, so EVERY vertex passes the filter — see the note above.
 for (let e = 0; e < N; e += 1) {
   g.addEdge({
     id: `e${String(e)}`,
@@ -91,7 +91,7 @@ const handTest = () => {
 };
 
 /*
- * ⚠️ ITEM 2026's ARMS. The route census (`gremlin-route-screen.mjs`) shows `scan: where values` FUSED
+ * ITEM 2026's ARMS. The route census (`gremlin-route-screen.mjs`) shows `scan: where values` FUSED
  * (item 2025) and its three RESIDUAL combinations still generic — the gap left by widening the gate
  * from two sides without covering the corner:
  *

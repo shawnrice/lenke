@@ -17,27 +17,27 @@
  *    csrEndPlusBuild          83.7         3.66x
  * ```
  *
- * ⚠️ EVERY POSITION'S CONSTRAINT BECOMES A PER-SLOT MASK, which is what lets one arm serve a start,
+ * EVERY POSITION'S CONSTRAINT BECOMES A PER-SLOT MASK, which is what lets one arm serve a start,
  * interior or end filter uniformly. A label and an inline gate are both per-vertex questions, so each
  * costs O(V) once per query against a walk over E per pass — free at any realistic degree.
  *
- * ⚠️ AND THE MASK IS ONLY SOUND BECAUSE `inlinePredOf` REFUSES A CORRELATED PREDICATE, which was
+ * AND THE MASK IS ONLY SOUND BECAUSE `inlinePredOf` REFUSES A CORRELATED PREDICATE, which was
  * checked rather than assumed: it returns `null` when any inline property's value has free
  * variables, and for an inline `WHERE` it refuses every free name but the node's own. So an
  * `InlinePred` is a pure function of its own vertex. A CLAUSE `WHERE` cannot make that claim —
  * `inline-gate.ts` says so directly — which is why this arm takes its gates from the compiled legs
  * and asks no questions about where they came from.
  *
- * ⚠️ THE MASKS AND THE SEED SET ARE PER-QUERY AND MUST NEVER BE CACHED ON `topologyVersion`. They
+ * THE MASKS AND THE SEED SET ARE PER-QUERY AND MUST NEVER BE CACHED ON `topologyVersion`. They
  * read PROPERTIES, and a property write deliberately does not bump that signal (items 1674/1675) so
  * that a `SET` cannot discard an adjacency cache. Only the CSRs are cached. That is the same split
  * item 1680 recorded for its projection memo and item 1685 for its degree arrays.
  *
- * ⚠️ NOT ITEM 1106'S REFUTED MEMO. `sweepChain` carries `slotNbrs`, a flat PER-QUERY slot memo gated
+ * NOT ITEM 1106'S REFUTED MEMO. `sweepChain` carries `slotNbrs`, a flat PER-QUERY slot memo gated
  * `passes > 2` because "the first pass PAYS for the memo and only later passes are refunded" — at two
  * passes it measured a small LOSS (162.0 against 165.7). That is correct on its own terms. A CACHED
  * CSR needs no amortisation on a hit, which removes the premise rather than disputing the number.
- * ⚠️ The `passes > 2` gate is NOT touched here; item 1683 relaxed it on an assumption and had to
+ * The `passes > 2` gate is NOT touched here; item 1683 relaxed it on an assumption and had to
  * revert.
  */
 import type { Graph, Vertex } from '@lenke/core';
@@ -61,7 +61,7 @@ export type CsrLeg = {
 /**
  * MAY THIS CHAIN TAKE THE FLAT-ARRAY ARM?
  *
- * ⚠️ A PURE FUNCTION WITH ITS OWN TEST, for the asymmetry item 1685 recorded: a wrongly RELAXED
+ * A PURE FUNCTION WITH ITS OWN TEST, for the asymmetry item 1685 recorded: a wrongly RELAXED
  * clause returns a WRONG COUNT and the differential tests catch it, while a wrongly TIGHTENED one
  * silently abandons the arm and every answer stays right. Only a direct assertion covers the second
  * direction.
@@ -72,7 +72,7 @@ export type CsrLeg = {
  * 1097 fixed a half-answer bug over. A single CSR run cannot express it and a union of two would
  * double the loop.
  *
- * ⚠️ `seeded`: AN INDEX SEED MAKES THIS ARM A REGRESSION, AND A TEST CAUGHT IT RATHER THAN
+ * `seeded`: AN INDEX SEED MAKES THIS ARM A REGRESSION, AND A TEST CAUGHT IT RATHER THAN
  * REASONING. `sweepStartSeed` returns a set when an index seek beat the label bucket (item 1330), so
  * the query is already SUB-LINEAR — it touches a handful of start vertices. This arm's masks are
  * O(V) per constrained position, which throws that away: `seeded-sweep-start.test.ts` asserts the
@@ -146,7 +146,7 @@ export const filteredChainCsrCount = (spec: {
   /**
    * EVERY SLOT STARTS LIVE, AND THE START'S OWN MASK REMOVES THE REST.
    *
-   * ⚠️ THERE IS NO SEED-SET BRANCH HERE, AND ITS ABSENCE IS DELIBERATE. An earlier draft carried
+   * THERE IS NO SEED-SET BRANCH HERE, AND ITS ABSENCE IS DELIBERATE. An earlier draft carried
    * one, narrowing `ways` to `sweepStartSeed`'s vertices — and a mutation pass SURVIVED replacing
    * its condition with `false`, because `filteredChainCsrApplies` returns false for a seeded query,
    * so the branch was unreachable and no test could ever distinguish it. Dead code behind a live

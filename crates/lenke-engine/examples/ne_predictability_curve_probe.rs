@@ -11,7 +11,7 @@
 //! value range, the selectivity and the row count fixed. Only the ORDER changes, which is the one
 //! variable the branch predictor sees.
 //!
-//! ⚠️ THE SELECTIVITY IS HELD AT ~49% ON PURPOSE. Misprediction cost is maximal near 50/50, so this
+//! THE SELECTIVITY IS HELD AT ~49% ON PURPOSE. Misprediction cost is maximal near 50/50, so this
 //! is the regime where the trade is sharpest; a selective predicate would understate both sides.
 //! The row counts are printed per regime so a regime that accidentally changed the question is
 //! visible rather than assumed away.

@@ -1,7 +1,7 @@
 /**
  * THE BRANCH THAT CONSUMES THE PAGED RUNGS, pinned directly (item 1885).
  *
- * ⚠️ WRITTEN BECAUSE A MUTANT SURVIVED. Replacing `fastPath`'s
+ * WRITTEN BECAUSE A MUTANT SURVIVED. Replacing `fastPath`'s
  * `const paged = pagedWidthProjections(linear, graph, params)` with `undefined` passed **92 tests**
  * — the answer file and the whole route file — because dropping a consumer is answer-equivalent: the
  * query falls to the general matcher and returns the same rows, more slowly.
@@ -57,7 +57,7 @@ describe('pagedWidthProjections — the consumer is wired', () => {
   });
 
   /**
-   * ⚠️ `null` IS A PER-CALL DECLINE, NOT AN EMPTY RESULT — `pagedRows` passes it through from the
+   * `null` IS A PER-CALL DECLINE, NOT AN EMPTY RESULT — `pagedRows` passes it through from the
    * walk it wraps. Answering it with `[]` would be rows MISSING rather than a slower route, so the
    * consumer must fall through to the next rung and then out.
    */

@@ -2,7 +2,7 @@
  * THE FLOOR for `V().out(T).values(k).order()` — the UNCAPPED global sort over a fused hop walk
  * (item 1630), priced BEFORE building anything (item 1465's rule).
  *
- * ⚠️ READ ITEM 1394 FIRST: it closed this row. `sortByBys` carries its accounting — `evalBy` plus
+ * READ ITEM 1394 FIRST: it closed this row. `sortByBys` carries its accounting — `evalBy` plus
  * `project` REFUTED at 0.1%, the comparator ~4.3%, `[...stream]` ~5.0%, and 36% of what the sort
  * adds over a bare hop being far-vertex locality with no per-row lever. **Nothing on that list is
  * re-attempted here.** What has changed since is the MECHANISM, not the accounting: item 1586 built
@@ -44,7 +44,7 @@ for (let i = 0; i < NODES; i += 1) {
   g.addVertex({ id: `u${i}`, labels: ['User'], properties: { k: i % 97, n: i } });
 }
 
-/** ⚠️ Split on the REPEAT INDEX — items 1516/1518; a linear `(a*k+b)%N` makes the graph functional. */
+/** Split on the REPEAT INDEX — items 1516/1518; a linear `(a*k+b)%N` makes the graph functional. */
 let edges = 0;
 
 for (let k = 0; k < NODES * FANOUT; k += 1) {
@@ -165,7 +165,7 @@ const handWalkSorted = (key: string): unknown[] => {
 };
 
 /**
- * ⚠️ THE SCAFFOLDING THE ENGINE PAYS AND THE FLOOR DOES NOT, measured rather than argued: the same
+ * THE SCAFFOLDING THE ENGINE PAYS AND THE FLOOR DOES NOT, measured rather than argued: the same
  * array sorted through a `{item, key}` wrapper per element plus the filter and map passes
  * `sortByBys` runs. If THIS lands on the engine's number then the wrapper is the gap; if it lands on
  * the floor's then it is not, and the gap is the traverser round trip instead.

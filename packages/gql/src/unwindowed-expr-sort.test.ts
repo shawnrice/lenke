@@ -15,7 +15,7 @@ import { parse } from './parser.js';
  * alias, so `ORDER BY n.k + 1` reached no rung while `ORDER BY n.k + 1 LIMIT 3` reached this one.
  * Item 1901 measured the unwindowed gap at **8.9x** over 200,000 rows.
  *
- * ⚠️⚠️ ~~**THE ORACLE IS `OFFSET 0`, AND IT NEEDS NO KILL SWITCH.** A `SKIP` with no `LIMIT`
+ * ~~**THE ORACLE IS `OFFSET 0`, AND IT NEEDS NO KILL SWITCH.** A `SKIP` with no `LIMIT`
  * still DECLINES the arm — that refusal is about faults on rows a window discards and is
  * deliberately unchanged — so `… ORDER BY <expr> OFFSET 0` runs the GENERAL PATH and drops
  * nothing.~~ **THAT STOPPED BEING TRUE AT ITEM 1902 AND NOBODY NOTICED UNTIL ITEM 1962.** The test
@@ -24,24 +24,24 @@ import { parse } from './parser.js';
  * and its `OFFSET 0` twin BOTH entered the keyed deferred arm, so every `bothRoutes` assertion in
  * this file was comparing one arm **against itself** — a vacuous oracle, passing for free.
  *
- * ✅ **IT IS A GENUINE TWO-ROUTE COMPARISON AGAIN, by accident of item 1962.** That item's permuted
+ * **IT IS A GENUINE TWO-ROUTE COMPARISON AGAIN, by accident of item 1962.** That item's permuted
  * arm is gated on `noWindow`, so the bare query now takes the PERMUTED arm while `OFFSET 0` takes
  * the KEYED one — verified with the same counter (`perm=1 keyed=0` against `perm=0 keyed=1`). So
  * `bothRoutes` compares two real routes, which is what it was written to do.
  *
- * ⚠️ IT IS STILL NOT THE GENERAL PATH, and the header should not claim it is. If item 1962's gate
+ * IT IS STILL NOT THE GENERAL PATH, and the header should not claim it is. If item 1962's gate
  * is ever widened to admit a window, this oracle goes vacuous again and the tests will not say so.
  * The durable fix is a hand-written expectation; what keeps it honest today is that the two arms
  * are different code.
  *
- * ⚠️ AND `ORDER BY n.k + 1` MUST ORDER LIKE `ORDER BY n.k`, because adding 1 is monotone. That is
+ * AND `ORDER BY n.k + 1` MUST ORDER LIKE `ORDER BY n.k`, because adding 1 is monotone. That is
  * the equivalent-spelling claim the whole item is about, and it is checked here as an answer rather
  * than only as a time in `bun run spelling`.
  */
 const fixture = (): Graph => {
   const g = new Graph();
 
-  // ⚠️ TIES ARE THE POINT OF `k`'s POOL: `Array.prototype.sort` is stable, so tie order is ARRIVAL
+  // TIES ARE THE POINT OF `k`'s POOL: `Array.prototype.sort` is stable, so tie order is ARRIVAL
   // order, and tie order under `ORDER BY` is OBSERVABLE between the engines (item 605). A fixture
   // of distinct keys cannot see a tiebreak change at all.
   const K = [3, 1, 3, 2, 1, 3, 2, 1];
@@ -149,7 +149,7 @@ describe('an unwindowed expression sort key agrees with the general path', () =>
 });
 
 /**
- * ⚠️⚠️ THE ROUTE IS ITS OWN ASSERTION, because taking the arm is ANSWER-EQUIVALENT — every test
+ * THE ROUTE IS ITS OWN ASSERTION, because taking the arm is ANSWER-EQUIVALENT — every test
  * above passes with the change reverted, and a mutant restoring the old gate survives all of them.
  * [[perf-gate-needs-its-own-test]]. `compileLinear` runs every detector and returns the set, so a
  * non-null `nodeProjection` means a rung claimed the query and an all-null result means the general
@@ -190,7 +190,7 @@ describe('the ROUTE, which the answers cannot see', () => {
   });
 
   /**
-   * ⚠️ A SKIP WITH NO LIMIT WAS REFUSED HERE AND IS NOW CLAIMED (item 1905). It was refused because
+   * A SKIP WITH NO LIMIT WAS REFUSED HERE AND IS NOW CLAIMED (item 1905). It was refused because
    * ranking-then-projecting emits fewer rows than it projects, so an item faulting on a discarded
    * row would silently not raise; the arm now forces `plan.skip` to 0, projects every ranked row and
    * slices AFTER, which `skip-only-fault-parity.test.ts` asserts against native.
@@ -227,7 +227,7 @@ const withFaultingRow = (): Graph => {
 const FAULTS = '(1 < 2) + (n.nu * n.nan)';
 
 /**
- * ⚠️⚠️ THE FAULT RULE IS WHY THIS ARM REFUSED EVERYTHING UNWINDOWED, so it gets its own section.
+ * THE FAULT RULE IS WHY THIS ARM REFUSED EVERYTHING UNWINDOWED, so it gets its own section.
  * The argument for admitting NO window is that nothing is discarded, so both paths evaluate every
  * key and every item and raise on the same inputs — and these tests are that argument as code.
  */
@@ -248,7 +248,7 @@ describe('the fault rule still holds either side of the change', () => {
   });
 
   /**
-   * ⚠️ `OFFSET` WITH NO `LIMIT` MUST STILL DECLINE, and this is the control that says so. Item
+   * `OFFSET` WITH NO `LIMIT` MUST STILL DECLINE, and this is the control that says so. Item
    * 1062's note records `page-fold-fault.test.ts` catching the first cut of this arm admitting it:
    * with no cap the general path projects EVERY row and then drops the skipped ones, so the query
    * raises — while ranking-then-projecting would emit fewer rows than it projects and silently
@@ -306,7 +306,7 @@ describe('permutedSortAxes — the route gate, as a pure function (item 1962)', 
   });
 
   test('declines when a window is syntactically present, even OFFSET 0', () => {
-    // ⚠️ THE PLAN CANNOT TELL `OFFSET 0` FROM NO OFFSET — it normalizes both to `skip: 0` — which
+    // THE PLAN CANNOT TELL `OFFSET 0` FROM NO OFFSET — it normalizes both to `skip: 0` — which
     // is why the gate takes `noWindow` separately. Admitting it would also make this file's own
     // oracle vacuous; see the header.
     expect(
@@ -336,7 +336,7 @@ describe('permutedSortAxes — the route gate, as a pure function (item 1962)', 
 
 describe('the permuted arm, against expectations written out by hand (item 1962)', () => {
   /*
-   * 🔑 HAND-WRITTEN, because every other assertion in this file is a cross-route comparison and a
+   * HAND-WRITTEN, because every other assertion in this file is a cross-route comparison and a
    * route gate can make those vacuous — which is exactly what happened to this file between items
    * 1902 and 1962. These numbers come from reading the fixture, not from running the engine.
    *
@@ -360,7 +360,7 @@ describe('the permuted arm, against expectations written out by hand (item 1962)
   });
 
   test('DESC reverses the GROUPS but not the arrival order within a tie', () => {
-    // ⚠️ THE TIE ORDER IS NOT REVERSED by `DESC` — a stable sort on a reversed comparator keeps
+    // THE TIE ORDER IS NOT REVERSED by `DESC` — a stable sort on a reversed comparator keeps
     // arrival order inside each group. A walk that reversed the whole list would pass a
     // distinct-key fixture and fail here.
     const rows = query(fixture(), 'MATCH (n:T) RETURN n.s AS s ORDER BY n.k DESC') as {
@@ -381,7 +381,7 @@ describe('the permuted arm, against expectations written out by hand (item 1962)
   });
 
   /*
-   * ⚠️ MUTATION FOUND THIS GAP: ignoring `nullsFirst` on the single-axis comparator SURVIVED the
+   * MUTATION FOUND THIS GAP: ignoring `nullsFirst` on the single-axis comparator SURVIVED the
    * whole suite, because nothing asserted an explicit NULLS placement on this arm. `nu` is null on
    * v2/v5/v8 and `k` elsewhere, so the two placements give visibly different orders.
    */

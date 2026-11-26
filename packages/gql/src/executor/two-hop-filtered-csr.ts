@@ -22,12 +22,12 @@
  *    csrEndPlusBuild      85.2        1.89x
  * ```
  *
- * ⚠️ NOT ITEM 1517'S REFUTED LEVER. That one built the "end formula" — the reversed walk — and
+ * NOT ITEM 1517'S REFUTED LEVER. That one built the "end formula" — the reversed walk — and
  * measured it **2.0x WORSE** (265.5 against 132.4), because it is selectivity-blind and structurally
  * so. This is not a cheaper route to the same degree lookup; it is an INDEX in place of the lookup,
  * which is the distinction items 1335 and 310 record at the three-hop twin.
  *
- * ⚠️ THIS ARM IS A 1.53x REGRESSION UNDER WRITE-EVERY-READ, AND IT IS THE ONLY CSR ARM THAT IS
+ * THIS ARM IS A 1.53x REGRESSION UNDER WRITE-EVERY-READ, AND IT IS THE ONLY CSR ARM THAT IS
  * (item 1696). Item 1695's criterion: an arm is safe under arbitrary writes iff the walk it replaces
  * costs more than the rebuild. On a scattered fixture, ms per read:
  *
@@ -45,7 +45,7 @@
  * last write" counter would decide it properly and is more state than this question has earned. If
  * a serving workload ever shows this shape under heavy writes, that counter is the fix.
  *
- * ⚠️ THE MASK IS PER-QUERY AND MUST NEVER BE CACHED ON `topologyVersion`. It reads PROPERTIES
+ * THE MASK IS PER-QUERY AND MUST NEVER BE CACHED ON `topologyVersion`. It reads PROPERTIES
  * through the predicate, and a property write deliberately does not bump that signal (items
  * 1674/1675), so a mask cached on it would go stale with no signal to catch it. Only the CSRs are
  * cached — the same split items 1680, 1685, 1688 and 1689 each recorded.
@@ -64,7 +64,7 @@ import type { InlinePred } from './inline-gate.js';
 /**
  * MAY THE FILTERED TWO-HOP COUNT TAKE THE FLAT-ARRAY ARM?
  *
- * ⚠️ A PURE FUNCTION WITH ITS OWN TEST, for the asymmetry that governs every route choice in this
+ * A PURE FUNCTION WITH ITS OWN TEST, for the asymmetry that governs every route choice in this
  * family: a wrongly RELAXED clause returns a WRONG COUNT and the differential tests catch it, while
  * a wrongly TIGHTENED one silently abandons the arm and every answer stays right.
  *
@@ -107,7 +107,7 @@ export const twoHopFilteredCsrApplies = (s: {
  * same `lastGated` split items 1688 and 1689 use, for its reason: a degree cannot say which of a
  * vertex's edges land somewhere that passes.
  *
- * ⚠️ THE ACCEPT TEST ORDER IS THE WALK'S, AND THAT IS A CORRECTNESS PROPERTY. The walk enumerates
+ * THE ACCEPT TEST ORDER IS THE WALK'S, AND THAT IS A CORRECTNESS PROPERTY. The walk enumerates
  * `candidateVertexSource(graph, aLabel)` — the label bucket — and only then applies the predicates.
  * A predicate can THROW (a string-vs-temporal `<=` does, which is settled policy here), so testing
  * the LABEL first keeps the evaluated set exactly the walk's: a vertex outside the bucket never

@@ -25,7 +25,7 @@ import { adjacentEdges, otherEndpoint } from './movement.js';
  * differ on laziness under a zero-row slice, so returning an eager array would change observable
  * behaviour for a caller that takes one value.
  *
- * ⚠️ BUT THE PRICE WAS WRONG BY 38x, and the wrong number is what kept the lever shut. This said
+ * BUT THE PRICE WAS WRONG BY 38x, and the wrong number is what kept the lever shut. This said
  * "one generator for the whole walk costs 10ns/row over the eager form, which is the price of not
  * touching that". Re-measured at item 1411 on a three-arm floor — the same body as a loop, as a
  * generator, and the real engine — the generator protocol is **1.9-2.2x**, not 4%: 416 ns/row
@@ -65,7 +65,7 @@ import { adjacentEdges, otherEndpoint } from './movement.js';
 /**
  * An EAGER drain for a walk that is already going to be drained in full (item 1412).
  *
- * ⚠️ `drain` NEVER REPLACES THE ITERABLE. `run` returns an `Iterable` and callers may `break` out of
+ * `drain` NEVER REPLACES THE ITERABLE. `run` returns an `Iterable` and callers may `break` out of
  * it, so making the walk eager would change observable behaviour — this file's own header says so
  * ("LAZY on purpose") and `eager-tail-cache` records a **473x** and a **3680x** from filling eagerly
  * under a LIMIT. The iterable stays exactly as it was.
@@ -76,7 +76,7 @@ import { adjacentEdges, otherEndpoint } from './movement.js';
  * downstream step to reason about: a trailing `limit` would appear in `rest` and the route is not
  * taken at all. So the step allowlist this seemed to need does not exist.
  *
- * ⚠️ IT MUST YIELD THE SAME ROWS IN THE SAME ORDER as the generator beside it, which is why each
+ * IT MUST YIELD THE SAME ROWS IN THE SAME ORDER as the generator beside it, which is why each
  * `drain` is written as the same loop over the same helpers rather than as a second derivation —
  * item 169's lesson, and Gremlin results are compared ORDERED by the differential fuzzer, so a
  * reordering here is a cross-engine failure rather than an unspecified-order liberty.
@@ -127,16 +127,16 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
   // key — both are different shapes, not this one.
   const valueKey = proj?.kind === 'values' && proj.keys.length === 1 ? proj.keys[0] : undefined;
   /**
-   * ⚠️ ~~PRICED AND OPEN (items 1693/1694)~~ — **BUILT AT ITEM 1889 as `hop-values-csr.ts`, which is
+   * ~~PRICED AND OPEN (items 1693/1694)~~ — **BUILT AT ITEM 1889 as `hop-values-csr.ts`, which is
    * consulted BEFORE this rung: 1.95x warm at 1,000,000 edges and 2.60x at 100,000, with the first-
    * query loss this note predicted (0.61x) removed by a SECOND-CALL policy — the CSR is built only
    * from the second ask on a given topology version, so a one-shot or write-heavy workload never
    * pays the build.** The analysis below is what made that possible and is kept in full.
    *
-   * ⚠️ PRICED AND OPEN (items 1693/1694): a `topologyVersion`-keyed CSR drain for THIS walk, the way
+   * PRICED AND OPEN (items 1693/1694): a `topologyVersion`-keyed CSR drain for THIS walk, the way
    * item 1692 built one for the far-FILTERED hop at 38.08x.
    *
-   * ⚠️ ITEM 1693 REFUTED IT AT 1.58x AND THAT REFUTATION IS WITHDRAWN. It was measured on a
+   * ITEM 1693 REFUTED IT AT 1.58x AND THAT REFUTATION IS WITHDRAWN. It was measured on a
    * GROUPED-insertion fixture — a vertex's edges added consecutively — which is the best case for a
    * pointer-chasing walk and therefore the worst case for the lever that replaces it. On the
    * Gremlin bench's own scattered layout, item 1694 measured the identical arms at:
@@ -163,7 +163,7 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
    *    engineValues       132.27 ms    1.00x
    *    handGen            110.69       1.20x   this walk's data access, by hand
    *    handCsr             83.81       1.58x   the same walk over flat slot runs
-   *    handCsrPlusBuild   173.11       0.76x   ⚠️ with the CSR build in the timed region: a LOSS
+   *    handCsrPlusBuild   173.11       0.76x   with the CSR build in the timed region: a LOSS
    * ```
    *
    * The engine is within **1.20x of its own hand-written walk**, so there is no delegation left to
@@ -171,7 +171,7 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
    * done. What remains is the DATA STRUCTURE, and on that fixture it cost ~89 ms to build against
    * the ~48 it saved.
    *
-   * ⚠️ Item 1692's arm still wins COLD where this one cannot, and for a reason the layout does not
+   * Item 1692's arm still wins COLD where this one cannot, and for a reason the layout does not
    * change: its filter drops 99% of the rows before anything is materialized, so its build is
    * amortized against work that disappears, while this shape materializes every row either way.
    *
@@ -199,12 +199,12 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
     proj.kind === 'store'
   ) {
     /**
-     * ⚠️ `order`, `fold`, `aggregate` AND `store` RIDE AS RESIDUALS OVER THE BARE HOP (items 1783,
+     * `order`, `fold`, `aggregate` AND `store` RIDE AS RESIDUALS OVER THE BARE HOP (items 1783,
      * 1910 and 1911) — the step kinds this shortcut NAMES, which is the bounded version of the change this file warns
      * against a few lines above ("treating an unrecognised step as a residual over a bare hop would
      * quietly re-route a large family of plans that nothing here has measured").
      *
-     * ⚠️⚠️ `fold` IS THE SECOND, AND ITS NUMBER IS THE SAME SHAPE AS THE FIRST'S.
+     * `fold` IS THE SECOND, AND ITS NUMBER IS THE SAME SHAPE AS THE FIRST'S.
      * `V().out(E).fold()` measured **99.53 ms against the identical walk's 4.12** at 200,000
      * vertices / 1,000,000 edges: an unrecognised third step declined the whole shortcut, so the hop
      * fell to the traverser pipeline and paid the generator chain per edge — 124 ns an element to
@@ -213,7 +213,7 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
      * spelling at 3.14x; this gate is what the ELEMENT spelling needed, so the two now agree on
      * route as well as on answer.
      *
-     * ⚠️ `aggregate` AND `store` ARE THE THIRD AND FOURTH NAMES (item 1911), admitted here only
+     * `aggregate` AND `store` ARE THE THIRD AND FOURTH NAMES (item 1911), admitted here only
      * because the PAIR `aggregate(k).cap(k)` is `fold` by another spelling — see
      * `fusableProjectedBagCap`, which is what actually decides it. A bare `aggregate('x')` with no
      * `cap` reaches `rest` here and that gate declines it, so the residual dispatch falls through
@@ -235,12 +235,12 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
      * answer-equivalent: the file's own note on iterating the adjacency `Set` directly is that it
      * is "the SAME order and the same edges — not a second derivation".
      *
-     * ⚠️ NAMED, NOT "ANYTHING UNRECOGNISED", and the distinction is this file's own warning a few
+     * NAMED, NOT "ANYTHING UNRECOGNISED", and the distinction is this file's own warning a few
      * lines above: treating an unrecognised step as a residual over a bare hop "would quietly
      * re-route a large family of plans that nothing here has measured". One named step kind, with
      * its own measurement, is the bounded version of that change.
      *
-     * ⚠️ AND IT DOES NOT MAKE AN ILLEGAL SORT LEGAL. `order()` over graph ELEMENTS throws by
+     * AND IT DOES NOT MAKE AN ILLEGAL SORT LEGAL. `order()` over graph ELEMENTS throws by
      * contract, and `assertFrontierTypes` raises at PLAN-CHECK time, before any route is chosen —
      * so the bare `V().out(T).order()` spelling still throws, by the same mechanism, whichever
      * route this gate would have picked. What rides here is `order().by(k)`, which sorts by a
@@ -278,7 +278,7 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
   // already prices that chain at 375.6 against 251 — the same 1.50x — so the gap is the delegation,
   // not the disjunction.
   //
-  // ⚠️ LABEL-ARG ORDER IS PRESERVED, and this is where this twin DIVERGES from the GQL one. The
+  // LABEL-ARG ORDER IS PRESERVED, and this is where this twin DIVERGES from the GQL one. The
   // buckets are walked in the order the traversal named them, exactly as `iterLabeled` does and as
   // `graph-queries.ts` documents on purpose. GQL's `edgesOfManyTypes` sorts largest-bucket-first
   // (item 1384) to close an equivalent-spelling gap; doing that here would reorder rows for a
@@ -294,7 +294,7 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
   /**
    * EXACTLY TWO TYPES, with both bucket lookups HOISTED and no per-vertex array (item 1442).
    *
-   * ⚠️ THE PER-VERTEX `buckets` ARRAY IS THE COST OF `manyTypes`, and three other candidates are
+   * THE PER-VERTEX `buckets` ARRAY IS THE COST OF `manyTypes`, and three other candidates are
    * refuted. `out('E','F')` measured **1.86x** `out('E')` on a graph with no `F` edge at all — an
    * identical edge set, identical row count, which is the equivalent-spelling class CLAUDE.md says
    * returns the right answer and costs 100-300x elsewhere. Item 1441 priced it against hand floors
@@ -316,7 +316,7 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
    * deliberately a specialization and 3+ types keep `manyTypes`. `out('E','F')` is the overwhelmingly
    * common multi-type spelling.
    *
-   * ⚠️ ORDER IS A TINKERPOP CONTRACT HERE, unlike GQL's unspecified row order — the differential
+   * ORDER IS A TINKERPOP CONTRACT HERE, unlike GQL's unspecified row order — the differential
    * fuzzer compares Gremlin streams ORDERED, which is also why item 1431's edge-index trick is
    * available to GQL's undirected hop and not to `both`. This emits bucket 0 in full, then bucket 1
    * minus bucket 0, which is exactly what the `i`/`j` loops do at `labels.length === 2`.
@@ -340,7 +340,7 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
    * the helpers measured 375.6 ms where the hand walk measured 251, "because `iterByLabel` `yield*`s
    * into `iterLabeled`". Item 1411 then measured ONE generator layer at 2.1x; this shape has four.
    *
-   * ⚠️ THE EDGE-INDEX ROUTE IS UNAVAILABLE HERE, and that is a semantic limit rather than an
+   * THE EDGE-INDEX ROUTE IS UNAVAILABLE HERE, and that is a semantic limit rather than an
    * oversight. Item 1431 took GQL's undirected hop from 53.02 to 15.57 ms by iterating
    * `edgesByLabel` ONCE — but that emits rows in EDGE order, and `iterBoth`'s contract is
    * **out-edges then in-edges, per vertex**, matching TinkerPop's `both` ordering. GQL row order is

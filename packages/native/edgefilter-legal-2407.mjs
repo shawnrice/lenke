@@ -6,12 +6,12 @@
  * called a 2.28x-beyond-start-driven prize and blamed stream order for blocking. Item 2400 freed
  * stream order, so the prize should now be claimable.
  *
- * ⚠️⚠️ **EXCEPT THAT CEILING READS `edge.properties.w` AND `edge.to.properties.n` AS LITERALS, AND
+ * **EXCEPT THAT CEILING READS `edge.properties.w` AND `edge.to.properties.n` AS LITERALS, AND
  * THE ENGINE CANNOT.** The keys are plan data (`proj.keys[0]`), so the engine's access is
  * `properties[key]` with a variable, and [[no-runtime-codegen]] is FIRM — there is no legal route
  * from one to the other. Item 2016 already priced exactly this term inside
  * `edge-filtered-hop-values.ts`: a flat edge array with a DYNAMIC key is 79 ns/edge where the same
- * walk with a LITERAL key is 56, "⬅ 1.41x is the KEYED LOAD", recorded there as unreachable.
+ * walk with a LITERAL key is 56, "<- 1.41x is the KEYED LOAD", recorded there as unreachable.
  *
  * So item 1955's ceiling is the trap [[floor-arm-must-take-same-route]] names: a floor that takes a
  * route the subject is not allowed to take. This probe settles whether ANY of that 1.96x survives
@@ -26,11 +26,11 @@
  *   flat DYNAMIC      a pre-built contiguous array + dynamic keys — the engine's own shape by hand,
  *                     which says how much of any gap is the walk rather than the access.
  *
- * ⚠️ The flat array is built OUTSIDE the timed loop on purpose: `edgeFlatFor` memoizes per
+ * The flat array is built OUTSIDE the timed loop on purpose: `edgeFlatFor` memoizes per
  * `topologyVersion`, so a read-only workload pays that build once and the probe must too, or it
  * would charge the engine's arm for work the engine amortizes.
  *
- * ⚠️ A NULL CONTROL runs alongside — a vertex-only count no arm here touches. If it moves between
+ * A NULL CONTROL runs alongside — a vertex-only count no arm here touches. If it moves between
  * rounds, the machine moved and no ratio below is evidence.
  *
  *   bun edgefilter-legal-2407.mjs
@@ -64,7 +64,7 @@ for (let e = 0; e < NODES * FANOUT; e += 1) {
 }
 
 /*
- * ⚠️ THE KEYS COME FROM THE ENVIRONMENT so no arm can constant-fold them. The engine reads
+ * THE KEYS COME FROM THE ENVIRONMENT so no arm can constant-fold them. The engine reads
  * `proj.keys[0]` off a plan, which is the same situation: a string known only at run time.
  */
 const WKEY = process.env.WKEY ?? 'w';
@@ -177,7 +177,7 @@ for (const [name, fn] of ARMS) {
   times.set(name, ms);
   sums.set(name, checksum(rows));
   /*
-   * ⚠️ ns PER EDGE VISITED, not per row. Every arm visits all |E| edges and keeps 3 in 7, so a
+   * ns PER EDGE VISITED, not per row. Every arm visits all |E| edges and keeps 3 in 7, so a
    * per-ROW figure divides by the kept rows and flatters each arm by the same ~2.33x — item 1858's
    * recorded mistake, and `edgecount-1955.mjs` prints per-visit for exactly this reason.
    */

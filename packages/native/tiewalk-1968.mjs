@@ -21,14 +21,14 @@
 // visits rows in a DIFFERENT arrival order, and `Array.prototype.sort` is stable, so TIE ORDER under
 // `ORDER BY` would change. Item 605 established that tie order is observable between the engines.
 //
-// 🔑 SO THE QUESTION IS ANSWERABLE WITHOUT BUILDING ANYTHING. Construct a fixture where the
+// SO THE QUESTION IS ANSWERABLE WITHOUT BUILDING ANYTHING. Construct a fixture where the
 // start-driven and far-driven arrival orders DIFFER even after a stable sort, compute both candidate
 // orders BY HAND, and ask which one the NATIVE engine's output matches. If native matches
 // start-driven, a far-driven TS deferred arm is a cross-engine wrong answer and the fold is dead.
 // If it matches far-driven, TS is the one that is out of step and the fold is not merely available
 // but owed.
 //
-// ⚠️ THE FIXTURE HAS TO MAKE THE TWO ORDERS DIFFER, which needs care: rows for one far vertex share
+// THE FIXTURE HAS TO MAKE THE TWO ORDERS DIFFER, which needs care: rows for one far vertex share
 // its key, so after sorting they are adjacent either way, and a fixture keyed on the FAR end cannot
 // tell the orders apart. So the sort key reads the START (`a.k`), while the projected tag reads the
 // FAR end — then a far-driven walk interleaves start keys and a start-driven one groups them.
@@ -123,7 +123,7 @@ console.log(`hand FAR-driven   : ${farOrder}`);
 console.log(`TS engine         : ${tsOut}`);
 console.log(`NATIVE engine     : ${natOut}`);
 
-// ⚠️ THE VACUITY GUARD, and this probe is useless without it: if the two hand orders coincide the
+// THE VACUITY GUARD, and this probe is useless without it: if the two hand orders coincide the
 // fixture cannot tell them apart, and "native matches start-driven" would be unearned.
 console.log(
   `\nthe two hand orders DIFFER? ${String(startOrder !== farOrder)}   <- if false, the fixture proves nothing`,

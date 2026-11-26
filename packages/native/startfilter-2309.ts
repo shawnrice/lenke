@@ -3,15 +3,15 @@ import { compileLinear } from '../../packages/gql/src/executor/rewrites.ts';
 /**
  * Why does a START filter cost 18x PER ROW on a 1-hop projection? (item 2309)
  *
- * 🔑 `bun run bench`, same fixture (`hopPairDoc`, 200,000 vertices / 1,000,000 edges):
+ * `bun run bench`, same fixture (`hopPairDoc`, 200,000 vertices / 1,000,000 edges):
  *
  *     traverse 1-hop project                 19.0 ms   ~1,000,000 rows    19 ns/row
  *     traverse 1-hop project + start filter 110.8 ms     ~320,000 rows   346 ns/row
  *
- * ⚠️ FEWER rows, 5.8x more time — 18x per row. `a.age > 60` over `age = i % 90` keeps 29/90 of the
+ * FEWER rows, 5.8x more time — 18x per row. `a.age > 60` over `age = i % 90` keeps 29/90 of the
  * starts, so the filter is selective and should REDUCE work.
  *
- * ⚠️ Item 1716 corrected this family once (three rows projected a property the fixture lacked, so the
+ * Item 1716 corrected this family once (three rows projected a property the fixture lacked, so the
  * whole "project" family measured NULLS); the current fixture carries `name`, so the comparison is
  * post-fix.
  */

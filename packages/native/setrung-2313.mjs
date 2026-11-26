@@ -1,9 +1,9 @@
 /**
- * ⚠️⚠️ **DO ITEM 2180's TARGET-ONE NUMBERS STILL HOLD? (item 2313)** It priced "a write clause
+ * **DO ITEM 2180's TARGET-ONE NUMBERS STILL HOLD? (item 2313)** It priced "a write clause
  * disqualifies EVERY read rung" at ~1.48x and declined to build it, because a new rung in that file costs
  * up to 16% on unrelated rows (`executor-edits-perturb`) for a gain on one shape.
  *
- * 🔑 This tick does NOT re-open that decision — my own three ships this session were GATE RELAXATIONS, not
+ * This tick does NOT re-open that decision — my own three ships this session were GATE RELAXATIONS, not
  * new walk variants, so they change nothing about the trade. The bounded question is whether the GAP is
  * still what 2180 measured:
  *
@@ -13,7 +13,7 @@
  *     WHERE + SET + count(*)    NO RUNG            6.82      <- ~1.48x headroom
  * ```
  *
- * ⚠️ A write MUTATES, so each rep writes a DIFFERENT value; and the filtered arms must keep the SAME row
+ * A write MUTATES, so each rep writes a DIFFERENT value; and the filtered arms must keep the SAME row
  * count as each other or the comparison is the match-the-fixture trap.
  */
 import { Graph } from '@lenke/core';
@@ -30,8 +30,8 @@ for (let i = 0; i < N; i += 1) {
 }
 
 /*
- * ⚠⚠ **THE CHEAP EXPLANATION, CHECKED BEFORE THE EXPENSIVE ONE (item 2315).** Item 2313 priced "a write
- * clause disqualifies every read rung" at 2.39x on THIS fixture — which has NO INDEX. 🔑 Item 2301
+ * **THE CHEAP EXPLANATION, CHECKED BEFORE THE EXPENSIVE ONE (item 2315).** Item 2313 priced "a write
+ * clause disqualifies every read rung" at 2.39x on THIS fixture — which has NO INDEX. Item 2301
  * measured an index on the lookup key at hundreds of times, so a filtered write's cost may be an unindexed
  * SCAN rather than a missing rung. If `INDEX=1` collapses the write arm, there is no engine defect here.
  */

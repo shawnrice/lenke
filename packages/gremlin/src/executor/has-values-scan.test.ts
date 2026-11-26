@@ -1,7 +1,7 @@
 /*
  * Item 2059 — the unindexed `V().has(k, pred).values(key)` fused scan.
  *
- * ⚠️⚠️ **THE ANSWER WAS ALWAYS RIGHT HERE TOO — only the ROUTE was wrong — so these tests assert the
+ * **THE ANSWER WAS ALWAYS RIGHT HERE TOO — only the ROUTE was wrong — so these tests assert the
  * route, the exact row SEQUENCE, and the two refusals that keep the rung honest.** Item 2058 priced
  * the generic route it replaces at ~47 ns a vertex against a 25 ns fused scan.
  */
@@ -40,7 +40,7 @@ const build = (): Graph => {
   // Has `n` but NO `k` at all: the filter must reject it rather than throw.
   g.addVertex({ id: 'e', labels: ['T'], properties: { n: 40 } });
   /*
-   * ⚠️ `f` EXISTS BECAUSE A MUTANT SURVIVED. It passes `regex('^x')` on `s` — a predicate
+   * `f` EXISTS BECAUSE A MUTANT SURVIVED. It passes `regex('^x')` on `s` — a predicate
    * `specializePredicate` DECLINES, so the GENERAL walk — and has NO `n`. Dropping the
    * `projKey in props` test from that walk was invisible until this vertex existed: every other
    * regex-passing vertex happened to carry `n`.
@@ -59,7 +59,7 @@ describe('unindexed has+values scan (item 2059)', () => {
 
   test('the row SEQUENCE matches the pipeline, dropping a filter-passing vertex with no projected key', () => {
     /*
-     * 🔑 `d` PASSES `has('k', 3)` AND HAS NO `n`, so it must emit NOTHING — the `values()` contract.
+     * `d` PASSES `has('k', 3)` AND HAS NO `n`, so it must emit NOTHING — the `values()` contract.
      * A walk that yielded `undefined` there would add a row the generic route never produces, and
      * [[toequal-blind-to-trailing-undefined]] is why `toEqual` would not notice. `e` has no `k`, so
      * the predicate must reject a MISSING value rather than throw.
@@ -83,7 +83,7 @@ describe('unindexed has+values scan (item 2059)', () => {
 
   test('a predicate `specializePredicate` DECLINES still routes here and answers correctly', () => {
     /*
-     * ⚠️ THE GENERAL WALK IS NOT DEAD CODE. `specializePredicate` returns `undefined` for anything
+     * THE GENERAL WALK IS NOT DEAD CODE. `specializePredicate` returns `undefined` for anything
      * but a number/string operand, so a `regex` lands on the `matches` walk — a separate closure, so
      * a mutant can target one without the other.
      */
@@ -91,16 +91,16 @@ describe('unindexed has+values scan (item 2059)', () => {
 
     expect(unindexedHasValuesShortcut(plan, g)).toBeDefined();
     /*
-     * 🔑 `f` PASSES THE REGEX AND HAS NO `n`, so it must emit nothing — the same `values()` contract
+     * `f` PASSES THE REGEX AND HAS NO `n`, so it must emit nothing — the same `values()` contract
      * the fast walk keeps for `d`. Until `f` existed, a mutant removing `projKey in props` from the
      * GENERAL walk survived every test in this file.
      */
     expect(toArray(plan, g)).toStrictEqual([10, 30]);
   });
 
-  test('⚠️ THE WALK CHOICE ITSELF, as a pure function — a route mutant changes no answer', () => {
+  test('THE WALK CHOICE ITSELF, as a pure function — a route mutant changes no answer', () => {
     /*
-     * ⚠️⚠️ `pickScanWalk` IS EXPORTED SOLELY SO THIS CAN BE ASSERTED. Forcing the rung onto the
+     * `pickScanWalk` IS EXPORTED SOLELY SO THIS CAN BE ASSERTED. Forcing the rung onto the
      * general walk is answer-equivalent, so it survived the whole suite;
      * [[perf-gate-needs-its-own-test]] prescribes exactly this: extract the decision and test it.
      */
@@ -110,14 +110,14 @@ describe('unindexed has+values scan (item 2059)', () => {
     expect(pickScanWalk(undefined)).toBe('general');
   });
 
-  test('⚠️ a LEADING hasLabel is REFUSED — item 1870 measured that form losing up to 678x', () => {
+  test('a LEADING hasLabel is REFUSED — item 1870 measured that form losing up to 678x', () => {
     /*
-     * ⚠️⚠️ THIS IS THE REFUSAL THAT MATTERS MOST. The rung is a FULL SCAN whatever the label matches,
+     * THIS IS THE REFUSAL THAT MATTERS MOST. The rung is a FULL SCAN whatever the label matches,
      * while the pipeline seeds from `graph.verticesByLabel` and visits only the labelled vertices —
      * so the labelled form ties when the label covers everything and loses 1.93x at one-in-two,
      * 7.98x at one-in-ten and 678x at one-in-a-thousand.
      *
-     * ⚠️ AND THE WORKLOAD SCREEN CANNOT CATCH THIS, which is why it is asserted here: every read
+     * AND THE WORKLOAD SCREEN CANNOT CATCH THIS, which is why it is asserted here: every read
      * screen is label-homogeneous ([[label-vacuity-gates-fast-paths]]), so a vacuous label makes the
      * scan look like a 2.39x WIN on exactly the shape that would regress on real data.
      */
@@ -147,9 +147,9 @@ describe('unindexed has+values scan (item 2059)', () => {
     ).toBeUndefined();
   });
 
-  test('⚠️ PRECEDENCE: an INDEXED key is claimed by the SEEDED rung, which visits only the bucket', () => {
+  test('PRECEDENCE: an INDEXED key is claimed by the SEEDED rung, which visits only the bucket', () => {
     /*
-     * ⚠️ THE ORDERING IS THIS RUNG'S GATE. It does not probe the index itself — `index.ts` consults
+     * THE ORDERING IS THIS RUNG'S GATE. It does not probe the index itself — `index.ts` consults
      * `seededNodeValuesShortcut` first and returns if it claims, so this one is reached only once
      * that declined. Re-probing here would duplicate `seedForStep` per query and could drift from
      * the rung that owns the decision; this test is what holds the ordering in place instead.
@@ -166,16 +166,16 @@ describe('unindexed has+values scan (item 2059)', () => {
     expect(toArray(plan, indexed)).toStrictEqual([10]);
   });
 
-  test('⚠️⚠️ a RANGE predicate on an INDEXED key declines — the regression an existing test caught', () => {
+  test('a RANGE predicate on an INDEXED key declines — the regression an existing test caught', () => {
     /*
-     * ⚠️⚠️ **THIS IS THE CASE THAT BROKE, AND PRECEDENCE DID NOT COVER IT.** The first cut of this
+     * **THIS IS THE CASE THAT BROKE, AND PRECEDENCE DID NOT COVER IT.** The first cut of this
      * rung had no index check and relied on sitting below `seededNodeValuesShortcut`. But that rung
      * DECLINES a range even on an indexed key — its `seedForStep` cap of `0` demands a `removable`
      * candidate, which a range never is — while the PIPELINE still seeds the range from the index.
      * So this shape fell through to the full scan and changed the row SEQUENCE from bucket order to
      * vertex order, failing `seeded-node-values.test.ts`'s "a RANGE predicate" case.
      *
-     * 🔑 Both halves are asserted: the rung DECLINES, and the answer still matches the pipeline's
+     * Both halves are asserted: the rung DECLINES, and the answer still matches the pipeline's
      * SEQUENCE (a trailing vacuous `order()` is a different route, so the bare form is compared
      * against the four-step form the way that test does it).
      */
@@ -192,7 +192,7 @@ describe('unindexed has+values scan (item 2059)', () => {
     expect(seededNodeValuesShortcut(ranged, indexed)).toBeUndefined();
 
     /*
-     * ⚠️ COMPARED AGAINST THE FOUR-STEP FORM, EXACTLY AS THE SIBLING TEST DOES IT — a vacuous
+     * COMPARED AGAINST THE FOUR-STEP FORM, EXACTLY AS THE SIBLING TEST DOES IT — a vacuous
      * `limit` cannot change the answer but DOES defeat every three-step rung, so it is the
      * pipeline's own sequence. My first attempt here compared against a SORTED `order()` result and
      * failed on `[10, 30, 20]` against `[10, 20, 30]`: the bare form emits in BUCKET order, which is

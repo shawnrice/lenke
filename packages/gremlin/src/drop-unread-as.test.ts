@@ -24,14 +24,14 @@ import {
 /**
  * Item 1572: `as(l)` whose label nothing downstream can read is removed from the plan.
  *
- * ⚠️ THE BIG COST IS NOT THE TAG COPY. `as` copies the whole tag map per traverser, which is real —
+ * THE BIG COST IS NOT THE TAG COPY. `as` copies the whole tag map per traverser, which is real —
  * but it is also one more step in front of the hop, and every count/values rung matches a plan
  * PREFIX from the source, so an unread `as` makes them all decline:
  *
  *     V().as(x).out(E).count()     24.1 ms -> 0.0    the shortcut answers it again
  *     V().as(x).out(E).values(k)   30.1    -> 8.1    3.7x — this one IS the tag copy
  *
- * ⚠️ The drop is answer-equivalent, so the suite cannot see a mutant in it
+ * The drop is answer-equivalent, so the suite cannot see a mutant in it
  * (`perf-gate-needs-its-own-test`). Hence ROUTE assertions on `effectivePlan` plus answers.
  */
 const kindsOf = (plan: Parameters<typeof effectivePlan>[0], graph: Graph): string[] =>
@@ -66,7 +66,7 @@ describe('an unread as() label is dropped', () => {
     ]);
   });
 
-  test('⚠️ TWO unread labels both go — the pass walks BACKWARDS', () => {
+  test('TWO unread labels both go — the pass walks BACKWARDS', () => {
     // `as` is not tag-blind (it reads `t.tags` to copy it), so testing each `as` against the
     // ORIGINAL suffix would let the second keep the first alive and drop only `y`. Testing against
     // the KEPT suffix drops both.
@@ -90,9 +90,9 @@ describe('an unread as() label is dropped', () => {
   });
 });
 
-describe('⚠️ the refusals, each of which a mutant removes', () => {
+describe('the refusals, each of which a mutant removes', () => {
   test('a select READS the tag', () => {
-    // ⚠️ THE TAIL IS DELIBERATELY NOT A BARE `count()`. It was, until item 1800 taught the chain to
+    // THE TAIL IS DELIBERATELY NOT A BARE `count()`. It was, until item 1800 taught the chain to
     // drop a `select(tag)` whose only tail is `count()` — after which this plan legitimately
     // becomes `V().out('E').count()` and says nothing about THIS pass's refusal. The invariant
     // under test is "`dropUnreadAs` must not drop an `as` a later step reads", so the shape has to
@@ -137,7 +137,7 @@ describe('⚠️ the refusals, each of which a mutant removes', () => {
     ).toContain('as');
   });
 
-  test('⚠️ a PATH-reading plan is left entirely alone', () => {
+  test('a PATH-reading plan is left entirely alone', () => {
     // `effectivePlan` applies no rewrite at all when the run tracks paths, so the `as` survives
     // for a reason that has nothing to do with this pass. Pinned so the two cannot be confused.
     const plan = traversal(V(), as_('x'), out('E'), path());
@@ -163,7 +163,7 @@ describe('⚠️ the refusals, each of which a mutant removes', () => {
 });
 
 describe('the pass is identity-preserving when it changes nothing', () => {
-  // ⚠️ THESE DO NOT TEST THE KIND GATE, and I first wrote them claiming they did. Removing
+  // THESE DO NOT TEST THE KIND GATE, and I first wrote them claiming they did. Removing
   // `if ((plan.kinds & KIND_BITS.as) === 0) return plan` leaves the loop to run, find no `as`,
   // keep `changed` false and return `plan` — THE SAME OBJECT. So the gate has no observable
   // effect whatsoever and its mutant is unkillable by any behavioural test; it is a pure cost

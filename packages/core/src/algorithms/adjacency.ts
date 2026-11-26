@@ -56,7 +56,7 @@ export const incidentEdges = function* (
  * How many edges `incidentEdges` would yield, **assuming no edge carries more than one label** —
  * a sum of bucket sizes, so O(buckets) rather than O(edges), and no allocation.
  *
- * ⚠️ ONLY VALID UNDER `graph.multiTypeEdgeCount === 0`. The index buckets an edge under every label
+ * ONLY VALID UNDER `graph.multiTypeEdgeCount === 0`. The index buckets an edge under every label
  * it carries, so a two-label edge is counted twice here. That gate is the exact condition (it counts
  * edges carrying more than one label), which is why this is a separate function rather than a flag
  * on {@link countIncidentEdges}: the unsafe case should not be reachable by passing `false`.
@@ -90,7 +90,7 @@ export const countIncidentEdgesFlat = (
  * at `at`; returns the cursor just past the last write. The direct-iteration counterpart of
  * {@link incidentEdges} — no generator frame, no intermediate array.
  *
- * ⚠️ ONLY VALID UNDER `graph.multiTypeEdgeCount === 0`, for the same reason as
+ * ONLY VALID UNDER `graph.multiTypeEdgeCount === 0`, for the same reason as
  * {@link countIncidentEdgesFlat}, and it must be paired with that function so the count it wrote
  * against and the count written here cannot disagree.
  *
@@ -98,7 +98,7 @@ export const countIncidentEdgesFlat = (
  * is identical to the one built through the generator — which byte-identity with the native engine
  * requires, since a permuted neighbour list changes a tie-break.
  *
- * ⚠️ REJECTED, WITH NUMBERS — `index.get(edge.toId)` INSTEAD OF `index.get(edge[end].id)`
+ * REJECTED, WITH NUMBERS — `index.get(edge.toId)` INSTEAD OF `index.get(edge[end].id)`
  * (item 1722). This profiled at 23.13% of `labelPropagation` and ~172 ns per index write, where a
  * typed-array store is ~1 ns, and `edge.to` / `edge.from` are getters that call
  * `graph.getVertexById(...)` on first touch — item 194 priced a string-keyed `Map.get` at
@@ -115,7 +115,7 @@ export const countIncidentEdgesFlat = (
  *     degree              14.47/12.88   13.39/12.26   1.081x / 1.051x   <- CONTROL
  * ```
  *
- * ⚠️ THE TARGET MOVED LESS THAN BOTH CONTROLS. Only `label-propagation.ts` uses this function,
+ * THE TARGET MOVED LESS THAN BOTH CONTROLS. Only `label-propagation.ts` uses this function,
  * so `connectedComponents` and `degree` cannot reach the change, and they moved MORE — drift.
  *
  * AND THE MECHANISM IS NOT WHAT THE ARITHMETIC SUGGESTED. `addEdge` is normally handed VERTEX
@@ -204,7 +204,7 @@ export const countIncidentEdges = (
  * An integer RANK per vertex in EXTERNAL-ID order, so a tie-break on "smallest external id" is an
  * int compare instead of two `Vertex.id` getter reads and a string compare (item 1625).
  *
- * ⚠️ WHY IT IS WORTH A PRECOMPUTE. `labelPropagation` and `peerPressure` both resolve a tie on the
+ * WHY IT IS WORTH A PRECOMPUTE. `labelPropagation` and `peerPressure` both resolve a tie on the
  * smallest external id, inside a loop that runs per tie, per vertex, per round — and at fanout 2
  * almost every vertex ties (two neighbours, two distinct labels, both counted once), so it ran on
  * nearly every vertex of every round. `labelPropagation` is the slowest procedure per vertex in
@@ -222,7 +222,7 @@ export const countIncidentEdges = (
  * why this ranks rather than just hoisting the ids. The remaining ~10% of the ceiling is the dirty
  * loop itself, which the ablation also removed.
  *
- * ⚠️ `rank[a] < rank[b]` IFF `ids[a] < ids[b]`, because ranks are assigned in id order and vertex
+ * `rank[a] < rank[b]` IFF `ids[a] < ids[b]`, because ranks are assigned in id order and vertex
  * ids are UNIQUE — so the tie-break can never itself tie and the contract is unchanged. The sort
  * uses the same `<`/`>` on strings the loops used, so the order is identical by construction rather
  * than by a second definition of "lexicographic".

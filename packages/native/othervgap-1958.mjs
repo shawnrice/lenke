@@ -5,12 +5,12 @@
 // the success criterion for a spelling gap. The workload screen carries both rows side by side so
 // the gap stays visible.
 //
-// ⚠️ TODAY THE SCREEN READS 108.55 AGAINST 81.14 — a 1.34x gap, where this session's two earlier
+// TODAY THE SCREEN READS 108.55 AGAINST 81.14 — a 1.34x gap, where this session's two earlier
 // runs of the same screen read 1.03x and 1.04x. Normalized, the two spellings are the SAME PLAN, and
 // the same plan cannot cost two different amounts — so either the normalization stopped firing, or
 // the screen's reading is an artifact of running 45 shapes in one process.
 //
-// 🔑 ONE SHAPE PER PROCESS IS THE ONLY WAY TO TELL. Item 1956 found this probe family's rows
+// ONE SHAPE PER PROCESS IS THE ONLY WAY TO TELL. Item 1956 found this probe family's rows
 // interfering through shared dispatch sites, and found one of them BIMODAL across whole processes.
 // So: `SHAPE=otherv` or `SHAPE=inv`, one per run, and compare mode by mode.
 //

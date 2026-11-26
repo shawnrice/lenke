@@ -6,7 +6,7 @@ import { describe, expect, it } from 'bun:test';
  * at FANOUT 2 scattered, one shape per process, three rounds (1.10x), with two- and three-filter
  * chains, string `eq` and four controls all flat.
  *
- * ⚠️ THE ROUTE IS THE THING UNDER TEST, not the answer. Every shape below answers identically on
+ * THE ROUTE IS THE THING UNDER TEST, not the answer. Every shape below answers identically on
  * both routes — that is what makes the fast path legal and also what makes it invisible to the
  * 1,376 differential tests (`perf-gate-needs-its-own-test`). So `specializedRowTest` is exported
  * and its decisions are asserted directly.
@@ -47,13 +47,13 @@ describe('which shapes the row test claims', () => {
     }
   });
 
-  it('⚠️ DECLINES two and three filters — measured 0.98x and 0.88x, so widening is a regression', () => {
+  it('DECLINES two and three filters — measured 0.98x and 0.88x, so widening is a regression', () => {
     expect(specializedRowTest(['a', 'b'], [gt(1), gt(2)])).toBeUndefined();
     expect(specializedRowTest(['a', 'b', 'c'], [gt(1), gt(2), gt(3)])).toBeUndefined();
     expect(specializedRowTest(['a', 'b', 'c', 'd'], [gt(1), gt(2), gt(3), gt(4)])).toBeUndefined();
   });
 
-  it('⚠️ DECLINES eq/neq — measured 0.96x, a LOSS and not a smaller win', () => {
+  it('DECLINES eq/neq — measured 0.96x, a LOSS and not a smaller win', () => {
     expect(specializedRowTest(['k'], [eq(5)])).toBeUndefined();
     expect(specializedRowTest(['k'], [neq(5)])).toBeUndefined();
     expect(specializedRowTest(['k'], [eq('s')])).toBeUndefined();

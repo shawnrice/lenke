@@ -9,13 +9,13 @@
 // them. [[ts-set-is-o-width]] prices the mechanism — three O(K) passes a write against native's
 // O(1) columnar — and this is the first cross-surface measurement of it.
 //
-// ⚠️ FIRST, ARE THE TWO SIDES DOING THE SAME WORK? `MATCH (n:T)` filters by label and `V()` does
+// FIRST, ARE THE TWO SIDES DOING THE SAME WORK? `MATCH (n:T)` filters by label and `V()` does
 // not, so the GQL side carries a label scan the Gremlin side skips — which if anything makes the
 // GQL side's job SMALLER. The `readOnly` arms below price each side's scan WITHOUT the write, so
 // the write cost is a difference rather than a whole-query ratio. A whole-query ratio would charge
 // the write for whatever the scan costs.
 //
-// ⚠️ FRESH GRAPH PER REP, build excluded: a write is not idempotent, and `SET n.n = 1` run twice
+// FRESH GRAPH PER REP, build excluded: a write is not idempotent, and `SET n.n = 1` run twice
 // has nothing to change the second time (every row already holds 1), so min-of-N over one fixture
 // would measure the no-op path.
 //
@@ -52,7 +52,7 @@ const ARMS = {
   gremScan: (g) => toArray(traversal(V(), values('n')), g),
 
   // ——— does the VALUE matter? setting what is already there vs a change ———
-  // ⚠️ `SET n.n = n.n` changes nothing, so if the cost is in the WRITE this is cheap and if it is
+  // `SET n.n = n.n` changes nothing, so if the cost is in the WRITE this is cheap and if it is
   // in the per-row machinery it is not.
   gqlSetSame: (g) => query(g, 'MATCH (n:T) SET n.n = n.n', {}),
   // ——— a NEW key widens the row; an existing key replaces in place ———
@@ -63,7 +63,7 @@ const ARMS = {
   gqlSetTwo: (g) => query(g, 'MATCH (n:T) SET n.n = 1, n.w = 2', {}),
 
   /*
-   * ⚠️ THE DELETION TEST FOR THE PROFILE'S TOP FRAMES ([[frame-attribution-trap]]). The clean
+   * THE DELETION TEST FOR THE PROFILE'S TOP FRAMES ([[frame-attribution-trap]]). The clean
    * profile puts 22.6% in `deferConstraint` (12.90%) + `runDeferredChecks` (9.71%) on a fixture
    * with NO CONSTRAINTS. Those fire only when `txDepth > 0`, and every GQL write statement
    * auto-commits — i.e. runs in an implicit transaction. So the same host-side mutation INSIDE an
@@ -125,7 +125,7 @@ for (const name of names) {
   results[name] = ser[ser.length >> 1];
   console.log(
     `${name.padEnd(16)} median ${results[name].toFixed(2)} ms   ` +
-      `${((results[name] * 1e6) / NODES).toFixed(0)} ns/row${err === '' ? '' : `  ⚠️ ${err}`}`,
+      `${((results[name] * 1e6) / NODES).toFixed(0)} ns/row${err === '' ? '' : `  ${err}`}`,
   );
 }
 

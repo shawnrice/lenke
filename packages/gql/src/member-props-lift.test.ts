@@ -19,7 +19,7 @@ import { query } from './index.js';
 // After: 3.643 and 3.678, a 1.15x spread. Item 230 had already measured and attributed that pair
 // (17.2 ns against 29.0) — the binding write and read per element.
 //
-// ⚠️ THIS FILE IS ABOUT THE SEMANTICS THE LIFT MUST NOT CHANGE, not the speed. The lift reaches a
+// THIS FILE IS ABOUT THE SEMANTICS THE LIFT MUST NOT CHANGE, not the speed. The lift reaches a
 // different code path from the generic evaluator, so every three-valued rule has to be re-asserted
 // on it: a null IN THE LIST, a null or absent CELL, a param bound to a non-array, and the RAISE a
 // sibling conjunct owes. Each test below fails if the lift gets one of them wrong, and the answer
@@ -68,7 +68,7 @@ describe('IN / OR lift into memberProps (item 1269)', () => {
     expect(countOf('MATCH (n:P) WHERE n.k IN [999] RETURN count(*) AS c')).toBe(0);
   });
 
-  test('⚠️ a NULL IN THE LIST makes a non-match UNKNOWN rather than FALSE', () => {
+  test('a NULL IN THE LIST makes a non-match UNKNOWN rather than FALSE', () => {
     // THE THREE-VALUED RULE THAT IS EASIEST TO GET WRONG, and `hashValues` carries a `hasNull` flag
     // precisely for it. `has2` matches outright (TRUE). `has9` does NOT match 2, and the remaining
     // element is null, so its verdict is UNKNOWN, not FALSE — it drops either way here, but the
@@ -93,8 +93,8 @@ describe('IN / OR lift into memberProps (item 1269)', () => {
     expect(countOf('MATCH (n:P) WHERE n.k IN $p RETURN count(*) AS c', { p: 2 })).toBe(0);
   });
 
-  test('⚠️ a sibling that SETTLES the row suppresses a raise, as it does on the generic route', () => {
-    // ⚠️ REWRITTEN AT ITEM 1286, AND THE BEHAVIOUR IT USED TO ASSERT WAS A CROSS-ENGINE DIVERGENCE.
+  test('a sibling that SETTLES the row suppresses a raise, as it does on the generic route', () => {
+    // REWRITTEN AT ITEM 1286, AND THE BEHAVIOUR IT USED TO ASSERT WAS A CROSS-ENGINE DIVERGENCE.
     // The original argument was that running a non-raising family FIRST "would let a FALSE test
     // return early and swallow that raise — changing WHICH queries error", so this family ran LAST
     // among the lifted blocks. The premise is right and the conclusion was backwards: the GENERIC
@@ -124,7 +124,7 @@ describe('IN / OR lift into memberProps (item 1269)', () => {
     expect(countOf('MATCH (n:P) WHERE n.k IN [2,9] AND n.k > 5 RETURN count(*) AS c')).toBe(1);
   });
 
-  test('⚠️ the far-hop MERGE carries memberProps (a dropped list would return a SUPERSET)', () => {
+  test('the far-hop MERGE carries memberProps (a dropped list would return a SUPERSET)', () => {
     // `mergeFarPreds` concatenates an inline far constraint with the lifted clause predicate. If
     // `memberProps` were left out of that merge the clause would VANISH and this would answer 2
     // (both `xx` nodes) instead of 1 — a wrong answer, not a slow one, and no count-only test
@@ -143,7 +143,7 @@ describe('IN / OR lift into memberProps (item 1269)', () => {
     ).toEqual([2]);
   });
 
-  test('⚠️ ROUTE: both spellings actually LIFT, asserted on the pure compiler', () => {
+  test('ROUTE: both spellings actually LIFT, asserted on the pure compiler', () => {
     // Admitting a spelling to a lifted family is ANSWER-EQUIVALENT, so every test above passes
     // with the lift reverted and only the cost changes. The mutation run proved it: removing the
     // OR fold SURVIVED the whole suite. `compilePredicate` is the pure decision, so it is asserted
@@ -196,14 +196,14 @@ describe('IN / OR lift into memberProps (item 1269)', () => {
     expect(unlifted.where).toBeDefined();
   });
 
-  test('⚠️ a membership is the ONLY constraint on a product factor (hasPredicate must see it)', () => {
+  test('a membership is the ONLY constraint on a product factor (hasPredicate must see it)', () => {
     // `hasPredicate`'s own doc: every gate that decides "can I skip applying this predicate" or
     // "is this node constrained" goes through it, so a FIFTH list forgotten there reintroduces the
     // bug it exists to prevent. A product count is the shape where that would show — an
     // unconstrained factor is answered from a bucket SIZE, so a dropped membership would multiply
     // the whole label instead of the one matching vertex.
     //
-    // ⚠️ THIS IS NOT WHAT CATCHES THE `hasPredicate` MUTANT, and the mutation run is why that is
+    // THIS IS NOT WHAT CATCHES THE `hasPredicate` MUTANT, and the mutation run is why that is
     // stated rather than assumed: `has-predicate-omits-member` is caught by the ROUTE test above,
     // through its explicit `hasPredicate(pred)` assertion. This case still earns its place — it
     // pins the product shape's ANSWER, which no assertion on the compiler can — but the guard it

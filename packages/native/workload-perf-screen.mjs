@@ -11,12 +11,12 @@
  * someone hunting a particular lever, which makes it the one list a cost screen cannot be
  * circular about.
  *
- * ⚠️ THE FUZZER RUNS THEM ON SIX VERTICES, where everything is free. The families' literals
+ * THE FUZZER RUNS THEM ON SIX VERTICES, where everything is free. The families' literals
  * (`n IN [3,5,7,11,13,17,1,99]`, `x`, `s`, dates, `w`) are the fixture's value domain, so this
  * builds a LARGE graph over the SAME schema and the same domain — which keeps every predicate
  * selective rather than degenerate, and keeps every family non-vacuous at scale.
  *
- * ⚠️ WHAT THIS SCREEN CAN AND CANNOT SAY, because the obvious reading of its output is wrong.
+ * WHAT THIS SCREEN CAN AND CANNOT SAY, because the obvious reading of its output is wrong.
  * Cost-per-ROW is NOT comparable across families: an aggregate family does O(N) work and returns
  * one row, so it will always look catastrophic per row and that means nothing. Cost per QUERY is
  * comparable only among families whose work is the same order. So the screen reports both and
@@ -28,7 +28,7 @@
  *   - a family returning ZERO rows at scale is a BROKEN SCREEN, not a fast family: its queries
  *     stopped matching when the fixture grew, so its time is the cost of finding nothing.
  *
- * ⚠️ AND THE EMPTY-SHARE COLUMN IS THE GUARD ON THIS WHOLE FILE. Item 1817's own worst bug was a
+ * AND THE EMPTY-SHARE COLUMN IS THE GUARD ON THIS WHOLE FILE. Item 1817's own worst bug was a
  * family that looked healthy on every axis while reaching the route it was written for zero times;
  * the analogue here is a family whose queries all return `[]` at 20,000 vertices, which would make
  * it the "fastest" family on the screen. Read `empty%` before any ns column.
@@ -45,7 +45,7 @@ import { query } from '@lenke/gql';
 import { WORKLOAD_FAMILIES } from './src/workload-queries.js';
 
 /**
- * ⚠️ 5,000 AND NOT 20,000, AND THE FIRST RUN IS WHY. At 20,000 vertices this screen hit
+ * 5,000 AND NOT 20,000, AND THE FIRST RUN IS WHY. At 20,000 vertices this screen hit
  * `timeout 600` and printed NOTHING — exit 124, with every family's row still buffered behind a
  * single report at the end. Two separate defects, both now fixed, and both the kind that make an
  * instrument useless rather than wrong:
@@ -56,7 +56,7 @@ import { WORKLOAD_FAMILIES } from './src/workload-queries.js';
  *   - **A per-family BUDGET, checked between queries.** Some of these realistic shapes are
  *     quadratic by specification — a comma join over `(a:T), (b:T)` is 400,000,000 rows at 20,000
  *     vertices — so "slow" is the correct answer for them and the screen must record it and move
- *     on instead of hanging. ⚠️ It cannot interrupt a query already running (one thread), so a
+ *     on instead of hanging. It cannot interrupt a query already running (one thread), so a
  *     single pathological query can still overrun; that is what the outer cgroup+timeout wrapper
  *     is for (`dogfood-sim-resource-limits`).
  */
@@ -84,13 +84,13 @@ const mulberry32 = (seed) => {
 };
 
 /**
- * ⚠️ THE SAME VALUE DOMAIN AS THE FUZZER FIXTURE, not a fresh one — that is what keeps the
+ * THE SAME VALUE DOMAIN AS THE FUZZER FIXTURE, not a fresh one — that is what keeps the
  * families' literals meaningful. `n` is drawn from the family pools' own numbers so `n = 5` and
  * `n IN [...]` select a real fraction; `x`, `s`, `nu`, `d`, `m` and the `w` edge property mirror
  * the fixture's shapes, including the SPARSE ones (`nu` null on some vertices, `st` absent on
  * most), because an absent property is a different code path from a present one.
  *
- * ⚠️ One vertex in six also carries `U`, matching the fixture's ratio — with every vertex
+ * One vertex in six also carries `U`, matching the fixture's ratio — with every vertex
  * single-labelled, "match any label" and "match the first label" are indistinguishable, and the
  * label-elision rungs would be measured on a graph that cannot tell them apart.
  */
@@ -127,7 +127,7 @@ const build = () => {
 
     g.addEdge({
       id: `e${e}`,
-      // ⚠️ Splits on the REPEAT INDEX, which is CLAUDE.md's fix for the `(a*k+b) % N` degeneracy:
+      // Splits on the REPEAT INDEX, which is CLAUDE.md's fix for the `(a*k+b) % N` degeneracy:
       // without it one vertex's FANOUT edges all land on the same target, every k-hop count is
       // `F^k * N` by construction, and the graph is FUNCTIONAL while every degree looks perfect.
       from: g.getVertexById(String(i + 1)),
@@ -172,13 +172,13 @@ for (const gen of WORKLOAD_FAMILIES) {
 const names = [...byFamily.keys()].sort((a, b) => a.localeCompare(b));
 
 /**
- * ⚠️ ONE CHILD PROCESS PER FAMILY WHEN NO `FAMILY` IS GIVEN, and the second run is why. With every
+ * ONE CHILD PROCESS PER FAMILY WHEN NO `FAMILY` IS GIVEN, and the second run is why. With every
  * family in one process the run died at `exit 137` — the cgroup OOM kill — on the family after
  * `in-list`, taking the seven already-measured families' output with it. A comma join over
  * `(a:T), (b:T)` materializes 25,000,000 rows at 5,000 vertices, so that family is SUPPOSED to
  * die; what is not acceptable is that it deletes the rest of the screen.
  *
- * ⚠️ AND NO `try/catch` CAN FIX THAT, which is the point worth keeping: an OOM kill and a timeout
+ * AND NO `try/catch` CAN FIX THAT, which is the point worth keeping: an OOM kill and a timeout
  * arrive as a SIGNAL to the process, not as a JavaScript exception, so the only way to survive one
  * is for the measurement to be in a process you are willing to lose. It also gets item 762's rule
  * for free (one shape per process, so no other family's shape pollutes the dispatch sites).
@@ -215,12 +215,12 @@ if (ONLY === undefined && process.env.SCREEN_CHILD !== '1') {
       console.log(
         `${name.padEnd(16)}${'-'.padStart(9)}${'-'.padStart(12)}${'-'.padStart(10)}` +
           `${'-'.padStart(11)}${'-'.padStart(8)}${'-'.padStart(6)}   ` +
-          `⚠️ NOT MEASURABLE AT THIS SIZE — ${why}`,
+          `NOT MEASURABLE AT THIS SIZE — ${why}`,
       );
     }
   }
 
-  console.log('\n# ⚠️ ns/row is NOT comparable across families (an aggregate returns 1 row for');
+  console.log('\n# ns/row is NOT comparable across families (an aggregate returns 1 row for');
   console.log('#    O(N) work). A NOMINATION needs its own floor before it is a finding.');
   process.exit(0);
 }
@@ -245,7 +245,7 @@ for (const name of names) {
     workloads.push(gens[i % gens.length](r));
   }
 
-  // ⚠️ ERRORS ARE COUNTED, NOT SWALLOWED. A family that throws at scale would otherwise read as
+  // ERRORS ARE COUNTED, NOT SWALLOWED. A family that throws at scale would otherwise read as
   // the fastest one on the screen — the same failure mode as a family returning [].
   let errors = 0;
   let empties = 0;
@@ -304,17 +304,17 @@ for (const name of names) {
   const flags = [];
 
   if (x.overBudget) {
-    flags.push(`⚠️ OVER BUDGET — ${done}/${QUERIES} queries in ${BUDGET_MS} ms`);
+    flags.push(`OVER BUDGET — ${done}/${QUERIES} queries in ${BUDGET_MS} ms`);
   }
 
   if (x.errors > 0) {
-    flags.push(`⚠️ ${x.errors} ERRORS — screen is broken for this family`);
+    flags.push(`${x.errors} ERRORS — screen is broken for this family`);
   }
 
   if (x.totalRows === 0) {
-    flags.push('⚠️ ZERO ROWS — vacuous at this size, not fast');
+    flags.push('ZERO ROWS — vacuous at this size, not fast');
   } else if (x.emptyPct > 50) {
-    flags.push(`⚠️ ${x.emptyPct.toFixed(0)}% empty — mostly measuring a miss`);
+    flags.push(`${x.emptyPct.toFixed(0)}% empty — mostly measuring a miss`);
   }
 
   const cells = [
@@ -327,7 +327,7 @@ for (const name of names) {
     String(x.errors).padStart(6),
   ].join('');
 
-  // ⚠️ PRINTED HERE, not collected for a report at the end — see the BUDGET note at the top.
+  // PRINTED HERE, not collected for a report at the end — see the BUDGET note at the top.
   console.log(`${cells}   ${flags.join('; ')}`);
 }
 
@@ -346,5 +346,5 @@ for (const x of rows.sort((a, b) => b.nsPerQuery - a.nsPerQuery)) {
   }
 }
 
-console.log('# ⚠️ ns/row is NOT comparable across families (an aggregate returns 1 row for O(N)');
+console.log('# ns/row is NOT comparable across families (an aggregate returns 1 row for O(N)');
 console.log('#    work). A NOMINATION needs its own floor before it is a finding.');

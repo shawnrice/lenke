@@ -1,12 +1,12 @@
 #!/bin/zsh
 # Item 2042 — a trailing terminal riding the label-seeded fusion, LIVE against the OLD gate.
 #
-# ⚠️ THE KILLED ARM RESTORES ITEM 2037's EXACT CONDITION (`steps.length === 0` -> `!== 1`), which is
+# THE KILLED ARM RESTORES ITEM 2037's EXACT CONDITION (`steps.length === 0` -> `!== 1`), which is
 # the one line this item changed. That is better than disabling the whole rung: the PRE arm is then
 # the shipped behaviour of four items ago, not "no fusion at all".
 #
-# ⚠️ ARMS NAMED FOR WHAT THEY ARE (LIVE/KILLED), not PRE/POST (item 2023).
-# ⚠️ RESTORE REBUILDS — `@lenke/*` resolve to dist, so a restored SOURCE with a stale BUILD measures
+# ARMS NAMED FOR WHAT THEY ARE (LIVE/KILLED), not PRE/POST (item 2023).
+# RESTORE REBUILDS — `@lenke/*` resolve to dist, so a restored SOURCE with a stale BUILD measures
 # the experiment under the control's name (item 2031 did exactly that).
 set -u
 
@@ -51,7 +51,7 @@ round() {
     done
   done
 
-  # ⚠️ AND THE WIDE SCREEN ([[executor-edits-perturb]]).
+  # AND THE WIDE SCREEN ([[executor-edits-perturb]]).
   (cd "$ROOT/packages/native" && MIXED=1 NODES=100000 timeout 900 bun gremlin-workload-screen.mjs 2>&1 | grep -E "^    [0-9]")
 }
 

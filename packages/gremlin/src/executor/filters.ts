@@ -109,23 +109,23 @@ export const whereCurrentStep = function* (
    *
    *     200,000 vertices / 1,000,000 edges, one shape per process, min of 3 alternated rounds:
    *       the per-row clone + dispatch   234.47 ms
-   *       one clone, mutated per row     224.85      ⬅ the allocation alone, 1.04x
-   *       the comparator chosen once     215.37      ⬅ 1.09x, control flat at 41-42
+   *       one clone, mutated per row     224.85      <- the allocation alone, 1.04x
+   *       the comparator chosen once     215.37      <- 1.09x, control flat at 41-42
    *
-   * ⚠️ SOUND ONLY FOR eq/neq, AND ONLY OFF THE TEMPORAL PATH. `matches`' eq/neq arm is `valueEq`,
+   * SOUND ONLY FOR eq/neq, AND ONLY OFF THE TEMPORAL PATH. `matches`' eq/neq arm is `valueEq`,
    * which is `v === b` for every non-temporal operand — the same derivation `specializePredicate`
    * carries for the fixed-operand twin. The ORDERING ops are deliberately not specialized: their
    * `predCmp` filters a cross-type pair to false via NaN, which does not reduce to an operator, and
    * a mutant routing `gt` through this branch keeps every row that is merely DIFFERENT.
    *
-   * ⚠️ THE `isTemporal` GUARD IS INSURANCE WHOSE BRANCH MAY BE UNREACHABLE, and that is a declared
+   * THE `isTemporal` GUARD IS INSURANCE WHOSE BRANCH MAY BE UNREACHABLE, and that is a declared
    * expected survivor in `where-mutants-1900.mjs` rather than a silence. The tag and the current
    * value share one traverser lineage and no step between them mints a new temporal of equal value,
    * so an equal-but-not-identical pair probably cannot meet here — but that is an argument over
    * every value-rebinding step, not a proof from this branch's own conditions, and the downside of
    * being wrong is a silent wrong answer rather than one typeof per row.
    *
-   * ⚠️ `whereCompareStep` BELOW STILL CLONES PER ROW, left alone deliberately: it is the arm that
+   * `whereCompareStep` BELOW STILL CLONES PER ROW, left alone deliberately: it is the arm that
    * must not move in the A/B above, and `neq-prof-1900.mjs`'s `wherecmp` prices it at 329 ms — the
    * larger shape, and the follow-up.
    */

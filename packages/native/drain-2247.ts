@@ -1,18 +1,18 @@
 /**
- * ⚠️⚠️⚠️ **IS ITEM 2246's 2.25x THE MUTATION DRAIN? (item 2247)** The churn sweep found a fixed ~1.6 ms
+ * **IS ITEM 2246's 2.25x THE MUTATION DRAIN? (item 2247)** The churn sweep found a fixed ~1.6 ms
  * penalty on the first read after ANY write — one write costs the same as a hundred. A CPU profile
  * nominated `pick` and `drain`, and `pick` was rejected (its delta exceeded the total, and the name resolved
  * to a `choose()` rung the query never uses). **`drain` survives that rejection, and there is a mechanism
  * for it**: the graph's mutation events are drained on a MICROTASK, and item 2246's loop is SYNCHRONOUS —
  * `write(); read();` with no `await` — so the microtask never runs between them.
  *
- * 🔑 **ONE DECISIVE ARM: yield a microtask between the write and the read.**
+ * **ONE DECISIVE ARM: yield a microtask between the write and the read.**
  *
  *     sync      write(); read()                        <- item 2246's shape, 2.25x
  *     drained   write(); await Promise.resolve(); read()
  *     none      read() only                            <- the floor
  *
- * ✅ If `drained` is fast, the penalty IS the deferred drain and the finding is actionable. ⚠️ If `drained`
+ * If `drained` is fast, the penalty IS the deferred drain and the finding is actionable. If `drained`
  * is equally slow, the drain is exonerated and the cause is elsewhere — either way one run settles it,
  * which a profile at this resolution could not.
  */
@@ -44,13 +44,13 @@ const doc = (() => {
 
 const g = deserialize(doc, 'ndjson', new Graph());
 /*
- * 🔑 **AND A SECOND KNOB: THE LABEL FILTER.** Draining removed only ~40% of the penalty, and item 2246
+ * **AND A SECOND KNOB: THE LABEL FILTER.** Draining removed only ~40% of the penalty, and item 2246
  * showed one write costs the same as a hundred — a GLOBAL rebuild. `hasLabel('User')` reads
  * `verticesByLabel`, a global index a write could invalidate, so `SHAPE=nolabel` drops it. If the residual
  * penalty goes with it, the label index is the rest; if not, it is the adjacency side.
  */
 /*
- * 🔑🔑 **SHAPE BISECTION (item 2249).** Three allocation instruments failed to name the rebuilt structure —
+ * **SHAPE BISECTION (item 2249).** Three allocation instruments failed to name the rebuilt structure —
  * a CPU profile was ambiguous, `--heap-prof` missed ~95% of allocations twice, and `heapUsed` deltas read
  * 0.0 MB because the rows are transient. So the structure is located by SHAPE instead, using the one
  * instrument that works here (timing, absolutes, 60 rounds):
@@ -118,7 +118,7 @@ for (let r = 0; r < ROUNDS; r += 1) {
   }
 
   if (ARM === 'drained') {
-    /* 🔑 THE WHOLE EXPERIMENT: let the queued mutation events drain before the read. */
+    /* THE WHOLE EXPERIMENT: let the queued mutation events drain before the read. */
     await Promise.resolve();
   }
 

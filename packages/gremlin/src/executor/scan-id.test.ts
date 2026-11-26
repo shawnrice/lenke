@@ -1,7 +1,7 @@
 /*
  * Item 2056 — `V().id()` admitted into the scan rung.
  *
- * ⚠️⚠️ **THE ANSWER WAS ALWAYS RIGHT — only the ROUTE was wrong — so every test here asserts the route
+ * **THE ANSWER WAS ALWAYS RIGHT — only the ROUTE was wrong — so every test here asserts the route
  * or the exact sequence, never just "it returns ids".** The route census is what found this
  * (`scan: id` generic, 1 dispatch) where the timing alone looked like noise on an 8 ms row.
  */
@@ -38,7 +38,7 @@ describe('scan id arm (item 2056)', () => {
 
   test('every id is emitted IN ORDER, including a vertex with no properties', () => {
     /*
-     * 🔑 THE `d` VERTEX IS THE POINT: `V().values('k')` drops it (no such key) while `V().id()` must
+     * THE `d` VERTEX IS THE POINT: `V().values('k')` drops it (no such key) while `V().id()` must
      * not — an id always exists. A walk that copied the `values` guard would silently lose a row, and
      * `toStrictEqual` on the sequence is what sees that ([[toequal-blind-to-trailing-undefined]]:
      * `toEqual` would accept a missing trailing element).
@@ -58,9 +58,9 @@ describe('scan id arm (item 2056)', () => {
     expect(nodeValuesShortcut(traversal(V(), label()), g)).toBeDefined();
   });
 
-  test('⚠️ every label is emitted IN ORDER, and a MULTI-LABEL vertex yields its FIRST', () => {
+  test('every label is emitted IN ORDER, and a MULTI-LABEL vertex yields its FIRST', () => {
     /*
-     * 🔑 `firstLabel` TAKES THE SET'S FIRST ELEMENT, which is insertion order — so a vertex created
+     * `firstLabel` TAKES THE SET'S FIRST ELEMENT, which is insertion order — so a vertex created
      * with `['T', 'U']` yields `T`. The fused walk must agree with `dispatch.ts`'s `case 'label'`
      * exactly, which is why `firstLabel` is imported there rather than re-implemented.
      */
@@ -72,9 +72,9 @@ describe('scan id arm (item 2056)', () => {
     expect(toArray(traversal(V(), label()), multi)).toStrictEqual(['T', 'U']);
   });
 
-  test('⚠️⚠️ an UNLABELLED vertex yields NULL, not undefined', () => {
+  test('an UNLABELLED vertex yields NULL, not undefined', () => {
     /*
-     * ⚠️ `?? null` IS THE CONTRACT, not a tidy-up: `dispatch.ts` returns `firstLabel(v.labels) ?? null`,
+     * `?? null` IS THE CONTRACT, not a tidy-up: `dispatch.ts` returns `firstLabel(v.labels) ?? null`,
      * so a vertex with no labels produces a NULL row — and it still produces a ROW, unlike `values(k)`
      * which drops a vertex lacking the key. A fused walk that yielded `undefined`, or dropped the row,
      * would differ from the generic path on exactly this vertex.
@@ -94,7 +94,7 @@ describe('scan id arm (item 2056)', () => {
     expect([...claimed!]).toStrictEqual(claimed!.drain!());
   });
 
-  test('⚠️ a LABELLED label() declines — item 1870s refusal covers this arm too', () => {
+  test('a LABELLED label() declines — item 1870s refusal covers this arm too', () => {
     expect(nodeValuesShortcut(traversal(V(), hasLabel('T'), label()), g)).toBeUndefined();
   });
 
@@ -108,7 +108,7 @@ describe('scan id arm (item 2056)', () => {
 
   test('a LABELLED id declines — item 1870s refusal still governs this rung', () => {
     /*
-     * ⚠️ `V().hasLabel(T).id()` must NOT be claimed here. Item 1870 refused `hasLabel` in this rung
+     * `V().hasLabel(T).id()` must NOT be claimed here. Item 1870 refused `hasLabel` in this rung
      * because the rung is a FULL SCAN while the pipeline seeds from the label index, losing up to
      * 678x as the label narrows. The `id` arm inherits that refusal rather than re-opening it.
      */
@@ -123,7 +123,7 @@ describe('scan id arm (item 2056)', () => {
 
   test('the DEDUPE rung declines an id projection, deliberately', () => {
     /*
-     * ⚠️ Ids are already distinct, so `V().id().dedupe()` is a tautology this rung would pay for —
+     * Ids are already distinct, so `V().id().dedupe()` is a tautology this rung would pay for —
      * and a second keyer in this area silently changed an ANSWER twice (items 1561/1562). The decline
      * is asserted so it cannot be "tidied up" later.
      */

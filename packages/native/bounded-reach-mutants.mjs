@@ -4,7 +4,7 @@
  * R6 is the control: it stops the bounded arm being reached at all. If it SURVIVES, the file is
  * testing the enumeration path and says nothing about the BFS.
  *
- * ⚠️ Both streams are read before the exit code — `bun test` reports to STDERR.
+ * Both streams are read before the exit code — `bun test` reports to STDERR.
  *
  *     bun bounded-reach-mutants.mjs
  */
@@ -52,7 +52,7 @@ const apply = (edits) => {
     const hits = s.split(find).length - 1;
 
     if (hits !== 1) {
-      console.log(`     ⚠️ anchor matched ${hits} times — NOT applied`);
+      console.log(`     anchor matched ${hits} times — NOT applied`);
       continue;
     }
 
@@ -108,14 +108,14 @@ try {
     const { code, text } = runTests();
 
     if (!/\d+ pass|\d+ fail/.test(text)) {
-      console.log(`${label}\n     ⚠️ DID-NOT-RUN — no result line on either stream\n`);
+      console.log(`${label}\n     DID-NOT-RUN — no result line on either stream\n`);
       continue;
     }
 
     const fails = /([1-9]\d*) fail/.exec(text);
 
     console.log(
-      `${label}\n     ${code === 0 ? '⚠️ SURVIVED' : `CAUGHT (${fails ? fails[1] : '?'} failing)`}\n`,
+      `${label}\n     ${code === 0 ? 'SURVIVED' : `CAUGHT (${fails ? fails[1] : '?'} failing)`}\n`,
     );
   }
 } finally {

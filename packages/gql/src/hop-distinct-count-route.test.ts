@@ -20,7 +20,7 @@ import { parse } from './parser.js';
  *   count(DISTINCT b)     29.928 -> 16.611     1.80x
  * ```
  *
- * ⚠️ A ROUTE CHOICE IS ANSWER-EQUIVALENT, so the correctness suites cannot see a mutant in the
+ * A ROUTE CHOICE IS ANSWER-EQUIVALENT, so the correctness suites cannot see a mutant in the
  * gate: reverting it, or inverting its condition, leaves every answer correct and only the speed
  * changes. Item 1582 learned this the hard way — three mutants survived a 125-test run. So the
  * route is asserted directly, by reading which detector `compileLinear` left non-null.

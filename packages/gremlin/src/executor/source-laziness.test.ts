@@ -1,7 +1,7 @@
 /**
  * `V(id)` and `E(id)` must not touch `graph.vertices` / `graph.edges` at all (item 1539).
  *
- * ⚠️ THIS NEEDS ITS OWN TEST AND CANNOT BORROW ONE. `applySource` used to pass `graph.vertices` as
+ * THIS NEEDS ITS OWN TEST AND CANNOT BORROW ONE. `applySource` used to pass `graph.vertices` as
  * an ARGUMENT to `sourceFromIds`, which reads it only when no ids were given — so the getter ran on
  * every id lookup and its result was discarded. That is answer-equivalent by construction: every
  * correctness test in the suite passed before and after, which is `perf-gate-needs-its-own-test`
@@ -58,7 +58,7 @@ describe('item 1539 — an id-seeded source must not read the whole-graph iterab
   test('the spy itself works — V() with NO ids does read graph.vertices', () => {
     // Without this, a spy that silently observes nothing would make every assertion below vacuous.
     //
-    // ⚠️ AND THE SHAPE MATTERS: `V().count()` and `V().values(k)` read it ZERO times, because
+    // AND THE SHAPE MATTERS: `V().count()` and `V().values(k)` read it ZERO times, because
     // `countShortcut` and `nodeValuesShortcut` answer them without building a source at all. Both
     // were tried here first and both made this control pass vacuously in the wrong direction. A
     // `has` filter declines every shortcut (item 1538), so this one really does reach `applySource`.

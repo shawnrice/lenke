@@ -37,7 +37,7 @@ const bag = (q: string): string[] =>
     .sort();
 
 /**
- * ⚠️ THE ROUTE, WHICH THIS FILE DID NOT ASSERT UNTIL ITEM 1662 — and the omission cost exactly
+ * THE ROUTE, WHICH THIS FILE DID NOT ASSERT UNTIL ITEM 1662 — and the omission cost exactly
  * what `perf-gate-needs-its-own-test` says it costs. A rewrite is ANSWER-EQUIVALENT: deleting
  * `inlineCorrelatedCall` outright leaves every `bag()` assertion below passing, so a file that
  * checks only answers cannot tell "rewritten" from "took the slow path". It is not a theoretical
@@ -125,7 +125,7 @@ describe('a correlated inline CALL is rewritten to its MATCH (item 513)', () => 
   });
 
   /**
-   * ⚠️ THIS TEST USED TO BE TITLED `an ALIASED or computed yield declines`, and it is the reason
+   * THIS TEST USED TO BE TITLED `an ALIASED or computed yield declines`, and it is the reason
    * the `kinds` helper above exists. Item 1662 made both shapes INLINE; the title was then
    * wrong and the test still passed, because it asserted only the answer. The answers are kept
    * — they are the equivalence oracle for the new route — and the route is now asserted too.
@@ -140,14 +140,14 @@ describe('a correlated inline CALL is rewritten to its MATCH (item 513)', () => 
 
     // `y` and `v` are new columns; `x` escapes the call and is unread by the tail, so both fire.
     //
-    // ⚠️ `[match, return]`, NOT `[match, let, return]` — and the difference is 2165 ns an outer
+    // `[match, return]`, NOT `[match, let, return]` — and the difference is 2165 ns an outer
     // row against 330 (item 1662). The rewrite emits `[match, match, let, return]`; it runs
     // INSIDE `inlineTrailingLet`, which folds a ONE-ITEM trailing `LET` into the projection, and
     // `fuseAnchorThenHop` then merges the two MATCHes. A `LET` left standing is off every rung.
     // Asserting the COMPOSED shape rather than this rewrite's own output is the point: the first
     // build of item 1662 fired correctly, passed its route assertion, and still left the clause
     // on the slow path, because the composition was the thing that was wrong.
-    // ⚠️ THE TWO SHAPES LAND DIFFERENTLY, AND THE SPLIT IS THE RESULT (item 1662). Both lose
+    // THE TWO SHAPES LAND DIFFERENTLY, AND THE SPLIT IS THE RESULT (item 1662). Both lose
     // the `callInline`, but only the COMPUTED yield loses its `LET` as well:
     //
     //   RETURN x.k AS v   ->  [match, return]        on `hopAggregate`, ~330 ns an outer row
@@ -194,7 +194,7 @@ describe('a correlated inline CALL is rewritten to its MATCH (item 513)', () => 
  * The COMPUTED-yield extension (item 1662). `CALL (n) { MATCH (n)-[:T]->(x) RETURN x.k AS c }`
  * is `MATCH (n)-[:T]->(x) LET c = x.k`, which measured 9.4x against the CALL route.
  *
- * ⚠️ WHAT MAKES IT HARD IS NOT THE `LET`, IT IS THAT `x` ESCAPES. The body's pattern introduces
+ * WHAT MAKES IT HARD IS NOT THE `LET`, IT IS THAT `x` ESCAPES. The body's pattern introduces
  * `x` and the call YIELDS only `x.k`, so the call hides `x`; the emitted MATCH cannot hide it.
  * Item 1661 priced this route and declined to build it for exactly that reason. The condition
  * that makes it sound is `nameIsUnread` — the same predicate `dropUnreadPathVar` uses — so these
@@ -254,7 +254,7 @@ describe('a COMPUTED yield inlines only when the escaping names are unread (item
     const q =
       'MATCH (n:P) CALL (n) { MATCH (n)-[r:T]->(x) RETURN x.k AS c, n.k AS d } RETURN c, d ORDER BY c';
 
-    // ⚠️ THE `LET` SURVIVES HERE, AND THAT IS NOT AN OVERSIGHT. `inlineTrailingLet` folds a
+    // THE `LET` SURVIVES HERE, AND THAT IS NOT AN OVERSIGHT. `inlineTrailingLet` folds a
     // ONE-ITEM `LET` only — a later item may read an earlier one (`LET a = n.k, b = a`), so
     // collecting them into one substitution map is a wrong answer, and that refusal predates
     // this rewrite. So a TWO-yield body inlines the CALL but stays off the rungs. The one-yield

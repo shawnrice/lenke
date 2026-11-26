@@ -6,7 +6,7 @@
  * plans are generated — which is how `match()` went years with two wrong answers (items
  * 1793/1794), and how `simplePath`/`cyclicPath` silently cost 28 of every 400 plans before that.
  *
- * ⚠️ THE FUZZER ALREADY TREATS AN EMITTER GAP AS A FINDING rather than a skip, and this does not
+ * THE FUZZER ALREADY TREATS AN EMITTER GAP AS A FINDING rather than a skip, and this does not
  * duplicate that check. The fuzzer's only fires for a step the GENERATOR builds. A step in neither
  * the generator's pool nor the emitter has NO differential coverage at all, and nothing reports it.
  * That is the hole this measures.
@@ -21,7 +21,7 @@
  * A step that parses natively and builds in TS but does NOT emit is a pure EMITTER GAP: both
  * engines implement it and nothing compares them. That is the `match()` case exactly.
  *
- * ⚠️ AN EARLIER CUT OF THIS PROBE READ `emit.ts` FOR `case '<kind>'` INSTEAD, AND IT LIED TWICE.
+ * AN EARLIER CUT OF THIS PROBE READ `emit.ts` FOR `case '<kind>'` INSTEAD, AND IT LIED TWICE.
  * `as` is handled by an `if` ABOVE the switch and the algorithm steps by a table, so both read as
  * missing; and the control rows were keyed by their DISPLAY NAME rather than their step kind, so
  * `out` — which obviously emits — printed "NO ARM". Calling the emitter is the only oracle here

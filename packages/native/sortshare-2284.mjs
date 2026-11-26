@@ -1,17 +1,17 @@
 /**
- * ⚠️⚠️ **HOW MUCH OF THE `ORDER BY + LIMIT` ROW IS THE SORT AT ALL? (item 2284)** Both spellings came out
- * FLAT across a 600x range of `cap`, which looks like the top-K heap not engaging. 🔑 But flatness has a
+ * **HOW MUCH OF THE `ORDER BY + LIMIT` ROW IS THE SORT AT ALL? (item 2284)** Both spellings came out
+ * FLAT across a 600x range of `cap`, which looks like the top-K heap not engaging. But flatness has a
  * second explanation that costs nothing to rule out: **if PROJECTING the rows dominates, the sort is a small
  * term and no top-K can help**, because every arm still projects every row before any selection.
  *
- * ✅ The decomposition, each arm doing strictly more than the last:
+ * The decomposition, each arm doing strictly more than the last:
  *
  *   count       closed form, no projection, no sort       — the scan's floor
  *   project     project all rows, no ORDER BY, no LIMIT   — adds projection
  *   ordered     project all rows, ORDER BY, no LIMIT      — adds the full sort
  *   topk        project, ORDER BY, LIMIT 100              — what a heap could serve
  *
- * ⚠️ `project` must NOT carry a LIMIT: `take` short-circuits, so `LIMIT 100` without an ORDER BY stops
+ * `project` must NOT carry a LIMIT: `take` short-circuits, so `LIMIT 100` without an ORDER BY stops
  * after 100 rows and would measure a 600x smaller scan — an unfair floor of exactly the kind item 2262 had
  * to correct three times.
  */

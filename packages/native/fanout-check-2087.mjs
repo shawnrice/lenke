@@ -1,7 +1,7 @@
 /*
  * Item 2087 — count the DISTINCT endpoints before trusting an `n·f²` answer.
  *
- * ⚠️⚠️ CLAUDE.md records that six generators here had the form `to = (a*k + b) % N`, which is
+ * CLAUDE.md records that six generators here had the form `to = (a*k + b) % N`, which is
  * INVARIANT under k -> k+N: one vertex's FANOUT edges then all land on the SAME target, out-degree
  * looks perfect, and a k-hop count is `f^k · N` BY CONSTRUCTION — so the count cannot validate the
  * fixture. This probe's generator splits on the repeat index (`hop`), which is the prescribed fix, but

@@ -1,14 +1,14 @@
 /**
  * THE PLAIN COUNT RUNG: `MATCH (n:L) RETURN count(*)` answered from a label bucket\'s size.
  *
- * ⚠️ THIS RUNG IS THE REASON SEVERAL "FLOORS" IN THIS AUDIT WERE INVALID, which is worth knowing
+ * THIS RUNG IS THE REASON SEVERAL "FLOORS" IN THIS AUDIT WERE INVALID, which is worth knowing
  * before using it as a control. It answers in O(1) from `verticesByLabel`, so an arm written
  * `MATCH (n:P) RETURN count(*)` reads ~0.1 ns a row and is not a floor for anything that
  * materialises — items 1653, 1654 and 1661 each divided a materialising path by an arm this rung
  * had claimed, and the ratios were meaningless. In this engine a `count(*)` arm is a RUNG until
  * proven otherwise.
  *
- * ⚠️ AND IT IS WHY `verticesByLabel` MAINTENANCE IS A CORRECTNESS QUESTION, not a bookkeeping one.
+ * AND IT IS WHY `verticesByLabel` MAINTENANCE IS A CORRECTNESS QUESTION, not a bookkeeping one.
  * The count is read from that index rather than counted, so an index the `v.labels =` setter failed
  * to maintain produces a WRONG ANSWER through the public API — a known open decision, recorded
  * rather than fixed here.
@@ -147,7 +147,7 @@ export const detectCountShortcut = (
       const written = patternCountOf(m.patterns[0], m.where, rowOf, cstart, cfar, cend);
 
       /*
-       * ⚠️⚠️ **SEED FROM THE END WHEN THE END IS THE SEEK — item 2106, measured 27x.** `cend` above is
+       * **SEED FROM THE END WHEN THE END IS THE SEEK — item 2106, measured 27x.** `cend` above is
        * `segments[1].node`, the end of a TWO-segment pattern (item 220 wired that). A THREE-segment
        * pattern's end is `segments[2]`, which nothing passes — and `threeSegmentRoute` takes only
        * `cstart`, its doc saying "carried only so the sweep can seed its START set". So a three-hop
@@ -159,13 +159,13 @@ export const detectCountShortcut = (
        *       hand-reversed  0.46        <- the SAME rung, seeding the one tagged vertex
        * ```
        *
-       * 🔑 **ONE QUESTION, 27x APART, AND `count(*)` IS THE SAFEST PLACE TO FIX IT**: a path count is
+       * **ONE QUESTION, 27x APART, AND `count(*)` IS THE SAFEST PLACE TO FIX IT**: a path count is
        * direction-agnostic (the same path set, counted), and this rung's projection is `star`, so no
        * output column can observe which end was the seed. Reversing is what `orient` does for the
        * matcher; here the rung does it for itself, because it already answers BOTH spellings — this is
        * NOT items 2104/2105's decline, where a rung handed the query back.
        *
-       * ⚠️ BOTH ORIENTATIONS ARE BUILT AT COMPILE TIME AND CHOSEN AT RUN TIME, because whether an index
+       * BOTH ORIENTATIONS ARE BUILT AT COMPILE TIME AND CHOSEN AT RUN TIME, because whether an index
        * seek exists is a property of the GRAPH. Building the second costs no graph work — `patternCountOf`
        * only inspects the pattern — and a rung that cannot build both simply keeps the written one.
        */
@@ -190,7 +190,7 @@ export const detectCountShortcut = (
       }
 
       /*
-       * ⚠️ THE GATE IS ITEM 2104's `farEndSeeksNarrower`: a genuine index seek, narrower than the start.
+       * THE GATE IS ITEM 2104's `farEndSeeksNarrower`: a genuine index seek, narrower than the start.
        * A label-bucket difference must NOT flip a walk whose cost is symmetric — that was 2104's first,
        * too-broad gate, and two unit tests caught it.
        */

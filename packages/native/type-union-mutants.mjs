@@ -4,7 +4,7 @@
  * M4 is the control: it stops `walkUnion` being selected at all. If that SURVIVES, the file is
  * testing the general matcher and proves nothing about the new walk.
  *
- * ⚠️ Result lines go to STDERR for `bun test`, so both streams are read before the exit code —
+ * Result lines go to STDERR for `bun test`, so both streams are read before the exit code —
  * item 1844's runner reported three survivors as `DID-NOT-RUN` by reading stdout alone.
  *
  *     bun type-union-mutants.mjs
@@ -82,7 +82,7 @@ const apply = (edits) => {
 
     if (s.split(find).length - 1 !== 1) {
       console.log(
-        `     ⚠️ anchor matched ${s.split(find).length - 1} times in ${where} — NOT applied`,
+        `     anchor matched ${s.split(find).length - 1} times in ${where} — NOT applied`,
       );
       continue;
     }
@@ -139,14 +139,14 @@ try {
     const { code, text } = runTests();
 
     if (!/\d+ pass|\d+ fail/.test(text)) {
-      console.log(`${label}\n     ⚠️ DID-NOT-RUN — no result line on either stream\n`);
+      console.log(`${label}\n     DID-NOT-RUN — no result line on either stream\n`);
       continue;
     }
 
     const fails = /([1-9]\d*) fail/.exec(text);
 
     console.log(
-      `${label}\n     ${code === 0 ? '⚠️ SURVIVED' : `CAUGHT (${fails ? fails[1] : '?'} failing)`}\n`,
+      `${label}\n     ${code === 0 ? 'SURVIVED' : `CAUGHT (${fails ? fails[1] : '?'} failing)`}\n`,
     );
   }
 } finally {

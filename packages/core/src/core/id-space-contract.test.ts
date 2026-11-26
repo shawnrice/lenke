@@ -6,7 +6,7 @@ import { Graph } from './Graph.js';
  * Ids must be unique across BOTH element kinds, not merely within each (item 1588, decided at
  * 1589).
  *
- * ⚠️ THIS FILE PINS A LIMITATION, NOT A DESIRED BEHAVIOUR. `verticesById` and `edgesById` are
+ * THIS FILE PINS A LIMITATION, NOT A DESIRED BEHAVIOUR. `verticesById` and `edgesById` are
  * separate maps, but `elementProperties` and `elementLabels` are each keyed by the BARE id and
  * shared, so an edge reusing a vertex's id replaces that vertex's labels and properties. The
  * owner's decision was to document that rather than split the storage per kind.
@@ -22,7 +22,7 @@ import { Graph } from './Graph.js';
  *     survive it — which is what makes a label-index count still answer 2 while a property filter
  *     answers 0. Anyone reading only the first of those would conclude the graph is fine.
  *
- * ⚠️ NOT GUARDED, deliberately: the Rust engine ACCEPTS a colliding id and answers correctly, so
+ * NOT GUARDED, deliberately: the Rust engine ACCEPTS a colliding id and answers correctly, so
  * throwing here would trade silent data loss for a cross-engine divergence.
  */
 describe('ids are expected to be unique across vertices AND edges', () => {
@@ -56,7 +56,7 @@ describe('ids are expected to be unique across vertices AND edges', () => {
     expect(vertex.properties).toEqual({});
   });
 
-  test('⚠️ and the loss is SILENT: identity, counts and the label index all survive it', () => {
+  test('and the loss is SILENT: identity, counts and the label index all survive it', () => {
     const { graph, vertex } = colliding();
 
     // Every cheap sanity check still passes, which is what makes this worth documenting.

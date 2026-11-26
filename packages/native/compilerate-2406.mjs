@@ -6,11 +6,11 @@
  * the expectation is zero — but "a gate is free" is the assumption this repo keeps measuring rather
  * than asserting, and item 2399 found that even a hot function's CODE SIZE is part of its cost.
  *
- * ⚠️ THE BIG BENCH ROWS CANNOT SEE THIS. They run one compile against 200,000-row execution, so a
+ * THE BIG BENCH ROWS CANNOT SEE THIS. They run one compile against 200,000-row execution, so a
  * compile regression is a rounding error there. This drives the opposite ratio: a ONE-VERTEX graph,
  * so execution is trivial and parse + compile + dispatch is nearly all of it.
  *
- * ⚠️⚠️ **KNOWN LIMIT, MEASURED: THIS HARNESS CANNOT RESOLVE A SUB-10% COMPILE EFFECT.** A compile of
+ * **KNOWN LIMIT, MEASURED: THIS HARNESS CANNOT RESOLVE A SUB-10% COMPILE EFFECT.** A compile of
  * these shapes is ~0.4 us, and across six alternated rounds the SAME arm varied up to 2.9x while the
  * CONTROL — a shape none of the three detectors touch — moved 3.3 to 8.4 ms, which is the giveaway
  * `CLAUDE.md` names for "the instrument is the variable". So a reading here is evidence only for an

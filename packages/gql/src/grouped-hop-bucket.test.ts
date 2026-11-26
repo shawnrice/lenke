@@ -14,7 +14,7 @@ import { query } from './index.ts';
  * object allocation per edge; it was **16.3%** of this shape's profile with the garbage collector at
  * 8.1% beside it. For a directed single-type hop there is one `Set` to walk and nothing to dedupe.
  *
- * ⚠️ THE HISTORICAL BUG IS THE WHOLE REASON THIS FILE EXISTS. `detectGroupedHopCount`'s own comment
+ * THE HISTORICAL BUG IS THE WHOLE REASON THIS FILE EXISTS. `detectGroupedHopCount`'s own comment
  * records that hand-rolling the general case counted a `T|S` edge **TWICE** under `-[:T|S]->`,
  * because the per-type buckets both hold it and only `expand`'s `Set` dedupes across them. So
  * `directedBucket` returns a shape ONLY for the directed single-type case and the multi-type arm
@@ -120,7 +120,7 @@ describe('the grouped hop count reads one bucket for a directed single type', ()
     expect(rows('MATCH (x)-[:T]->(y) RETURN y.k AS k, count(*) AS c')).toHaveLength(2);
   });
 
-  test('⚠️ a MULTI-TYPE hop still dedupes — the double-count this file exists for', () => {
+  test('a MULTI-TYPE hop still dedupes — the double-count this file exists for', () => {
     /**
      * The `e>f` edge carries BOTH `T` and `S`, so it sits in two per-type buckets. Under `-[:T|S]->`
      * it must be counted ONCE. `directedBucket` declines a label disjunction, so this goes through
@@ -153,7 +153,7 @@ describe('the grouped hop count reads one bucket for a directed single type', ()
       }),
     ).toBeUndefined();
     /**
-     * And the answer through `expand` is right. ⚠️ DERIVED BY A SCRIPT, after I wrote 4/4 by eye and
+     * And the answer through `expand` is right. DERIVED BY A SCRIPT, after I wrote 4/4 by eye and
      * the engine answered 5/3 — the eighteenth eyeballed literal this session it was right about.
      * Each of the four `T` edges is seen from BOTH ends, so the eight far ends are b(2), a(1), c(1),
      * b(2), a(1), c(1), f(2), e(1): five at k=1 and three at k=2. "Symmetric" is not the same as
@@ -176,7 +176,7 @@ describe('the grouped hop count reads one bucket for a directed single type', ()
     ]);
   });
 
-  test('⚠️ the two loop bodies agree — the START-keyed arm takes neither', () => {
+  test('the two loop bodies agree — the START-keyed arm takes neither', () => {
     /**
      * Keyed on the START, the rung takes its DEGREE arm instead of either per-edge body, which is
      * why that shape measured FLAT across this change (6.014 ms against 6.214). Asserted so the

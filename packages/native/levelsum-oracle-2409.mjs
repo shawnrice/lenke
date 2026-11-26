@@ -8,11 +8,11 @@
 //
 // so this compares BOTH arms against an EXACT reference and checks each against that bound.
 //
-// ⚠️ THE EXACT REFERENCE IS NOT ANOTHER f64 SUM. It is a Kahan-compensated sum over the per-path
+// THE EXACT REFERENCE IS NOT ANOTHER f64 SUM. It is a Kahan-compensated sum over the per-path
 // values in the path walk's own order, which carries ~2ε total error rather than ~nε — so it is
 // three orders tighter than either arm at these path counts and can stand in for the exact value.
 //
-// ⚠️ AND THE FIXTURE MUST BE INEXACT OR THE TEST IS VACUOUS. An integer sum in f64 is EXACT whatever
+// AND THE FIXTURE MUST BE INEXACT OR THE TEST IS VACUOUS. An integer sum in f64 is EXACT whatever
 // the order and whatever the weights, so `n` alone could never separate the two arms. Every shape
 // here aggregates a value multiplied into the binary-inexact range.
 //
@@ -67,7 +67,7 @@ const chainOf = (hops) =>
 /**
  * The EXACT reference: Kahan over the per-path values, in the path walk's own order.
  *
- * ⚠️ IT READS THE ENGINE'S OWN ROWS rather than re-deriving the walk. A second traversal written
+ * IT READS THE ENGINE'S OWN ROWS rather than re-deriving the walk. A second traversal written
  * here could disagree with the engine about WHICH paths exist — and then the oracle would be
  * measuring my traversal against the engine's, not the two folds against the arithmetic.
  */
@@ -127,7 +127,7 @@ for (const { hops, prop, fn } of SHAPES) {
   const err = Math.abs(got - exact);
   const ok = err <= bound;
 
-  // ⚠️ THE CONTROL THAT MAKES A PASS MEAN SOMETHING: if the two arms were bit-identical the bound
+  // THE CONTROL THAT MAKES A PASS MEAN SOMETHING: if the two arms were bit-identical the bound
   // would be satisfied trivially and this oracle would prove nothing. `exactIsSeparable` says the
   // fixture is actually inexact at this size — the error must be NON-ZERO somewhere in the sweep.
   if (err > 0) {
@@ -151,7 +151,7 @@ for (const { hops, prop, fn } of SHAPES) {
  * THE BAIL. `mixed` holds a DATE on every 50th vertex, so `sum` over it is a data exception on the
  * general path (item 2336) and `u · Temporal` is a silent `NaN` in the weighted fold.
  *
- * ⚠️ WHAT THIS ASSERTS IS THAT THE RUNG HANDS THE QUERY BACK, not that it answers. A rung that
+ * WHAT THIS ASSERTS IS THAT THE RUNG HANDS THE QUERY BACK, not that it answers. A rung that
  * answered `NaN`, or answered the partial sum of the numbers it had seen before the date, would
  * both be WRONG where the engine is required to fault — item 2159's sharpest test is exactly this
  * shape, a column numeric until its last row.

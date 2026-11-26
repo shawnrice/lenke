@@ -4,7 +4,7 @@
  * `MATCH (n:P) WHERE n.n = $n RETURN n.k` against a hash index measured ~1.9-2.4 us for ONE
  * row, against ~0.1 us for the direct `getVertexById`. That ratio is what this profile is for.
  *
- * ⚠️ 800,000 QUERIES, AND ITEM 1843'S FIRST PROFILE IS WHY. At 80,000 the process spent 22% of
+ * 800,000 QUERIES, AND ITEM 1843'S FIRST PROFILE IS WHY. At 80,000 the process spent 22% of
  * its samples in `toUpperCase` called from `(module)` — the lexer's keyword table, built once at
  * import. Module init is ~17 ms (core 5.7, gql 7.7, gremlin 3.4), so a profile whose query loop
  * runs for 160 ms is one third startup and reads as though a string builtin were hot on the

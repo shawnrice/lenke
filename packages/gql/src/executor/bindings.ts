@@ -4,14 +4,14 @@
  * The smallest leaf (item 1666) — 7 symbols, no value imports — and the most-reached-for: `matching.ts`
  * needed five of these back from `core.ts`, which was one of the import cycles.
  *
- * ⚠️ **THE COPY IS PRICED AND THE REPLACEMENT IS BLOCKED BY THE TYPE, NOT BY NERVE** (items
+ * **THE COPY IS PRICED AND THE REPLACEMENT IS BLOCKED BY THE TYPE, NOT BY NERVE** (items
  * 1805/1806). It is 12.1% of `hop3rowsboth`, and mutate-and-undo with one snapshot at the leaf
  * would turn k copies of sizes 1..k into a single copy of size k. It does not compile: `Binding` is
  * `ReadonlyMap`, so `set`/`delete` are type errors — deliberately. Unlocking it means a separate
  * `MutableBinding` owned by the walk and never escaping it, which is a contained refactor of
  * `matching.ts`'s walk family rather than a tick; item 1806 has the design.
  *
- * ⚠️ `withBinding` COPIES, AND `consistent` IS WHY. A matcher extends a row by name, and if two
+ * `withBinding` COPIES, AND `consistent` IS WHY. A matcher extends a row by name, and if two
  * pattern positions bind the same name they must agree rather than overwrite — `consistent` is that
  * check, and it is the reason this is a copy-on-extend `Map` rather than a mutable one. Item 1661's
  * surviving mutant was precisely a shared-instead-of-copied binding map; it was unobservable only
@@ -87,12 +87,12 @@ export const relHasPredicate = (rel: RelPattern): boolean =>
   (rel.properties?.length ?? 0) > 0 || rel.where !== undefined;
 
 /**
- * ⚠️ MOVED DOWN FROM `matching.ts` (item 1666). `core.ts` needed `matchNode` and nothing else from
+ * MOVED DOWN FROM `matching.ts` (item 1666). `core.ts` needed `matchNode` and nothing else from
  * `matching.ts`, while `matching.ts` needed two back — one of the four mutual import pairs. These
  * belong here on their own terms: both take a `Binding` and return an extended one or `null`, which
  * is exactly what this module is.
  *
- * ⚠️ `matchNodeLabelled` EXISTS SO A CALLER CAN SKIP THE LABEL TEST. A caller that already resolved
+ * `matchNodeLabelled` EXISTS SO A CALLER CAN SKIP THE LABEL TEST. A caller that already resolved
  * the effective label (item 1623) passes `undefined` for a vacuous one, and the test is not run at
  * all — see `effectiveLabel` in `labels.ts`. `matchNode` is the convenience form that always tests.
  * Collapsing the two would reinstate a test the elision exists to remove.
@@ -108,7 +108,7 @@ export const matchNode = (
  * `matchNode` with the label test given EXPLICITLY, so a caller that has already resolved the
  * effective label (item 1623) can pass `undefined` for a vacuous one and skip the test.
  *
- * ⚠️ IT IS A SEPARATE PARAMETER AND NOT A MUTATED `CNode`: the compiled plan is reused across
+ * IT IS A SEPARATE PARAMETER AND NOT A MUTATED `CNode`: the compiled plan is reused across
  * executions and across GRAPHS, and vacuity is a property of the graph. Writing the elided label
  * back onto the node would make the second execution's answer depend on the first graph's label
  * distribution, which is a wrong answer and not a slow one.

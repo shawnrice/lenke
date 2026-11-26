@@ -633,7 +633,7 @@ export class PropertyIndex<E> {
    * `countRange`, but it stops once the count passes `cap` — so the answer is EXACT at or below the
    * cap and merely "greater than `cap`" above it.
    *
-   * ⚠️ WHY THIS EXISTS (item 1756). `countRange` is O(distinct values in range), and its only
+   * WHY THIS EXISTS (item 1756). `countRange` is O(distinct values in range), and its only
    * consumer is a GATE that compares the count against a threshold. On a high-cardinality column
    * that made the estimate cost more than the decision saved: item 1755 measured
    * `WHERE n.n < 10000` over 20,000 DISTINCT values at **1.9x SLOWER with the index than without**

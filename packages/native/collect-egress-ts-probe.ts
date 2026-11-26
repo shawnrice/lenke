@@ -15,7 +15,7 @@
  *                `collect` cannot beat the cost of producing its own output, so anything above
  *                this is fold/egress overhead.
  *
- * ⚠️ `size(collect(a.k))` is deliberately NOT a floor here. That was item 1194's instrument and
+ * `size(collect(a.k))` is deliberately NOT a floor here. That was item 1194's instrument and
  * item 1195 showed it INVALID in Rust: `size`/`cardinality` has a borrow-not-clone path that reads
  * `len()` without a pass, so the floor skipped work the real egress cannot and overstated the gap
  * ~3.5x. It is measured below only to see whether TS has an analogous shortcut.

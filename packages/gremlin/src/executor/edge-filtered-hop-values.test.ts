@@ -27,12 +27,12 @@ import { seenBefore } from './second-ask.js';
 /**
  * The EDGE-PREDICATE hop rung (items 1882/1883).
  *
- * ⚠️ THE ORACLE IS HAND-COMPUTED, NOT THE ENGINE. A route test that asserts the fused walk agrees
+ * THE ORACLE IS HAND-COMPUTED, NOT THE ENGINE. A route test that asserts the fused walk agrees
  * with itself proves nothing, and CLAUDE.md records three wrong answers that passed a suite whose
  * fixture could not tell right from wrong. So the fixture below is small enough to read off, and
  * every expectation is written out rather than derived.
  *
- * ⚠️ AND THE FIXTURE IS BUILT TO DISCRIMINATE:
+ * AND THE FIXTURE IS BUILT TO DISCRIMINATE:
  *   - an edge whose `w` is MISSING, so a predicate's treatment of absent is observable;
  *   - a far vertex MISSING the projected key, which `values(k)` must drop;
  *   - two edge types on one vertex, so a type filter that leaked would show;
@@ -182,7 +182,7 @@ describe('edgeFilteredHopValues — the answer', () => {
   });
 
   /**
-   * ⚠️ THE LAZY ITERATOR AND THE EAGER `drain` ARE TWO COPIES OF ONE LOOP (item 1893), and `toArray`
+   * THE LAZY ITERATOR AND THE EAGER `drain` ARE TWO COPIES OF ONE LOOP (item 1893), and `toArray`
    * reads only the second — so without this, half the walk has no test. Item 1889 lost a mutant to
    * exactly this and item 1891 lost five.
    */
@@ -197,7 +197,7 @@ describe('edgeFilteredHopValues — the answer', () => {
 
     expect([...run(ids(), g)]).toStrictEqual(toArray(ids(), g));
 
-    // ⚠️ `inE`/`outV` THROUGH THE ITERATOR, because the bucket DIRECTION is only observable there:
+    // `inE`/`outV` THROUGH THE ITERATOR, because the bucket DIRECTION is only observable there:
     // a mutant hard-coding the out-adjacency survived while every lazy case used `outE`.
     const back = () => traversal(V(), inE('E'), has('w', gt(3)), outV(), values('n'));
 
@@ -279,7 +279,7 @@ describe('edgeFilteredHopValues — the route', () => {
  * sibling — strictly more work — was fused by this rung. Isolated A/B at 200,000 vertices /
  * 1,000,000 edges: **179.1 ms -> 76.9, 2.33x**, with two controls flat.
  *
- * 🔑 THE DISCRIMINATING FACT IS THAT A COUNT AND A `values(n)` DISAGREE ON THIS FIXTURE. The five
+ * THE DISCRIMINATING FACT IS THAT A COUNT AND A `values(n)` DISAGREE ON THIS FIXTURE. The five
  * surviving `E` edges land on c, f, d, d, d — and `f` has no `n`, which `values('n')` DROPS. So the
  * count is 5 and the values row count is 4. A test that only checked "count equals the number of
  * value rows" would pass with the drop wrongly applied to the count; these assert both numbers.
@@ -375,7 +375,7 @@ describe('the count terminal (item 1956)', () => {
  * **values 188.0 -> 51.4 ms (3.66x)** and **count 171.9 -> 75.3 (2.28x)**, with both previously
  * fused rows flat as controls.
  *
- * 🔑 THE ORDER IS PART OF THE ANSWER, so every expectation is an ARRAY in walk order: global vertex
+ * THE ORDER IS PART OF THE ANSWER, so every expectation is an ARRAY in walk order: global vertex
  * order, each vertex's bucket in its own insertion order. The fixture's `E` buckets are
  * a: e1 e2 e3 | b: e4 e5 | c: e7 | d: e8 — read off by hand, not from the engine.
  */
@@ -437,7 +437,7 @@ describe('no vertex move: the edge-valued shapes (item 1957)', () => {
   it('the type filter still holds: the F-only edge never appears', () => {
     const g = fixture();
 
-    // ⚠️ "the E list must not contain 9" WOULD BE WRONG: e5 legitimately carries w=9, so the only
+    // "the E list must not contain 9" WOULD BE WRONG: e5 legitimately carries w=9, so the only
     // honest check is that each type's list is EXACTLY right. e6 (b->e) is `F`-only with w=9, and
     // e7 carries BOTH types — so `F` sees e6 then e7 (b before c), and `E` sees neither e6 nor a
     // duplicate of e7.
@@ -481,13 +481,13 @@ describe('no vertex move: the edge-valued shapes (item 1957)', () => {
 
 describe('the FLAT edge array arm (item 2016)', () => {
   /*
-   * ⚠️⚠️ **EVERY TEST ABOVE BUILDS A FRESH `fixture()`, SO EVERY ONE OF THEM REACHES THE BUCKET WALK
+   * **EVERY TEST ABOVE BUILDS A FRESH `fixture()`, SO EVERY ONE OF THEM REACHES THE BUCKET WALK
    * AND NONE REACHES THE FLAT ARRAY.** The flat arm is behind the second-ask policy (item 1889's, in
    * its own `'e'` namespace), so ask 1 on a topology version is the bucket walk and ask 2 onward is
    * the flat pass. A suite that never asks twice tests one of the two arms — item 2015 found exactly
    * this shape one item earlier, where `toArray` reaching the `drain` left the generator unexercised.
    *
-   * 🔑 AND THE SECOND-ASK POLICY MAKES THE INVARIANT SELF-CHECKING: within one graph, with no write
+   * AND THE SECOND-ASK POLICY MAKES THE INVARIANT SELF-CHECKING: within one graph, with no write
    * between, ask 1 and ask 2 are the two different walks and must agree ELEMENT FOR ELEMENT.
    * Gremlin rows are compared ORDERED against the Rust engine for a single-type step
    * ([[order-is-unspecified]] does not cover it), so a reordering is a cross-engine failure rather
@@ -496,7 +496,7 @@ describe('the FLAT edge array arm (item 2016)', () => {
   const shapes: readonly (readonly [string, () => ReturnType<typeof traversal>])[] = [
     ['outE has inV values', () => traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n'))],
     /*
-     * ⚠️⚠️ **`gt(0)`, NOT `gt(3)`, AND A SURVIVING MUTANT IS WHY.** The flat array's FIRST element is
+     * **`gt(0)`, NOT `gt(3)`, AND A SURVIVING MUTANT IS WHY.** The flat array's FIRST element is
      * `e1` (a->b, `w: 1`), which FAILS `gt(3)` — so every other shape in this list is blind to an
      * off-by-one at the START of the array: `for (let i = 1; ...)` dropped the first edge and
      * changed no answer. A loop bound is exactly where an off-by-one stops being academic
@@ -533,7 +533,7 @@ describe('the FLAT edge array arm (item 2016)', () => {
       const ask2 = toArray(make(), g);
       const ask3 = toArray(make(), g);
 
-      // ⚠️ A NON-EMPTY ANSWER IS ASSERTED FIRST: two empty arrays agree trivially, and an
+      // A NON-EMPTY ANSWER IS ASSERTED FIRST: two empty arrays agree trivially, and an
       // always-empty flat arm would pass every comparison below.
       expect(ask1.length).toBeGreaterThan(0);
       expect(ask2).toEqual(ask1);
@@ -543,7 +543,7 @@ describe('the FLAT edge array arm (item 2016)', () => {
 
   it('a topology write sends the next ask back to the bucket walk, and they still agree', () => {
     /*
-     * ⚠️ IF THE CACHE WERE MERELY STAMPED WITH THE VERSION RATHER THAN KEYED ON IT, this is the
+     * IF THE CACHE WERE MERELY STAMPED WITH THE VERSION RATHER THAN KEYED ON IT, this is the
      * assertion that fails: a stale flat array over a changed topology, which is a WRONG ANSWER
      * rather than a slow one.
      */
@@ -573,7 +573,7 @@ describe('the FLAT edge array arm (item 2016)', () => {
 
   it('WHICH ROUTE FIRED: not on the first ask, yes on the second', () => {
     /*
-     * ⚠️⚠️ **FOUR MUTANTS SURVIVED THE ANSWER TESTS ABOVE AND THIS IS WHAT CATCHES THEM**
+     * **FOUR MUTANTS SURVIVED THE ANSWER TESTS ABOVE AND THIS IS WHAT CATCHES THEM**
      * ([[perf-gate-needs-its-own-test]]). `ask1 === ask2` is satisfied when BOTH asks take the
      * bucket walk, so it cannot tell "the flat arm ran and was right" from "the flat arm never ran":
      * mutants making the arm never fire (`if (false)`), always fire (`if (true)`) and bypass the
@@ -588,7 +588,7 @@ describe('the FLAT edge array arm (item 2016)', () => {
 
     toArray(make(), g);
 
-    // ⚠️ THE FIRST ASK MUST NOT BUILD. This is item 1889's second-ask policy, whose whole point is
+    // THE FIRST ASK MUST NOT BUILD. This is item 1889's second-ask policy, whose whole point is
     // that a ONE-SHOT query pays nothing — measured there at a 1.64x regression on the first query.
     expect(edgeFlatIsBuilt(g, true, 'E')).toBe(false);
 
@@ -618,7 +618,7 @@ describe('the FLAT edge array arm (item 2016)', () => {
 
   it('this rung does NOT arm the vertex-CSR rungs’ builds — the `kind` namespace', () => {
     /*
-     * ⚠️⚠️ **A PERFORMANCE CONTRACT WITH NO ANSWER TO OBSERVE, AND A MUTANT DROPPING IT SURVIVED.**
+     * **A PERFORMANCE CONTRACT WITH NO ANSWER TO OBSERVE, AND A MUTANT DROPPING IT SURVIVED.**
      * The nine vertex-CSR callers share `seenBefore`'s default namespace deliberately, because they
      * all build `chainCsrFor` from that key. This rung builds a flat `Edge[]` instead, so if it
      * asked in the default namespace its first ask would mark `>E` as seen and every CSR rung would
@@ -636,7 +636,7 @@ describe('the FLAT edge array arm (item 2016)', () => {
 
   it('`run` keeps the LAZY bucket walk on every ask — the flat pass is drain-only', () => {
     /*
-     * ⚠️ THE FLAT ARM HAS NO GENERATOR TWIN, deliberately: it is reached only from `drain`, so
+     * THE FLAT ARM HAS NO GENERATOR TWIN, deliberately: it is reached only from `drain`, so
      * `run` stays exactly as lazy as it was for a caller that `break`s out (`hop-values.ts`'s rule).
      * This pins that — a later edit adding a flat generator must update this test rather than
      * silently changing `run`'s laziness.

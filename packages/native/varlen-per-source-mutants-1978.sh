@@ -6,21 +6,21 @@
 # arms (position marking, the min-0 term, the budget) have to be caught by the answer tests. This
 # runs each mutant under BOTH suites and reports which one caught it.
 #
-# ⚠️ EVERY MUTANT RUNS UNDER A TIMEOUT AND A MEMORY CAP. A mutant here is arbitrary broken code in a
+# EVERY MUTANT RUNS UNDER A TIMEOUT AND A MEMORY CAP. A mutant here is arbitrary broken code in a
 # RECURSIVE enumeration with a budget that a mutant can remove — non-termination and unbounded
 # allocation are the normal case, not the exception. 124 or 137 IS the catch.
 #
-# ⚠️ AND THE VERDICT READS STDOUT+STDERR, NOT THE EXIT CODE ALONE. `bun test` reports `N pass` to
+# AND THE VERDICT READS STDOUT+STDERR, NOT THE EXIT CODE ALONE. `bun test` reports `N pass` to
 # STDERR; items 767 and 772/773 each got this wrong in opposite directions.
 set -u
 
-# ⚠️ RUN FROM THE REPO ROOT: `zsh packages/native/varlen-per-source-mutants-1978.sh`. The paths below
+# RUN FROM THE REPO ROOT: `zsh packages/native/varlen-per-source-mutants-1978.sh`. The paths below
 # are repo-relative, which is what lets one script drive both the gql suites and the pristine copy
 # under `crates/lenke-engine/target/` (gitignored, and it survives the reboot a runaway mutant can
 # force).
 SRC=packages/gql/src/executor/var-length-count.ts
 PRISTINE=crates/lenke-engine/target/post-varlen-1979.ts
-# ⚠️ item 1979 put the seek in a SECOND file, so both are restored per mutant.
+# item 1979 put the seek in a SECOND file, so both are restored per mutant.
 SRC2=packages/gql/src/executor/matching.ts
 PRISTINE2=crates/lenke-engine/target/post-matching-1979.ts
 STAMP=$(date +%s)
@@ -70,7 +70,7 @@ for entry in "${MUTANTS[@]}"; do
     seek-*) target="$SRC2" ;;
   esac
 
-  # ⚠️ `seek-*` MUTANTS ARE SCOPED TO `seekedSeeds`'s BODY. Its candidate-choosing loop is textually
+  # `seek-*` MUTANTS ARE SCOPED TO `seekedSeeds`'s BODY. Its candidate-choosing loop is textually
   # identical to `seedVertices`'s — deliberately, so the two cannot disagree about which candidate
   # wins — so a whole-file anchor matches twice and the run reports ANCHOR-BAD rather than a verdict.
   # Scoping makes the short anchor unambiguous without editing the engine to suit the harness.
@@ -89,7 +89,7 @@ t = os.environ["TO"].encode().decode("unicode_escape")
 scope = os.environ.get("SCOPE", "")
 end = os.environ.get("SCOPE_END", "")
 at = s.index(scope) if scope else 0
-# ⚠️ BOUNDED AT BOTH ENDS: `seekedSeeds` is defined ABOVE `seedVertices`, so a forward-only slice
+# BOUNDED AT BOTH ENDS: `seekedSeeds` is defined ABOVE `seedVertices`, so a forward-only slice
 # still contains the twin whose identical line is what made the anchor ambiguous.
 to = s.index(end, at) if end else len(s)
 head, body, tail = s[:at], s[at:to], s[to:]

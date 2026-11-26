@@ -10,7 +10,7 @@
  *
  * A rewrite would inherit TWENTY rungs instead of adding a twenty-first.
  *
- * ⚠️ BUT THE EQUIVALENCE TURNS ENTIRELY ON ONE CASE: may the two legs be the SAME EDGE? In the
+ * BUT THE EQUIVALENCE TURNS ENTIRELY ON ONE CASE: may the two legs be the SAME EDGE? In the
  * comma form the patterns are independent, so an `a` with a single out-edge still matches once,
  * with `b` and `c` both bound to that edge's target — item 1863's test pins that diagonal
  * explicitly. In the single-path form the answer depends on the path MODE: `walk` admits a
@@ -18,7 +18,7 @@
  * `mode: 'trail'` on some shapes by default. If the chain spelling excludes the diagonal, the
  * rewrite is a WRONG ANSWER and the whole design is dead.
  *
- * ⚠️ SO THIS IS A CORRECTNESS EXPERIMENT RUN BEFORE ANY DESIGN, not a benchmark. It asks both
+ * SO THIS IS A CORRECTNESS EXPERIMENT RUN BEFORE ANY DESIGN, not a benchmark. It asks both
  * spellings on fixtures chosen to make the diagonal the WHOLE difference, and prints the answers
  * side by side. One disagreement is enough to settle it.
  */
@@ -94,8 +94,8 @@ for (const [name, build, expectFork] of [
 
   console.log(
     `${name.padEnd(14)} ${String(f).padStart(4)}   ${String(c).padStart(14)}   ${
-      f === c ? 'yes' : '⚠️  NO'
-    }${f === expectFork ? '' : `   ⚠️ fork expected ${String(expectFork)}`}`,
+      f === c ? 'yes' : ' NO'
+    }${f === expectFork ? '' : `   fork expected ${String(expectFork)}`}`,
   );
 }
 
@@ -114,7 +114,7 @@ const rowsOf = (text) =>
 const forkRows = rowsOf('MATCH (a:T)-[:E]->(b:T), (a)-[:E]->(c:T) RETURN b.n AS x, c.n AS y');
 const chainRows = rowsOf('MATCH (b:T)<-[:E]-(a:T)-[:E]->(c:T) RETURN b.n AS x, c.n AS y');
 
-// ⚠️ THE FIRST VERSION OF THIS PRINTED `null/null` NINE TIMES and read as agreement. It projected
+// THE FIRST VERSION OF THIS PRINTED `null/null` NINE TIMES and read as agreement. It projected
 // `b.id`, and `id` is the ELEMENT id, not a property — so both sides emitted nulls and the
 // comparison was vacuous. A column that is null everywhere cannot distinguish two routes.
 if (forkRows.includes('null')) {
@@ -124,5 +124,5 @@ if (forkRows.includes('null')) {
 console.log(`  fork rows : ${forkRows}`);
 console.log(`  chain rows: ${chainRows}`);
 console.log(
-  `  multisets ${forkRows === chainRows ? 'AGREE' : '⚠️  DIFFER'} (sorted; GQL row order is unspecified)`,
+  `  multisets ${forkRows === chainRows ? 'AGREE' : ' DIFFER'} (sorted; GQL row order is unspecified)`,
 );

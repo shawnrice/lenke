@@ -9,13 +9,13 @@ import { query } from './index.js';
  * `\x01`-joined string through `rowKeyOf`. **2.40x at low cardinality, 1.68x in the middle, 1.28x
  * when every row is distinct** (`distinct2-ab-1886.mjs`, a kill-switch A/B at three cardinalities).
  *
- * ⚠️ EVERY TEST HERE IS A SEMANTIC EQUIVALENCE, not a speed check — `distinct-rows-one-column.test.ts`
+ * EVERY TEST HERE IS A SEMANTIC EQUIVALENCE, not a speed check — `distinct-rows-one-column.test.ts`
  * is the same file one width down, and its reasoning carries over verbatim: a value key space and a
  * string key space can disagree on numeric edge cases (`-0`, `NaN`), on types that stringify alike
  * (`5` vs `'5'`), and on a string that happens to look like another kind's key (`'@v1'` vs a vertex
  * with id `v1`).
  *
- * ⚠️ AND EACH OF THOSE IS TESTED IN **BOTH POSITIONS**, which is the new risk this width adds. The
+ * AND EACH OF THOSE IS TESTED IN **BOTH POSITIONS**, which is the new risk this width adds. The
  * first column picks a bucket and the second keys inside it, so a collision confined to one
  * position would pass a test that only varied the other. Items 1561 and 1562 each found a silent
  * answer change in this area; `newOneColumnKeys`' own note says a second keyer "would be the
@@ -65,7 +65,7 @@ describe('two-column DISTINCT keeps the string key space equivalence classes', (
     expect(second.length).toBe(4);
   });
 
-  test('⚠️ a STRING that looks like an element key does NOT collide with the element — position 1', () => {
+  test('a STRING that looks like an element key does NOT collide with the element — position 1', () => {
     // THE CASE FOR TWO MAPS AT THE FIRST POSITION. An element keys as `@<id>`, so the string `'@v1'`
     // and the vertex `v1` would select the SAME bucket in one shared map, and these two rows would
     // collapse to one.
@@ -76,7 +76,7 @@ describe('two-column DISTINCT keeps the string key space equivalence classes', (
     expect(rows.length).toBe(4);
   });
 
-  test('⚠️ and does NOT collide at position 2 either', () => {
+  test('and does NOT collide at position 2 either', () => {
     const rows = rowsOf(
       'MATCH (n:P) RETURN n.k AS a, n.tag AS b UNION MATCH (n:P) RETURN n.k AS a, n AS b',
     );
@@ -139,7 +139,7 @@ describe('two-column DISTINCT keeps the string key space equivalence classes', (
   });
 
   /**
-   * ⚠️ THE DISCRIMINATING THREE-COLUMN CASE, and the first version of this test was VACUOUS without
+   * THE DISCRIMINATING THREE-COLUMN CASE, and the first version of this test was VACUOUS without
    * it. A mutant widening the width test to `isWidth(rows, 2) || isWidth(rows, 3)` — so three-column
    * rows key on their first two columns — SURVIVED `RETURN DISTINCT n.k, n.s, n.n`, because those
    * rows already differ in column 1. The rows have to AGREE on the first two columns and differ only
@@ -152,7 +152,7 @@ describe('two-column DISTINCT keeps the string key space equivalence classes', (
   });
 
   /**
-   * ⚠️ AND THE SET-OP PROBE MUST READ BOTH COLUMNS, which the identical-sides tests below cannot
+   * AND THE SET-OP PROBE MUST READ BOTH COLUMNS, which the identical-sides tests below cannot
    * see. These pairs AGREE on the first column and differ in the second, so a probe that stopped at
    * the bucket would call them equal.
    */

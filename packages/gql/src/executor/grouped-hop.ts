@@ -4,13 +4,13 @@
  *
  * `detectGroupedHopCount` and `detectGroupedHopAggregate` plus the eight symbols only they reach.
  *
- * ⚠️ `reachedOnSide` IS THE MIRROR-SPELLING RULE IN THIS FAMILY. `(a:L)-[:T]->(b)` and
+ * `reachedOnSide` IS THE MIRROR-SPELLING RULE IN THIS FAMILY. `(a:L)-[:T]->(b)` and
  * `(a)-[:T]->(b:L)` are the same question asked from opposite ends, and a rung that serves one and
  * declines the other makes two spellings of one query cost different amounts — the defect class
  * CLAUDE.md opens with, and one this file has re-learned at items 125, 137 and 286. Both sides get
  * the gate.
  *
- * ⚠️ `primedGroupedExtremum` EXISTS BECAUSE AN EXTREMUM HAS NO IDENTITY ELEMENT. A sum starts at 0
+ * `primedGroupedExtremum` EXISTS BECAUSE AN EXTREMUM HAS NO IDENTITY ELEMENT. A sum starts at 0
  * and a count at 0, but a `min` has to start at the FIRST value seen, not at a sentinel — a
  * `NEG_INFINITY` seed renders as `null` at egress, so a `max` that wrongly skips its first value
  * returns the same JSON as one that is right (item 1161's lesson, in the grouped form).
@@ -258,7 +258,7 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
   /*
    * The NON-keyed end must be plain: the walks apply nothing to it beyond its label.
    *
-   * ⚠️⚠️ **A FAR LABEL USED TO BE REFUSED OUTRIGHT WHEN GROUPING BY THE START, and that was one
+   * **A FAR LABEL USED TO BE REFUSED OUTRIGHT WHEN GROUPING BY THE START, and that was one
    * clause stricter than the runtime needs** (item 2011). The reasoning was sound about the DEGREE
    * walk — it adds a whole degree, not per-edge matches, so it cannot apply a far label — but the
    * closure already chooses between two walks per call: the degree sum only when
@@ -273,7 +273,7 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
    * label as `a`. Dropping `(b:T)` made the identical question fast, which is this repo's named
    * defect class: two spellings of one question, one of them 124x.
    *
-   * ⚠️ GROUP ORDER IS PRESERVED BECAUSE BOTH WALKS ARE UNCHANGED — this admits more shapes into the
+   * GROUP ORDER IS PRESERVED BECAUSE BOTH WALKS ARE UNCHANGED — this admits more shapes into the
    * SAME two walks, which visit start vertices via `candidateVertexSource` and then each vertex's
    * own bucket. First-seen group order is the contract item 1313 records; nothing here reorders.
    */
@@ -352,7 +352,7 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
     // it is not enough to count the right edges; they have to be met in the same order. See
     // the rejected far-end degree walk recorded on this function.
     //
-    // ⚠️ "NO SKIP/LIMIT" IS NOT A SUFFICIENT NARROWING, and that was tried and REFUTED at item
+    // "NO SKIP/LIMIT" IS NOT A SUFFICIENT NARROWING, and that was tried and REFUTED at item
     // 1313. The reasoning that invites it is sound as far as it goes: a window is what makes group
     // order decide WHICH groups come back, an `ORDER BY` sorts whatever order arrived, and item
     // 1296 established that a grouped result without `ORDER BY` is compared as a row MULTISET. So
@@ -419,7 +419,7 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
       // TWICE under `-[:T|S]->` — caught by the multi-label test, which the general path
       // answered correctly.
       /**
-       * ⚠️ THE LOOP BODY IS WRITTEN TWICE, and the duplication buys removing `expand`'s generator
+       * THE LOOP BODY IS WRITTEN TWICE, and the duplication buys removing `expand`'s generator
        * resume AND its per-edge `{ edge, node }` allocation — **16.3%** of this shape's profile with
        * the garbage collector at 8.1% beside it (item 1621).
        *
@@ -433,7 +433,7 @@ export const detectGroupedHopCount = (clauses: readonly Clause[]): ReachFn | nul
        * duplication itself — so the multi-label test that caught the original double-count still
        * covers the `expand` arm, and item 1621's own tests cover both arms with the same fixture.
        *
-       * ⚠️ THE ROUTE ITSELF IS UNPINNED, the same limit item 1619 recorded for all twenty rungs:
+       * THE ROUTE ITSELF IS UNPINNED, the same limit item 1619 recorded for all twenty rungs:
        * making this `if` never fire is answer-equivalent (the bodies are identical, which is the
        * point) and the whole suite passes. What IS pinned is `directedBucket`'s verdict — it is
        * exported and unit-tested directly, so every way it could admit the wrong shape dies. Only
@@ -602,7 +602,7 @@ export const reachedOnSide = (
  * endpoint each distinct endpoint belongs to exactly ONE group, so folding it once into that
  * group's accumulator is the same answer. ~200,000 endpoints answer what 1,000,000 edges are asked.
  *
- * ⚠️ HALF OF THIS IDEA IS A REGRESSION ON ITS OWN, which is why the run-time test below is not
+ * HALF OF THIS IDEA IS A REGRESSION ON ITS OWN, which is why the run-time test below is not
  * optional. Item 1245 priced the parts separately:
  *
  * ```text
@@ -664,7 +664,7 @@ export const primedGroupedExtremum = (o: {
         continue;
       }
 
-      // ⚠️ A SELF-LOOP NEEDS NO CORRECTION HERE, for `primedEndpointExtremum`'s reason: this asks
+      // A SELF-LOOP NEEDS NO CORRECTION HERE, for `primedEndpointExtremum`'s reason: this asks
       // only "is x reached at all", a BOOLEAN, and then folds x's value ONCE. A loop sits in both
       // adjacency maps and makes the answer true either way, and min/max do not care how many
       // times a value would have arrived.
@@ -751,14 +751,14 @@ export const primedGroupedExtremum = (o: {
  *   * every non-key projection item is `min`/`max` with one argument. This is the half that does
  *     the work: `foldFor` admits count/min/max, so `count(x)` builds a `fold` acc that ONLY the
  *     name test refuses;
- *   * every accumulator is a streaming `fold`. ⚠️ THIS GUARD'S MUTANT SURVIVES, and it is kept as
+ *   * every accumulator is a streaming `fold`. THIS GUARD'S MUTANT SURVIVES, and it is kept as
  *     a precondition rather than deleted. Every shape that would expose it — a `values` acc from
  *     `collect`/`percentile`, or a DISTINCT extremum — is refused by the RUNG upstream, which
  *     `compileLinear` shows directly: `routes()` returns `[]` for
  *     `RETURN x.grp, min(DISTINCT x.n)`, so no rung fires and the general path answers. Two
  *     wrong guesses preceded that measurement (first "redundant with the name test", then "a test
  *     gap"), which is why the route check is recorded here rather than the reasoning;
- *   * the relationship's label is a plain type list, so reachability is a bucket read. ⚠️ THIS
+ *   * the relationship's label is a plain type list, so reachability is a bucket read. THIS
  *     GUARD'S MUTANT ALSO SURVIVES, for the same reason: `relTypeNames` does return `null` for a
  *     negated label, but `routes()` returns `[]` for `-[:!T]->` and for `-[:%]->`, so the rung
  *     declines a non-plain relationship label before the fold is consulted. Kept because the
@@ -766,7 +766,7 @@ export const primedGroupedExtremum = (o: {
  *     did collapse it, and only the typechecker caught that;
  *   * the aggregate arguments read the keyed end only — enforced by the caller.
  *
- * ⚠️ THE KEY'S SLOT IS A `{kind:'rows'}` PLACEHOLDER that `groupedAccs` pushes so the column can be
+ * THE KEY'S SLOT IS A `{kind:'rows'}` PLACEHOLDER that `groupedAccs` pushes so the column can be
  * written by index, so it is EXCLUDED from the acc-kind test rather than required to be a fold. The
  * first cut required every acc to be a fold, which no admissible query can satisfy — the rung
  * stayed green and the target did not move, which is the silent-decline failure that looks exactly
@@ -790,7 +790,7 @@ export const groupedEndpointFold = (o: {
   readonly keyCol: string;
   readonly gate: InlineGate | undefined;
 }): ((graph: Graph, params: Params) => Row[] | null) | undefined => {
-  // ⚠️ `relTypeNames` HAS THREE MEANINGS and they must not be collapsed: `undefined` is an UNTYPED
+  // `relTypeNames` HAS THREE MEANINGS and they must not be collapsed: `undefined` is an UNTYPED
   // relationship, i.e. EVERY type, which `reachedOnSide` handles as an empty list; `null` is a
   // label expression that is not a plain type list, which must DECLINE; and an array is the types.
   // Declining on `undefined` would silently refuse `-[]->`, and admitting `null` would read the

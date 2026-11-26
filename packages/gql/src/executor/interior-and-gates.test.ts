@@ -1,13 +1,13 @@
 // A three-segment clause `WHERE` split across BOTH interior positions (item 1701), closing the
 // 1411x equivalent-spelling gap item 1700 found.
 //
-// ⚠️ THE CENTRAL ASSERTION OF THIS FILE IS THAT TWO SPELLINGS AGREE, not that a count is some
+// THE CENTRAL ASSERTION OF THIS FILE IS THAT TWO SPELLINGS AGREE, not that a count is some
 // number. `WHERE b.k = 7 AND c.k > 60` and `(b {k: 7})-[…]->(c WHERE c.k > 60)` are one question;
 // they were 1411.1 ms and 1.0 ms apart with the same answer, which no correctness test could see.
 // Each case below therefore pairs a clause spelling against its inline twin AND against an
 // independent `COUNT { … }` subquery route.
 //
-// ⚠️ AND A ROUTE CHOICE IS ANSWER-EQUIVALENT WHEN TIGHTENED: a clause wrongly relaxed here returns a
+// AND A ROUTE CHOICE IS ANSWER-EQUIVALENT WHEN TIGHTENED: a clause wrongly relaxed here returns a
 // WRONG COUNT and these tests catch it, while a wrongly tightened one silently declines to the
 // general pipeline and every answer stays right. The decline cases are what cover that direction,
 // and they assert the ANSWER rather than the route, because the route is not observable from here.
@@ -21,7 +21,7 @@ import { parse } from '../parser.js';
 import { interiorConstrained, interiorPredOf } from './interior-route-choice.js';
 
 /**
- * ⚠️ Scattered insertion and a nonlinear target, so the graph is neither functional nor in-regular
+ * Scattered insertion and a nonlinear target, so the graph is neither functional nor in-regular
  * (items 1516/1518/1684) — a k-walk count over either is `N * F^k` by arithmetic however the
  * traversal behaves, which would make every case below pass for the wrong reason.
  */
@@ -52,7 +52,7 @@ const g = build();
 const countOf = (q: string): number => Number(query(g, q)[0].c);
 const CHAIN = '-[:E]->(b)-[:E]->(c)-[:E]->(d)';
 
-describe('⚠️ the fixture, before any agreement is believed', () => {
+describe('the fixture, before any agreement is believed', () => {
   test('branching exists and the gates exclude something', () => {
     expect(new Set([...g.edges].map((e) => e.to)).size).toBeGreaterThan(g.vertexCount / 2);
 
@@ -108,7 +108,7 @@ describe('a clause over BOTH interior positions agrees with its inline twin', ()
   }
 
   /** The independent oracle: a subquery, which cannot reach this arm at all. */
-  test('⚠️ and both agree with an independent subquery route', () => {
+  test('and both agree with an independent subquery route', () => {
     const want = Number(
       query(g, `MATCH (a:P) RETURN sum(COUNT { (a)${CHAIN} WHERE b.k = 7 AND c.k > 9 }) AS c`)[0].c,
     );
@@ -125,7 +125,7 @@ describe('a clause over BOTH interior positions agrees with its inline twin', ()
   });
 });
 
-describe('⚠️ the shapes that must still DECLINE, each still answering correctly', () => {
+describe('the shapes that must still DECLINE, each still answering correctly', () => {
   /**
    * The product reaches `a` and `d` only as DEGREES, so a conjunct there has no once-per-element
    * place to go — `chainGatesOf`'s rule (item 305) at the two positions this shape visits. A
@@ -168,7 +168,7 @@ describe('⚠️ the shapes that must still DECLINE, each still answering correc
   }
 
   /**
-   * ⚠️ A CONSTANT CONJUNCT. `free.size !== 1` declines it, as the old reader's `free.size === 0`
+   * A CONSTANT CONJUNCT. `free.size !== 1` declines it, as the old reader's `free.size === 0`
    * check did — it is not a per-vertex test, so there is no position to bucket it under.
    */
   test('a constant conjunct declines and still answers', () => {
@@ -211,7 +211,7 @@ describe('a write between two counts is seen', () => {
 
 describe('interiorPredOf — the BUCKETING asserted directly', () => {
   /**
-   * ⚠️ THIS BLOCK EXISTS BECAUSE THREE MUTANTS SURVIVED THE WHOLE SUITE. Bucketing a `b` conjunct
+   * THIS BLOCK EXISTS BECAUSE THREE MUTANTS SURVIVED THE WHOLE SUITE. Bucketing a `b` conjunct
    * under `c`, never filling the `c` bucket, and not splitting the clause at all each make the
    * reader NARROWER — so the shape declines, the general pipeline answers, and every count above
    * stays right. A route choice is answer-equivalent when tightened, so the route has to be
@@ -248,7 +248,7 @@ describe('interiorPredOf — the BUCKETING asserted directly', () => {
     expect(gates?.c.length).toBe(1);
   });
 
-  test('⚠️ the clause IS split: three conjuncts become three gates', () => {
+  test('the clause IS split: three conjuncts become three gates', () => {
     const { gates } = readerFor(q('b.k > 2 AND b.j < 9 AND c.k > 9'));
 
     expect(gates?.b.length).toBe(2);
@@ -269,8 +269,8 @@ describe('interiorPredOf — the BUCKETING asserted directly', () => {
     expect(gates?.c[0]?.bindVar).toBe('c');
   });
 
-  /** ⚠️ The DECLINE direction, asserted on the reader rather than on an answer. */
-  test('⚠️ the shapes that must decline return null', () => {
+  /** The DECLINE direction, asserted on the reader rather than on an answer. */
+  test('the shapes that must decline return null', () => {
     expect(readerFor(q('a.k = 7 AND c.k > 9')).gates).toBeNull();
     expect(readerFor(q('b.k = 7 AND d.k > 9')).gates).toBeNull();
     expect(readerFor(q('b.k = c.k')).gates).toBeNull();
@@ -281,9 +281,9 @@ describe('interiorPredOf — the BUCKETING asserted directly', () => {
   });
 });
 
-describe('⚠️ the SWEEP path, which needs a NON-VACUOUS start label to reach', () => {
+describe('the SWEEP path, which needs a NON-VACUOUS start label to reach', () => {
   /**
-   * ⚠️ EVERY TEST ABOVE LABELS EVERY VERTEX `P`, SO `P` IS VACUOUS — `effectiveLabel` returns
+   * EVERY TEST ABOVE LABELS EVERY VERTEX `P`, SO `P` IS VACUOUS — `effectiveLabel` returns
    * `undefined`, the CSR degree product applies, and the sweep is never consulted for an answer.
    * Two mutants proved that blind spot: sweeping a clause whose gates CANNOT be built, and building
    * those gates from the wrong pattern positions, both SURVIVED the whole suite.
@@ -315,7 +315,7 @@ describe('⚠️ the SWEEP path, which needs a NON-VACUOUS start label to reach'
     ['one interior conjunct', ' WHERE c.k > 9'],
     ['both interior positions', ' WHERE b.k = 7 AND c.k > 9'],
     ['two conjuncts on one position', ' WHERE b.k > 2 AND b.j < 9'],
-    // ⚠️ A clause whose gates CANNOT be built — `chainGatesOf` returns `null` for a conjunct
+    // A clause whose gates CANNOT be built — `chainGatesOf` returns `null` for a conjunct
     // spanning two variables — so the sweep must NOT be taken. M2 swept it anyway and survived.
     ['a conjunct spanning two positions', ' WHERE b.k = c.k'],
     ['a constant conjunct', ' WHERE 1 = 1 AND c.k > 9'],
@@ -333,7 +333,7 @@ describe('⚠️ the SWEEP path, which needs a NON-VACUOUS start label to reach'
     });
   }
 
-  test('⚠️ and the clause still agrees with its inline twin here', () => {
+  test('and the clause still agrees with its inline twin here', () => {
     expect(
       countIn('MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) WHERE c.k = 3 RETURN count(*) AS c'),
     ).toBe(countIn('MATCH (a:P)-[:E]->(b)-[:E]->(c {k: 3})-[:E]->(d) RETURN count(*) AS c'));
@@ -342,7 +342,7 @@ describe('⚠️ the SWEEP path, which needs a NON-VACUOUS start label to reach'
 
 describe('interiorConstrained — the ROUTE choice, asserted directly', () => {
   /**
-   * ⚠️ THIS CHOICE IS ANSWER-EQUIVALENT, so every mutant of it survives the differential tests and
+   * THIS CHOICE IS ANSWER-EQUIVALENT, so every mutant of it survives the differential tests and
    * it needs its own assertions — `perf-gate-needs-its-own-test`, and the same reason
    * `csrDegreeProductApplies` and `interiorPredOf` carry theirs. The numbers that justify the
    * choice (product 1.17x unfiltered, sweep 1.58x-1.72x interior-gated) are on the function.
@@ -368,7 +368,7 @@ describe('interiorConstrained — the ROUTE choice, asserted directly', () => {
     expect(interiorConstrained(chain('b', 'c'), gates)).toBe(false);
   });
 
-  test('⚠️ an INLINE constraint on either interior position counts, read from the SEGMENTS', () => {
+  test('an INLINE constraint on either interior position counts, read from the SEGMENTS', () => {
     // `inlineInteriorGate` sets `interiorPred` only for an inline `b`, so the `c` case would be
     // missed entirely by testing the gates alone — and the inline `c` row is the 1.72x one.
     expect(interiorConstrained(chain('b {k: 2}', 'c'), undefined)).toBe(true);

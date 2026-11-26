@@ -1,7 +1,7 @@
 /**
  * Assert that a generated fixture's graph actually BRANCHES (item 1633).
  *
- * ⚠️ WHY THIS IS A SHARED HELPER AND NOT A COMMENT. Nine generators in this corpus produced a
+ * WHY THIS IS A SHARED HELPER AND NOT A COMMENT. Nine generators in this corpus produced a
  * FUNCTIONAL graph — every vertex with the full out-degree and exactly ONE distinct out-neighbour —
  * and every degree statistic looked perfect while they did. The mechanical form, which no choice of
  * multiplier fixes:

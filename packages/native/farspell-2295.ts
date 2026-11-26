@@ -3,13 +3,13 @@ import { compileLinear } from '../../packages/gql/src/executor/rewrites.ts';
 /**
  * Why is the CLAUSE spelling 2.8x FASTER here, when item 2291 found the opposite? (item 2295)
  *
- * 🔑 The GQL spelling probe's far-node group, isolated and reproducible to within 1%:
+ * The GQL spelling probe's far-node group, isolated and reproducible to within 1%:
  *
  *     (b {k: 5})          130.7 / 128.6 / 129.1 ms   inline prop anchor
  *     (b WHERE b.k = 5)   146.7 / 143.8 / 145.6      inline WHERE
  *     (b) WHERE b.k = 5    46.3 /  46.4 /  46.1      CLAUSE — 2.8x FASTER
  *
- * ⚠️ Note the far node is UNLABELLED, so item 2293's bucket-ratio gate cannot fire (an unlabelled
+ * Note the far node is UNLABELLED, so item 2293's bucket-ratio gate cannot fire (an unlabelled
  * bucket is every vertex, never 64x smaller than `:P`). This is a different cause, and the direction is
  * reversed from item 2291's authz shape — so reading the route is the cheap first question.
  */

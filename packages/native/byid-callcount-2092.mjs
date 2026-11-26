@@ -1,15 +1,15 @@
 /*
  * Item 2092 — DOES ANY QUERY PATH DO A PER-ROW BY-ID LOOKUP? Counted, not asserted.
  *
- * ⚠️ Item 2091 measured a by-id lookup at **142 ns a call at a million elements** — the Map's cost,
+ * Item 2091 measured a by-id lookup at **142 ns a call at a million elements** — the Map's cost,
  * not the engine's, but real. A rung doing one PER ROW would pay that on every row, and a static read
  * of the 59 call sites says none does: they are the fixture build, undo/rollback, `Edge`'s cached
  * `??=` (once per edge lifetime), and `hasId`/`V(id)` seeds BOUNDED BY THE QUERY's own id list.
  *
- * 🔑 A STATIC READ IS NOT A GUARD. This counts the calls a query actually makes, per row it returns,
+ * A STATIC READ IS NOT A GUARD. This counts the calls a query actually makes, per row it returns,
  * so a future rung that starts resolving ids per row shows up as a ratio near 1 instead of near 0.
  *
- * ⚠️ THE BUILD IS EXCLUDED BY COUNTING ONLY WHILE A QUERY RUNS — the fixture build is by far the
+ * THE BUILD IS EXCLUDED BY COUNTING ONLY WHILE A QUERY RUNS — the fixture build is by far the
  * heaviest by-id caller (it resolves both endpoints of every edge), and including it would drown the
  * signal. Every profile in items 2083-2090 shows `getVertexById` at 5-16% for exactly that reason.
  */
@@ -54,7 +54,7 @@ for (let e = 0; e < NODES * FANOUT; e += 1) {
 }
 
 /*
- * The counters. ⚠️ BOTH THE METHOD AND THE RAW MAP are patched: `seedFromIndex` deliberately uses
+ * The counters. BOTH THE METHOD AND THE RAW MAP are patched: `seedFromIndex` deliberately uses
  * `graph.verticesById.get` rather than `getVertexById` ("the RAW map, not `getVertexById`"), so
  * counting only the method would miss the index-seed path entirely — the one place a per-row
  * resolution could plausibly live.
@@ -94,7 +94,7 @@ const shapes = {
 };
 
 /*
- * ⚠️⚠️ **THE POSITIVE CONTROL, AND WITHOUT IT A ZERO PROVES NOTHING.** Every shape below reads 0, which
+ * **THE POSITIVE CONTROL, AND WITHOUT IT A ZERO PROVES NOTHING.** Every shape below reads 0, which
  * is indistinguishable from a BROKEN COUNTER. `V(id)` must resolve its id through the graph, so this
  * arm has to count ABOVE zero or the instrument is not watching anything.
  */
@@ -144,7 +144,7 @@ for (const [name, run] of Object.entries(shapes)) {
 }
 
 /*
- * ⚠️ THE THRESHOLD IS THE POINT OF THE PROBE. A bounded seed (`hasId`, `V(id)`) is fine — its count
+ * THE THRESHOLD IS THE POINT OF THE PROBE. A bounded seed (`hasId`, `V(id)`) is fine — its count
  * comes from the QUERY, not the data — so the guard is per ROW, and 0.01 leaves room for a handful of
  * fixed lookups on a many-row query while catching anything proportional.
  */

@@ -25,11 +25,11 @@ import {
  * the protocol is the whole gap. `toArray` is defined as `[...run(plan, graph)]`, so it already
  * drains the walk in full; taking an eager route there is the same answer by a cheaper route.
  *
- * ⚠️ `run` MUST STAY LAZY. A caller may `break` out of it, and `eager-tail-cache` records a 473x and
+ * `run` MUST STAY LAZY. A caller may `break` out of it, and `eager-tail-cache` records a 473x and
  * a 3680x from filling eagerly under a LIMIT. So `drain` is an ADDITION to the walk object, never a
  * replacement for its iterator, and only `toArray` reads it.
  *
- * ⚠️ ROW ORDER IS A TINKERPOP CONTRACT HERE, not an unspecified-order liberty. Unlike GQL, the
+ * ROW ORDER IS A TINKERPOP CONTRACT HERE, not an unspecified-order liberty. Unlike GQL, the
  * differential fuzzer compares Gremlin results ORDERED, so the drain must emit the same rows in the
  * same sequence as the generator — which is why every equivalence test below compares `toEqual` on
  * the whole array rather than lengths, sets or sorted copies.
@@ -84,7 +84,7 @@ const TAKES = {
   // `both` with ONE type, added at item 1432 — out-bucket then in-bucket per vertex, which is
   // `iterBoth`'s TinkerPop ordering without its four-deep generator chain.
   'both, one type': () => traversal(V(), both('E'), values('k')),
-  // ⚠️ MOVED FROM `DECLINES` AT ITEM 1630, which fused a residual global `order()`: the sort now
+  // MOVED FROM `DECLINES` AT ITEM 1630, which fused a residual global `order()`: the sort now
   // drains the walk eagerly and re-exposes `drain` over the sorted array, so `toArray` does not
   // copy it a second time. Same shape as `both, one type` below — the assertion failed the moment
   // its reason stopped being true, which is the test doing its job.
@@ -92,14 +92,14 @@ const TAKES = {
 };
 
 const DECLINES = {
-  // ⚠️ `both('E')` MOVED TO `TAKES` at item 1432, which gave it a hand walk. This assertion used to
+  // `both('E')` MOVED TO `TAKES` at item 1432, which gave it a hand walk. This assertion used to
   // read "`both` uses the shared helpers rather than a hand walk, so it has no drain" — true when
   // written, and it failed the moment that stopped being true, which is the test doing its job.
   // Kept as the MULTI-TYPE case, which still falls to the general tail: `bothOneType` requires
   // exactly one label.
   'both, two types': () => traversal(V(), both('E', 'F'), values('k')),
   // A RESIDUAL: the shortcut still fires but `rest` is non-empty, so `run` wraps the values in
-  // traversers and the route must not be offered. ⚠️ A GLOBAL `order()` residual is the EXCEPTION
+  // traversers and the route must not be offered. A GLOBAL `order()` residual is the EXCEPTION
   // since item 1630 and has moved to `TAKES`; a CAPPED one has not, because that fusion measured
   // flat and declines. `limit(2)` arrives here as its own step rather than as a cap.
   'residual limit': () => traversal(V(), out('E'), values('k'), limit(2)),
@@ -158,7 +158,7 @@ describe('toArray and run agree, row for row and in order (item 1412)', () => {
     expect(vals).toEqual([...run(traversal(V(), out('E'), values('k')), g)]);
   });
 
-  test('⚠️ the multi-type dedupe and the label-arg ORDER survive the eager route', () => {
+  test('the multi-type dedupe and the label-arg ORDER survive the eager route', () => {
     const g = build();
     // `ad` carries both `E` and `F`, so it is in both buckets and must be emitted ONCE. And
     // `out('F','E')` walks the buckets in the named order, which is a TinkerPop contract — so the

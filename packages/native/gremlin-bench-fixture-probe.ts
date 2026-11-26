@@ -29,7 +29,7 @@ import { deserialize as tsDeserialize } from '@lenke/serialization';
 const N = Number(process.env.PROBE_N ?? 200_000);
 const REPS = Number(process.env.REPS ?? 14);
 
-// ⚠️ BYTE-FOR-BYTE `bench-gremlin.ts`'s fixture, including the repeat-index split that item 1632 put
+// BYTE-FOR-BYTE `bench-gremlin.ts`'s fixture, including the repeat-index split that item 1632 put
 // in to stop the graph being functional, and the edge property `w` the standalone probe omits.
 const lines = Array.from(
   { length: N },
@@ -44,10 +44,10 @@ for (let k = 0; k < N * 5; k++) {
   );
 }
 
-// ⚠️ THE BENCH'S OWN TS LOADER. `graphFromNdjson` is the NATIVE one (it takes a backend), which
+// THE BENCH'S OWN TS LOADER. `graphFromNdjson` is the NATIVE one (it takes a backend), which
 // is what the first version of this probe reached for — the two loaders live one import apart.
 /**
- * ⚠️ FOUR WAYS TO BUILD THE SAME GRAPH, so the fixture's 2.44x can be attributed. The one-shape arm
+ * FOUR WAYS TO BUILD THE SAME GRAPH, so the fixture's 2.44x can be attributed. The one-shape arm
  * on the bench's own fixture reads 149.03 ms where a standalone probe read 61.06, and the remaining
  * differences between them are exactly these three: the LOADER, the EDGE PROPERTY `w`, and the
  * degree distribution (exactly 5 against 1..9 with the same mean).
@@ -58,7 +58,7 @@ for (let k = 0; k < N * 5; k++) {
  *   FIXTURE=vardeg     deserialized with degree 1..9             -> isolates the distribution
  */
 /**
- * ⚠️ THE SAME EDGE SET, INSERTED GROUPED BY SOURCE. The bench's `from = (k * 7919) % N` scatters a
+ * THE SAME EDGE SET, INSERTED GROUPED BY SOURCE. The bench's `from = (k * 7919) % N` scatters a
  * vertex's five edges ~200,000 insertions apart, so its `Edge` objects land far apart in allocation
  * order and walking one vertex's adjacency chases pointers across the heap. Grouping them changes
  * nothing about the graph — same vertices, same edges, same per-vertex bucket ORDER, so the emitted
@@ -194,7 +194,7 @@ const timed = (plan: (typeof SHAPES)['id']): { med: number; series: number[]; ro
 };
 
 /**
- * ⚠️ THE HAND ARMS, ON WHICHEVER FIXTURE IS SELECTED. Item 1693 refuted a CSR drain for this walk at
+ * THE HAND ARMS, ON WHICHEVER FIXTURE IS SELECTED. Item 1693 refuted a CSR drain for this walk at
  * 1.58x warm and 0.76x cold — measured on a GROUPED-insertion fixture, which is the best case for a
  * pointer-chasing walk and therefore the worst case for the lever. The bench's scattered layout is
  * 2.26x slower for the same graph, so the refutation has to be re-run against it.
@@ -311,7 +311,7 @@ if (ARM === 'one') {
     `ONE-SHAPE  id  median=${med.toFixed(2)} rows=${rows} series=${series.map((x) => x.toFixed(1)).join(' ')}`,
   );
 } else {
-  // ⚠️ THE SAME `toArray` CALL SITE SERVING SEVERAL PLANS, which is what the bench does. If this
+  // THE SAME `toArray` CALL SITE SERVING SEVERAL PLANS, which is what the bench does. If this
   // reproduces the bench's figure while the one-shape arm does not, the bench's numbers carry a
   // polymorphism tax and its RANKING is what needs correcting, not the engine.
   for (const [name, plan] of Object.entries(SHAPES)) {

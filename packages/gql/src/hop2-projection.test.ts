@@ -11,7 +11,7 @@ import { parse } from './parser.ts';
  * `MATCH (a)-[:T]->(b)-[:U]->(c) RETURN <items>` — the two-segment row projection (item 1619),
  * **5.28x** (206.1 ms to 39.0 isolated, 320k rows).
  *
- * ⚠️ `WHERE true` IS THE ORACLE. The rung declines any clause `WHERE`, so appending `WHERE true`
+ * `WHERE true` IS THE ORACLE. The rung declines any clause `WHERE`, so appending `WHERE true`
  * runs the IDENTICAL question down the general matcher — item 570 records `WHERE true` as *the*
  * control for this engine, and here it is the only way to reach the path this rung replaced. Row
  * order without an `ORDER BY` is unspecified (item 198), so the comparison is as a MULTISET.
@@ -93,13 +93,13 @@ const sorted = (rows: readonly Record<string, unknown>[]): string[] =>
 /**
  * The rung's rows against the general matcher's, as a multiset.
  *
- * ⚠️ THE ORACLE IS AN `ORDER BY`, NOT `WHERE true` — and this changed at item 1620. `WHERE true`
+ * THE ORACLE IS AN `ORDER BY`, NOT `WHERE true` — and this changed at item 1620. `WHERE true`
  * was the oracle while a clause `WHERE` declined the rung; item 1620 CARRIES one, so that spelling
  * now rides the SAME rung and would compare it against itself. An `ORDER BY` makes the projection
  * non-plain (`plainRowProjection`), which is the remaining way to reach the general matcher for an
  * otherwise identical query.
  *
- * ⚠️ AND IT IS CHECKED, NOT ASSUMED: every call asserts the fast spelling takes the rung AND that
+ * AND IT IS CHECKED, NOT ASSUMED: every call asserts the fast spelling takes the rung AND that
  * the oracle spelling does NOT. That pair of assertions is what caught the `WHERE true` oracle going
  * stale — it failed loudly on eight tests rather than silently comparing the rung to itself, which is
  * the failure mode an oracle has and the reason it is worth asserting both halves.
@@ -119,7 +119,7 @@ const agrees = (src: string, sortKey: string): Record<string, unknown>[] => {
 describe('a two-segment pattern projecting rows', () => {
   test('the far end only — the shape at 5.28x', () => {
     /**
-     * ⚠️ DERIVED BY A SCRIPT over the table, after SEVEN of my eyeballed literals in this file were
+     * DERIVED BY A SCRIPT over the table, after SEVEN of my eyeballed literals in this file were
      * wrong and the engine was right every time — the sixth through twelfth of this session. The
      * `R` two-hop paths from an `L` start are a>b>c, a>c>c, b>c>c, d>a>b, d>a>c (NOT c>c>c: `c` is
      * `M`, not `L`), so the far `k` values are 3, 3, 3, 2, 3.
@@ -132,7 +132,7 @@ describe('a two-segment pattern projecting rows', () => {
     );
   });
 
-  test('⚠️ a SELF-LOOP may be traversed TWICE, and the default path mode does not forbid it', () => {
+  test('a SELF-LOOP may be traversed TWICE, and the default path mode does not forbid it', () => {
     /**
      * `c` has a loop `c>c`, so `c>c>c` reuses the SAME edge for both segments. The default `mode` is
      * `'trail'`, which forbids a repeated edge — but only per REPETITION of a quantifier, so it is
@@ -217,7 +217,7 @@ describe('a two-segment pattern projecting rows', () => {
 
   test('an expression over two variables, and a literal item', () => {
     agrees('MATCH (a:L)-[:R]->(b)-[:R]->(c) RETURN a.id AS a, c.k AS ck, 1 AS one', 'a, ck');
-    // ⚠️ `AS sum` does not parse — `sum` is an aggregate name and `bindName` refuses it. `tot` is
+    // `AS sum` does not parse — `sum` is an aggregate name and `bindName` refuses it. `tot` is
     // the same test without the reserved word.
     agrees('MATCH (a:L)-[:R]->(b)-[:R]->(c) RETURN a.k + c.k AS tot', 'tot');
   });
@@ -234,7 +234,7 @@ describe('the rung declines what it must — and the answer stays right', () => 
     declines('MATCH (a:L)-[:R]->(b)-[:R]->(c)-[:R]->(d) RETURN d.k AS k');
   });
 
-  test('⚠️ a clause WHERE is CARRIED since item 1620, not declined', () => {
+  test('a clause WHERE is CARRIED since item 1620, not declined', () => {
     /**
      * Item 1619 declined it and left the two filtered twins open at 4.49x and 4.69x their fast
      * neighbour. They are taken now, and the gate is evaluated AT THE DEEPEST LEVEL — once per
@@ -250,7 +250,7 @@ describe('the rung declines what it must — and the answer stays right', () => 
       ['MATCH (a:L)-[:R]->(b)-[:R]->(c) WHERE c.k = 2 OR b.k = 3 RETURN c.id AS c', 'c'],
       // LOOP-INVARIANT, which item 1437 measured at 7.46x when the one-hop walk declined it.
       ['MATCH (a:L)-[:R]->(b)-[:R]->(c) WHERE true RETURN c.id AS c', 'c'],
-      // ⚠️ A NULL comparison is UNKNOWN, and a clause `WHERE` keeps only definite TRUE — so a
+      // A NULL comparison is UNKNOWN, and a clause `WHERE` keeps only definite TRUE — so a
       // vertex with no `k` is DROPPED rather than kept. That is why the gate tests
       // `asTruth(...) !== true` rather than `=== false`.
       ['MATCH (x)-[:R]->(y)-[:R]->(z) WHERE z.k > 1 RETURN z.id AS z', 'z'],
@@ -269,7 +269,7 @@ describe('the rung declines what it must — and the answer stays right', () => 
     expect(query(g, 'MATCH (x)-[:S]->(y)-[:R]->(z) RETURN z.id AS z')).toEqual([{ z: 'a' }]);
   });
 
-  test('⚠️ a clause WHERE that READS THE START declines, and the reason is measured', () => {
+  test('a clause WHERE that READS THE START declines, and the reason is measured', () => {
     /**
      * The general matcher rejects a start BEFORE expanding it, so a start-anchored predicate costs
      * it one test per VERTEX where this walk pays one per ROW. Admitting it measured a **3.7x
@@ -308,7 +308,7 @@ describe('the rung declines what it must — and the answer stays right', () => 
   });
 
   /**
-   * ⚠️ THIS ROW DELIBERATELY FLIPPED AT ITEM 1846, and the route file's rule is to say why rather
+   * THIS ROW DELIBERATELY FLIPPED AT ITEM 1846, and the route file's rule is to say why rather
    * than quietly edit the expectation: a TYPE ALTERNATION used to decline this rung, and `[:R|S]`
    * then cost **684 ns a row against the single-type spelling's 102**. `walkUnion` takes it now.
    * `and`, `not` and `wildcard` label expressions still decline — they are not alternations over
@@ -329,9 +329,9 @@ describe('the rung declines what it must — and the answer stays right', () => 
     declines('MATCH (a:L)-[r:R]->(b)-[:R]->(c) RETURN c.k AS k');
   });
 
-  test('⚠️ INLINE NODE PROPERTIES are LIFTED and now ride the rung; an inline node WHERE does not', () => {
+  test('INLINE NODE PROPERTIES are LIFTED and now ride the rung; an inline node WHERE does not', () => {
     /**
-     * ⚠️ `{id: 'a'}` IS NOT A DECLINE, and item 1619's test said it was. The clause list the
+     * `{id: 'a'}` IS NOT A DECLINE, and item 1619's test said it was. The clause list the
      * detectors receive is the POST-REWRITE form, and inline node properties are lifted into the
      * clause `WHERE` — so once item 1620 carries a clause `WHERE`, the inline spelling rides the rung
      * too. That is the equivalent-spelling property this repo is named after working in the right
@@ -341,7 +341,7 @@ describe('the rung declines what it must — and the answer stays right', () => 
      * refuses it — and a rel's inline properties are refused by `plainRel`.
      */
     /**
-     * ⚠️ EVERY INLINE-PROPERTY SPELLING DECLINES, and the two nodes decline for DIFFERENT reasons —
+     * EVERY INLINE-PROPERTY SPELLING DECLINES, and the two nodes decline for DIFFERENT reasons —
      * which is worth stating because I got the claim wrong twice in one tick.
      *
      * On the START node the rewrite LIFTS `{id: 'a'}` into a clause `WHERE` reading `a`. That was
@@ -362,9 +362,9 @@ describe('the rung declines what it must — and the answer stays right', () => 
     declines('MATCH (a:L)-[:R {w: 1}]->(b)-[:R]->(c) RETURN c.k AS k');
   });
 
-  test('⚠️ a path VARIABLE declines only when it is actually READ', () => {
+  test('a path VARIABLE declines only when it is actually READ', () => {
     /**
-     * ⚠️ AN UNREAD PATH VARIABLE IS DROPPED BEFORE ANY DETECTOR SEES THE CLAUSES, so
+     * AN UNREAD PATH VARIABLE IS DROPPED BEFORE ANY DETECTOR SEES THE CLAUSES, so
      * `MATCH p = … RETURN c.k` fires this rung and SHOULD: there is no `Path` to build. I wrote this
      * test expecting a decline and the engine was right — `drop-unread-path-var` is the rewrite, and
      * the clauses the detectors receive are the post-rewrite form.
@@ -387,7 +387,7 @@ describe('the rung declines what it must — and the answer stays right', () => 
   });
 
   /**
-   * ⚠️ `DISTINCT` MOVED OUT OF THE LIST ABOVE AT ITEM 1822, and it is a separate test because the
+   * `DISTINCT` MOVED OUT OF THE LIST ABOVE AT ITEM 1822, and it is a separate test because the
    * two groups were refused for different reasons and only one was about capability. `SKIP`/`LIMIT`
    * stay refused permanently: with no `ORDER BY` row order decides WHICH rows survive, so a rung
    * whose walk order differs from the general path's would return different ROWS. Dedupe keeps one
@@ -413,7 +413,7 @@ describe('the rung declines what it must — and the answer stays right', () => 
     declines('OPTIONAL MATCH (a:L)-[:R]->(b)-[:R]->(c) RETURN c.k AS k');
   });
 
-  test('⚠️ a PARAMETER in the projection is ADMITTED, not declined', () => {
+  test('a PARAMETER in the projection is ADMITTED, not declined', () => {
     /**
      * I wrote this as a decline, reasoning that `size($p)` reads a name the pattern does not bind.
      * The engine is right: `$p` is a PARAMETER, not a free variable, `freePredicateVars` does not

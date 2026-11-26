@@ -6,13 +6,13 @@
  * a PROXY. The invariant is TS against **Rust**, and Rust could perfectly well sum in a different
  * internal order than it emits `values` in, in which case matching the emission order buys nothing.
  *
- * ⚠️ WHY THIS MATTERS MORE THAN THE SHAPE COUNT. Item 1831 already ran the TS-vs-TS experiment —
+ * WHY THIS MATTERS MORE THAN THE SHAPE COUNT. Item 1831 already ran the TS-vs-TS experiment —
  * 25 cases, identical sequences — and item 1830 deliberately DECLINED to act on it: "That is
  * evidence, not proof, and byte-identity with the Rust engine is a hard invariant rather than a
  * target." More TS-vs-TS cases do not answer that objection; a direct TS-vs-Rust comparison on an
  * order-sensitive fixture does.
  *
- * ⚠️ THE FIXTURE MUST BE ABLE TO SEE SUMMATION ORDER OR THE WHOLE PROBE IS VACUOUS. A reciprocal
+ * THE FIXTURE MUST BE ABLE TO SEE SUMMATION ORDER OR THE WHOLE PROBE IS VACUOUS. A reciprocal
  * ramp spans magnitudes so that reversing the multiset changes the f64; integers would add
  * associatively and every arm would agree for reasons that have nothing to do with the engines.
  * The control is printed first and the probe refuses to interpret anything if it fails.
@@ -111,17 +111,17 @@ console.log(`  sum reverse ${rev.toExponential(20)}`);
 
 if (fwd === rev) {
   console.error(
-    '⚠️ CONTROL VACUOUS: this fixture cannot see summation order, so nothing below means anything.',
+    'CONTROL VACUOUS: this fixture cannot see summation order, so nothing below means anything.',
   );
   process.exit(1);
 }
 
-console.log('  ✅ the control differs, so this fixture CAN see summation order\n');
+console.log('  the control differs, so this fixture CAN see summation order\n');
 
 /**
  * The shapes that reach the fused projected residual.
  *
- * ⚠️ THE NATIVE TEXT IS DERIVED FROM THE TS PLAN by `planToGremlin`, not written out beside it.
+ * THE NATIVE TEXT IS DERIVED FROM THE TS PLAN by `planToGremlin`, not written out beside it.
  * Two hand-maintained spellings of each shape could drift into being two different questions, and
  * then a disagreement would mean nothing. This is also what the differential fuzzer does.
  */
@@ -183,12 +183,12 @@ for (const plan of SHAPES) {
     bad += 1;
   }
 
-  let mark = '❌ ';
+  let mark = '';
 
   if (isErr) {
-    mark = '⚠️ ';
+    mark = '';
   } else if (a === b) {
-    mark = '✅ ';
+    mark = '';
   }
 
   console.log(`${mark}${text}`);
@@ -197,9 +197,9 @@ for (const plan of SHAPES) {
 }
 
 const ok = bad === 0 && errs === 0;
-const errNote = errs > 0 ? `   ⚠️ ${errs} shape(s) errored and prove nothing` : '';
+const errNote = errs > 0 ? `   ${errs} shape(s) errored and prove nothing` : '';
 
 console.log(
-  `\n${ok ? '✅' : '❌'} ${SHAPES.length - bad - errs}/${SHAPES.length} bit-identical${errNote}`,
+  `\n${ok ? '' : ''} ${SHAPES.length - bad - errs}/${SHAPES.length} bit-identical${errNote}`,
 );
 process.exit(bad === 0 && errs === 0 ? 0 : 1);

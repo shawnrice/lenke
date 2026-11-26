@@ -8,18 +8,18 @@ import { describe, expect, test } from 'bun:test';
  * pipeline — which builds a traverser per value to keep 997 of 200,000. Priced at item 1868:
  * **11.96 ms against a 5.81 ms fused floor that emits 200x more rows than the deduped shape keeps.**
  *
- * ⚠️ **THE GAP WAS DIAGNOSED IN THE ENGINE'S OWN SOURCE BEFORE IT WAS MEASURED.** `dedupe`'s note
+ * **THE GAP WAS DIAGNOSED IN THE ENGINE'S OWN SOURCE BEFORE IT WAS MEASURED.** `dedupe`'s note
  * records `values(k).dedup()` at 3.4-3.6x the GQL `RETURN DISTINCT` spelling for num and str columns
  * and says the residual "is the TRAVERSAL STREAM'S own cost and not a keying defect". That sentence
  * is the nomination; this removes the stream and leaves the keying alone.
  *
- * ⚠️⚠️ **ORDER IS THE LOAD-BEARING ASSERTION, not the set.** Gremlin results are compared ORDERED by
+ * **ORDER IS THE LOAD-BEARING ASSERTION, not the set.** Gremlin results are compared ORDERED by
  * the differential fuzzer, and `dedupe()` keeps FIRST-OCCURRENCE order — so every test below
  * compares SEQUENCES. A fused walk that collected a `Set` and emitted its contents would pass a
  * set-equality test and be insertion-ordered only by accident of the implementation; this one
  * filters in place while scanning, which is why the order holds by construction rather than by luck.
  *
- * ⚠️ **AND THE DEDUP CLASSES ARE THE ENGINE'S OWN.** `valueDedupeFilter` was EXTRACTED from
+ * **AND THE DEDUP CLASSES ARE THE ENGINE'S OWN.** `valueDedupeFilter` was EXTRACTED from
  * `dispatch.ts` at item 1869, not copied, so the five key spaces — plain `Set`, composite string key
  * with a `WeakSet` short-circuit, `LocalDate` on `days`, the other temporal kinds, and
  * `NO_VALUE` — are shared by construction. The cases below still exercise each space through this
@@ -31,7 +31,7 @@ import { Graph, LocalDate } from '@lenke/core';
 import { V, dedupe, hasLabel, run, toArray, traversal, values } from '../index.js';
 
 /**
- * ⚠️ DUPLICATES ARE INTERLEAVED, NOT ADJACENT, so first-occurrence order is observable: a walk that
+ * DUPLICATES ARE INTERLEAVED, NOT ADJACENT, so first-occurrence order is observable: a walk that
  * emitted the LAST occurrence of each value, or sorted them, would differ here and agree on a
  * fixture where each value's copies were consecutive.
  */
@@ -52,7 +52,7 @@ const build = (vals: readonly unknown[], labels: readonly string[][] = []): Grap
 /**
  * The same query down the route that CANNOT take the rung, so the two cannot share a mistake.
  *
- * ⚠️⚠️ THE FIRST ORACLE HERE WAS WRONG, AND RUNNING IT IS WHAT SAID SO. It used
+ * THE FIRST ORACLE HERE WAS WRONG, AND RUNNING IT IS WHAT SAID SO. It used
  * `values(k).dedupe().by(k)` on the reasoning that a `by` modulator is refused by the rung and
  * dedupes on the same value anyway. It does not: by that point the stream holds VALUES, not
  * vertices, so `by('k')` reads property `k` OF A NUMBER, yields `NO_VALUE`, and `dedupe` FILTERS
@@ -60,7 +60,7 @@ const build = (vals: readonly unknown[], labels: readonly string[][] = []): Grap
  * `[LocalDate(5), 5, LocalDate(6)]`. The rung was correct and my check was not, which is the same
  * failure item 1857 recorded twice in one item.
  *
- * ⚠️ THE REPLACEMENT IS A SEEDED SOURCE, which `matchShape` refuses outright (item 1858's device).
+ * THE REPLACEMENT IS A SEEDED SOURCE, which `matchShape` refuses outright (item 1858's device).
  * Naming every id IN ORDER keeps the question identical rather than merely similar: the pipeline
  * then visits the same vertices in the same sequence and runs the same `dedupe` step.
  */
@@ -86,7 +86,7 @@ describe('the fused scan dedupe', () => {
   });
 
   /**
-   * ⚠️ A STORED `null` IS A VALUE AND AN ABSENT KEY IS NOT. `values(k)` emits nothing for a vertex
+   * A STORED `null` IS A VALUE AND AN ABSENT KEY IS NOT. `values(k)` emits nothing for a vertex
    * lacking `k`, and `null` is a value that dedupes with other nulls — a walk conflating them would
    * pass any fixture where every vertex carries the key.
    */
@@ -107,7 +107,7 @@ describe('the fused scan dedupe', () => {
   });
 
   /**
-   * ⚠️ THE TEMPORAL KEY SPACE, reached through this rung. `LocalDate` keys on `days` in its own
+   * THE TEMPORAL KEY SPACE, reached through this rung. `LocalDate` keys on `days` in its own
    * container (item 857), and a raw `5` must NOT collide with `LocalDate(5)` — item 850's reason
    * for a separate container, asserted here rather than assumed from the shared import.
    */
@@ -141,7 +141,7 @@ describe('the fused scan dedupe', () => {
   });
 
   /**
-   * ⚠️ AGAINST THE PIPELINE, which is what says the rung did not invent its own classes. Every
+   * AGAINST THE PIPELINE, which is what says the rung did not invent its own classes. Every
    * fixture above goes down `dedupe().by(k)` too — refused by the rung, same question — and the
    * SEQUENCES must match.
    */
@@ -153,7 +153,7 @@ describe('the fused scan dedupe', () => {
       ['a', 'b', 'a', 'c', 'b'],
       [new LocalDate(5), new LocalDate(5), 5, new LocalDate(6)],
       [1],
-      // ⚠️ NOT `[]`: with zero ids `V(...[])` is `V()`, which TAKES the rung — so an empty fixture
+      // NOT `[]`: with zero ids `V(...[])` is `V()`, which TAKES the rung — so an empty fixture
       // would compare the rung against itself. A one-element fixture gives `V('v0')`, genuinely
       // seeded and genuinely refused.
     ]) {
@@ -168,7 +168,7 @@ describe('the fused scan dedupe', () => {
   /**
    * `drain` and the iterator are two consumers of ONE loop body and must not drift.
    *
-   * ⚠️ THE LAZY SIDE MUST COME FROM `run`, NOT `toArray` — item 1858's test made exactly that
+   * THE LAZY SIDE MUST COME FROM `run`, NOT `toArray` — item 1858's test made exactly that
    * mistake and compared `drain` against itself, because `toArray` takes the `drain` path when a
    * shortcut offers one.
    */
@@ -189,7 +189,7 @@ describe('the fused scan dedupe', () => {
 
 describe('the fused scan dedupe refuses what it must', () => {
   /**
-   * ⚠️ A LABELLED dedupe keys on TAGGED values, and this asserts the exact answer because
+   * A LABELLED dedupe keys on TAGGED values, and this asserts the exact answer because
    * `length > 0` let a mutant admitting the shape SURVIVE. No step here sets a tag, so every
    * traverser's `tags.get('a')` is `undefined` — ONE key, ONE row. A rung that ignored the labels
    * would answer three.
@@ -201,7 +201,7 @@ describe('the fused scan dedupe refuses what it must', () => {
   });
 
   /**
-   * ⚠️ A `by` MODULATOR DEDUPES ON SOMETHING ELSE, and the fixture has to make that observable —
+   * A `by` MODULATOR DEDUPES ON SOMETHING ELSE, and the fixture has to make that observable —
    * on a plain numeric column `by('k')` happens to yield the value itself, so the answers coincide
    * and a mutant admitting the shape SURVIVED. Over temporals it does not: `by('k')` on a
    * `LocalDate` yields NO_VALUE, which `dedupe` FILTERS, so the pipeline keeps only the raw number.
@@ -219,7 +219,7 @@ describe('the fused scan dedupe refuses what it must', () => {
   });
 
   /**
-   * ⚠️ `NO_VALUE` MUST FILTER, which is TinkerPop's rule for a dedup-by that yields nothing — and
+   * `NO_VALUE` MUST FILTER, which is TinkerPop's rule for a dedup-by that yields nothing — and
    * a mutant flipping it to `return true` SURVIVED until this case existed. It reaches the
    * EXTRACTED predicate through the PIPELINE (the `by` is refused by the rung), so it is what
    * covers that branch of the code item 1869 moved out of `dispatch.ts`.
@@ -228,7 +228,7 @@ describe('the fused scan dedupe refuses what it must', () => {
     const g = build([3, 1, 3, 2]);
 
     /**
-     * ⚠️ THE STREAM MUST HOLD ELEMENTS, NOT VALUES, and getting that wrong is how this case first
+     * THE STREAM MUST HOLD ELEMENTS, NOT VALUES, and getting that wrong is how this case first
      * asserted `[]` and read `[3, 1, 2]`. `evalBy` on a PRIMITIVE yields the primitive itself
      * whatever key is named, so `values(k).dedupe().by('nope')` never produces `NO_VALUE` at all.
      * Over VERTICES an absent property does produce it, and `dedupe` then filters every traverser.

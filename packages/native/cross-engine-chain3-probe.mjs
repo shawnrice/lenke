@@ -11,7 +11,7 @@
  * shape the differential fuzzer does not cover (it compares TS against RUST, not GQL against
  * Gremlin).
  *
- * ⚠️ WHAT EACH PLANNER SEES IS NOT IDENTICAL, and that is the point of measuring rather than
+ * WHAT EACH PLANNER SEES IS NOT IDENTICAL, and that is the point of measuring rather than
  * assuming. GQL's bench row carries `(a:P)` and `(b:P)`; Gremlin's carries `hasLabel('P')` on the
  * start only. On this fixture every vertex is `P`, so both labels narrow NOTHING — GQL's route
  * comparison sees `candidateCount(P) === vertexCount` and keeps the degree product, and Gremlin's
@@ -36,7 +36,7 @@ for (let i = 0; i < N; i += 1) {
 }
 
 /**
- * ⚠️ THE SUCCESSOR FUNCTION IS A KNOB, and it is worth ~2x on this row (item 1426).
+ * THE SUCCESSOR FUNCTION IS A KNOB, and it is worth ~2x on this row (item 1426).
  *
  * `STRIDE=small` is `to = (i * 7 + 3) % N` — what `isolated-row-bench.mjs` builds. A vertex points
  * ~7 slots along, so the walk's successor is partly cache-resident.
@@ -91,7 +91,7 @@ const time = (fn) => {
 };
 
 /**
- * ⚠️ ONE SHAPE PER PROCESS, selected by `ARM`, and the first version of this probe got it wrong.
+ * ONE SHAPE PER PROCESS, selected by `ARM`, and the first version of this probe got it wrong.
  *
  * Running all three arms in one process makes every dispatch site in the executors polymorphic
  * across query shapes — the repo's own rule is "one shape per PROCESS, so no other shape pollutes
@@ -124,7 +124,7 @@ const med = (x) => {
   return s[Math.floor(s.length / 2)];
 };
 
-// ⚠️ A CROSS-ENGINE ANSWER CHECK, which nothing else in the tree does for this shape: the
+// A CROSS-ENGINE ANSWER CHECK, which nothing else in the tree does for this shape: the
 // differential fuzzer compares TS against RUST, not GQL against Gremlin.
 const answers = new Set(names.map((n) => got[n][0].a));
 

@@ -8,13 +8,13 @@ import { describe, expect, test } from 'bun:test';
  * reduces — 21.93 ms against the walk's 9.48 — and now folds in place at 12.36 (1.77x), 2.47x for
  * `max`.
  *
- * ⚠️ THE ORACLE IS A PLAIN JAVASCRIPT REDUCE OVER THE WALK'S OWN OUTPUT, which is outside the
+ * THE ORACLE IS A PLAIN JAVASCRIPT REDUCE OVER THE WALK'S OWN OUTPUT, which is outside the
  * engine. The new fold mirrors `fusedValuesAggregate`'s non-numeric arm, and two near-twins that
  * must stay identical are item 1832's drift hazard — so neither is trusted to check the other.
  * `toArray` of the same traversal WITHOUT the aggregate gives exactly the values being reduced;
  * `Math.min` over them cannot share a mistake with either engine path.
  *
- * ⚠️⚠️ **THIS FILE USED TO HOLD A TEST NAMED `sum and mean are NOT folded`, AND IT IS GONE
+ * **THIS FILE USED TO HOLD A TEST NAMED `sum and mean are NOT folded`, AND IT IS GONE
  * DELIBERATELY (item 2408).** It pinned a refusal whose stated reason — "byte-identity with the
  * Rust engine is a hard invariant" — item **2401** retired in favour of a PRECISION contract, so
  * the test was asserting a contract the repo no longer has. That assertion is what told item 1918
@@ -31,7 +31,7 @@ import { V, max, mean, min, out, sum, toArray, traversal, values } from '../inde
 import { foldProjectedMinMax, fusableProjectedAggregate } from './aggregation.js';
 
 /**
- * ⚠️ THE VALUES ARE CHOSEN SO THE FOLD'S RULES ARE OBSERVABLE: a stored `null` (skipped), an
+ * THE VALUES ARE CHOSEN SO THE FOLD'S RULES ARE OBSERVABLE: a stored `null` (skipped), an
  * ABSENT key (never emitted by `values`), a negative, a zero, and on one fixture STRINGS mixed
  * with numbers so `compareTotal`'s total order matters rather than `<`.
  */
@@ -68,7 +68,7 @@ const FIXTURES: Record<string, readonly unknown[]> = {
   'all null': [null, null],
   'mixed strings and numbers': [3, 'b', 1, 'a', 7],
   /**
-   * ⚠️ AN ALL-STRING COLUMN, added at item 1919 because the win there is 2.00x on exactly this and
+   * AN ALL-STRING COLUMN, added at item 1919 because the win there is 2.00x on exactly this and
    * the file had no such fixture — only the MIXED one, whose numbers mean `compareTotal`'s type
    * rank decides the answer before any string comparison happens. A column that is wholly strings
    * is a different path through the comparator.
@@ -80,14 +80,14 @@ const FIXTURES: Record<string, readonly unknown[]> = {
 /**
  * The oracle's comparison, chosen by the COLUMN'S TYPE.
  *
- * ⚠️ WHY THIS IS NOT RE-IMPLEMENTING THE THING UNDER TEST, which the note below rightly warns
+ * WHY THIS IS NOT RE-IMPLEMENTING THE THING UNDER TEST, which the note below rightly warns
  * against for the MIXED fixture: a cross-type order needs `compareTotal`'s type ranks, and copying
  * those here would make the oracle a second copy of the engine. A column that is wholly numbers or
  * wholly strings needs no ranks at all — `<` on two ASCII strings IS code-point order — so each
  * single-type column gets the plain JavaScript comparison for its type and the mixed one stays
  * excluded.
  *
- * ⚠️ AND THE NUMERIC ORACLE WAS SILENTLY WRONG FOR STRINGS, which is how item 1919 found this:
+ * AND THE NUMERIC ORACLE WAS SILENTLY WRONG FOR STRINGS, which is how item 1919 found this:
  * `Number('apple')` is NaN, so every `Number(b) < Number(a)` was false and the reduce returned the
  * FIRST element — reporting `fig` as the minimum of `[pear, apple, fig, apple, quince]` while the
  * engine correctly said `apple`. An oracle that cannot read its own fixture's type is not an oracle.
@@ -120,7 +120,7 @@ describe('a residual min/max over the fused values walk', () => {
         );
         const nonNull = walked.filter((v) => v !== null && v !== undefined);
         /**
-         * ⚠️ A NUMERIC reduce, and the first version of this oracle compared as STRINGS — which
+         * A NUMERIC reduce, and the first version of this oracle compared as STRINGS — which
          * made it report `-1` as the minimum of `[-5, 0, 3, -1, 0]`, because `'-1' < '-5'`
          * lexicographically. The engine was right and the oracle was wrong. The mixed-type fixture
          * is excluded below for the same reason: replicating `compareTotal`'s cross-type order here
@@ -132,12 +132,12 @@ describe('a residual min/max over the fused values walk', () => {
           nonNull.length === 0 ? null : nonNull.reduce((a, b) => (cmp(a, b) ? b : a));
 
         /**
-         * ⚠️ THE LENGTH IS PART OF THE ASSERTION, and `got[0] ?? null` alone was not enough: a
+         * THE LENGTH IS PART OF THE ASSERTION, and `got[0] ?? null` alone was not enough: a
          * mutant that answered NOTHING for an all-null input instead of `[null]` survived, because
          * `undefined ?? null` and `null` render identically. These four terminals always emit
          * exactly one value, so the arity is as much the contract as the value.
          *
-         * ⚠️ Compared as a STRING so a `null` answer and a `0` answer cannot be confused — on the
+         * Compared as a STRING so a `null` answer and a `0` answer cannot be confused — on the
          * `negatives and zero` fixture the correct `min` IS a falsy value.
          */
         expect(`${name}/${kind}: len=${String(got.length)} ${JSON.stringify(got[0] ?? null)}`).toBe(
@@ -169,7 +169,7 @@ describe('a residual min/max over the fused values walk', () => {
   });
 
   /**
-   * ⚠️ THE SCAN SPELLING IS THE SECOND OPINION. `V().values(k).min()` goes through
+   * THE SCAN SPELLING IS THE SECOND OPINION. `V().values(k).min()` goes through
    * `fusedValuesAggregate`'s element-reading arm — the near-twin this fold mirrors — so agreeing
    * with it on the same values is what shows the two have not drifted.
    */
@@ -193,13 +193,13 @@ describe('the residual fold admits what it must and refuses the rest', () => {
   test('all four global aggregates are folded, each reporting its own kind', () => {
     expect(fusableProjectedAggregate([{ kind: 'min' }] as never)).toBe('min');
     expect(fusableProjectedAggregate([{ kind: 'max' }] as never)).toBe('max');
-    // ⚠️ ADMITTED AT ITEM 2408, having been explicitly refused here since 1857 — see the file note.
+    // ADMITTED AT ITEM 2408, having been explicitly refused here since 1857 — see the file note.
     expect(fusableProjectedAggregate([{ kind: 'sum' }] as never)).toBe('sum');
     expect(fusableProjectedAggregate([{ kind: 'mean' }] as never)).toBe('mean');
   });
 
   /**
-   * ⚠️ THE KIND MUST SURVIVE THE GATE, not merely be accepted by it. A gate returning a truthy
+   * THE KIND MUST SURVIVE THE GATE, not merely be accepted by it. A gate returning a truthy
    * constant for all four would pass the test above if it only checked `toBeDefined`, and the
    * dispatch then picks the WRONG FOLD — `numfold-mutants-1918.mjs` names both directions of that
    * swap (`sum/mean folded by the MIN/MAX fold`, `min/max folded by the NUMERIC fold`).
@@ -213,7 +213,7 @@ describe('the residual fold admits what it must and refuses the rest', () => {
 
   test('a non-global scope, a longer residual and an empty one are refused', () => {
     expect(fusableProjectedAggregate([{ kind: 'min', scope: 'local' }] as never)).toBeUndefined();
-    // ⚠️ THE NUMERIC PAIR CARRIES A SCOPE TOO, and `sum(local)` sums WITHIN each value rather than
+    // THE NUMERIC PAIR CARRIES A SCOPE TOO, and `sum(local)` sums WITHIN each value rather than
     // across the stream — a different question, which must not reach a fold of the whole walk.
     expect(fusableProjectedAggregate([{ kind: 'sum', scope: 'local' }] as never)).toBeUndefined();
     expect(fusableProjectedAggregate([{ kind: 'mean', scope: 'local' }] as never)).toBeUndefined();
@@ -244,14 +244,14 @@ describe('the residual fold admits what it must and refuses the rest', () => {
  *     values(s).max()   176.52 -> 91.61
  *     values(k).min()    71.94 -> 67.74       numeric, already near its 62.81 floor
  *
- * ⚠️ WHY THE STRING KEY GAINS 8x WHAT THE NUMERIC ONE DOES, because it is NOT the comparator:
+ * WHY THE STRING KEY GAINS 8x WHAT THE NUMERIC ONE DOES, because it is NOT the comparator:
  * `strcmp-ceiling-1919.mjs` priced all 800,000 string comparisons at ~11 ms in a tight loop against
  * a 123 ms gap. Both profiles put >52% in the SAME frame — the CSR walk's lazy iterator — costing
  * ~105 ns an element for numbers and ~210 for strings, because the fixture's numbers yield as SMIs
  * where a string yields a HEAP POINTER across the generator boundary. Removing the generator
  * removes that difference.
  *
- * ⚠️ AND THESE TESTS EXIST SO THE DRAIN IS NOT A ROUTE-ONLY CHANGE. Taking a walk's `drain` yields
+ * AND THESE TESTS EXIST SO THE DRAIN IS NOT A ROUTE-ONLY CHANGE. Taking a walk's `drain` yields
  * the same elements in the same order, so no answer test can see it — `projected-fold.test.ts` hit
  * exactly this and solved it the same way, with a walk whose `drain` and iterator DISAGREE. Without
  * these two, a mutant reverting the drain survives the whole suite.

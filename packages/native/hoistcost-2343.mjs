@@ -1,18 +1,18 @@
 /**
- * ⚠️⚠️ **TWO PUBLISHED NUMBERS FOR THE SAME THING DISAGREE 5x (item 2343).**
+ * **TWO PUBLISHED NUMBERS FOR THE SAME THING DISAGREE 5x (item 2343).**
  *
  * `docs/guides/query-cost.md`'s "Hoist a Gremlin traversal out of the request path" says building a plan
- * per request costs **about 18% (332 ns)** of a small traversal, citing item 2272's probe. ⚠️ But item
+ * per request costs **about 18% (332 ns)** of a small traversal, citing item 2272's probe. But item
  * 2325 read `bench:usage`'s `gremlin(built) read: point lookup` at **457.6k ops/s** against
  * `reused plan` at **1.81M** — 3.96x, which is **1640 ns** of difference, not 332.
  *
- * 🔑 Both cannot be right about the same quantity. Either construction is ~332 ns and the bench's 3.96x
+ * Both cannot be right about the same quantity. Either construction is ~332 ns and the bench's 3.96x
  * includes something else, or it is ~1640 ns and the guide understates it by 5x. **A user-facing number
  * that is 5x off is worth settling**, and the resolution matters for the advice: a FIXED construction cost
  * is a small share of a big traversal and a large multiple of a tiny one, which is more useful guidance
  * than either figure alone.
  *
- * ✅ So: build-once against build-per-call, for a TINY shape (an indexed point lookup) and a BIG one (a
+ * So: build-once against build-per-call, for a TINY shape (an indexed point lookup) and a BIG one (a
  * whole-label projection), in the same process with the same fixture.
  */
 import { Graph } from '@lenke/core';
@@ -31,11 +31,11 @@ for (let i = 0; i < NODES; i += 1) {
 
 graph.createIndex({ on: 'vertex', kind: 'hash', keys: ['name'] });
 
-/* ✅ The two shapes, built ONCE for the reused arms. */
+/* The two shapes, built ONCE for the reused arms. */
 const tinyPlan = traversal(V(), hasLabel('N'), has('name', eq('n12345')), values('k'));
 const bigPlan = traversal(V(), hasLabel('N'), values('k'));
 
-/* ⚠️ The builders, identical in content — so the ONLY difference is when `traversal(...)` runs. */
+/* The builders, identical in content — so the ONLY difference is when `traversal(...)` runs. */
 const buildTiny = () => traversal(V(), hasLabel('N'), has('name', eq('n12345')), values('k'));
 const buildBig = () => traversal(V(), hasLabel('N'), values('k'));
 
@@ -44,7 +44,7 @@ const ARMS = {
   tinyRebuilt: () => toArray(buildTiny(), graph).length,
   bigReused: () => toArray(bigPlan, graph).length,
   bigRebuilt: () => toArray(buildBig(), graph).length,
-  /* ✅ CONSTRUCTION ALONE, executing nothing — the fixed cost both arms differ by. */
+  /* CONSTRUCTION ALONE, executing nothing — the fixed cost both arms differ by. */
   buildOnly: () => buildTiny().steps.length,
 };
 

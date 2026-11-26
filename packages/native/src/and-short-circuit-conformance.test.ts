@@ -242,7 +242,7 @@ suite('AND short-circuit: the TS and native engines agree', () => {
     expect(agree('MATCH (n:P) WHERE n.s AND n.n = 1 RETURN n.n AS x')).toBe('ERR E_INVALID_VALUE');
   });
 
-  test('⚠️ THE LIFTED FAMILIES SHARE IT TOO, and two of them did NOT (item 1286)', () => {
+  test('THE LIFTED FAMILIES SHARE IT TOO, and two of them did NOT (item 1286)', () => {
     // The cases above exercise the GENERIC route's ordering key. These exercise the LIFTED one:
     // `satisfies` applies `eqProps`, `cmpProps`, `memberProps`, `nullProps` and friends by reading
     // the property straight off the element, in a fixed block order, and that order is an ordering
@@ -439,7 +439,7 @@ suite('AND short-circuit: the TS and native engines agree', () => {
     expect(agree('MATCH (n:P) RETURN (n.s AND n.n = 99) AS x')).toBe('ERR E_INVALID_VALUE');
   });
 
-  // ⚠️ OPEN DIVERGENCE, PINNED RATHER THAN DECLARED (item 1226). Found by the differential fuzzer
+  // OPEN DIVERGENCE, PINNED RATHER THAN DECLARED (item 1226). Found by the differential fuzzer
   // drawing a random seed in CI (FUZZ_SEED=2382646283), at roughly 1 per 120,000 generated
   // queries. PRE-EXISTING: the same seed fails identically with `fastpath.rs` restored to
   // `87052afe`, so items 1219-1225 are not the cause.
@@ -493,7 +493,7 @@ suite('AND short-circuit: the TS and native engines agree', () => {
     expect(outcome('native', plain)).toBe('ERR E_INVALID_VALUE');
   });
 
-  // ⚠️ A SEPARATE GAP, found while minimising the above (item 1226): a clause `WHERE` attached to
+  // A SEPARATE GAP, found while minimising the above (item 1226): a clause `WHERE` attached to
   // an OPTIONAL MATCH is NOT IMPLEMENTED in the Rust engine, where the TS engine answers it. That
   // is not an evaluation-order difference at all — it is a missing feature, and it is recorded here
   // because the minimisation walked into it and nothing else pins it.

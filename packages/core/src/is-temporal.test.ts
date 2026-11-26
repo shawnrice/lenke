@@ -72,7 +72,7 @@ describe('isTemporal rejects what the typeof guard short-circuits (item 1393)', 
     expect(isTemporal(false)).toBe(false);
   });
 
-  // ⚠️ `v !== null` IS NOT LOAD-BEARING FOR CORRECTNESS, and mutation testing said so: dropping it
+  // `v !== null` IS NOT LOAD-BEARING FOR CORRECTNESS, and mutation testing said so: dropping it
   // leaves all 13 tests green, because `typeof null === 'object'` lets null through to
   // `null instanceof LocalDate`, which is false anyway. I had written the opposite here before
   // running the mutant.

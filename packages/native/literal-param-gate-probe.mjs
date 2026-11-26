@@ -15,7 +15,7 @@
  *   ANSWER   they must return the same rows, or the rewrite is a wrong-answer bug;
  *   ROUTE    they must cost the same, or the rewrite silently loses a fast path.
  *
- * ⚠️ THE ROUTE AXIS IS THE WHOLE POINT, and it is why this cannot be a unit test. Both spellings
+ * THE ROUTE AXIS IS THE WHOLE POINT, and it is why this cannot be a unit test. Both spellings
  * answering identically is necessary and not sufficient: every index-seeding defect in this engine's
  * history returned the correct answer and cost 100-300x (CLAUDE.md's named class). A position where
  * the param spelling is much slower is a position auto-parameterization must leave alone.
@@ -66,7 +66,7 @@ const build = () => {
     });
   }
 
-  // ⚠️ INDEXED BY DEFAULT, because the seeding routes are exactly where a literal-vs-param
+  // INDEXED BY DEFAULT, because the seeding routes are exactly where a literal-vs-param
   // difference would hide — an unindexed graph scans either way and the probe would be blind to the
   // class it exists to check (item 578's lesson about the spelling probe having no index).
   if (INDEXED) {
@@ -157,7 +157,7 @@ const CASES = {
     'MATCH (n:P {maybe: $v}) RETURN count(*) AS c',
     { v: null },
   ],
-  // ⚠️ DIFFERENT OPERATORS BY DESIGN — this row is expected to DIFFER and exists to pin why.
+  // DIFFERENT OPERATORS BY DESIGN — this row is expected to DIFFER and exists to pin why.
   // `IS NULL` is a null TEST; `= $v` with a null param is a comparison that yields UNKNOWN and
   // matches nothing. So `IS NULL` has no parameterized spelling at all, which is a stronger
   // statement than "do not parameterize a null literal": there is nothing to rewrite it into.
@@ -214,7 +214,7 @@ for (const name of names) {
   if (!same) {
     diverged.push(name);
   } else if (ratio > 1.5 || ratio < 1 / 1.5) {
-    // ⚠️ A sub-millisecond pair is clock, not a route. `two conjuncts` read 0.54x at NODES=200000
+    // A sub-millisecond pair is clock, not a route. `two conjuncts` read 0.54x at NODES=200000
     // and 1.25x at 1,000,000 for exactly this reason (item 1501).
     (Math.max(lit.ms, par.ms) < FLOOR_MS ? nearFloor : slow).push(`${name} (${ratio.toFixed(2)}x)`);
   }
@@ -229,12 +229,12 @@ console.log();
 console.log(
   diverged.length === 0
     ? 'ANSWERS: every case agrees.'
-    : `⚠️ ANSWERS DIFFER in ${diverged.length} case(s) — auto-parameterization must NOT touch: ${diverged.join(', ')}`,
+    : `ANSWERS DIFFER in ${diverged.length} case(s) — auto-parameterization must NOT touch: ${diverged.join(', ')}`,
 );
 console.log(
   slow.length === 0
     ? `ROUTES: no case outside 1.5x above the ${FLOOR_MS}ms floor.`
-    : `⚠️ ROUTE DIFFERS (>1.5x) in ${slow.length} case(s): ${slow.join(', ')}`,
+    : `ROUTE DIFFERS (>1.5x) in ${slow.length} case(s): ${slow.join(', ')}`,
 );
 
 if (nearFloor.length > 0) {
@@ -244,7 +244,7 @@ if (nearFloor.length > 0) {
 }
 
 if (slow.length > 0) {
-  console.log('\n  ⚠️ CONFIRM EACH ALONE, AT HIGH REPS, BEFORE BELIEVING IT. Item 1501 had three');
+  console.log('\n  CONFIRM EACH ALONE, AT HIGH REPS, BEFORE BELIEVING IT. Item 1501 had three');
   console.log('  flags and all three were the instrument: `two conjuncts` was the floor (0.54x at');
   console.log(
     '  200k, 1.25x at 1M); `hop start` swung 3.03x / 0.73x / 0.32x across isolated rounds;',

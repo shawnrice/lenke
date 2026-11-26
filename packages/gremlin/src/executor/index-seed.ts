@@ -104,7 +104,7 @@ const rangeCandidate = <E>(
   cap: number,
 ): Candidate<E> | null => {
   /**
-   * ⚠️ `cap === 0` MEANS "A RANGE SEED IS OF NO USE TO ME — DO NOT COUNT IT" (item 1759).
+   * `cap === 0` MEANS "A RANGE SEED IS OF NO USE TO ME — DO NOT COUNT IT" (item 1759).
    *
    * Both `node-values.ts` callers of `seedForStep` discard any candidate whose `removable` is
    * false, and a range candidate is ALWAYS `removable: false` — so for a range predicate they were
@@ -116,7 +116,7 @@ const rangeCandidate = <E>(
    * those callers already map `null` to "not this shape", and since they would have discarded a
    * range candidate anyway the two paths are equivalent by construction.
    *
-   * ⚠️ UNREACHABLE FROM `rangeCap`, checked: it returns `Infinity` below the floor and
+   * UNREACHABLE FROM `rangeCap`, checked: it returns `Infinity` below the floor and
    * `sourceSize / 8` at or above it, so its smallest possible value is 512 at `SEEK_FLOOR_ELEMENTS`.
    * Only an explicit `0` from a caller that wants exact seeds only can land here.
    */
@@ -151,7 +151,7 @@ const seedForPred = <E>(
       }
 
       const { value } = pred;
-      // ⚠️ REJECTED, WITH ITS NUMBERS (item 1594): holding the bucket here so the count and the
+      // REJECTED, WITH ITS NUMBERS (item 1594): holding the bucket here so the count and the
       // build share ONE lookup instead of two. `countEquals` fetches the bucket for its `.size`
       // and `build()` fetches the same bucket again — two `indexes.get(key)` plus two
       // `buckets.get(value)` per seek, and a string-keyed `Map.get` is ~190 ns in this repo
@@ -238,7 +238,7 @@ const seedForPred = <E>(
  * (audit item 234; the failure it avoids is item 149's, where a fast path lost the index and the
  * tell was two identical `bench:usage` columns).
  *
- * ⚠️ **THE "O(1) ESTIMATE … ASKING COSTS NOTHING" CLAIM IS FALSE FOR A RANGE PREDICATE** (item
+ * **THE "O(1) ESTIMATE … ASKING COSTS NOTHING" CLAIM IS FALSE FOR A RANGE PREDICATE** (item
  * 1757). It holds for `eq`/`within`, whose `countEquals` is a bucket-size read — but a range
  * candidate's count comes from `countRange`, which is **O(distinct values in range)**. On a
  * high-cardinality column that is not an estimate, it is most of the query: measured at 20,000
@@ -300,7 +300,7 @@ export type SeededPlan = {
  * MULTI-LABEL declines: `hasLabel(a, b)` keeps an element carrying EITHER, and an element may
  * carry both, so the union is not a bucket and not a sum.
  *
- * ⚠️ This used to add that "`labelledCount` in the count shortcut declines it for exactly the same
+ * This used to add that "`labelledCount` in the count shortcut declines it for exactly the same
  * reason", and since item 1382 it does not — `labelledCount` counts the UNION instead. The decline
  * here is unaffected: seeding has to hand back an ENUMERATION of the elements, and a union count is
  * a number. Deduping an enumeration across buckets is a different and more expensive question than
@@ -349,7 +349,7 @@ const labelSeed = <E>(
  * reaches for when the id arrives as a FILTER rather than as a seed — from a `where`, or after a
  * hop — so it is not an exotic form.
  *
- * ⚠️ THE SELECTION MUST MATCH `hasId`'s FILTER EXACTLY, and two details decide it.
+ * THE SELECTION MUST MATCH `hasId`'s FILTER EXACTLY, and two details decide it.
  *
  * **Equality.** `dispatch.ts` filters with `step.ids.includes(v.id)`, which is SameValueZero;
  * `Map.get` is also SameValueZero, so a map lookup selects precisely the elements the filter keeps.
@@ -551,7 +551,7 @@ const SEEK_FLOOR_ELEMENTS = 4_096;
  * The cap for a RANGE candidate's count (item 1758) — the point past which the exact number cannot
  * change any decision here.
  *
- * ⚠️ IT IS `sourceSize`-BASED AND NOT THE GATE'S ACTUAL THRESHOLD, which is the one thing that does
+ * IT IS `sourceSize`-BASED AND NOT THE GATE'S ACTUAL THRESHOLD, which is the one thing that does
  * not carry over from GQL's twin (item 1756). `seekIsWorthIt(count, scan, total)` is asked with
  * `scan = exact?.count ?? sourceSize` — ANOTHER candidate's count, discovered after this one — so
  * the real threshold is not known when the count is taken. `sourceSize * SEEK_MAX_FRACTION` is the

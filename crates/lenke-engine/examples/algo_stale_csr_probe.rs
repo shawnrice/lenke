@@ -11,7 +11,7 @@
 //!
 //! This is that measurement.
 //!
-//! ⚠️ A FALSE START WORTH RECORDING, because it nearly ended the investigation. Grepping `algo.rs`
+//! A FALSE START WORTH RECORDING, because it nearly ended the investigation. Grepping `algo.rs`
 //! for the typed accessors (`out_typed_csr`, `out_typed_flat`, `for_each_typed_out`, `csr_fresh`)
 //! returns ZERO for every one of them, which reads as "the algorithms do not touch the overlay, so
 //! a re-arm would be pure cost". That is wrong. `algo.rs` goes through `store.out()` / `store.inc()`,

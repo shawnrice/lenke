@@ -1,7 +1,7 @@
 /**
  * WHY DOES ONE `.has()` COST 42 ms ON A HOP COUNT THAT IS OTHERWISE FREE? (item 2126, Gremlin)
  *
- * 🔑 `bun run bench:gremlin` nominates this with no interpretation needed, at 200,000 vertices /
+ * `bun run bench:gremlin` nominates this with no interpretation needed, at 200,000 vertices /
  * 1,000,000 edges:
  *
  * ```text
@@ -9,17 +9,17 @@
  *     V().out().has().count()    42.1         1.05          <- 39.9x native, and the TS bare twin is FREE
  * ```
  *
- * ⚠️⚠️ **THE SAME SIGNATURE AS THE LAST SEVEN GQL ITEMS: a rung for each half and none for the pair.** The
+ * **THE SAME SIGNATURE AS THE LAST SEVEN GQL ITEMS: a rung for each half and none for the pair.** The
  * bare hop count has a shortcut that answers without walking; `.has()` on the far end falls off it and
  * the walk materializes a million elements. Native answers the FILTERED form in 1.05 ms, so the shape is
  * reachable — this is a missing TS route, not a cost of the question.
  *
- * ⚠️ **THE PROFILE IS WINDOWED TO THE TRAVERSAL LOOP** — V8's profiler starts after the fixture is built
+ * **THE PROFILE IS WINDOWED TO THE TRAVERSAL LOOP** — V8's profiler starts after the fixture is built
  * and stops before teardown, so `PROBES.md`'s closed frames (`indexEdgeLabel`, `commitElementLabels`,
  * `#commitNormalized`; six prior arrivals between them) are structurally absent rather than something to
- * remember to ignore. Item 2125's pattern. ⚠️ Run with `node`, not `bun`.
+ * remember to ignore. Item 2125's pattern. Run with `node`, not `bun`.
  *
- * ⚠️⚠️ **READ A CALLEE AND ITS CALLER AS ONE NUMBER.** Item 2125 measured the same two frames at 8.1 /
+ * **READ A CALLEE AND ITS CALLER AS ONE NUMBER.** Item 2125 measured the same two frames at 8.1 /
  * 18.2 / 40.1 / 13.3% across four runs of one binary — V8's inlining varies per run and adjacent frames
  * TRADE self time while their sum stays put. A nomination that depends on which of two adjacent frames is
  * hot is not a finding; sum them, or ablate with a control.
@@ -28,7 +28,7 @@
  *
  *   - `filtered`   the target: `V().out().has(age, gt).count()`.
  *   - `bare`       `V().out().count()` — the rung, so the difference is what `.has()` costs.
- *   - `vacuous`    `.has(age, gt(-1))`, which keeps EVERY row. 🔑 If this costs what `filtered` costs, the
+ *   - `vacuous`    `.has(age, gt(-1))`, which keeps EVERY row. If this costs what `filtered` costs, the
  *                  cost is the ROUTE and not the rows it rejects — the `WHERE true` control's logic
  *                  (item 570), which is THE control for "why is the filtered version slower".
  *   - `nearside`   `V().has(age, gt).out().count()` — the same predicate on the START, which the bench
@@ -57,7 +57,7 @@ for (let i = 0; i < N; i += 1) {
 let e = 0;
 
 /*
- * ⚠️ THE REPEAT INDEX IS THE SECOND TERM, NOT `k` ALONE. `to = (a*k + b) % N` is INVARIANT under
+ * THE REPEAT INDEX IS THE SECOND TERM, NOT `k` ALONE. `to = (a*k + b) % N` is INVARIANT under
  * `k -> k + N`, so a flat `for (k = 0; k < N*FANOUT; k++)` loop sends all of one vertex's FANOUT edges to
  * the SAME target — out-degree looks perfect and the graph is FUNCTIONAL (items 1516/1518). Splitting on
  * `d` is what makes the fan-out real, and the assertion below is what proves it.
@@ -75,7 +75,7 @@ for (let d = 0; d < FANOUT; d += 1) {
   }
 }
 
-/* 🔑 COUNT THE DISTINCT ENDPOINTS OF v0's EDGES — a degenerate generator passes every degree check. */
+/* COUNT THE DISTINCT ENDPOINTS OF v0's EDGES — a degenerate generator passes every degree check. */
 const sample = graph.getVertexById('v0');
 const targets = new Set();
 
@@ -94,19 +94,19 @@ const PLANS = {
   bare: traversal(V(), out('KNOWS'), count()),
   vacuous: traversal(V(), out('KNOWS'), has('age', gt(-1)), count()),
   nearside: traversal(V(), has('age', gt(44)), out('KNOWS'), count()),
-  /* 🔑 SELECTIVE — where a predicate-first order should pay most, and vacuous where it pays least. */
+  /* SELECTIVE — where a predicate-first order should pay most, and vacuous where it pays least. */
   selective: traversal(V(), out('KNOWS'), has('age', gt(85)), count()),
   dedupe_count: traversal(V(), out('KNOWS'), dedupe(), count()),
-  /* 🔑 ITEM 2128's TARGETS, nominated by ABSOLUTE cost: 244 ms and 135 ms, both healthy in ratio. */
+  /* ITEM 2128's TARGETS, nominated by ABSOLUTE cost: 244 ms and 135 ms, both healthy in ratio. */
   twohop_vac: traversal(V(), out('KNOWS'), out('KNOWS'), has('age', gt(-1)), count()),
   twohop_half: traversal(V(), out('KNOWS'), out('KNOWS'), has('age', gt(44)), count()),
   values_vac: traversal(V(), out('KNOWS'), has('age', gt(-1)), values('age')),
-  /* ⚠️ CONTROLS this rung cannot reach. */
+  /* CONTROLS this rung cannot reach. */
   twohop_ctl: traversal(V(), out('KNOWS'), out('KNOWS'), count()),
   values_ctl: traversal(V(), out('KNOWS'), has('age', gt(44)), values('age')),
 };
 const plan = PLANS[ARM];
-/* 🔑 The plan is built ONCE, outside the window — this measures execution, not plan construction. */
+/* The plan is built ONCE, outside the window — this measures execution, not plan construction. */
 const run = plan === undefined ? undefined : () => toArray(plan, graph);
 
 if (run === undefined) {
@@ -155,7 +155,7 @@ for (const node of profile.nodes) {
   const { functionName, url, lineNumber } = node.callFrame;
   const parts = String(url).split('/');
   const [file] = parts.slice(-1);
-  /* ⚠️ A LENGTH TEST, NOT `??` — an anonymous frame's name is '', falsy but not nullish (item 2117). */
+  /* A LENGTH TEST, NOT `??` — an anonymous frame's name is '', falsy but not nullish (item 2117). */
   const name = functionName.length > 0 ? functionName : '(anonymous)';
 
   byFn.set(

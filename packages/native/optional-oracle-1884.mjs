@@ -10,15 +10,15 @@
  *          pipeline it ran before item 1884 (which already had `optional-hop.ts`'s fused STEP).
  *   POST — the shipped build.
  *
- * ⚠️ ORDER IS COMPARED, NOT THE MULTISET — Gremlin stream order is a TinkerPop contract and the
+ * ORDER IS COMPARED, NOT THE MULTISET — Gremlin stream order is a TinkerPop contract and the
  * differential fuzzer compares Gremlin results ORDERED.
  *
- * ⚠️ AND `undefined` IS DISTINGUISHED FROM `null` IN THE COMPARISON. A dropped row and a stored
+ * AND `undefined` IS DISTINGUISHED FROM `null` IN THE COMPARISON. A dropped row and a stored
  * null are different answers, and item 1884's first test file let a mutant live because `toEqual`
  * ignores `undefined` entries; `JSON.stringify` would collapse them the same way, so the battery
  * maps `undefined` to a marker string before serializing.
  *
- * ⚠️ THE FIXTURES INCLUDE VERTICES THAT EXERCISE THE EMPTY BRANCH — isolated vertices, vertices
+ * THE FIXTURES INCLUDE VERTICES THAT EXERCISE THE EMPTY BRANCH — isolated vertices, vertices
  * whose only edges are of the other type, and vertices whose far ends lack the projected key, which
  * is the case where `optional` must emit NOTHING rather than itself.
  *
@@ -177,7 +177,7 @@ try {
     throw new Error('the rung call site is not in the dist exactly once — rebuild, then re-run');
   }
 
-  // PRE: the kill switch ALONE. ⚠️ The first cut wrote `${KILLED} ?? ${COUNTER}` so the arm could
+  // PRE: the kill switch ALONE. The first cut wrote `${KILLED} ?? ${COUNTER}` so the arm could
   // also COUNT its (expected zero) claims — and `??` on `void 0` falls straight through, so the
   // "killed" arm called the rung 51 times. The arm assertion caught it, which is the whole reason
   // it is there; the PRE arm's proof is the KILL_1884 marker plus a counter that is never set.
@@ -207,7 +207,7 @@ try {
   }
 } finally {
   copyFileSync(PRISTINE, DIST);
-  // ⚠️ THE GENERATED CHILD IS REMOVED HERE. It has to live in `packages/native` for `@lenke/*` to
+  // THE GENERATED CHILD IS REMOVED HERE. It has to live in `packages/native` for `@lenke/*` to
   // resolve, so it cannot go in the scratchpad — and left behind it is a lint target the gate
   // fails on (which is how this line came to exist).
   rmSync(CHILD, { force: true });
@@ -242,12 +242,10 @@ console.log(
 );
 
 for (const [name, a, b] of bad) {
-  console.log(`\n❌ ${name}\n   generic: ${a}\n   fused:   ${b}`);
+  console.log(`\n${name}\n   generic: ${a}\n   fused:   ${b}`);
 }
 
-console.log(
-  bad.length === 0 ? '\n✅ every pair identical' : `\n⚠️ ${String(bad.length)} DIVERGENCE(S)`,
-);
+console.log(bad.length === 0 ? '\nevery pair identical' : `\n${String(bad.length)} DIVERGENCE(S)`);
 
 if (bad.length > 0) {
   process.exitCode = 1;

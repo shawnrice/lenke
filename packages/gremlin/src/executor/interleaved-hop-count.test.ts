@@ -2,7 +2,7 @@
  * `V()[…filters] out(T) …filters out(U) .count()` — a filter BETWEEN two hops, which reached NONE
  * of `countShortcut`'s rungs and fell to the traverser pipeline at **62x** (item 1602).
  *
- * ⚠️ EVERY EXPECTATION HERE IS A HAND COUNT OVER THE FIXTURE, not a recording from the engine, and
+ * EVERY EXPECTATION HERE IS A HAND COUNT OVER THE FIXTURE, not a recording from the engine, and
  * for this rung that matters twice over. The shape previously declined to the pipeline, so nothing
  * in the suite covered it — and the first oracle written for it was `toArray(plan, graph)`, which
  * CALLS `countShortcut` and therefore agreed with the rung by construction. An oracle written by
@@ -131,10 +131,10 @@ describe('the rung answers a filter between two hops', () => {
      *   c: E in-edges from a, from b, and its own SELF-LOOP -> 3 arrivals, c departs 1 -> 3
      *   d: E in-edges none (a->d is an F edge) -> 0
      *   f: E in-edges none -> 0
-     * so 3. ⚠️ The self-loop is the discriminating row: it is one of c's in-edges AND one of its
+     * so 3. The self-loop is the discriminating row: it is one of c's in-edges AND one of its
      * out-edges, and it must be counted in both roles exactly as enumeration walks it.
      *
-     * ⚠️ MY FIRST GUESS HERE WAS 2 — I read c's in-edges as a plus the loop and forgot b->c. SIX
+     * MY FIRST GUESS HERE WAS 2 — I read c's in-edges as a plus the loop and forgot b->c. SIX
      * of this file's literals were wrong on the first run and the ENGINE was right every time;
      * they were re-derived by a hand count over the table with no engine involved. Item 1596's
      * lesson: a comparison proves two paths agree, only a literal proves they agree on the right
@@ -196,7 +196,7 @@ describe('the rung answers a filter between two hops', () => {
 
   test('an interior seekable `has` is answered even with the index present', () => {
     /**
-     * ⚠️ THE ASYMMETRY THE RUNG DOCUMENTS. A seekable LEADING `has` is refused, because
+     * THE ASYMMETRY THE RUNG DOCUMENTS. A seekable LEADING `has` is refused, because
      * `countShortcut` runs before `seedFromIndex` and a tally that scanned would preempt the seek.
      * An INTERIOR one is not, because a seek seeds the SOURCE and no route seeds from the middle of
      * a walk — refusing it would decline the shape on every indexed graph and gain nothing.
@@ -218,9 +218,9 @@ describe('the rung answers a filter between two hops', () => {
 });
 
 describe('the rung declines what it must', () => {
-  test('⚠️ a filter AFTER the last hop is now ANSWERED — by item 1612, not by this rung', () => {
+  test('a filter AFTER the last hop is now ANSWERED — by item 1612, not by this rung', () => {
     /**
-     * ⚠️ THIS TEST USED TO ASSERT A DECLINE, and the change is deliberate. This item left the shape
+     * THIS TEST USED TO ASSERT A DECLINE, and the change is deliberate. This item left the shape
      * open with the reason "the final contribution stops being a degree, so it needs the last level
      * walked" — and item 1612 walked it, far-driven, at **214x** on the two-hop form and 36.8x on
      * this one. `countShortcut` therefore answers it now, through
@@ -256,7 +256,7 @@ describe('the rung declines what it must', () => {
 
   test('a MULTI-TYPE graph with an untyped hop', () => {
     /**
-     * ⚠️ `degreeOfTypes` sums the per-type buckets, which is a degree only when the wanted set is
+     * `degreeOfTypes` sums the per-type buckets, which is a degree only when the wanted set is
      * ONE bucket. `hopChainShape`'s own note records 13 divergences from getting this wrong, every
      * one an untyped `out()` at depth 2 or more, and that `!== 1` is the right test because
      * `out()` iterates EVERY bucket and so visits a two-type edge once per label it carries.

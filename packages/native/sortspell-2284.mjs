@@ -1,17 +1,17 @@
 /**
- * ⚠️⚠️⚠️ **DOES `ORDER BY <alias>` REACH THE TOP-K HEAP THAT `ORDER BY <var>.<prop>` REACHES? (item 2284)**
+ * **DOES `ORDER BY <alias>` REACH THE TOP-K HEAP THAT `ORDER BY <var>.<prop>` REACHES? (item 2284)**
  *
- * 🔑 The ladder found `ORDER BY n LIMIT k` FLAT across a 200x range of `k` (3.0-3.7 ms at every cap, with
+ * The ladder found `ORDER BY n LIMIT k` FLAT across a 200x range of `k` (3.0-3.7 ms at every cap, with
  * `LIMIT 200` sometimes SLOWER than `LIMIT 40000`), which says the top-K heap built at item 1064 is not
  * engaging. `topKPlan` admits a plan only when each sort key resolves through
  * `directKeys[cols.indexOf(s.col)]` — so the question is whether sorting by the projection's ALIAS resolves
  * the same way as sorting by the property itself.
  *
- * ⚠️ **This is the exact bug class `CLAUDE.md` is built around**: "the planner recognized one spelling of a
+ * **This is the exact bug class `CLAUDE.md` is built around**: "the planner recognized one spelling of a
  * predicate and scanned for another that meant exactly the same thing — each cost 100-300x and each
  * returned the correct answer, so no correctness test could catch it."
  *
- * ✅ **CAP-SENSITIVITY IS THE SIGNAL, not the absolute.** A spelling on the heap gets cheaper as `cap`
+ * **CAP-SENSITIVITY IS THE SIGNAL, not the absolute.** A spelling on the heap gets cheaper as `cap`
  * shrinks; a spelling off it is flat, because it sorts everything either way. Both must return identical
  * rows — asserted here, so a routing difference cannot hide behind a wrong answer.
  */
@@ -48,7 +48,7 @@ const run = (text) => {
 };
 
 /*
- * ⚠⚠ **WARM-UP FIRST.** Without this the very first cell measured in the process carries the JIT's tiering
+ * **WARM-UP FIRST.** Without this the very first cell measured in the process carries the JIT's tiering
  * cost, and that cell was `alias|cap=100` — which read 4.49 against 2.24 and looked exactly like a routing
  * difference. Every spelling and cap is exercised before anything is timed.
  */

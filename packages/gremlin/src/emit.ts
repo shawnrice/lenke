@@ -299,7 +299,7 @@ const emitNestedStep = (step: Step): string | null => {
     case 'union':
       return `union(${step.plans.map(emitSubPlan).join(', ')})`;
     /**
-     * ⚠️ `__.`-PREFIXED, UNLIKE EVERY OTHER NESTED STEP HERE, and that is not a style choice: a
+     * `__.`-PREFIXED, UNLIKE EVERY OTHER NESTED STEP HERE, and that is not a style choice: a
      * match pattern begins with `as(…)`, and a BARE `as('a')` at the head of an argument reads as
      * the enclosing traversal's own step rather than an anonymous sub-traversal. The forms were
      * checked against the Rust parser rather than assumed (item 1794).
@@ -324,7 +324,7 @@ const emitNestedStep = (step: Step): string | null => {
     case 'not':
       return `not(${emitSubPlan(step.plan)})`;
     /**
-     * ⚠️ ITEM 1796 ADDED THIS BLOCK, and the reason is item 1795's census rather than a feature
+     * ITEM 1796 ADDED THIS BLOCK, and the reason is item 1795's census rather than a feature
      * request: a step `planToGremlin` cannot write has NO differential coverage at all, because
      * the gremlin fuzzer feeds the Rust engine by emitting TEXT. Nineteen steps both engines
      * implement were in that state. The emitter is where the invariant is actually bounded.
@@ -413,7 +413,7 @@ const emitWriteStep = (step: Step): string | null => {
 /**
  * Item 1796's batch: the PROJECTION, VALUE-FILTER and SIDE-EFFECT-COLLECTOR steps, each implemented
  * on BOTH sides and uncomparable purely because nothing could write it as text (item 1795's census
- * found nineteen such). ⚠️ Its own family emitter rather than more arms in `emitStep`, because
+ * found nineteen such). Its own family emitter rather than more arms in `emitStep`, because
  * eighteen of them put that switch at complexity 50 against a limit of 35 — and the limit is right:
  * the families are what keep this file readable.
  */
@@ -468,7 +468,7 @@ const FAMILY_EMITTERS: readonly ((step: Step) => string | null)[] = [
 ];
 
 /**
- * Throw an `unsupported` gap from inside an expression position. ⚠️ `'unsupported'` rather than a
+ * Throw an `unsupported` gap from inside an expression position. `'unsupported'` rather than a
  * `tsOnly` reason ON PURPOSE: the fuzzer classifies the two differently — a tsOnly throw is a skip,
  * an unsupported one is a FINDING — and these forms are not TS-superset, they are forms whose
  * spelling nobody has checked. Reporting them is the point.

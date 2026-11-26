@@ -1,15 +1,15 @@
 /*
  * Item 2108 — the cliff is the PREDICATE FORM, not the selectivity.
  *
- * 🔑 WHAT NARROWED IT. A sweep over `b.bK = 'hit'` (equality on a TWO-VALUED key) jumped 52 -> 410 ms
+ * WHAT NARROWED IT. A sweep over `b.bK = 'hit'` (equality on a TWO-VALUED key) jumped 52 -> 410 ms
  * between 75,000 and 150,000 rows and then went FLAT. The same sweep written as a RANGE (`b.sel < $hi`)
  * is SMOOTH across the same range — 51.8 at 75,000 rows and 58.5 at 150,000, where equality read 410.
  *
- * ⚠️ SO THE TWO FORMS ARE COMPARED AT IDENTICAL SELECTIVITY, on ONE fixture that carries both keys, with
+ * SO THE TWO FORMS ARE COMPARED AT IDENTICAL SELECTIVITY, on ONE fixture that carries both keys, with
  * the SAME answer asserted. A difference is then the form and nothing else — which is this repo's named
  * bug class ("equivalent spellings must cost the same").
  *
- * ⚠️ BOTH KEYS ARE INDEXED and both predicates select the same vertices by construction: `dense` is
+ * BOTH KEYS ARE INDEXED and both predicates select the same vertices by construction: `dense` is
  * `'hit'` exactly when `sel < hi`, so `dense = 'hit'` and `sel < $hi` are the same set every time.
  */
 import { Graph } from '@lenke/core';
@@ -82,7 +82,7 @@ for (const oneIn of (process.env.ONEIN ?? '16,10,8,7,6,5,4,3,2').split(',').map(
   const range = timeIt(g, 'MATCH (a:P)-[:E]->(b:P) WHERE b.sel < $hi RETURN min(a.n) AS c', { hi });
   const equal = timeIt(g, "MATCH (a:P)-[:E]->(b:P) WHERE b.dense = 'hit' RETURN min(a.n) AS c", {});
 
-  // ⚠️ THE TWO FORMS MUST SELECT THE SAME SET, or this is two questions and the ratio is meaningless.
+  // THE TWO FORMS MUST SELECT THE SAME SET, or this is two questions and the ratio is meaningless.
   if (range.answer !== equal.answer) {
     throw new Error(`1-in-${oneIn}: the forms disagree — ${range.answer} vs ${equal.answer}`);
   }
@@ -90,6 +90,6 @@ for (const oneIn of (process.env.ONEIN ?? '16,10,8,7,6,5,4,3,2').split(',').map(
   const ratio = equal.ms / range.ms;
 
   console.log(
-    `  ${String(oneIn).padStart(7)} ${String(Math.round((NODES * hi) / MOD)).padStart(9)} ${range.ms.toFixed(3).padStart(9)} ${equal.ms.toFixed(3).padStart(9)} ${ratio.toFixed(2).padStart(7)}x${ratio > 2 ? '  ⚠️ FORM GAP' : ''}`,
+    `  ${String(oneIn).padStart(7)} ${String(Math.round((NODES * hi) / MOD)).padStart(9)} ${range.ms.toFixed(3).padStart(9)} ${equal.ms.toFixed(3).padStart(9)} ${ratio.toFixed(2).padStart(7)}x${ratio > 2 ? '  FORM GAP' : ''}`,
   );
 }

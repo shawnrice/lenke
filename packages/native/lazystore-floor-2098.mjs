@@ -1,17 +1,17 @@
 /*
  * Item 2098 — what would a LAZY-iterator-with-`drain` `store` arm be worth, and what does it risk?
  *
- * ⚠️ WHAT IS SETTLED. Item 2070 refused `store` in the `[bag]` residual and has a mutant that CATCHES
+ * WHAT IS SETTLED. Item 2070 refused `store` in the `[bag]` residual and has a mutant that CATCHES
  * admitting it. The reason is exact: `barrierProjectedBag` **returns the drained array**, so admitting
  * `store` there makes the result eager for EVERY consumer — and `run` is the public lazy API, so a
  * caller that `break`s out would have caused elements to be collected that it never pulled.
  *
- * 🔑 WHAT IS NOT COVERED BY THAT REFUSAL. `toArray`'s own rule (item 1412) is "an already-eager
+ * WHAT IS NOT COVERED BY THAT REFUSAL. `toArray`'s own rule (item 1412) is "an already-eager
  * terminal takes an eager walk… `run` is left exactly as lazy as it was". A result that is LAZY as an
  * iterator and ALSO offers `drain` satisfies both: the breaking caller takes the iterator and collects
  * only what it pulled; `toArray` takes `drain` and collects everything, which is what it does anyway.
  *
- * ⚠️⚠️ AND THE HAZARD THIS PROBE EXISTS TO SHOW. A side-effecting LAZY walk is STATEFUL in a way the
+ * AND THE HAZARD THIS PROBE EXISTS TO SHOW. A side-effecting LAZY walk is STATEFUL in a way the
  * array form is not: the bag must be filled EXACTLY ONCE. Iterate twice, or iterate and then drain,
  * and the bag DOUBLES — a silent wrong answer. The array form cannot do that. The arms below measure
  * the win AND demonstrate the hazard, so the record is actionable either way.
@@ -42,12 +42,12 @@ const fusedWalk = () => {
 /**
  * The SAME walk whose `drain` RESPECTS THE CURSOR — item 2111.
  *
- * ⚠️⚠️ **THIS IS WHY ITEM 2098's ARM BOTH WON AND DOUBLED: ONE CAUSE.** Its `drain` is `values.slice()`,
+ * **THIS IS WHY ITEM 2098's ARM BOTH WON AND DOUBLED: ONE CAUSE.** Its `drain` is `values.slice()`,
  * which ignores whatever the iterator already yielded. That is what made it fast (an O(1) slice instead
  * of a walk) AND what doubled the bag on iterate-then-drain. The two are not separable in that design.
  *
- * 🔑 A CURSOR SEPARATES THEM. The walk tracks how far it has yielded, so `drain` slices FROM there —
- * still one O(1) slice, and each element is yielded exactly once. ⚠️ No latch, no flag, no "has it been
+ * A CURSOR SEPARATES THEM. The walk tracks how far it has yielded, so `drain` slices FROM there —
+ * still one O(1) slice, and each element is yielded exactly once. No latch, no flag, no "has it been
  * consumed" state: the cursor is the position the generator already had to keep, exposed.
  */
 const cursoredWalk = () => {
@@ -74,10 +74,10 @@ const cursoredWalk = () => {
 };
 
 /**
- * ⚠️⚠️ THE SAME CURSORED DESIGN WHOSE `drain` **WALKS** INSTEAD OF SLICING — item 2111, and this is the
+ * THE SAME CURSORED DESIGN WHOSE `drain` **WALKS** INSTEAD OF SLICING — item 2111, and this is the
  * arm that matters.
  *
- * 🔑 THE ENGINE'S FUSED-WALK DRAINS ARE WALKS. Both `drain` implementations in `node-values.ts` build
+ * THE ENGINE'S FUSED-WALK DRAINS ARE WALKS. Both `drain` implementations in `node-values.ts` build
  * their rows with `for (const t of stream) rows.push(...)`; there is NO underlying array to slice, and
  * `far-mask-drain.ts` is a mark/resolve/emit pass rather than a stored list. So an arm that slices
  * `values` is measuring a drain this engine does not have — which is the one thing item 2098's floor did
@@ -95,7 +95,7 @@ const walkingCursoredWalk = () => {
     }
   })();
 
-  // ⚠️ A WALK, as the engine's own drains are — the cursor still makes it exactly-once.
+  // A WALK, as the engine's own drains are — the cursor still makes it exactly-once.
   out.drain = () => {
     const rows = [];
 
@@ -133,7 +133,7 @@ const arms = {
     return { n, bag: bag.length };
   },
   /*
-   * ⚠️ THE EAGER FORM ITEM 2070 REFUSED, measured only as a CEILING — it is what `aggregate` gets and
+   * THE EAGER FORM ITEM 2070 REFUSED, measured only as a CEILING — it is what `aggregate` gets and
    * what `store` may not have, because the array it returns is eager for every consumer.
    */
   eager: () => {
@@ -153,7 +153,7 @@ const arms = {
     return { n, bag: bag.length };
   },
   /*
-   * 🔑🔑 ITEM 2111's DECISIVE ARM: cursored AND the drain WALKS, which is the engine's real shape.
+   * ITEM 2111's DECISIVE ARM: cursored AND the drain WALKS, which is the engine's real shape.
    */
   walkcursored: () => {
     const bag = [];
@@ -186,7 +186,7 @@ const arms = {
     return { n, bag: bag.length };
   },
   /*
-   * 🔑🔑 ITEM 2111's ARM: the same proposal over a CURSORED walk, so `drain` slices from where the
+   * ITEM 2111's ARM: the same proposal over a CURSORED walk, so `drain` slices from where the
    * iterator stopped. Correct on all four consumption patterns (asserted below) with no latch, and this
    * measures whether correctness costs the 2.1x.
    */
@@ -221,7 +221,7 @@ const arms = {
     return { n, bag: bag.length };
   },
   /*
-   * 🔑 THE PROPOSAL: lazy as an iterator, eager via `drain`. `toArray` takes the drain, so this arm
+   * THE PROPOSAL: lazy as an iterator, eager via `drain`. `toArray` takes the drain, so this arm
    * measures what the common path would cost.
    */
   lazydrain: () => {
@@ -258,7 +258,7 @@ const arms = {
 };
 
 /*
- * ⚠️⚠️ FOUR CONSUMPTION PATTERNS ON THE CURSORED DESIGN, asserted before anything is timed — item 2111.
+ * FOUR CONSUMPTION PATTERNS ON THE CURSORED DESIGN, asserted before anything is timed — item 2111.
  * Item 2098's arm passed the first two and DOUBLED on the fourth, which is the whole reason it was not
  * shipped. A faster arm that double-fills the bag is a wrong answer, not a win.
  */
@@ -322,7 +322,7 @@ const checkCursored = () => {
       }
     }
 
-    // 🔑 THE BREAKING CALLER bags ONLY what it pulled — the refusal's whole purpose.
+    // THE BREAKING CALLER bags ONLY what it pulled — the refusal's whole purpose.
     out.push(['iterate part-way', bag.length, BREAK_AT]);
   }
 
@@ -344,7 +344,7 @@ const checkCursored = () => {
   }
 
   for (const [name, got, want] of out) {
-    const verdict = got === want ? 'OK' : '⚠️ WRONG';
+    const verdict = got === want ? 'OK' : 'WRONG';
 
     console.log(
       `  ${String(name).padEnd(21)} bag=${String(got).padStart(7)} want=${String(want).padStart(7)}  ${verdict}`,
@@ -380,7 +380,7 @@ for (let r = 0; r < REPS; r += 1) {
   series.push(performance.now() - t0);
 }
 
-// ⚠️ THE BAG MUST HOLD EXACTLY ONE COPY. An arm that double-filled it would otherwise look like a
+// THE BAG MUST HOLD EXACTLY ONE COPY. An arm that double-filled it would otherwise look like a
 // faster arm with the same row count.
 if (got.bag !== ROWS) {
   throw new Error(

@@ -1,22 +1,22 @@
 /**
  * WHAT DOES THE GQL SCREEN NOT ASK? (item 1901)
  *
- * ⚠️⚠️ **THIS IS ITEM 1898'S SWEEP, ON THE OTHER SURFACE.** That item added nine families the Gremlin
+ * **THIS IS ITEM 1898'S SWEEP, ON THE OTHER SURFACE.** That item added nine families the Gremlin
  * screen had never carried and found that **all five of the biggest shapes on the surface were among
  * them**. The GQL side never had the same sweep: item 1890 applied the SIZE lesson to the GQL grid,
  * and items 1879/1880 split the existing families until "the addressable time is exhausted" — a
  * conclusion that is only ever true of the shapes a screen HAS.
  *
- * ⚠️ EVERY SHAPE HERE WAS VERIFIED TO PARSE AND MATCH ROWS FIRST, by
+ * EVERY SHAPE HERE WAS VERIFIED TO PARSE AND MATCH ROWS FIRST, by
  * `gql-coverage-probe-1901.mjs`. ISO-GQL is NOT Cypher and a candidate row is worthless two ways —
  * it may not parse, and it may parse and match nothing, which `workload-perf-screen.mjs` warns is a
  * BROKEN screen row rather than a fast family.
  *
- * ⚠️ ONE CHILD PROCESS PER SHAPE, which is `workload-perf-screen.mjs`'s discipline and not
+ * ONE CHILD PROCESS PER SHAPE, which is `workload-perf-screen.mjs`'s discipline and not
  * decoration: item 1871 retracted a flag measured in a shared process, and item 737 refuted a 1.66x
  * that only existed in-sweep.
  *
- * ⚠️ THE CONTROLS ARE THE POINT OF COMPARISON, NOT THE FASTEST ROW. Three shapes from the EXISTING
+ * THE CONTROLS ARE THE POINT OF COMPARISON, NOT THE FASTEST ROW. Three shapes from the EXISTING
  * corpus are carried here deliberately: the one-hop projection (item 1895's target, the most common
  * shape in the language), the deduped hop (item 1899's GQL fast side), and the `{2,3}` var-length
  * bound, which items 1879/1880 established as a documented CORRECTNESS refusal rather than a gap. A
@@ -52,7 +52,7 @@ const SHAPES = [
   ['CONTROL deduped hop', 'MATCH (a:T)-[:E]->(b:T) RETURN DISTINCT b.n AS x', {}],
   ['CONTROL varlen {2,3} rows', 'MATCH (a:T)-[:E]->{2,3}(b:T) RETURN DISTINCT b.n AS x', {}],
 
-  // ⚠️ THE FLOORS THE FIRST RUN LACKED. Item 1878's lesson, cited by 1879: a big absolute is not a
+  // THE FLOORS THE FIRST RUN LACKED. Item 1878's lesson, cited by 1879: a big absolute is not a
   // nomination until its own floor says what the shape costs WITHOUT the feature under suspicion.
   // `ORDER BY n.n + 1` and `ORDER BY x` sort identically here (adding 1 is monotone), so the pair is
   // an ordering-equivalent spelling and its gap is a real question rather than a comparison of
@@ -68,7 +68,7 @@ const SHAPES = [
   // The UNSEEDED count takes `varLengthCount`; both SEEDED spellings reach no rung at all, so the
   // count shape is a MISSING RUNG rather than a spelling gap. Priced for the next item.
   ['CONTROL varlen count unseeded', 'MATCH (a:T)-[:E]->{1,3}(b:T) RETURN count(*) AS c', {}],
-  // ⚠️⚠️ THE CLAUSE-`WHERE` vs INLINE SPELLING OF ONE SEEDED VAR-LENGTH QUERY (item 1906). The
+  // THE CLAUSE-`WHERE` vs INLINE SPELLING OF ONE SEEDED VAR-LENGTH QUERY (item 1906). The
   // inline form reaches `reachShortcut`; the clause form reaches NO rung. Same answer, same 8 rows,
   // and the clause form is SLOWER THAN NOT SEEDING AT ALL — which is `audit item 159`'s "a filter
   // that makes a query slower is a declined fast path, not the cost of filtering".
@@ -108,7 +108,7 @@ const SHAPES = [
   // The NODE twin of the skip-only refusal item 1905 took.
   ['NODE expr key, OFFSET no LIMIT', 'MATCH (n:T) RETURN n.n AS x ORDER BY n.n + 1 OFFSET 3', {}],
   ['NODE alias key, OFFSET no LIMIT', 'MATCH (n:T) RETURN n.n AS x ORDER BY x OFFSET 3', {}],
-  // ⚠️⚠️ THE INVERSION ITEM 1901 FOUND: adding a WINDOW makes the expression key ACCEPTABLE. The
+  // THE INVERSION ITEM 1901 FOUND: adding a WINDOW makes the expression key ACCEPTABLE. The
   // route census says `ORDER BY n.k + 1` reaches NO rung while `ORDER BY n.k + 1 LIMIT 3` reaches
   // `nodeProjection` — so the engine ALREADY evaluates an arbitrary expression sort key, and it is
   // the unwindowed form that refuses. That is backwards from the documented hazard, which is about
@@ -117,7 +117,7 @@ const SHAPES = [
   ['order by alias + LIMIT', 'MATCH (n:T) RETURN n.n AS x ORDER BY x LIMIT 3', {}],
   ['HOP order by alias', 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY x', {}],
   ['HOP order by EXPRESSION', 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY b.n + 1', {}],
-  // ⚠️ THE ONE SORT REFUSAL ITEM 1904'S MATRIX LEAVES STANDING (43 of its 320 shapes): a `SKIP`
+  // THE ONE SORT REFUSAL ITEM 1904'S MATRIX LEAVES STANDING (43 of its 320 shapes): a `SKIP`
   // with no `LIMIT`. Priced here so the next item has a number rather than a hunch.
   [
     'HOP expr key, OFFSET no LIMIT',
@@ -129,7 +129,7 @@ const SHAPES = [
     'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY x OFFSET 3',
     {},
   ],
-  // ⚠️ ITEM 1063'S WINDOWED SUBJECTS, carried as the CONTROL SET for item 1903's flag fix. That fix
+  // ITEM 1063'S WINDOWED SUBJECTS, carried as the CONTROL SET for item 1903's flag fix. That fix
   // turns OFF the start-only walk's template-clone whenever the deferred arm is active, so these
   // rows are where a regression from it would land — in particular the start-only projection, whose
   // clone it is.
@@ -151,7 +151,7 @@ const SHAPES = [
   /*
    * The unwindowed start-only shape, which is what the wrong answer was found on.
    *
-   * ⚠️⚠️ ITS NEIGHBOUR IS NOT ITS CONTROL (item 1930). This row (470.97) sits beside
+   * ITS NEIGHBOUR IS NOT ITS CONTROL (item 1930). This row (470.97) sits beside
    * `CONTROL hop windowed, START-only proj` (298.23) and reads as a 1.58x gap. It is not a pair:
    * the control carries `LIMIT 10` and returns TEN rows where this returns 800,000. Against its
    * genuine twin — `HOP order by EXPRESSION` at 456.92, the same shape projecting the far end
@@ -177,14 +177,14 @@ const SHAPES = [
   ],
   ['chained LET', 'MATCH (n:T) LET a = n.n + 1 LET b = a * 2 RETURN b AS x', {}],
   /*
-   * ⚠️ THE SINGLE LET WAS MISSING, AND THAT OMISSION IS WHY `chained LET` SAT OPEN FOR 25 ITEMS.
+   * THE SINGLE LET WAS MISSING, AND THAT OMISSION IS WHY `chained LET` SAT OPEN FOR 25 ITEMS.
    * The row above reads as "a CHAIN is expensive", so item 1901's entry priced the chain — and the
    * cost was in ONE binding all along: at item 1926 the single `LET` measured 54.99 ms against the
    * hand-folded `RETURN (n.n + 1) AS x`'s 9.26, because `boundExprs` admitted only
    * `cheapPureExpr` or a subquery and ARITHMETIC is neither. Now 8.33. The chain row cannot show
    * that, since BOTH spellings carry a standing `LET` either way.
    *
-   * 🔑 So a screen row that composes a feature with itself needs the ONE-of-it row beside it, or
+   * So a screen row that composes a feature with itself needs the ONE-of-it row beside it, or
    * the composition takes the blame for the primitive.
    */
   ['single LET', 'MATCH (n:T) LET a = n.n + 1 RETURN a AS x', {}],
@@ -246,13 +246,13 @@ const build = () => {
   }
 
   /*
-   * ⚠️⚠️ `MIXED=1` MAKES THE FIXTURE NON-HOMOGENEOUS, AND WITHOUT IT THIS SCREEN MEASURES AN ARM A
+   * `MIXED=1` MAKES THE FIXTURE NON-HOMOGENEOUS, AND WITHOUT IT THIS SCREEN MEASURES AN ARM A
    * REAL GRAPH CANNOT REACH (items 1934-1942). Every vertex above carries `T`, so `T` is VACUOUS —
    * `verticesByLabel.get('T').size === vertexCount` — and the GQL fast paths that elide a universal
    * label or drive the far end all engage. A real schema (`Person` and `Company`) never satisfies
    * that: ONE vertex lacking the label disqualifies it for the whole graph, permanently.
    *
-   * 🔑 THE OFF-LABEL VERTEX IS ISOLATED, which is what makes the two modes COMPARABLE. It carries no
+   * THE OFF-LABEL VERTEX IS ISOLATED, which is what makes the two modes COMPARABLE. It carries no
    * edges and a label nothing matches, so every shape's ANSWER is identical in both modes and only
    * `graph.vertexCount` differs — which is exactly what `vacuousLabel` compares against. Item 1935
    * got this wrong first by RELABELLING a vertex, which changed the `T` count and the edge set, and
@@ -272,7 +272,7 @@ const build = () => {
     g.addEdge({
       id: `e${e}`,
       from: g.getVertexById(String(i + 1)),
-      // ⚠️ Splits on the REPEAT INDEX — CLAUDE.md's fix for the `(a*k+b) % N` degeneracy, where one
+      // Splits on the REPEAT INDEX — CLAUDE.md's fix for the `(a*k+b) % N` degeneracy, where one
       // vertex's FANOUT edges all land on the same target and every k-hop count is `F^k * N` by
       // construction while every degree looks perfect.
       to: g.getVertexById(String(((i * 7 + 3 + hop * 2_654_435_761) % NODES) + 1)),
@@ -346,7 +346,7 @@ if (SHAPE !== '') {
       label,
       ms: Number(m[1]),
       rows: Number(m[2]),
-      note: Number(m[2]) === 0 ? '⚠️ ZERO ROWS — a broken row, not a fast one' : '',
+      note: Number(m[2]) === 0 ? 'ZERO ROWS — a broken row, not a fast one' : '',
     });
   }
 

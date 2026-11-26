@@ -1,7 +1,7 @@
 /**
  * DOES THE CHAIN RUNG EMIT ROWS IN THE SAME ORDER AS THE GENERAL MATCHER? (item 1831)
  *
- * ⚠️ THIS IS THE BLOCKER, NOT A CURIOSITY. Item 1829 found the whole aggregate family losing its
+ * THIS IS THE BLOCKER, NOT A CURIOSITY. Item 1829 found the whole aggregate family losing its
  * route past one hop; item 1830 took the half that is ORDER-INVARIANT (`min`, `max`, `count`) and
  * left `sum`, `avg` and `collect` explicitly refused, because:
  *
@@ -15,17 +15,17 @@
  * or chain rungs.** Admitting `sum` without asking would be a wrong answer invisible to every
  * integer fixture.
  *
- * ⚠️ THE ORACLE IS A SPELLING VERIFIED TO DECLINE, not one assumed to (item 1827's lesson).
+ * THE ORACLE IS A SPELLING VERIFIED TO DECLINE, not one assumed to (item 1827's lesson).
  * `compileLinear` was asked directly: `RETURN d.k AS k` fires `chainProjection`, and the same query
  * with `LIMIT 100000000` fires NOTHING — a limit larger than the row count returns every row in the
  * GENERAL path's order. So the two spellings are the same question down two different routes.
  *
- * ⚠️ AND IT CHECKS BOTH OF THE RUNG'S INTERNAL BRANCHES. `farEndOnly` picks a blocked SWEEP when the
+ * AND IT CHECKS BOTH OF THE RUNG'S INTERNAL BRANCHES. `farEndOnly` picks a blocked SWEEP when the
  * projection and carried `WHERE` read only the far end, and a recursive WALK otherwise — two
  * different traversal orders inside one rung. A probe that only projected the far end would test
  * half of it and report a clean result for the other half.
  *
- * ⚠️ A MATCH PROVES NOTHING UNIVERSAL. One fixture agreeing says the orders agree THERE; it cannot
+ * A MATCH PROVES NOTHING UNIVERSAL. One fixture agreeing says the orders agree THERE; it cannot
  * say they agree for every graph. A MISMATCH, though, settles it immediately — which is why this is
  * run across several fixture shapes before any conclusion is drawn either way.
  *
@@ -67,7 +67,7 @@ const build = ({ fanout, stride, labelEvery }) => {
   const g = new Graph();
 
   for (let i = 0; i < NODES; i += 1) {
-    // ⚠️ A SPLIT LABEL SET matters: `L` seeds the walk, `M` does not. With every vertex labelled the
+    // A SPLIT LABEL SET matters: `L` seeds the walk, `M` does not. With every vertex labelled the
     // same, "which vertices seed" and "every vertex" are indistinguishable.
     const labels = i % labelEvery === 0 ? ['L', 'M'] : ['M'];
 
@@ -137,14 +137,14 @@ for (const [fixName, spec] of Object.entries(FIXTURES)) {
 
     if (a.length === 0 || b.length === 0) {
       console.log(
-        `   ${caseName.padEnd(28)} ⚠️ VACUOUS — ${a.length}/${b.length} rows, proves nothing`,
+        `   ${caseName.padEnd(28)} VACUOUS — ${a.length}/${b.length} rows, proves nothing`,
       );
       continue;
     }
 
     if (a.length !== b.length) {
       anyMismatch = true;
-      console.log(`   ${caseName.padEnd(28)} ⚠️ DIFFERENT ROW COUNTS ${a.length} vs ${b.length}`);
+      console.log(`   ${caseName.padEnd(28)} DIFFERENT ROW COUNTS ${a.length} vs ${b.length}`);
       continue;
     }
 
@@ -157,7 +157,7 @@ for (const [fixName, spec] of Object.entries(FIXTURES)) {
       }
     }
 
-    // ⚠️ The multiset check separates "different ORDER" from "different ROWS" — only the first is
+    // The multiset check separates "different ORDER" from "different ROWS" — only the first is
     // the question here, and the second would be a far worse finding.
     const sameSet =
       [...a].sort((x, y) => x.localeCompare(y)).join('|') ===
@@ -168,7 +168,7 @@ for (const [fixName, spec] of Object.entries(FIXTURES)) {
     } else {
       anyMismatch = true;
       console.log(
-        `   ${caseName.padEnd(28)} ⚠️ ORDER DIFFERS at row ${first} ` +
+        `   ${caseName.padEnd(28)} ORDER DIFFERS at row ${first} ` +
           `(${a[first]} vs ${b[first]}), same multiset: ${sameSet}`,
       );
     }

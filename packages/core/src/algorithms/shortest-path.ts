@@ -86,20 +86,20 @@ const dirOf = (config: AlgorithmConfig): Dir =>
  * u's neighbour INDICES in the configured direction, and `w[...]` the corresponding edge weights
  * (empty when unweighted, where every step costs 1).
  *
- * ⚠️ IT REPLACES A NESTED GENERATOR THAT ALLOCATED A TUPLE PER EDGE AND HASHED A STRING PER STEP.
+ * IT REPLACES A NESTED GENERATOR THAT ALLOCATED A TUPLE PER EDGE AND HASHED A STRING PER STEP.
  * `neighbours` was a generator delegating to `incidentEdges` (a second generator), yielding
  * `[edge, neighbourId]` — one 2-element array per edge traversed — and every consumer then did
  * `index.get(vid)!`, a string-keyed Map lookup per step. Item 1470 profiled `shortestPath` with
  * `incidentEdges` at 20.69% and `neighbours` at 20.32%: **41% of the run in adjacency plumbing**,
  * none of it the search. Built once, every step becomes two typed-array reads.
  *
- * ⚠️ THE ORDER IS OUT-EDGES THEN IN-EDGES PER VERTEX — NOT merged by edge index. `both` has to
+ * THE ORDER IS OUT-EDGES THEN IN-EDGES PER VERTEX — NOT merged by edge index. `both` has to
  * match native `visit_adj`'s order because the Dijkstra `(distance, index)` tie-break is decided by
  * it, so two equal-distance routes must be offered in the same sequence as native offers them.
  * (This is the opposite of item 1469's `neighborAggregate` merge, where eidx order WAS the contract
  * — the two procedures genuinely differ, so the orders cannot be shared.)
  *
- * ⚠️ A `both`-direction SELF-LOOP APPEARS TWICE, once from each side, because that is what
+ * A `both`-direction SELF-LOOP APPEARS TWICE, once from each side, because that is what
  * `neighbours` yielded and the distances must not change. `neighborAggregate` drops the second
  * copy; this one must not.
  *

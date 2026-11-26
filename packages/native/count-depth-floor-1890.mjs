@@ -1,13 +1,13 @@
 /**
  * WHY DOES A TWO-HOP COUNT COST 7x A THREE-HOP COUNT AT SCALE? (item 1890)
  *
- * ⚠️ THE SCALE SWEEP FOUND IT, which is item 1889's lesson applied to the other surface.
+ * THE SCALE SWEEP FOUND IT, which is item 1889's lesson applied to the other surface.
  * `rung-gap-screen.mjs` at `NODES=200000` flags `count: depth2 (42.0 ms) costs 7.3x depth3 (5.7)`
  * — a SHORTER chain costing more, which is the signature that grid was built for (item 1822). At
  * the screens' usual 20,000 vertices the same two cells read 1.1 and 0.5 ms, so the inversion is
  * there but 40x smaller in absolute terms and easy to read as timer noise.
  *
- * ⚠️ AND THE GRID TIMES EVERY CELL IN ONE PROCESS, so its numbers carry cross-row inline-cache
+ * AND THE GRID TIMES EVERY CELL IN ONE PROCESS, so its numbers carry cross-row inline-cache
  * pollution (item 1871 retracted a flag for exactly that). This file is ONE SHAPE PER PROCESS, and
  * it reports the cold reps as well, because item 1889 found a lever whose whole risk lived in rep 1.
  *
@@ -27,7 +27,7 @@ for (let i = 0; i < NODES; i += 1) {
   g.addVertex({ id: `v${String(i)}`, labels: ['P'], properties: { k: i % 997 } });
 }
 
-// ⚠️ FANOUT 1 AND A COPRIME STRIDE, the grid's own fixture: with one out-edge per vertex every
+// FANOUT 1 AND A COPRIME STRIDE, the grid's own fixture: with one out-edge per vertex every
 // depth returns exactly N rows, so a cost difference across depth is about the ROUTE and not about
 // how many rows came back (item 1815's finding). The stride still makes the endpoints a permutation
 // rather than the single collapsed target CLAUDE.md warns about.

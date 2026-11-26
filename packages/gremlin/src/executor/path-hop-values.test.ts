@@ -25,16 +25,16 @@ import { pathHopValues } from './path-hop-values.js';
  *
  * The workload screen's TOP row, at 200,000 vertices / 800,000 edges:
  *
- *     path: hop path   124.55 -> 8.40 ms for 600,000 rows   ⬅ 14.8x
+ *     path: hop path   124.55 -> 8.40 ms for 600,000 rows   <- 14.8x
  *     hop1: values      45.75     for the same 600,000      the same walk, no path
  *
- * ⚠️ `path()` MAKES `planReadsPath` TRUE, and every fused walk in this package is gated on
+ * `path()` MAKES `planReadsPath` TRUE, and every fused walk in this package is gated on
  * `!tracksPath`, so this shape reached no rung at all. The warrant for riding past that guard is
  * items 1912/1914's: the rung claims the WHOLE plan — three steps, `rest` always `[]` — so there is
  * no downstream step left that could ask for a path. A fourth step declines, which is also what
  * makes `limit(BIG)` a usable oracle below.
  *
- * ⚠️ THE LAYOUT WAS READ OFF THE ENGINE (`pathshape-probe-1920.mjs`) RATHER THAN ASSUMED, because a
+ * THE LAYOUT WAS READ OFF THE ENGINE (`pathshape-probe-1920.mjs`) RATHER THAN ASSUMED, because a
  * fusion built on a guessed path layout is a wrong answer no aggregate would show: `[near, far]` per
  * edge, `[d, d]` for a self-loop, and `near` is the SCAN vertex for `in` as well as `out`.
  */
@@ -49,7 +49,7 @@ const fixture = (): Graph => {
 
   g.addEdge({ id: 'e1', from: vx('a'), to: vx('b'), labels: ['E'], properties: {} });
   g.addEdge({ id: 'e2', from: vx('a'), to: vx('c'), labels: ['E'], properties: {} });
-  // ⚠️ A SELF-LOOP, which is the only shape where the path's two elements are the same object.
+  // A SELF-LOOP, which is the only shape where the path's two elements are the same object.
   g.addEdge({ id: 'e3', from: vx('b'), to: vx('b'), labels: ['E'], properties: {} });
   g.addEdge({ id: 'e4', from: vx('c'), to: vx('d'), labels: ['E'], properties: {} });
   // A SECOND TYPE, so a typed hop is not vacuous.
@@ -70,7 +70,7 @@ const paths = (rows: readonly unknown[]): string[] =>
   );
 
 /**
- * ⚠️ TWICE, BECAUSE THE RUNG RIDES ITEM 1889'S SECOND-ASK POLICY and declines its own first call: a
+ * TWICE, BECAUSE THE RUNG RIDES ITEM 1889'S SECOND-ASK POLICY and declines its own first call: a
  * single `toArray` measures the bucket walk and a repeat measures the CSR. Both must answer the
  * same — five mutants survived a single-`toArray` suite at item 1889 for exactly this reason.
  */
@@ -146,7 +146,7 @@ describe('pathHopValues — the answer, on both walks', () => {
   });
 
   /**
-   * ⚠️ THE LAZY ITERATOR IS A SECOND COPY OF THE LOOP, and only spreading `run` reaches it — item
+   * THE LAZY ITERATOR IS A SECOND COPY OF THE LOOP, and only spreading `run` reaches it — item
    * 1913's duplication hazard. Item 1914 then found that a `toArray` BEFORE the spread warms the
    * CSR, so the iterator's BUCKET arm was reached by nothing; both orders are driven here.
    */
@@ -173,7 +173,7 @@ describe('pathHopValues — the answer, on both walks', () => {
   });
 
   /**
-   * ⚠️ AND THE COLD ITERATOR MUST BE DRIVEN WITH `in` TOO — a MUTANT IS WHY. The bucket arm reads
+   * AND THE COLD ITERATOR MUST BE DRIVEN WITH `in` TOO — a MUTANT IS WHY. The bucket arm reads
    * `direct.forward ? e.to : e.from`, and for `out` that is just `e.to`, so a mutant replacing the
    * whole expression with `e.to` SURVIVED the first battery: every cold-iterator test used `out`.
    * This is the fourth path (iterator x bucket x the direction that discriminates), which is item
@@ -192,7 +192,7 @@ describe('pathHopValues — the answer, on both walks', () => {
   });
 
   /**
-   * ⚠️ THE `by` MODE NEEDS THE ITERATOR ARMS TOO — all four paths, which is item 1920's own finding
+   * THE `by` MODE NEEDS THE ITERATOR ARMS TOO — all four paths, which is item 1920's own finding
    * in this very module: a walk written twice (lazy, eager) over two arms (CSR, bucket) is FOUR
    * paths, and that item's battery found three of them untested. Adding a MODE multiplies them
    * again, so each is driven here rather than assumed to follow from the drain.
@@ -274,7 +274,7 @@ describe('the fused path agrees with the generic path', () => {
   });
 
   /**
-   * ⚠️ `path().by(k)` IS NOW SERVED (item 1924) where item 1920 refused it — **304.87 -> 80.55 ms,
+   * `path().by(k)` IS NOW SERVED (item 1924) where item 1920 refused it — **304.87 -> 80.55 ms,
    * 3.78x**, which lands at its floor: `values(k)` is 44.99 for ONE property read per row and this
    * does two.
    */
@@ -291,7 +291,7 @@ describe('the fused path agrees with the generic path', () => {
   });
 
   /**
-   * ⚠️⚠️ AN ABSENT KEY AND A STORED NULL ARE DIFFERENT VALUES — `undefined` and `null` — and this is
+   * AN ABSENT KEY AND A STORED NULL ARE DIFFERENT VALUES — `undefined` and `null` — and this is
    * the assertion a JSON comparison cannot make. `pathby-shape-1924.mjs`'s FIRST version used
    * `JSON.stringify`, which renders `undefined` inside an array AS `null`, and so showed the two as
    * identical. A fusion building `null` for an absent key would have passed it.
@@ -330,7 +330,7 @@ describe('the fused path agrees with the generic path', () => {
   });
 
   /**
-   * ⚠️ `Object.hasOwn`, NOT `in`: `evalBy`'s own note says an inherited name must never leak a
+   * `Object.hasOwn`, NOT `in`: `evalBy`'s own note says an inherited name must never leak a
    * prototype function. With `in` the row would hold `function toString()`.
    */
   it('an inherited name does not leak a prototype function', () => {
@@ -344,7 +344,7 @@ describe('the fused path agrees with the generic path', () => {
   });
 
   /**
-   * ⚠️ TWO `by`s CYCLE ROUND-ROBIN across path positions, so they are a DIFFERENT answer and must be
+   * TWO `by`s CYCLE ROUND-ROBIN across path positions, so they are a DIFFERENT answer and must be
    * refused: `path().by(n).by(opt)` projects position 0 through `n` and position 1 through `opt`.
    */
   it('two bys are refused, and still cycle', () => {
@@ -352,7 +352,7 @@ describe('the fused path agrees with the generic path', () => {
 
     expect(pathHopValues(traversal(V(), out('E'), path().by('k').by('n')), g)).toBeUndefined();
     /*
-     * ⚠️ AND A NON-`key` BY IS REFUSED TOO — a mutant is why. Dropping the `by.kind === 'key'` test
+     * AND A NON-`key` BY IS REFUSED TOO — a mutant is why. Dropping the `by.kind === 'key'` test
      * survived, because every `by` in these tests is a key. Item 1899 shipped the mirror of this
      * bug (a gate testing `typeof by === 'string'` when the AST holds `{kind: 'key', key}`) and
      * only measuring BOTH spellings caught it.

@@ -10,7 +10,7 @@
 // STRUCTURAL writes only), and five inserts cost the same as one (ONE invalidation, not per-write
 // work).
 //
-// ⚠️ THE READ QUERY IS IDENTICAL IN BOTH ARMS, which is what makes a frame DIFF meaningful here: a
+// THE READ QUERY IS IDENTICAL IN BOTH ARMS, which is what makes a frame DIFF meaningful here: a
 // frame that appears only in the after-write arm is the demotion itself, not a difference of work.
 //
 //     ARM=cold|afterWrite bun --cpu-prof readdemote-prof-1934.mjs
@@ -48,7 +48,7 @@ const build = () => {
 const READ = 'MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x';
 
 /*
- * ⚠️ ONE GRAPH, MANY ROUNDS — which is sound here ONLY because item 1932 measured that five inserts
+ * ONE GRAPH, MANY ROUNDS — which is sound here ONLY because item 1932 measured that five inserts
  * cost the same as one, i.e. the demotion is ONE invalidation and not per-write work. So repeating
  * `insert; read` on one graph reproduces the demoted read every round without the fixture rebuild
  * a CPU profile cannot exclude. The `cold` arm reads the same graph the same number of times with
@@ -64,7 +64,7 @@ for (let r = 0; r < ROUNDS; r += 1) {
   }
 
   /*
-   * 🔑 THE DECISIVE ARM. `hop-projection.ts:3066` takes the FAR-DRIVEN walk only when
+   * THE DECISIVE ARM. `hop-projection.ts:3066` takes the FAR-DRIVEN walk only when
    * `startLabel === undefined || vacuousLabel(graph, startLabel)` — i.e. when the start label
    * matches every vertex, so filtering by it is a no-op. This fixture is all `:T`, so it qualifies.
    * `INSERT (:W …)` adds a vertex with a DIFFERENT label, `:T` stops being vacuous, and the

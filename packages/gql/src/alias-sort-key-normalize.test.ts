@@ -1,7 +1,7 @@
 /**
  * Item 1929: `normalizeAliasSortKeys` — an output ALIAS inside an `ORDER BY` key EXPRESSION.
  *
- * ⚠️⚠️ THIS WAS AN ABSENCE OF A RUNG, NOT A SLOW ONE, which is why no profile nominated it: the
+ * THIS WAS AN ABSENCE OF A RUNG, NOT A SLOW ONE, which is why no profile nominated it: the
  * general matcher is not a hot frame. `ORDER BY x + 1` and `ORDER BY n.n + 1` are the SAME question
  * — `x` IS `n.n`, by the projection's own definition — and the alias spelling, the more natural one
  * to write, reached nothing at all. Measured at 200,000 vertices, one shape per process:
@@ -15,7 +15,7 @@
  *   CONTROL ORDER BY n.n + 1                      96.58    ->  95.63   flat
  * ```
  *
- * 🔑 WHAT GIVES THESE TESTS TEETH. The rewrite IS answer-equivalent, so the ROUTE is asserted as
+ * WHAT GIVES THESE TESTS TEETH. The rewrite IS answer-equivalent, so the ROUTE is asserted as
  * well as the answer ([[perf-gate-needs-its-own-test]]) — and every answer is checked against the
  * spelling it must equal, as a QUERY rather than as a hand-written literal. That is deliberate: in
  * this session hand-written row literals have been wrong six times (NULL sorts LAST, not first),
@@ -46,7 +46,7 @@ const routes = (src: string): string[] => {
  * the rewrite is value-equal, so the rows cannot show whether it fired.
  */
 const sortKeyKinds = (src: string): string[] => {
-  // ⚠️ THE PASS'S OWN OUTPUT, not `compileLinear`'s — the compiled clause carries no AST `expr`,
+  // THE PASS'S OWN OUTPUT, not `compileLinear`'s — the compiled clause carries no AST `expr`,
   // so reading it threw. The pass is exported for exactly this: the rewrite is value-equal, so its
   // output PLAN is the only thing that can observe whether it fired ([[rewrite-composition-is-not-free]]).
   const q = parse(src) as never as { parts: readonly { clauses: readonly never[] }[] };
@@ -55,7 +55,7 @@ const sortKeyKinds = (src: string): string[] => {
   }[];
   const last = out[out.length - 1];
 
-  // ⚠️ THE FREE VARIABLES, NOT THE TOP-LEVEL `kind`. My first version read the kind, and it
+  // THE FREE VARIABLES, NOT THE TOP-LEVEL `kind`. My first version read the kind, and it
   // CANNOT see the substitution: `c + 1` is an `arith` before and after, since only the leaf
   // changes. The free names show it exactly — an ALIAS name surviving means not substituted, the
   // scan variable means substituted.
@@ -65,7 +65,7 @@ const sortKeyKinds = (src: string): string[] => {
 };
 
 /*
- * ⚠️ DISTINCT SORT KEYS, AND AN ORDER THAT IS NOT ARRIVAL ORDER. Item 1903 established that a
+ * DISTINCT SORT KEYS, AND AN ORDER THAT IS NOT ARRIVAL ORDER. Item 1903 established that a
  * tie-heavy fixture lets a WRONG order share its first rows with the right one — on the perf
  * screen's own fixture a broken sort measured 7.6x faster and looked like a win. Here `n` is
  * distinct and deliberately anti-correlated with insertion order, and the edges point so that the
@@ -144,7 +144,7 @@ describe('an alias inside a sort-key EXPRESSION resolves to the expression it na
     test(`${label}: same route, same rows`, () => {
       expect(routes(aliasForm)).toEqual(routes(propForm));
       expect(routes(aliasForm)).toContain('nodeProjection');
-      // ⚠️ THE COLUMN BY POSITION, NOT BY NAME. The un-aliased pair spells its column `n.n` on one
+      // THE COLUMN BY POSITION, NOT BY NAME. The un-aliased pair spells its column `n.n` on one
       // side and `x` on the other, so reading `.x` compared `undefined` against a real value —
       // which would also have passed VACUOUSLY had both sides been un-aliased.
       const firstCol = (rs: readonly unknown[]) => rs.map((r) => Object.values(r as object)[0]);
@@ -187,11 +187,11 @@ describe('what the pass must NOT rewrite', () => {
     // Substituting duplicates the aliased expression's evaluation — once for the column, once for
     // the key. A property read is free and cannot fault; a subquery is neither.
     /*
-     * ⚠⚠ THE FIRST VERSION OF THIS TEST WAS VACUOUS — `expect(rows(text)).toEqual(rows(text))` —
+     * THE FIRST VERSION OF THIS TEST WAS VACUOUS — `expect(rows(text)).toEqual(rows(text))` —
      * and the mutation battery said so: admitting a non-cheap alias SURVIVED. The guard's effect is
      * not on the rows (substituting is value-equal) but on the PLAN, so the plan is what to assert.
      *
-     * 🔑 And it is load-bearing rather than merely tidy: substituting a subquery into a sort key was
+     * And it is load-bearing rather than merely tidy: substituting a subquery into a sort key was
      * a live CROSS-ENGINE DIVERGENCE at item 213, and `deferredSortKeys` declines a subquery key for
      * that reason. So the substituted spelling must stay off that arm.
      */
@@ -209,7 +209,7 @@ describe('what the pass must NOT rewrite', () => {
     expect(rows(subq).length).toBe(6);
   });
 
-  test('⚠️ a COLLIDING output name declines the whole pass', () => {
+  test('a COLLIDING output name declines the whole pass', () => {
     // In the sort scope the output columns are OVERLAID on the binding, so with `n.k AS n` the name
     // `n` in a substituted `n.n` would resolve to that COLUMN rather than the element and read a
     // property of the wrong value. The pass refuses rather than reproduce the overlay rule.

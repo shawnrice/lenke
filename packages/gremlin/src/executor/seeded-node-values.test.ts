@@ -8,7 +8,7 @@
  *   reused plan                PRE 1744-1961      POST 1045-1236   1.67x
  * ```
  *
- * ⚠️ THE ORACLE THROUGHOUT IS THE PIPELINE ITSELF, reached by appending one step. The shortcut
+ * THE ORACLE THROUGHOUT IS THE PIPELINE ITSELF, reached by appending one step. The shortcut
  * requires its `values(j)` to be LAST, so `… .values(j).limit(1000)` is the same question answered
  * by the full traverser pipeline — a genuinely independent path on the same build, and a vacuous
  * `limit` cannot change the answer. That matters more here than usual because the shortcut iterates
@@ -49,7 +49,7 @@ const build = (): Graph => {
 
 describe('the seeded shortcut agrees with the pipeline, in ORDER', () => {
   // Each case yields the step BUILDERS, so the same list can be spread with and without the extra
-  // step. ⚠️ My first version spread a built plan's `steps` into `traversal`, which takes BUILDERS
+  // step. My first version spread a built plan's `steps` into `traversal`, which takes BUILDERS
   // and not step objects — `TypeError: step is not a function`, loudly, on nine of eighteen tests.
   const CASES: Array<readonly [string, () => Parameters<typeof traversal>]> = [
     [
@@ -65,7 +65,7 @@ describe('the seeded shortcut agrees with the pipeline, in ORDER', () => {
       'a label nothing carries',
       () => [V(), hasLabel('ZZZ'), has('name', eq('dup')), values('score')],
     ],
-    // ⚠️ A MULTI-LABEL `hasLabel`, which mutation showed was missing: `hasLabel(a, b)` passes a
+    // A MULTI-LABEL `hasLabel`, which mutation showed was missing: `hasLabel(a, b)` passes a
     // vertex carrying EITHER, so `some` and `every` differ only on this shape. Without it, a mutant
     // swapping them SURVIVED — the fixture's vertices all carry `User`, so `every` and `some` agreed
     // on every other case.
@@ -201,13 +201,13 @@ describe('the ROUTE — answer-equivalent, so it needs its own test', () => {
 /**
  * The COUNT twin (item 1596) — `V()[.hasLabel(L)].has(k, eq(v)).count()` off the bucket's size.
  *
- * ⚠️ `countShortcut` declines this shape ON PURPOSE: `filterChainCount` refuses a `has` the moment
+ * `countShortcut` declines this shape ON PURPOSE: `filterChainCount` refuses a `has` the moment
  * `seekWorthTaking` says a seek beats a scan, leaving it to the seeding path — which then ran the
  * traverser pipeline. So it was recognised as seekable and answered in closed form by neither, and
  * the tell was that the seeded COUNT cost MORE than the seeded projection (2486 ns against 1743).
  */
 describe('the seeded count agrees with the pipeline', () => {
-  // ⚠️ A count is TERMINAL, so the shortcut cannot be defeated by appending a step. A vacuous
+  // A count is TERMINAL, so the shortcut cannot be defeated by appending a step. A vacuous
   // `limit` BEFORE the count does it instead — it changes no answer and makes the step list a
   // shape the gate refuses, so the pipeline answers.
   const CASES: Array<readonly [string, () => Parameters<typeof traversal>]> = [
@@ -240,7 +240,7 @@ describe('the seeded count agrees with the pipeline', () => {
   test('the counts are the LITERAL values, not just agreement', () => {
     const g = build();
 
-    // ⚠️ COUNTED OFF THE FIXTURE, and my first attempt at these got them wrong — the
+    // COUNTED OFF THE FIXTURE, and my first attempt at these got them wrong — the
     // pipeline-comparison tests above all passed while four literals here were off by one, because
     // `u3`'s special case (no `score`) ALSO gives it `name: 'dup'`, overriding the parity rule.
     // That is the argument for having both kinds: the comparisons prove the two paths agree, and
@@ -293,11 +293,11 @@ describe('the seeded count ROUTE — answer-equivalent, so its own test', () => 
     expect(takes(traversal(V(), has('name', eq('dup'))), g)).toBe(false);
   });
 
-  test('⚠️ count(LOCAL) declines, and its answer is a DIFFERENT question', () => {
+  test('count(LOCAL) declines, and its answer is a DIFFERENT question', () => {
     const g = build();
 
     expect(takes(traversal(V(), has('name', eq('dup')), count(Scope.local)), g)).toBe(false);
-    // ⚠️ PINNED AS AN ANSWER TOO, because the route assertion alone did not catch a mutant that
+    // PINNED AS AN ANSWER TOO, because the route assertion alone did not catch a mutant that
     // admitted `local`: on a single-match fixture both scopes answer `[1]`, so they only differ
     // once there are several matches. Global counts the STREAM (one row, seven); local counts
     // WITHIN each element (seven rows of one).
@@ -313,14 +313,14 @@ describe('the seeded count ROUTE — answer-equivalent, so its own test', () => 
   });
 });
 /*
- * ✅✅ **ITEM 169's INVARIANT, MADE EXPLICIT (item 2319).** `seededNodeValuesShortcut` returns an object
+ * **ITEM 169's INVARIANT, MADE EXPLICIT (item 2319).** `seededNodeValuesShortcut` returns an object
  * with BOTH a lazy `[Symbol.iterator]` (a generator) and an eager `drain`. They used to share one loop
  * body — `drain` was `[...walk()]` — which made divergence impossible but paid the generator protocol per
  * element: a differential profile put `walk` at 30.05% and `drain` at 8.99%, with the `V(id)` control at
- * EXACTLY 0.00% on both. 🔑 `drain` is now its own plain loop (2.16-2.83x), and the two share only the
+ * EXACTLY 0.00% on both. `drain` is now its own plain loop (2.16-2.83x), and the two share only the
  * per-vertex `emit` decision.
  *
- * ⚠️ **SO THE THING THAT CAN NOW GO WRONG IS THE THING ITEM 169 WARNED ABOUT**: two derivations that
+ * **SO THE THING THAT CAN NOW GO WRONG IS THE THING ITEM 169 WARNED ABOUT**: two derivations that
  * disagree. Gremlin results are compared ORDERED by the differential fuzzer, so a disagreement about
  * membership OR order is a wrong answer. This pins them equal, element for element, on shapes that
  * exercise the label filter, the missing-key skip, and a multi-element bucket.
@@ -329,16 +329,16 @@ describe('the lazy iterator and the eager drain agree exactly', () => {
   const build = (): Graph => {
     const g = new Graph();
 
-    /* ✅ Two vertices share the seeked value, so the bucket has more than one element to order. */
+    /* Two vertices share the seeked value, so the bucket has more than one element to order. */
     g.addVertex({ id: 'a', labels: ['User'], properties: { team: 'core', score: 1 } });
     g.addVertex({ id: 'b', labels: ['User'], properties: { team: 'core', score: 2 } });
-    /* ✅ Same seeked value, WRONG label — exercises the label filter in both loops. */
+    /* Same seeked value, WRONG label — exercises the label filter in both loops. */
     g.addVertex({ id: 'c', labels: ['Other'], properties: { team: 'core', score: 3 } });
-    /* ✅ Same seeked value, right label, but NO `score` — exercises the missing-key skip. */
+    /* Same seeked value, right label, but NO `score` — exercises the missing-key skip. */
     g.addVertex({ id: 'd', labels: ['User'], properties: { team: 'core' } });
 
     /*
-     * ⚠️ **WITHOUT THIS THE SHORTCUT DECLINES AND THE TEST PROVES NOTHING.** `seedForStep` needs the key
+     * **WITHOUT THIS THE SHORTCUT DECLINES AND THE TEST PROVES NOTHING.** `seedForStep` needs the key
      * indexed, so a fixture without the index exercises the general walk instead — the same trap item
      * 2291 hit in an untypechecked probe. The `toBeDefined` below is what caught it here.
      */
@@ -355,13 +355,13 @@ describe('the lazy iterator and the eager drain agree exactly', () => {
       const g = build();
       const seeded = seededNodeValuesShortcut(plan, g);
 
-      /* ⚠️ If the shortcut declined, this test proves nothing — fail loudly rather than pass vacuously. */
+      /* If the shortcut declined, this test proves nothing — fail loudly rather than pass vacuously. */
       expect(seeded, 'the shortcut must take this shape').toBeDefined();
 
       const lazy = [...(seeded as Iterable<unknown>)];
       const eager = (seeded as { drain: () => unknown[] }).drain();
 
-      /* ✅ Same elements IN THE SAME ORDER — `toStrictEqual` on arrays is order-sensitive. */
+      /* Same elements IN THE SAME ORDER — `toStrictEqual` on arrays is order-sensitive. */
       expect(eager).toStrictEqual(lazy);
       expect(lazy.length).toBeGreaterThan(1);
     });

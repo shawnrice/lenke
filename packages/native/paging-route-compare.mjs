@@ -8,7 +8,7 @@
  * (2.45 ms). Items 1574 and 1576 already took 2.97x cumulative out of this shape, so what remains is
  * not the obvious materialization.
  *
- * ⚠️ METHOD, from item 1590: PROFILE THE FAST SIDE. Five guesses at the slow side's mechanisms found
+ * METHOD, from item 1590: PROFILE THE FAST SIDE. Five guesses at the slow side's mechanisms found
  * one win there; one profile of the fast side named the shortcut it had and the other lacked. Here
  * the fast side is GQL, so GQL is what gets profiled first.
  *

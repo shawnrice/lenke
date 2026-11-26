@@ -1,6 +1,6 @@
 // The A/B instrument for item 1246's per-endpoint extremum fold.
 //
-// ⚠️ WHY NOT `bun run bench`: item 1245 measured that instrument's drift at ~25% per arm (its
+// WHY NOT `bun run bench`: item 1245 measured that instrument's drift at ~25% per arm (its
 // control moved 1.26x when it could not be reached at all), which is larger than the effect being
 // claimed here. This runs ONE process per arm and measures the engine only.
 //
@@ -77,7 +77,7 @@ const CASES: readonly [string, string][] = [
   ['node grouped ordered', 'MATCH (x:Person) RETURN x.city AS c, min(x.age) AS lo ORDER BY c'],
   // `detectReachableShortcut` refuses every ORDER BY, and its COUNT form returns ONE ROW - so
   // ordering is a no-op there and could be admitted free, as the single-row aggregate rungs do.
-  // ⚠️ MEASURED UNDER A HARD TIMEOUT: falling off an UNBOUNDED reachability shortcut enumerates
+  // MEASURED UNDER A HARD TIMEOUT: falling off an UNBOUNDED reachability shortcut enumerates
   // trails, which is not a 2x risk.
   ['reach count', 'MATCH (a:Person)-[:KNOWS]->*(x) RETURN count(DISTINCT x) AS c'],
   [
@@ -94,7 +94,7 @@ const CASES: readonly [string, string][] = [
   ],
 ];
 
-// ⚠️ ONE SHAPE PER PROCESS when `AB_CASE` is set, and that is the only honest way to read the
+// ONE SHAPE PER PROCESS when `AB_CASE` is set, and that is the only honest way to read the
 // controls. Item 762's rule (recorded in CLAUDE.md): an in-process A/B flatters any change that
 // REDISTRIBUTES call sites, and the giveaway is a control moving with the target. Running all five
 // here showed both controls 1.03-1.07x slower in POST; an ABLATION — the same code admitting

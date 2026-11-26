@@ -12,7 +12,7 @@
  *
  *   undirectedHopWalk  48.6%     propOf  20.2%     get properties  16.3%     get from  3.8%
  *
- * So 36.5% is the far-vertex property read. ⚠️ BUT A SHARE IS A NOMINATION AND AN ABLATION IS THE
+ * So 36.5% is the far-vertex property read. BUT A SHARE IS A NOMINATION AND AN ABLATION IS THE
  * PRICE, and this session has twice had a profile name a frame that an ablation priced at nothing —
  * the Gremlin hop's 86.2% generator (real, 2.1x) against the multi-type dedupe's 60.1% (worth
  * −0.5%). Three candidate mechanisms, no evidence between them, so: measure instead of reason.
@@ -77,13 +77,13 @@ const build = () => {
 
     g.addEdge({
       id: `e${k}`,
-      // ⚠️ STRIDE, added at item 1429. This probe has always built `random` — large-stride
+      // STRIDE, added at item 1429. This probe has always built `random` — large-stride
       // permutations for both endpoints — while `isolated-row-bench.mjs` builds `small`
       // (`to = (i*7+3)`). Item 1426 measured that difference at ~2x and item 1428 found it reorders
       // the whole row ranking, so the two numbers item 1414's entry quotes side by side (this
       // probe's 504 ns/row and the bench's 365) were never the same fixture.
       from: STRIDE === 'small' ? vs[i] : vs[(k * 7919) % NODES],
-      // ⚠️ THE REPEAT INDEX IS LOAD-BEARING (item 1518). Any linear `(a*k + b) % N` is invariant
+      // THE REPEAT INDEX IS LOAD-BEARING (item 1518). Any linear `(a*k + b) % N` is invariant
       // under `k -> k + N`, and the FANOUT edges leaving one vertex are exactly k0, k0+N, k0+2N, …
       // — so the old `(k * 104_729) % NODES` sent EVERY one of them to the SAME target. Degrees
       // looked perfect and the graph was functional: one distinct out-neighbour per vertex at any
@@ -221,7 +221,7 @@ const countOnly = () => {
  * licence `farDrivenHopWalk` already uses and `hopOrderPlan` already forces start-driven under
  * `ORDER BY`.
  *
- * ⚠️ IT IS A FLOOR, NOT A CANDIDATE. A real implementation must also apply the start label to BOTH
+ * IT IS A FLOOR, NOT A CANDIDATE. A real implementation must also apply the start label to BOTH
  * endpoints (each edge yields a row with `from` as start and one with `to` as start, where today the
  * start side comes free from `candidateVertexSource`) and keep a self-loop emitted once. Those cost
  * something this arm does not pay, so the gap it shows is an upper bound on the win.
@@ -262,7 +262,7 @@ const time = (fn) => {
 
   const kept = series.slice(DROP).sort((a, b) => a - b);
 
-  // ⚠️ AN ORDER-INDEPENDENT CONTENT DIGEST, not just a length (item 1430). `edgePass` measured 13x
+  // AN ORDER-INDEPENDENT CONTENT DIGEST, not just a length (item 1430). `edgePass` measured 13x
   // the floor, and a number that large is exactly when "same row COUNT" stops being evidence — a
   // walk that emitted the wrong endpoint, or the same one twice, would match on length and be
   // meaningless. Summed, so the deliberate reordering is invisible and a wrong VALUE is not.
@@ -293,7 +293,7 @@ const med = (xs) => {
   return s[Math.floor(s.length / 2)];
 };
 
-// ⚠️ THE ARMS THAT CLAIM THE SAME ROW SET MUST AGREE ON IT. `onePass` deliberately does not, so it
+// THE ARMS THAT CLAIM THE SAME ROW SET MUST AGREE ON IT. `onePass` deliberately does not, so it
 // is checked against its own expectation instead: strictly fewer rows, and more than none.
 const full = ['engine', 'twoPass', 'noProp', 'countOnly', 'edgePass'].map((n) => got[n][0].len);
 

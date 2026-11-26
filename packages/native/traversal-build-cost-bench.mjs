@@ -1,7 +1,7 @@
 /**
  * WHAT DOES BUILDING A GREMLIN TRAVERSAL COST, AND IS IT PAID PER QUERY IN REAL USE? (item 1841)
  *
- * ⚠️ THE GREMLIN PROBE'S OWN HEADER FLAGS THIS AND THEN RELIES ON IT: "EVERY `SHAPES` ENTRY IS
+ * THE GREMLIN PROBE'S OWN HEADER FLAGS THIS AND THEN RELIES ON IT: "EVERY `SHAPES` ENTRY IS
  * BUILT ONCE, AT MODULE LEVEL, AND THE PLAN OBJECT IS REUSED ACROSS REPS." That is right for
  * measuring a WALK — building the traversal per rep would time the builder — but it means no
  * instrument here has ever measured the builder itself. A real caller writes
@@ -11,18 +11,18 @@
  * parse and a cache; here there is no text and no parse, so the question is whether constructing
  * the step chain and lowering it is a per-call cost worth knowing about.
  *
- * ⚠️ THREE ARMS, BECAUSE TWO CANNOT SEPARATE THE PARTS:
+ * THREE ARMS, BECAUSE TWO CANNOT SEPARATE THE PARTS:
  *
  *   - `build`     — construct the traversal and throw it away. No graph touched.
  *   - `execute`   — run a traversal built ONCE outside the timed loop (the probe's own shape).
  *   - `both`      — build it fresh and run it, which is what a caller actually does.
  *
  * `both - execute` is the per-call builder cost, and `build` is a cross-check on that subtraction:
- * if the two disagree the subtraction is measuring something else. ⚠️ Item 1839's subtraction sat
+ * if the two disagree the subtraction is measuring something else. Item 1839's subtraction sat
  * inside its own noise band, which is why this one is checked against a direct arm rather than
  * trusted.
  *
- * ⚠️ A SMALL GRAPH ON PURPOSE. Execution is the noise the builder has to be seen through; at 200
+ * A SMALL GRAPH ON PURPOSE. Execution is the noise the builder has to be seen through; at 200
  * vertices the walk is microseconds, so a per-call build cost is not buried under row work. The
  * ratio reported is therefore an UPPER BOUND on what build costs a real query — on a big graph the
  * same absolute cost is a smaller share, and that is stated rather than left for the reader to
@@ -65,7 +65,7 @@ const prebuilt = make();
 
 const once = () => {
   if (ARM === 'build') {
-    // ⚠️ The result is RETURNED, not discarded in place: a builder whose output is unused is
+    // The result is RETURNED, not discarded in place: a builder whose output is unused is
     // exactly the shape an optimizer may elide, and a measured zero would then be an artifact.
     return make().steps.length;
   }

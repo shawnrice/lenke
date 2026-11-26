@@ -1,21 +1,21 @@
 /*
  * Item 2108 — derive the TS engine's seek break-even FROM ITS OWN PER-UNIT COSTS, the way native did.
  *
- * 🔑 NATIVE'S DERIVATION, from `opt.rs`: "a scan costs 1.88 ns per node scanned and a seek 12.2 ns per
+ * NATIVE'S DERIVATION, from `opt.rs`: "a scan costs 1.88 ns per node scanned and a seek 12.2 ns per
  * row returned, both flat in selectivity, so a seek stops being worth it at 1.88/12.2 = 15.4%". The TS
  * engine's `SEEK_MAX_FRACTION` is 1/8 = 12.5%, close to that number — but it was NOT derived this way: it
  * took `SEEK_MARGIN`'s already-shipped 1/8, bracketed by two curve measurements at 16.25% and 18%.
  *
- * ⚠️⚠️ **AND A CURVE SWEEP SAYS THE TS BREAK-EVEN IS MUCH HIGHER.** Measured at five values of the
+ * **AND A CURVE SWEEP SAYS THE TS BREAK-EVEN IS MUCH HIGHER.** Measured at five values of the
  * constant on two shapes, raising it to 0.25 won **2.08x at 14.3% selectivity and 1.07-1.19x at 25%**,
  * with 0.35 REGRESSING at 33% (0.79-0.84x). If that is right, the per-unit costs should say so — because
  * a ratio of two measured rates is a reason, where a curve fit is only a result.
  *
- * 🔑 WHY THE TWO ENGINES SHOULD DIFFER HERE: native scans a COLUMN (a `u32` compare, 1.88 ns/node). The
+ * WHY THE TWO ENGINES SHOULD DIFFER HERE: native scans a COLUMN (a `u32` compare, 1.88 ns/node). The
  * TS engine walks a `Map` iterator and reads a property off a plain object per node. If its scan is
  * relatively more expensive, the break-even moves UP — and the ratio is the whole prediction.
  *
- * ⚠️ BOTH RATES MUST BE MEASURED ON THE SAME GRAPH WITH THE SAME QUERY SHAPE, varying only whether the
+ * BOTH RATES MUST BE MEASURED ON THE SAME GRAPH WITH THE SAME QUERY SHAPE, varying only whether the
  * index exists. Comparing a seek on one fixture against a scan on another measures the fixtures.
  */
 import { Graph } from '@lenke/core';
@@ -68,7 +68,7 @@ const Q = 'MATCH (b:P) WHERE b.sel < $hi RETURN min(b.n) AS c, count(*) AS rows'
 console.log(`  NODES=${NODES}, median of ${REPS}\n`);
 
 /*
- * 🔑 THE SCAN RATE comes from the UNINDEXED graph, where no seek is possible at any selectivity, so the
+ * THE SCAN RATE comes from the UNINDEXED graph, where no seek is possible at any selectivity, so the
  * cost is (nodes scanned) x (scan rate) + (rows matched) x (per-row work). Two widely separated
  * selectivities separate those two terms by simultaneous equations rather than assuming either.
  */
@@ -85,8 +85,8 @@ console.log(`    => per matched row ${perRowScan.toFixed(2)} ns, fixed ${scanFix
 console.log(`    => SCAN RATE ${scanPerNode.toFixed(2)} ns/node over ${NODES} nodes\n`);
 
 /*
- * 🔑 THE SEEK RATE comes from the INDEXED graph at selectivities BELOW the gate, where the seek is taken.
- * ⚠️ Above the gate the indexed graph scans too, so those points measure the scan and would corrupt the
+ * THE SEEK RATE comes from the INDEXED graph at selectivities BELOW the gate, where the seek is taken.
+ * Above the gate the indexed graph scans too, so those points measure the scan and would corrupt the
  * rate — which is why only narrow points are used.
  */
 const kNarrow = timeIt(indexed, Q, { hi: 10 });
@@ -99,7 +99,7 @@ console.log(`    ${kMid.rows} rows  ${kMid.ms.toFixed(3)} ms`);
 console.log(`    => SEEK RATE ${seekPerRow.toFixed(2)} ns/row returned\n`);
 
 /*
- * 🔑 THE DERIVATION, native's own: a seek returning `f * NODES` rows costs `f * NODES * seekPerRow`; the
+ * THE DERIVATION, native's own: a seek returning `f * NODES` rows costs `f * NODES * seekPerRow`; the
  * scan it replaces costs `NODES * scanPerNode`. They cross at `f = scanPerNode / seekPerRow`.
  */
 const breakEven = scanPerNode / seekPerRow;

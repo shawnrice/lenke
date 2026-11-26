@@ -38,8 +38,8 @@ const QUERIES = {
   farCmp: 'MATCH (a:Person)-[:KNOWS]->(x) WHERE x.age > 60 RETURN x.name AS n',
   startTrue: 'MATCH (a:Person)-[:KNOWS]->(x) WHERE true RETURN x.name AS n',
   /*
-   * ⚠⚠ **THE NARROWER FOLD'S CASE (item 2310).** Item 2287 built a vacuous-`WHERE` fold and reverted it
-   * because a BARE `WHERE true` is a load-bearing route ORACLE in this repo's tests. 🔑 The obvious escape
+   * **THE NARROWER FOLD'S CASE (item 2310).** Item 2287 built a vacuous-`WHERE` fold and reverted it
+   * because a BARE `WHERE true` is a load-bearing route ORACLE in this repo's tests. The obvious escape
    * is to fold `true` out of an AND and leave the bare form alone — oracle kept, query builders helped.
    * These two arms test whether that is worth anything: if `true AND cond` costs the same as `cond`, the
    * narrower fold has no route to recover and the trade-off is irreducible.

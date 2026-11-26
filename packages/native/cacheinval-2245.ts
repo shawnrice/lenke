@@ -1,11 +1,11 @@
 /**
- * ⚠️⚠️⚠️ **WHAT DOES A WRITE DO TO THE TS ENGINE'S PER-ELEMENT CACHES? (item 2245)**
+ * **WHAT DOES A WRITE DO TO THE TS ENGINE'S PER-ELEMENT CACHES? (item 2245)**
  *
  * Item 2239 established that `#box` (properties), `#toV` (an edge's resolved endpoint) and `#adjTo` /
  * `#adjFrom` (a vertex's adjacency map) are **load-bearing** — replacing them with direct store lookups was
  * 1.7x WORSE. Each is a `??=` memo on the ELEMENT, filled on first read.
  *
- * 🔑 That raises two questions nothing in the corpus asks, and `CLAUDE.md` records the native engine
+ * That raises two questions nothing in the corpus asks, and `CLAUDE.md` records the native engine
  * failing the second one badly (one `add_edge` clears `csr_fresh` with nothing to re-arm it, so EVERY later
  * read is demoted for the rest of the session — up to 24.07x):
  *
@@ -14,7 +14,7 @@
  * 2. **PERFORMANCE.** Does one write demote later reads, and if so does the next read RE-ARM the memo or
  *    does the demotion persist?
  *
- * ⚠️ The third possibility matters most and is the one to look for: a memo that is neither invalidated
+ * The third possibility matters most and is the one to look for: a memo that is neither invalidated
  * (wrong answers) nor re-armed (permanent demotion). Both would be invisible to every existing instrument.
  */
 import { Graph } from '@lenke/core';
@@ -45,7 +45,7 @@ const doc = (() => {
 const g = deserialize(doc, 'ndjson', new Graph());
 
 /*
- * ⚠️⚠️ **THE SHAPE MUST ACTUALLY WALK ADJACENCY, AND THE FIRST ATTEMPT DID NOT.** `out('E').count()` is the
+ * **THE SHAPE MUST ACTUALLY WALK ADJACENCY, AND THE FIRST ATTEMPT DID NOT.** `out('E').count()` is the
  * DEGREE-SUM CLOSED FORM — it reads per-type degree totals and never touches `#adjTo`/`#adjFrom`, so it
  * timed at 0.0 ms and could say nothing about memo invalidation. (Its answer was still correct after the
  * write, which does tell us the degree totals are maintained.) `values` after a hop has to enumerate the
@@ -88,7 +88,7 @@ console.log(`  warm count      = ${baseline}`);
 console.log(`  warm series     = ${warm.map((x) => x.toFixed(1)).join(' ')}`);
 
 /*
- * 🔑 ONE WRITE — a single new edge from a vertex that already has four. A traversal run immediately after
+ * ONE WRITE — a single new edge from a vertex that already has four. A traversal run immediately after
  * MUST include it: the expected count is exactly baseline + 1.
  */
 const from = g.getVertexById('v7');

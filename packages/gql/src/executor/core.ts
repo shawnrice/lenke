@@ -365,7 +365,7 @@ const hashedIn = (v: unknown, { set, hasNull }: Haystack): Truth => {
  * row's env and reusing it is sound precisely BECAUSE it is closed: a `lit`/`param` tree never
  * reads the binding, so every row would compute the same value.
  *
- * ⚠️ KEYING ON THE ARRAY'S IDENTITY INSTEAD WAS A 2.9x REGRESSION, and it is worth saying why,
+ * KEYING ON THE ARRAY'S IDENTITY INSTEAD WAS A 2.9x REGRESSION, and it is worth saying why,
  * because identity looks like the obvious key. `case 'list'` rebuilds its array per ROW, so for an
  * inline list of params the identity check missed on every row and re-hashed the whole haystack
  * each time — strictly worse than the linear scan it replaced. Measured at 100 terms, 200,000 rows:
@@ -1752,19 +1752,19 @@ const compileCase = (expr: Extract<Expr, { kind: 'case' }>): CompiledExpr => {
 /**
  * `coalesce(a, b, …)` as a dedicated closure: the first non-nullish argument, else `null`.
  *
- * ⚠️ Mirrors `firstNonNullish` exactly, including returning `null` (not `undefined`) when every argument
+ * Mirrors `firstNonNullish` exactly, including returning `null` (not `undefined`) when every argument
  * is nullish — a difference there would be a wrong answer, not a slower one.
  */
 /**
  * Can evaluating `expr` RAISE? Conservatively, only three kinds are known not to (item 2173).
  *
- * 🔑 A literal is a constant; a variable read is a slot load; and a compiled property read normalizes a
+ * A literal is a constant; a variable read is a slot load; and a compiled property read normalizes a
  * MISSING property to `null` rather than throwing — verified at item 2165, whose own note records that
- * `a.k` projects as `null` and `a.k IS NULL` is true. ⚠️ Everything else — a function call, an arithmetic
+ * `a.k` projects as `null` and `a.k IS NULL` is true. Everything else — a function call, an arithmetic
  * operator, a cast, a subscript — is assumed to raise, because being wrong in that direction only costs
  * the short-circuit.
  *
- * 🔑 The same three kinds are the ones `detectNodeProjection` treats as plain projection items, which is
+ * The same three kinds are the ones `detectNodeProjection` treats as plain projection items, which is
  * where the spelling comes from rather than from a fresh list.
  */
 export const cannotRaise = (expr: { readonly kind: string }): boolean =>
@@ -1774,9 +1774,9 @@ export const cannotRaise = (expr: { readonly kind: string }): boolean =>
  * `coalesce` that STOPS at the first non-nullish argument — legal only when no later argument can raise
  * (item 2173).
  *
- * ⚠️⚠️ **THIS IS THE SHORT-CIRCUIT `coalesceCall`'s NOTE CALLS A SEMANTIC CHANGE, AND THAT NOTE IS RIGHT**:
+ * **THIS IS THE SHORT-CIRCUIT `coalesceCall`'s NOTE CALLS A SEMANTIC CHANGE, AND THAT NOTE IS RIGHT**:
  * `coalesce(a.k, f())` must keep raising whatever `f()` raises even when `a.k` is non-null, because which
- * errors surface is behaviour. 🔑 The note is a claim about ARGUMENTS THAT CAN RAISE, though, and
+ * errors surface is behaviour. The note is a claim about ARGUMENTS THAT CAN RAISE, though, and
  * `coalesce(a.k, 0)` has none — so the blocker is respected by gating on `cannotRaise` rather than by
  * overriding it. Both closures exist and the compiler picks per call site.
  *
@@ -1787,7 +1787,7 @@ export const cannotRaise = (expr: { readonly kind: string }): boolean =>
  *     sum(coalesce(a.k, .., .., 0))   9.55 / 9.60     +3.2  — LINEAR in arg count, ~1.07 per arg
  * ```
  *
- * ⚠️ The win is DATA-DEPENDENT: it saves the later arguments only while the first is non-nullish, and
+ * The win is DATA-DEPENDENT: it saves the later arguments only while the first is non-nullish, and
  * `coalesce(a.nope, a.k)` saves nothing. That is inherent to a short-circuit, not a defect.
  */
 const coalesceShortCircuit = <E>(
@@ -1800,7 +1800,7 @@ const coalesceShortCircuit = <E>(
       const v = steps[i](env);
 
       /*
-       * ⚠️ `isNullish` and not an inlined test, for the reason `coalesceCall` gives: one call to the
+       * `isNullish` and not an inlined test, for the reason `coalesceCall` gives: one call to the
        * shared predicate cannot drift from the `firstNonNullish` both mirror.
        */
       if (!isNullish(v)) {
@@ -1819,22 +1819,22 @@ const coalesceCall = <E>(steps: readonly ((env: E) => unknown)[]): ((env: E) => 
     let found: unknown = null;
 
     /*
-     * ⚠️ ALL arguments are evaluated, and the FIRST non-nullish wins — not the last. The loop does not
+     * ALL arguments are evaluated, and the FIRST non-nullish wins — not the last. The loop does not
      * `break`, because breaking is the short-circuit the call site explains is a semantic change.
      */
     for (let i = 0; i < n; i += 1) {
       const v = steps[i](env);
 
       /*
-       * ⚠️ `isNullish`, NOT an inlined `v !== null && v !== undefined` — one call to the shared predicate
+       * `isNullish`, NOT an inlined `v !== null && v !== undefined` — one call to the shared predicate
        * cannot drift from the `firstNonNullish` it mirrors.
        *
-       * ⚠️⚠️ **AND THIS TEST IS DEFENCE IN DEPTH, NOT LOAD-BEARING, which mutation showed and a check
+       * **AND THIS TEST IS DEFENCE IN DEPTH, NOT LOAD-BEARING, which mutation showed and a check
        * explained.** Three mutants of it survive — dropping it, dropping either half — for two compounding
        * reasons: a compiled property read normalizes a MISSING property to `null` (verified: `a.k`
        * projects as `null`, `a.k IS NULL` is true), so this closure never sees `undefined`; and `found`
        * starts as `null`, so assigning a nullish value to it is indistinguishable from not assigning.
-       * 🔑 Kept because the invariant it states is what makes the loop correct, and a later `found`
+       * Kept because the invariant it states is what makes the loop correct, and a later `found`
        * initializer that was not `null` would make it load-bearing again.
        */
       if (found === null && !isNullish(v)) {
@@ -1999,18 +1999,18 @@ const compileFunc = (expr: FuncExpr): CompiledExpr => {
   /*
    * ITEM-2165-COALESCE-CALL: `coalesce` compiled directly, instead of through the generic scalar call.
    *
-   * ⚠️⚠️ **THE PREDICATE SPELLING IS 6.3x ITS TWIN FOR THE IDENTICAL ANSWER** — `WHERE coalesce(a.k, 0) = 1`
+   * **THE PREDICATE SPELLING IS 6.3x ITS TWIN FOR THE IDENTICAL ANSWER** — `WHERE coalesce(a.k, 0) = 1`
    * at 10.5 ms against `WHERE a.k = 1`'s 1.67 over 200,000 vertices — and item 2164 established where that
    * lives. Not the AST: an AST rewrite folding the two spellings together measured a **NO-OP**, because the
-   * engine already converges them below it (identical `eqProps` and `seedHints`). 🔑 A windowed profile
+   * engine already converges them below it (identical `eqProps` and `seedHints`). A windowed profile
    * found `callScalar` at **9.5% in one arm and ABSENT in the other** with those identical shapes, so the
    * cost is the compiled CLOSURE.
    *
-   * 🔑 `bufferedScalarCall` pays, PER ROW: a `buf` array fill, `assertScalarArgTypes`, and two table
+   * `bufferedScalarCall` pays, PER ROW: a `buf` array fill, `assertScalarArgTypes`, and two table
    * lookups (`UNARY_NUM`, `UNARY_STR`) before reaching the `coalesce` case. All of it is constant for a
    * given call site.
    *
-   * ⚠️ **EVERY ARGUMENT IS STILL EVALUATED, DELIBERATELY.** Short-circuiting would be faster again, but
+   * **EVERY ARGUMENT IS STILL EVALUATED, DELIBERATELY.** Short-circuiting would be faster again, but
    * `coalesce(a.k, f())` currently raises whatever `f()` raises even when `a.k` is non-null, and changing
    * which errors surface is a semantic change, not a speed-up. This closure is behaviour-identical.
    */
@@ -2856,7 +2856,7 @@ export type CPredicate = {
    * 1261 and 1262) — including the `NOT (… IS NULL)` spelling, which is why that one is folded here
    * rather than left for a second pass.
    *
-   * ⚠️ A NULL TEST IS TOTAL, which is what makes this lift simple where the others needed care:
+   * A NULL TEST IS TOTAL, which is what makes this lift simple where the others needed care:
    * `isNullish` returns a plain boolean, there is no UNKNOWN to settle, and nothing here can RAISE.
    * It applies `isNullish` — the SAME function `case 'isNull'` uses — so absent and stored-null
    * cells are classified identically on both routes rather than by re-deriving the rule.
@@ -2899,7 +2899,7 @@ export type CPredicate = {
    *   n.v IS NOT TYPED INTEGER   6.971      1.60x
    * ```
    *
-   * ⚠️ THE TWO SPELLINGS COST DIFFERENTLY BEFORE THIS LIFT (12.976 against 6.971 on a 50/50 split
+   * THE TWO SPELLINGS COST DIFFERENTLY BEFORE THIS LIFT (12.976 against 6.971 on a 50/50 split
    * answering the same count), and item 1297 recorded that as its own open question since the lift
    * was absent from BOTH. If they still differ after this, that asymmetry is a second defect and
    * not this one.
@@ -3082,7 +3082,7 @@ export type CNullProp = {
 /**
  * One lifted `<ownVar>.<key> IS [NOT] TRUE|FALSE|UNKNOWN` conjunct (item 1286).
  *
- * ⚠️ TOTAL AND NON-RAISING, which is what makes this the easiest of the lifted families to get
+ * TOTAL AND NON-RAISING, which is what makes this the easiest of the lifted families to get
  * right — the same property `CNullProp` has. `case 'isTruth'` says it outright: the test is an
  * EXACT three-valued comparison, not a truthiness coercion, so a non-boolean is simply "no"
  * rather than a fault, and it yields a plain boolean with no UNKNOWN to settle.
@@ -3093,7 +3093,7 @@ export type CNullProp = {
  * TOTAL AND NON-RAISING, like `CTruthTestProp`: `valueIsTypedTy` returns a plain boolean and
  * `case 'isTyped'` composes it with `negated ? !m : m`, so there is no UNKNOWN to settle.
  *
- * ⚠️ AND YET IT RUNS IN THE **LATE** GROUP, after `truthProps`, exactly as `truthTestProps` does.
+ * AND YET IT RUNS IN THE **LATE** GROUP, after `truthProps`, exactly as `truthTestProps` does.
  * Non-raising does NOT imply hoistable in this engine — the engine is the authority (item 1286) and
  * it hoists no form of this test, measured at item 1297 with `n.s` as the faulting sibling:
  *
@@ -3122,7 +3122,7 @@ export type CTruthTestProp = {
 /**
  * One lifted `<ownVar> IS [NOT] LABELED <label expr>` conjunct (item 1289).
  *
- * ⚠️ THE SUBJECT IS THE ELEMENT, NOT A PROPERTY, which is what makes this the first lifted family
+ * THE SUBJECT IS THE ELEMENT, NOT A PROPERTY, which is what makes this the first lifted family
  * with no `key`. Every other one reads `propOf(element, key)`; this one reads `element.labels`.
  *
  * TOTAL AND NON-RAISING, like `CNullProp` and `CMemberProp`: `case 'isLabeled'` yields
@@ -3165,7 +3165,7 @@ type CMemberProp = {
  * `member` cannot raise — equality is total (a cross-type `=` answers no-match), `isNullish`
  * returns a plain boolean, and membership is built on equality.
  *
- * ⚠️ `cmp`/`path` USED TO BE HELD BACK HERE AND NO LONGER ARE (item 1545). An ordering comparison
+ * `cmp`/`path` USED TO BE HELD BACK HERE AND NO LONGER ARE (item 1545). An ordering comparison
  * does throw on a cross-type pair, so lifting one ahead of a residual can RAISE where the
  * whole-chain route settled the row FALSE first — a query that works today can start throwing on
  * mixed-type data. That is a deliberate trade the owner took on being shown it: the hold cost
@@ -3193,7 +3193,7 @@ const raisesWhereTheChainWouldNot = (lists: {
  * The tail `directEqProps` could not read, as one expression — or `'decline'`, meaning the chain
  * keeps its old whole-predicate route (item 1284).
  *
- * ⚠️ A TAIL THAT READS ANOTHER VARIABLE DECLINES, as it always did. The callers that pass an
+ * A TAIL THAT READS ANOTHER VARIABLE DECLINES, as it always did. The callers that pass an
  * `ownVar` have PROVED the predicate element-local, so such a tail should not arrive here at all —
  * but the three sites that evaluate a residual (`relOnlyHopCount` and the two `startLifted` gates)
  * bind only the element's OWN variable, so a residual reading `m` would be evaluated against a
@@ -3252,14 +3252,14 @@ const residualOf = (
  * the third family added to a `directEqProps` that sits at its complexity cap, so each arm is one
  * branch in the loop and the matching lives in here.
  *
- * ⚠️ THE SUBJECT IS A `var`, NOT A `prop` — the one arm in that loop which matches the bare
+ * THE SUBJECT IS A `var`, NOT A `prop` — the one arm in that loop which matches the bare
  * variable, because `IS LABELED` asks about the ELEMENT rather than about one of its properties.
  */
 /**
  * File one lifted membership conjunct: `'taken'`, `'stop'` (decline the rest of the chain), or
  * `'skip'` (not this family).
  *
- * ⚠️ `NOT IN` LIFTS TOO SINCE ITEM 1288, and it stays in the NON-RAISING group: `not3` of a
+ * `NOT IN` LIFTS TOO SINCE ITEM 1288, and it stays in the NON-RAISING group: `not3` of a
  * membership cannot raise, and the native engine HOISTS it past a faulting sibling — the
  * measurement item 1286 established as the authority on that question:
  *
@@ -3268,7 +3268,7 @@ const residualOf = (
  *   WHERE n.s AND n.n NOT IN [99]     native ERR     TRUE, settles nothing, uninformative
  * ```
  *
- * ⚠️ THE OR SPELLING IS FOLDED BY `asMembershipNode`, not received already folded — item 1269's
+ * THE OR SPELLING IS FOLDED BY `asMembershipNode`, not received already folded — item 1269's
  * first cut assumed otherwise and left `OR` on the generic path at 6.042 while `IN` went to 3.699.
  *
  * Extracted at item 1289 because `directEqProps` sits at its complexity cap and this arm carries
@@ -3281,14 +3281,14 @@ const residualOf = (
  * `NOT (n.k = v)` is `n.k <> v` and `NOT (n.k <> v)` is `n.k = v`, so the lift is a flip of the
  * operator (item 1272).
  *
- * ⚠️ EQUALITY ONLY, AND THE RESTRICTION IS NaN. `NOT (x >= 2)` is NOT `x < 2`: this repo keeps NaN
+ * EQUALITY ONLY, AND THE RESTRICTION IS NaN. `NOT (x >= 2)` is NOT `x < 2`: this repo keeps NaN
  * JS-unordered, so every ordering comparison against NaN is FALSE, making the negation TRUE where
  * the flipped operator is FALSE. `=`/`<>` have no such hole — they are exact complements on every
  * value this engine stores. `NEGATED_COMPARE` enforces this, and
  * `negated-compare-lift.test.ts` demonstrates what widening it would cost with a NaN PARAM, which
  * is not coerced the way a stored NaN is. Same restriction `opt::normalize_pred` carries natively.
  *
- * ⚠️ THE DOTTED FORM LIFTS TOO SINCE ITEM 1290. `asPropCompare` matches a plain `prop` only, so
+ * THE DOTTED FORM LIFTS TOO SINCE ITEM 1290. `asPropCompare` matches a plain `prop` only, so
  * `NOT (n.m.k = 5)` used to decline — while `n.m.k <> 5`, the same question, lifted into
  * `pathProps` (item 900). Measured at 200,000 vertices against that positive form, which is the
  * right twin because item 899 measured the dotted field step at 101.5 ns/row against a flat 26.5:
@@ -3398,7 +3398,7 @@ const directEqProps = (
     return null;
   }
 
-  // ⚠️ A NESTED `and` IS FLATTENED (item 1271), and the note that used to stand here said why it
+  // A NESTED `and` IS FLATTENED (item 1271), and the note that used to stand here said why it
   // was not: "the parser produces one flat `items` list for `a AND b AND c`, so the nested shape
   // arrives only from parenthesisation, and declining it is a missed optimisation, not a wrong
   // answer." Both halves are true and the conclusion was still wrong — a missed optimisation that
@@ -3427,7 +3427,7 @@ const directEqProps = (
   const typedTests: CTypedTestProp[] = [];
   const labelTests: CLabelTest[] = [];
 
-  // ⚠️ AN UNADMITTED CONJUNCT STOPS THE LOOP, it no longer forfeits the chain (item 1284).
+  // AN UNADMITTED CONJUNCT STOPS THE LOOP, it no longer forfeits the chain (item 1284).
   // `stop` is the index of the first conjunct this loop could not read; everything from there on
   // is the residual and keeps WRITTEN ORDER. Lifting a PREFIX is what makes that sound without a
   // reordering argument: the lifted families run before the residual, and a prefix is already
@@ -3444,7 +3444,7 @@ const directEqProps = (
   // The unliftable conjunct runs only on the 1% that survive `a = 50`, so nearly all of that is
   // the SIBLINGS' forfeited lift rather than its own cost.
   //
-  // ⚠️ THE REVERSE ORDER IS DELIBERATELY NOT DONE. `<unliftable> AND a=50` measured 13.750 and a
+  // THE REVERSE ORDER IS DELIBERATELY NOT DONE. `<unliftable> AND a=50` measured 13.750 and a
   // lift would take it to ~4.3 (3.2x), but only by running `a = 50` FIRST — which is observable
   // when the unliftable conjunct can RAISE, because short-circuiting on FALSE would then skip a
   // throw that happens today. It needs its own argument and its own item; the test
@@ -3452,7 +3452,7 @@ const directEqProps = (
   /**
    * The conjuncts this loop could not read, in WRITTEN ORDER — the residual.
    *
-   * ⚠️ IT USED TO BE A PREFIX RULE and that forfeited every lift after the first unreadable
+   * IT USED TO BE A PREFIX RULE and that forfeited every lift after the first unreadable
    * conjunct (item 1544). `stop` was the index of the first conjunct the scan could not read and
    * everything from there on became the residual, so `<unliftable> AND n.a = 50` lifted NOTHING
    * while `n.a = 50 AND <unliftable>` lifted the equality. Two spellings of one question, measured
@@ -3503,7 +3503,7 @@ const directEqProps = (
     //   a <> 50          3.859 ms   19.3 ns a vertex
     //   NOT (a = 50)     6.467      32.3            1.68x
     //
-    // ⚠️ EQUALITY ONLY, AND THE RESTRICTION IS NaN. `NOT (x >= 2)` is NOT `x < 2`: this repo keeps
+    // EQUALITY ONLY, AND THE RESTRICTION IS NaN. `NOT (x >= 2)` is NOT `x < 2`: this repo keeps
     // NaN JS-unordered, so every ordering comparison against NaN is FALSE, making the negation TRUE
     // where the flipped operator is FALSE. `=`/`<>` have no such hole — they are exact complements
     // on every value this engine stores:
@@ -3553,7 +3553,7 @@ const directEqProps = (
 
     // `WHERE n.k IN [..]` AND the `n.k = a OR n.k = b` spelling (item 1269).
     //
-    // ⚠️ THE OR SPELLING HAS TO BE FOLDED HERE, and the first cut of this item assumed it arrived
+    // THE OR SPELLING HAS TO BE FOLDED HERE, and the first cut of this item assumed it arrived
     // already folded. It does not: `membershipFromEqChain` is applied inside `compileExpr`'s
     // `case 'or'` — deliberately, so that every ANALYSIS pass still sees the original `or` and
     // `collectHints`' seeding keeps firing — which is a stage this loop runs BEFORE. The two
@@ -3668,7 +3668,7 @@ const directEqProps = (
     return null;
   }
 
-  // ⚠️ WITH A RESIDUAL, ONLY THE NON-RAISING FAMILIES MAY LIFT — and this is a WRONG ANSWER rather
+  // WITH A RESIDUAL, ONLY THE NON-RAISING FAMILIES MAY LIFT — and this is a WRONG ANSWER rather
   // than a missed optimisation. `truthProps` reads a value and coerces it to a boolean, which
   // RAISES on a non-boolean; the generic `and` arm does not, because FALSE dominates and settles
   // the row first. So lifting a bare `prop` ahead of a residual exposes a raise the whole-chain
@@ -4393,13 +4393,13 @@ export const compilePath = (pattern: PathPattern): CPath => {
  * ablated the whole call out of `buildNodeCount`'s tally and measured **2.23x** (3.84 -> 1.72 ms at
  * 200,000 vertices), with the ceiling BELOW Gremlin's 2.16 rather than level with it.
  *
- * ⚠️ AND THE COST IS DISTRIBUTED, which is why this is a specialization and not a fix to one term.
+ * AND THE COST IS DISTRIBUTED, which is why this is a specialization and not a fix to one term.
  * Item 802 refuted the env allocation and the scaffolding by micro-benchmark; item 1338 re-tested
  * by ablation and agreed — the env reads 3.69 against 4.01 reused (overlapping), and hoisting the
  * right-hand side reads 1.09x against a measured ~1.11x noise floor on the same shape. No single
  * term is resolvable; the aggregate is 2.23x.
  *
- * ⚠️ THE GUARD IS AN ALLOW-LIST OVER THE PREDICATE'S OWN KEYS, and that is not a stylistic choice —
+ * THE GUARD IS AN ALLOW-LIST OVER THE PREDICATE'S OWN KEYS, and that is not a stylistic choice —
  * it is the fix for a WRONG ANSWER this function already caused. The first version listed the
  * carriers to refuse by hand, and the list was short: `CPredicate` has TWELVE
  * (`props`, `where`, `eqProps`, `cmpProps`, `truthProps`, `notTruthProps`, `memberProps`,
@@ -4434,7 +4434,7 @@ const PAIRABLE: ReadonlySet<string> = new Set(['props', 'eqProps']);
  * TWO equality conjuncts as ONE straight-line closure, or `undefined` when the predicate is not
  * that shape. The width-2 sibling of {@link specializeSingleProp}.
  *
- * ⚠️ ITEM 1604 — THE ARITY CLIFF, nominated by `bun run bench:usage` rather than by a profile.
+ * ITEM 1604 — THE ARITY CLIFF, nominated by `bun run bench:usage` rather than by a profile.
  * `read: keyed dedup lookup` is the slowest INDEXED read in the TS engine by 6-20x over its
  * siblings (76.4k ops/s against 468k-1.49M) and the only indexed read row where TS LOSES to native
  * (76.4k against 162.0k). Its query is `WHERE u.score = $s AND u.active = true` — and the planner
@@ -4460,20 +4460,20 @@ const PAIRABLE: ReadonlySet<string> = new Set(['props', 'eqProps']);
  *
  * So the FIRST conjunct costs ~21 ns a candidate and each unspecialized one adds ~34.
  *
- * ⚠️ THE UNROLL IS THE SHAPE `filteredHopCount` ALREADY MEASURED, not a new idea: that function's
+ * THE UNROLL IS THE SHAPE `filteredHopCount` ALREADY MEASURED, not a new idea: that function's
  * header records a two-filter count at **54.81 ms against a one-filter 28.49**, an inline indexed
  * loop at 41.79, monomorphic key/pred arrays at 43.82 ("so the polymorphic `Step` property load was
  * NOT the cost — that hypothesis is refuted"), and an UNROLLED straight-line pair over captured
  * locals at **30.25** — landing on the one-filter twin. The same cliff at the same arity in a
  * different file, so this takes the answer that was already paid for.
  *
- * ⚠️ A SEPARATE FUNCTION, NOT A WIDENED `specializeSingleProp`. That function's guard structure —
+ * A SEPARATE FUNCTION, NOT A WIDENED `specializeSingleProp`. That function's guard structure —
  * one populated carrier, iterate the keys PRESENT so an unknown carrier REFUSES rather than being
  * ignored — exists because its first version used a hand-written list and MISSED FOUR CARRIERS,
  * answering 5 where the right answer was 2. Widening it would put all five of its arms on the same
  * change; this adds a second narrow contract beside it and leaves those untouched.
  *
- * ⚠️ BOTH SPELLINGS OR NEITHER. `props` and `eqProps` are admitted together, which is not
+ * BOTH SPELLINGS OR NEITHER. `props` and `eqProps` are admitted together, which is not
  * generosity: specializing only the clause form would open a 2.7x EQUIVALENT-SPELLING GAP, the
  * defect class this engine is named after, on the exact row that nominated the work.
  *
@@ -4519,7 +4519,7 @@ export const specializeEqPair = (
   }
 
   /**
-   * ⚠️ THE MIXED ARM IS NOT REACHED BY ANY ENGINE QUERY TODAY, and that is measured rather than
+   * THE MIXED ARM IS NOT REACHED BY ANY ENGINE QUERY TODAY, and that is measured rather than
    * assumed. Making it THROW left the suite green except for this file's own two direct tests — so
    * every real query carrying both an inline and a clause constraint splits them into TWO
    * `InlinePred`s, each width-1, which `fastTallyPred` composes from two `specializeSingleProp`
@@ -4573,7 +4573,7 @@ const CMP_PAIRABLE: ReadonlySet<string> = new Set(['props', 'eqProps', 'cmpProps
 /**
  * ONE ordering comparison plus ONE equality as one straight-line closure, or `undefined`.
  *
- * ⚠️ THE WIDTH-2 CASE ITEM 1604 DID NOT COVER. `PAIRABLE` is `{props, eqProps}`, both equality readings,
+ * THE WIDTH-2 CASE ITEM 1604 DID NOT COVER. `PAIRABLE` is `{props, eqProps}`, both equality readings,
  * so `WHERE u.name = $n AND u.score >= 0` — an equality plus an ORDERING comparison — declines
  * `specializeEqPair` and falls to the generic `satisfies` loop. Measured at item 2363 over a
  * 20,000-vertex unindexed scan, one arm per process:
@@ -4584,14 +4584,14 @@ const CMP_PAIRABLE: ReadonlySet<string> = new Set(['props', 'eqProps', 'cmpProps
  *    cheapAnd     + u.score >= 0  (cmpProps)    24.43        <- 1.19x, this function's target
  * ```
  *
- * 🔑 Most of the 20.40 is the second property read and compare — genuine work, not a cliff; item 2363
+ * Most of the 20.40 is the second property read and compare — genuine work, not a cliff; item 2363
  * corrected an earlier claim of 1.76x-2.11x on exactly that point. The 1.19x between a PAIRABLE pair and a
  * `cmpProps` one is what is actually recoverable.
  *
- * ⚠️ `satisfies` consults `props`, then `eqProps`, then `cmpProps`, so the EQUALITY is emitted first in
+ * `satisfies` consults `props`, then `eqProps`, then `cmpProps`, so the EQUALITY is emitted first in
  * both arms below — item 1604's rule, kept for the same reason.
  *
- * ⚠️ TWO ORDERING COMPARISONS ARE NOT ADMITTED. That is a third contract with its own semantics to get
+ * TWO ORDERING COMPARISONS ARE NOT ADMITTED. That is a third contract with its own semantics to get
  * right, and item 2363's table does not price it; a pair is enough to close the measured gap. The `=` and
  * `<>` exclusion is `specializeSingleProp`'s own, for its reason: an equality in `cmpProps` is routed to
  * `compareTruth` rather than to a `COMPARE` entry.
@@ -4702,7 +4702,7 @@ export const specializeSingleProp = (
 
     // ORDERING ops only: an equality is routed to `compareTruth` instead.
     //
-    // ⚠️ AND `cmpProps` DOES CARRY EQUALITIES, which is the opposite of what this comment first
+    // AND `cmpProps` DOES CARRY EQUALITIES, which is the opposite of what this comment first
     // claimed. `satisfies`'s own loop describes `cmpProps` as "the ORDERING comparisons `eqProps`
     // cannot carry", so I wrote this off as belt-and-braces — then made the branch THROW and ran
     // the suite: SEVEN tests fired. The refusal is reached, not defensive.
@@ -4720,7 +4720,7 @@ export const specializeSingleProp = (
     /**
      * ITEM 1339: the numeric pair is answered by `cmp` DIRECTLY, skipping the `compareTruth` CALL.
      *
-     * ⚠️ READ `compareTruth`'s HEADER BEFORE TOUCHING THIS — it refutes a NEIGHBOURING lever and
+     * READ `compareTruth`'s HEADER BEFORE TOUCHING THIS — it refutes a NEIGHBOURING lever and
      * the difference is the whole point. That header records adding
      * `if (op !== '=' && … typeof lv === 'number' …) return fn(lv, rv)` INSIDE `compareTruth`: "It
      * was written and measured and it moved NOTHING", across five shapes, twice over. This is not
@@ -4768,7 +4768,7 @@ export const specializeSingleProp = (
      * an absent or null cell still drops the row — item 1288's composition, reused rather than
      * rewritten.
      *
-     * ⚠️ `negated` IS DECIDED HERE, NOT PER ELEMENT — item 1339's "answer it at the call site"
+     * `negated` IS DECIDED HERE, NOT PER ELEMENT — item 1339's "answer it at the call site"
      * applied to a branch instead of a comparison. Two closures, each with the test it needs.
      */
     return negated
@@ -4799,10 +4799,10 @@ export const specializeSingleProp = (
      * passing is exactly `isNullish(...) !== negated`, with `negated` true for `IS NOT NULL`. This
      * calls the same `isNullish` and the same `propOf`.
      *
-     * ⚠️ NO `env`. Unlike the ordering and equality arms there is no right-hand side to evaluate,
+     * NO `env`. Unlike the ordering and equality arms there is no right-hand side to evaluate,
      * so this closure reads the element alone — which is most of why it is cheaper.
      *
-     * ⚠️ THE ORDERING QUESTION DOES NOT ARISE HERE, and that is worth stating because the arm this
+     * THE ORDERING QUESTION DOES NOT ARISE HERE, and that is worth stating because the arm this
      * binds sits inside a careful ordering argument. `satisfies` runs `nullProps` late precisely
      * because it CANNOT RAISE, and the file records a live TS-vs-native divergence that turns on
      * that placement (`WHERE n.s AND n.z IS NOT NULL`, item 1270). It cannot be reached from here:
@@ -4837,7 +4837,7 @@ export const specializeSingleProp = (
      * in `props`, which `SPECIALIZABLE` refused — so the general `satisfies` dispatch ran per
      * candidate for one spelling and not the other.
      *
-     * ⚠️ THIS IS A SEPARATE ARM ON PURPOSE, and merging it into the `eqProps` closure below would
+     * THIS IS A SEPARATE ARM ON PURPOSE, and merging it into the `eqProps` closure below would
      * be a WRONG ANSWER rather than a slow one. The two carriers implement DIFFERENT readings of
      * equality, and `satisfies`'s own `eqProps` comment is the matrix:
      *
@@ -4889,7 +4889,7 @@ export const specializeSingleProp = (
    * list exactly as the clause spelling does (the bug item 210 records: JS `!==` made an inline
    * list constraint never match).
    *
-   * ⚠️ THE ARM'S INPUT CONTRACT IS MEASURED, NOT ASSUMED, and it explains two surviving mutants.
+   * THE ARM'S INPUT CONTRACT IS MEASURED, NOT ASSUMED, and it explains two surviving mutants.
    * Making this closure THROW on an `undefined` right-hand side, and again on a non-scalar one,
    * left all 3,477 tests green — so only SCALARS arrive here, never `undefined` and never a list
    * or map. Hence:
@@ -5729,7 +5729,7 @@ export type CLinear = {
   forProjection: ((graph: Graph, params: Params) => Row[]) | null;
   /*
    * `MATCH (a:L) OPTIONAL MATCH (a)-[:T]->(b) RETURN a.k, count(*)` — the grouped twin of the rung
-   * below (item 2123). ⚠️ The pair had no rung though each half did, which cost 18x.
+   * below (item 2123). The pair had no rung though each half did, which cost 18x.
    */
   optionalGroupedHopCount: ((graph: Graph, params: Params) => Row[]) | null;
   optionalHopCount: ((graph: Graph, params: Params) => Row[]) | null;
@@ -5753,12 +5753,12 @@ export type CLinear = {
   /** Fused `MATCH (a)-[:T]->(x) RETURN <exprs over x>` row builder; else null. */
   hopProjection: RowsFn | null;
   /** A two-segment pattern projecting rows (item 1619) — `detectHop2Projection`. */
-  // ⚠️ `RowsFn`, not `AlwaysRowsFn`: these three DECLINE AT EXECUTION TIME when the generic
+  // `RowsFn`, not `AlwaysRowsFn`: these three DECLINE AT EXECUTION TIME when the generic
   // matcher would seed from the other end of the pattern (item 2104). The caller falls through.
   hop2Projection: RowsFn | null;
   /** THREE OR MORE segments projecting rows (item 1814) — `detectChainProjection`. */
   /*
-   * ⚠️ `RowsFn` (item 2105): declines at EXECUTION time when the far node carries a genuine index
+   * `RowsFn` (item 2105): declines at EXECUTION time when the far node carries a genuine index
    * seek — a property of the GRAPH, not the query. Measured 934x; the consumer must fall through.
    */
   chainProjection: RowsFn | null;
@@ -5774,27 +5774,27 @@ export type CLinear = {
    */
   /*
    * `RETURN DISTINCT <far>.<k>` over a 2+-segment chain, off the level recurrence (item 2119) — the
-   * row twin of `chainFoldLevels`. ⚠️ It must be consulted ABOVE `hop2Projection`, which claimed the
+   * row twin of `chainFoldLevels`. It must be consulted ABOVE `hop2Projection`, which claimed the
    * shape and was 27x slower on the same values.
    */
   chainDistinctLevels: AlwaysRowsFn | null;
   /*
-   * ⚠️ A `RowsFn` SINCE ITEM 2409, which admitted `sum`/`avg` to this rung as a multiplicity-weighted
+   * A `RowsFn` SINCE ITEM 2409, which admitted `sum`/`avg` to this rung as a multiplicity-weighted
    * fold. Those bail at EXECUTION time on a value they may not multiply — a stored temporal makes
    * `sum` a data exception rather than an addition (item 2336), and whether a property holds one is
    * not knowable while compiling. The caller's existing `!== null` fall-through applies unchanged.
    */
   chainFoldLevels: RowsFn | null;
-  // ⚠️ Declines at EXECUTION time (vacuity is a graph property) with `undefined`, exactly as
+  // Declines at EXECUTION time (vacuity is a graph property) with `undefined`, exactly as
   // `varLengthCount` above it does, so the caller's existing fall-through applies unchanged.
   chainStarCount: ((graph: Graph, params: Params) => Row[] | undefined) | null;
   /*
-   * ⚠️ `RowsFn` (item 2105): declines at EXECUTION time when the far node carries a genuine index
+   * `RowsFn` (item 2105): declines at EXECUTION time when the far node carries a genuine index
    * seek — a property of the GRAPH, not the query. Measured 934x; the consumer must fall through.
    */
   chainFoldedAggregate: RowsFn | null;
   /** The two-hop twin of `chainFoldedAggregate` — item 1824. */
-  // ⚠️ `RowsFn`, not `AlwaysRowsFn`: these three DECLINE AT EXECUTION TIME when the generic
+  // `RowsFn`, not `AlwaysRowsFn`: these three DECLINE AT EXECUTION TIME when the generic
   // matcher would seed from the other end of the pattern (item 2104). The caller falls through.
   hop2FoldedAggregate: RowsFn | null;
   /**
@@ -5803,7 +5803,7 @@ export type CLinear = {
    */
   hopDistinctProjection: RowsFn | null;
   /** The grouped `count(*)` at two and three-plus segments — item 1832. */
-  // ⚠️ `RowsFn`, not `AlwaysRowsFn`: these three DECLINE AT EXECUTION TIME when the generic
+  // `RowsFn`, not `AlwaysRowsFn`: these three DECLINE AT EXECUTION TIME when the generic
   // matcher would seed from the other end of the pattern (item 2104). The caller falls through.
   hop2GroupedCount: RowsFn | null;
   /**
@@ -5813,7 +5813,7 @@ export type CLinear = {
    */
   chainGroupedLevels: AlwaysRowsFn | null;
   /*
-   * ⚠️ `RowsFn` (item 2105): declines at EXECUTION time when the far node carries a genuine index
+   * `RowsFn` (item 2105): declines at EXECUTION time when the far node carries a genuine index
    * seek — a property of the GRAPH, not the query. Measured 934x; the consumer must fall through.
    */
   chainGroupedCount: RowsFn | null;
@@ -5857,7 +5857,7 @@ export type CLinear = {
    * settles — 14.7% of an 82 ns `RETURN 1 AS v`. Same move as `Plan.readsPath`/`mayFault` on the
    * Gremlin side (items 1504, 1507).
    *
-   * ⚠️ TOP-LEVEL CLAUSES ONLY, which is the right rule HERE and the opposite of `mayFault`'s. A
+   * TOP-LEVEL CLAUSES ONLY, which is the right rule HERE and the opposite of `mayFault`'s. A
    * nested write — a subquery or a `CALL` body that inserts — is a `CLinear` of its own, and
    * `runLinear` is what runs it, so it wraps its own transaction when it executes. Propagating
    * inward would be wrong twice over: it would claim a read-only outer query writes, and
@@ -5904,13 +5904,13 @@ export const boundExprs = (c: Clause): Map<string, Expr> | null => {
     const [{ var: name, expr }] = c.items;
 
     /*
-     * ⚠️⚠️ ANY EXPRESSION IS ADMITTED, and the once-read guard in `inlineTrailingLet` is what makes
+     * ANY EXPRESSION IS ADMITTED, and the once-read guard in `inlineTrailingLet` is what makes
      * that sound (item 1926). The rule used to be `cheapPureExpr(expr) || SUBQUERY_EXPRS.has(…)`,
      * and the subquery half already carried the whole argument: a subquery "is neither cheap nor
      * total, and is admitted anyway — but only because `inlineTrailingLet` then proves the
      * projection reads the name EXACTLY ONCE, which is what keeps the evaluation count unchanged".
      *
-     * 🔑 THAT ARGUMENT NEVER DEPENDED ON CHEAPNESS OR TOTALITY. Read exactly once, the expression is
+     * THAT ARGUMENT NEVER DEPENDED ON CHEAPNESS OR TOTALITY. Read exactly once, the expression is
      * evaluated once per row before the fold and once per row after it — same count, same faults,
      * same cost. So the narrower test was excluding expressions it did not need to, and
      * ARITHMETIC was the one that mattered: `LET a = n.n + 1 RETURN a AS x` kept its `LET`, and a
@@ -6238,7 +6238,7 @@ type FoldSite = { node: NodePattern; count: number; poisoned: boolean };
  *     path satisfying the PATTERN and only then filters. Fold `L` inward and the selector chooses
  *     among a different set of paths, which is a WRONG ANSWER, not a slower one.
  *
- *     ⚠️ THIS CONDITION IS CURRENTLY UNREACHABLE AND IS KEPT ANYWAY — measured, not assumed: the
+ *     THIS CONDITION IS CURRENTLY UNREACHABLE AND IS KEPT ANYWAY — measured, not assumed: the
  *     mutant that deletes it SURVIVES the whole gql suite. The reason is that this engine accepts
  *     a selector only with a single VARIABLE-LENGTH segment (`ANY SHORTEST (a)-[:T]->(m)-[:T]->(b)`
  *     is a syntax error, "currently support a single variable-length segment"), so a non-`walk`

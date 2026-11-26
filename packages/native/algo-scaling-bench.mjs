@@ -16,7 +16,7 @@
  * output rather than left to the reader: a two-point ratio makes a ratio, not a trend, so a row that
  * exceeds its expectation prints a note telling you to re-run it at `SIZES=4` before believing it.
  *
- * ⚠️ EACH ALGORITHM HAS ITS OWN SIZE SCALE, and it is not a convenience — it is a correctness
+ * EACH ALGORITHM HAS ITS OWN SIZE SCALE, and it is not a convenience — it is a correctness
  * requirement for the fixture. `betweenness` and `closeness` are Brandes/BFS from EVERY vertex
  * (O(V·E)), so the 40,000-vertex fixture the hop benches use would run for hours and the row would
  * never be collected. Each carries a `div`: its size is `NODES / div`. The ratio stays comparable
@@ -70,7 +70,7 @@ const SPECS = [
   { name: 'pagerank', div: 1, exp: 4, config: { iterations: 20 } },
   { name: 'personalizedPagerank', div: 1, exp: 4, config: { iterations: 20, sourceNodes: ['v0'] } },
   { name: 'shortestPath', div: 1, exp: 4, config: { source: 'v0' } },
-  // ⚠️ A SEPARATE ROW BECAUSE IT IS A DIFFERENT ROUTE, not a variation of one. Unweighted
+  // A SEPARATE ROW BECAUSE IT IS A DIFFERENT ROUTE, not a variation of one. Unweighted
   // `shortestPath` takes the BFS arm; supplying `weightProperty` takes the Dijkstra heap. The row
   // above measured only the BFS arm, so until item 1470 the whole weighted path was unbenched.
   {
@@ -121,7 +121,7 @@ const build = (n) => {
 
     g.addEdge({
       id: `e${e}`,
-      // ⚠️ STRIDE MATTERS MORE THAN IT LOOKS (item 1486). `sequential` gives every vertex exactly
+      // STRIDE MATTERS MORE THAN IT LOOKS (item 1486). `sequential` gives every vertex exactly
       // FANOUT out-edges in vertex order, so every adjacency read is in build order and the cache
       // misses a real graph pays are absent — which inflated a headline ratio by 3.6x elsewhere in
       // this corpus and silently reversed a sub-conclusion. `scattered` matches
@@ -182,7 +182,7 @@ const runOne = (spec, n, g) => {
 };
 
 /**
- * ⚠️ ONE FIXTURE PER (div, size), SHARED BY EVERY ALGORITHM AT THAT SCALE — and this is a
+ * ONE FIXTURE PER (div, size), SHARED BY EVERY ALGORITHM AT THAT SCALE — and this is a
  * requirement, not a tidy-up. A mutated `Graph` is retained IN FULL by its own pending
  * `drainMutations` microtask, and this bench's body is synchronous, so the queue never drains and
  * **no graph it builds is ever collected**. The first version built one fixture per algorithm per
@@ -270,17 +270,17 @@ for (const row of results) {
 
   for (const p of row.points) {
     if (!p.shape.startsWith(`n=${p.n} `)) {
-      console.log(`  ⚠️ ${row.name} at V=${p.n} returned ${p.shape} — expected one row per vertex`);
+      console.log(`  ${row.name} at V=${p.n} returned ${p.shape} — expected one row per vertex`);
     }
   }
 
   if (row.points.length > 1 && row.points[0].shape.split(' ')[1] !== b.shape.split(' ')[1]) {
-    console.log(`  ⚠️ ${row.name} changed COLUMN between sizes — ${a.shape} vs ${b.shape}`);
+    console.log(`  ${row.name} changed COLUMN between sizes — ${a.shape} vs ${b.shape}`);
   }
 
   if (over) {
     console.log(
-      `  ⚠️ ${row.name}: ${ratio.toFixed(2)}x against an expected ${row.exp}x. A two-point ratio is a ratio, not a trend (item 1464) — re-run SIZES=4 ALGO=${row.name} before believing it.`,
+      `  ${row.name}: ${ratio.toFixed(2)}x against an expected ${row.exp}x. A two-point ratio is a ratio, not a trend (item 1464) — re-run SIZES=4 ALGO=${row.name} before believing it.`,
     );
   }
 }

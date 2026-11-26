@@ -10,7 +10,7 @@
  * bucket lookup is 1.6% of self time. The cost is real, it survives inside one implementation, and
  * no code-level explanation is left.
  *
- * ⚠️ THE SUSPECT IS THE GENERATOR, AND IT IS A CLASS CLAUDE.md ALREADY NAMES. The profile probe's
+ * THE SUSPECT IS THE GENERATOR, AND IT IS A CLASS CLAUDE.md ALREADY NAMES. The profile probe's
  * `sequential` stride wires `v_i -> v_((7i + 3) % N)`, so the multiplier COMPOUNDS with depth:
  *
  *     depth 1   consecutive starts land 7 apart
@@ -165,7 +165,7 @@ for (let r = 0; r < REPS; r += 1) {
   answer = out.length > 0 ? out[0].k : undefined;
 }
 
-// ⚠️ ROW GUARD, SCALED. A functional graph has exactly one depth-k walk per vertex, so anything but
+// ROW GUARD, SCALED. A functional graph has exactly one depth-k walk per vertex, so anything but
 // N rows per rep means this arm is not answer-equivalent and its timing says nothing.
 if (rows !== NODES * REPS) {
   throw new Error(

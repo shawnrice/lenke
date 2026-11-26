@@ -3,12 +3,12 @@ import { compileLinear } from '../../packages/gql/src/executor/rewrites.ts';
 /**
  * Which rung takes the authz list, and does an index change it? (item 2291)
  *
- * 🔑 `hop2-projection.ts`'s `shouldDeclineToOrientedMatcher` hands a query to the orienting matcher only
+ * `hop2-projection.ts`'s `shouldDeclineToOrientedMatcher` hands a query to the orienting matcher only
  * when `farEndSeeksNarrower`. A hash index on the far node's key is PROVEN to work here (a 400,000-user
  * name lookup goes 7.01 ms → 0.00) and the orientation still does not change — so either this query is not
  * on that rung at all, or the gate is not reading what I think.
  *
- * ⚠️ Timing cannot tell those apart, so this reads the route.
+ * Timing cannot tell those apart, so this reads the route.
  */
 // eslint-disable-next-line boundaries/no-cross-package-relative-import -- internal parser entry point
 import { parse } from '../../packages/gql/src/parser.ts';

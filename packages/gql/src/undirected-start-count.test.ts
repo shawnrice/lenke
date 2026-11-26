@@ -30,7 +30,7 @@ import { query } from './index.ts';
 /**
  * The fast route and an INDEPENDENT route on ONE pattern, asserted equal and returned.
  *
- * ⚠️ THE ORACLE IS A ROW PROJECTION, NOT `AND true` (corrected at item 1095). `AND true` was
+ * THE ORACLE IS A ROW PROJECTION, NOT `AND true` (corrected at item 1095). `AND true` was
  * item 570's decline-forcer for the UNFILTERED count, where adding any predicate does change the
  * route. **It does NOT decline a rung that is already taking a predicate**: tracing shows
  * `a.k >= 0` and `a.k >= 0 AND true` both enter `undirectedStartOnlyCount`, and both far-reading

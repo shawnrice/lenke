@@ -4,12 +4,12 @@
  * `detectOptionalHopProjection` gates on `plainRowProjection`, which refuses an `orderBy`, so
  * adding an `ORDER BY` to an OPTIONAL hop dropped the whole rung.
  *
- * ⚠️ THE TWO SIBLING CLIFFS ARE CONTROLS, NOT TARGETS, and they are in the table precisely so this
+ * THE TWO SIBLING CLIFFS ARE CONTROLS, NOT TARGETS, and they are in the table precisely so this
  * item cannot be read as having fixed them. An edge VARIABLE and an outer clause `WHERE` each cost
  * ~9.4x on the same rung and are left open; if either moves here, the change is doing something
  * other than what its comment says.
  *
- * ⚠️ ONE SHAPE PER PROCESS; arms asserted by `optionalOrderedProjection` in the built dist.
+ * ONE SHAPE PER PROCESS; arms asserted by `optionalOrderedProjection` in the built dist.
  *
  *     bun optional-ordered-ab.mjs
  */
@@ -39,7 +39,7 @@ const SHAPES = {
     'MATCH (a:T {n: 2}) OPTIONAL MATCH (a)-[:E]->(b:T) RETURN a.n AS x, b.n AS y',
   'anchor WHERE + ORDER BY':
     'MATCH (a:T) WHERE a.n >= 2 OPTIONAL MATCH (a)-[:E]->(b:T) RETURN a.n AS x, b.n AS y ORDER BY x',
-  // ⚠️ THE OPTIONAL CLAUSE'S OWN WHERE MUST NOT MOVE: it filters the HOP, which changes which
+  // THE OPTIONAL CLAUSE'S OWN WHERE MUST NOT MOVE: it filters the HOP, which changes which
   // anchors get a NULL row, and stays refused by design.
   'CONTROL optional-clause WHERE':
     'MATCH (a:T) OPTIONAL MATCH (a)-[:E]->(b:T) WHERE b.n >= 2 RETURN a.n AS x, b.n AS y',
@@ -80,7 +80,7 @@ for (let r = 0; r < ${REPS}; r += 1) {
   const t0 = performance.now();
   const out = query(g, Q);
   s.push(performance.now() - t0);
-  // ⚠️ THE FIRST 200 ROWS IN ORDER, not a sorted set: this rung's whole claim is that it produces
+  // THE FIRST 200 ROWS IN ORDER, not a sorted set: this rung's whole claim is that it produces
   // the SAME ORDER as the general path, so a set digest would miss the bug it could introduce.
   const d = out.length + '|' + out.slice(0, 200).map((x) => Object.values(x).map(String).join('/')).join(',');
   if (digest === null) { digest = d; } else if (digest !== d) { throw new Error('answer moved between reps'); }
@@ -164,6 +164,6 @@ for (const name of Object.keys(SHAPES)) {
   console.log(
     `${name.padEnd(36)} PRE ${pre.toFixed(2).padStart(8)} ms   POST ${post
       .toFixed(2)
-      .padStart(8)} ms   ${(pre / post).toFixed(2)}x${same ? '' : '   ⚠️ ROWS OR ORDER DIFFER'}`,
+      .padStart(8)} ms   ${(pre / post).toFixed(2)}x${same ? '' : '   ROWS OR ORDER DIFFER'}`,
   );
 }

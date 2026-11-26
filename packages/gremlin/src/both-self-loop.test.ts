@@ -12,13 +12,13 @@ import { V, both, toArray, traversal, values } from './index.js';
  * suite.** Nothing covered a self-loop under `both`, so the behaviour was free to change silently in
  * either direction.
  *
- * ⚠️ TWICE IS THE PRE-EXISTING CONTRACT, read off the source rather than assumed. `iterBoth` is
+ * TWICE IS THE PRE-EXISTING CONTRACT, read off the source rather than assumed. `iterBoth` is
  * `yield* iterByLabel(fromByLabel, labels)` followed by `yield* iterByLabel(toByLabel, labels)`,
  * with no self-loop filter — and a loop `a -> a` sits in BOTH `adjFrom` and `adjTo`. Its own comment
  * says "out-edges first, then in-edges, to match TinkerPop's `both`/`bothE` ordering", so the vertex
  * is adjacent to itself twice over.
  *
- * ⚠️ AND IT IS THE OPPOSITE OF THE GQL RULE, which is why this is worth pinning rather than
+ * AND IT IS THE OPPOSITE OF THE GQL RULE, which is why this is worth pinning rather than
  * obvious. GQL's undirected hop emits a self-loop ONCE — item 1431's edge pass skips the second
  * direction for `from === to`, and `shortcuts.ts` says "a SELF-LOOP contributes one, because
  * `expand` yields it once". Two engines, two deliberate contracts, one easy mistake: carrying the
@@ -39,7 +39,7 @@ const loopGraph = (): Graph => {
 const ks = (g: Graph, plan: ReturnType<typeof traversal>): unknown[] => toArray(plan, g);
 
 describe('both() over a self-loop (item 1432)', () => {
-  test('⚠️ the loop is yielded TWICE, in out-then-in order', () => {
+  test('the loop is yielded TWICE, in out-then-in order', () => {
     // From `a`: out-bucket holds `aa` then `ab` (insertion order) → k=1, k=2. In-bucket holds `aa`
     // → k=1. From `b`: out-bucket empty; in-bucket holds `ab` → k=1.
     //

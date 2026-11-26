@@ -13,7 +13,7 @@ import { parsePredicate } from './parser.js';
 //     n.a >= 0            4.076 ms   a compare every row satisfies
 //     n IS LABELED P     10.656      2.61x
 //
-// ⚠️ THE SUBJECT IS THE ELEMENT, NOT A PROPERTY, which makes this the first lifted family with no
+// THE SUBJECT IS THE ELEMENT, NOT A PROPERTY, which makes this the first lifted family with no
 // `key`: every other one reads `propOf(element, key)` and this one reads `element.labels`. It is
 // also the only arm in `directEqProps`' loop that matches a `var` rather than a `prop`.
 //
@@ -21,7 +21,7 @@ import { parsePredicate } from './parser.js';
 // a plain boolean — and the native engine HOISTS it past a faulting sibling (measured at item 1288),
 // so it sits in the non-raising group with `nullProps` and `memberProps`.
 //
-// ⚠️ THE FIXTURE MUST BE DISCRIMINATING. The timing probe used `MATCH (n:P) WHERE n IS LABELED P`,
+// THE FIXTURE MUST BE DISCRIMINATING. The timing probe used `MATCH (n:P) WHERE n IS LABELED P`,
 // where the pattern already guarantees the label and the predicate is vacuous — fine for measuring
 // pure route cost, useless for correctness. Every query below starts from an UNTYPED pattern so the
 // predicate is the only thing filtering.
@@ -44,7 +44,7 @@ const ids = (where: string): string[] =>
     .sort();
 
 describe('IS LABELED lifts into labelTests (item 1289)', () => {
-  test('⚠️ ROUTE: every spelling lands in labelTests and nothing is left behind', () => {
+  test('ROUTE: every spelling lands in labelTests and nothing is left behind', () => {
     // Answer-equivalent by design, so only the compiler can see it.
     const lifted = (src: string): number =>
       (compilePredicate(undefined, parsePredicate(src), 'n').labelTests ?? []).length;
@@ -66,7 +66,7 @@ describe('IS LABELED lifts into labelTests (item 1289)', () => {
     // Fully lifted leaves NOTHING for the generic evaluator — the item 277 class.
     expect(pos.where).toBeUndefined();
 
-    // ⚠️ AND `hasPredicate` MUST SEE IT. A mutation run is why this line is here rather than
+    // AND `hasPredicate` MUST SEE IT. A mutation run is why this line is here rather than
     // assumed: dropping `labelTests` from `hasPredicate` SURVIVED all 4,200 tests until this
     // assertion existed. `hasPredicate`'s own doc is explicit that every gate deciding "can I skip
     // applying this predicate" goes through it, so a list forgotten there reintroduces the item 277
@@ -94,7 +94,7 @@ describe('IS LABELED lifts into labelTests (item 1289)', () => {
     expect(ids('NOT (n IS LABELED P)')).toEqual(['none', 'q', 'r']);
   });
 
-  test('⚠️ a LABEL EXPRESSION is carried whole, not reduced to one name', () => {
+  test('a LABEL EXPRESSION is carried whole, not reduced to one name', () => {
     // `labelsMatch` handles the conjunction/disjunction/negation forms, and the lift stores the
     // whole `LabelExpr` rather than a string — so a composite must answer identically through the
     // lift. A carrier that kept only a name would answer this wrong.
@@ -137,8 +137,8 @@ describe('IS LABELED lifts into labelTests (item 1289)', () => {
     expect(ids("n IS LABELED P AND n.nm NOT IN ['p']")).toEqual(['pq']);
   });
 
-  test('⚠️ it survives a HOP, and the far-end MERGE must carry it', () => {
-    // ⚠️ THE INLINE FAR CONSTRAINT IS WHAT REACHES `mergeFarPreds`, and leaving it out is why the
+  test('it survives a HOP, and the far-end MERGE must carry it', () => {
+    // THE INLINE FAR CONSTRAINT IS WHAT REACHES `mergeFarPreds`, and leaving it out is why the
     // `merge-drops-family` mutant SURVIVED the first version of this test. That function merges an
     // INLINE far constraint with the lifted clause predicate; with no inline half it is never
     // entered, so a dropped list cannot show. This mirrors `null-props-lift.test.ts`'s own merge

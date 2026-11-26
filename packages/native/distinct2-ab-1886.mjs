@@ -1,7 +1,7 @@
 /**
  * DOES THE TWO-COLUMN KEY EARN ITS PLACE, AT EVERY CARDINALITY? (item 1886)
  *
- * ⚠️ THE CARDINALITY SWEEP IS THE POINT, not a refinement. The nested-map key allocates one
+ * THE CARDINALITY SWEEP IS THE POINT, not a refinement. The nested-map key allocates one
  * second-column key-pair per DISTINCT FIRST-COLUMN VALUE, where `rowKeyOf` allocates a string per
  * ROW. So the two trade places as the first column's cardinality rises, and a single fixture cannot
  * see that — CLAUDE.md's "match the fixture to the claim" one axis over. At `CARD=20000` every row
@@ -22,7 +22,7 @@ const ROOT = '/home/shawn/projects/pl-graph';
 const DIST = `${ROOT}/packages/gql/dist/esm/index.mjs`;
 const PRISTINE = `${ROOT}/crates/lenke-engine/target/pristine-1886-dist.mjs`;
 /**
- * ⚠️ THREE KILL SWITCHES, NOT ONE, AND THE FIRST VERSION OF THIS FILE HAD ONE. Item 1886 gave the
+ * THREE KILL SWITCHES, NOT ONE, AND THE FIRST VERSION OF THIS FILE HAD ONE. Item 1886 gave the
  * two-column key space to THREE callers — `distinctRows`, `distinctUnion` and `twoColumnSetOp` — and
  * killing only the first measured the union and set-op arms POST against POST: three rows read
  * 1.00x / 0.96x / 0.84x, which looks like "no gain, maybe a regression" and is actually "the arm was
@@ -117,7 +117,7 @@ console.log('-------------------------------------------------------------------
 for (const shape of SHAPES) {
   const pre = rows.filter(([, w, s]) => w === 'PRE' && s === shape).map(([, , , ms]) => ms);
   const post = rows.filter(([, w, s]) => w === 'POST' && s === shape).map(([, , , ms]) => ms);
-  // ⚠️ THE HEADLINE IS THE MEDIAN OF ROUNDS, NOT THE MIN. On one run the min made the CONTROL read
+  // THE HEADLINE IS THE MEDIAN OF ROUNDS, NOT THE MIN. On one run the min made the CONTROL read
   // 0.85x off a single low PRE reading (1.92 against 2.33/2.34) while its medians were 2.33 and
   // 2.29 — flat. CLAUDE.md says this in terms for the TS per-row path; it applies to the
   // round-level summary too.

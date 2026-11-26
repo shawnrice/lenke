@@ -46,7 +46,7 @@ export const unionStep = function* (
 /**
  * `coalesce`'s FIRST arm, when it is a single vertex step — the fused half (item 1629).
  *
- * ⚠️ WHY ONLY THE FIRST. `coalesce` emits the output of the first arm that produces anything, so
+ * WHY ONLY THE FIRST. `coalesce` emits the output of the first arm that produces anything, so
  * only arm 0 runs for every incoming traverser; the rest run just for the rows arm 0 missed. On the
  * shape that matters — `coalesce(out(T), identity())`, the "hop or keep what you had" spelling — arm
  * 0 succeeds for every vertex with an out-edge, so fusing it reaches almost every row while fusing
@@ -57,7 +57,7 @@ export const unionStep = function* (
  * traverser pipeline, and the fused walks are source-anchored so they structurally cannot reach it.
  * `optionalSingleHop` + `soleTypeBucket` are the composable form items 1627/1628 built.
  *
- * ⚠️ `plans[0]` IS LOAD-BEARING AND WAS NOT TESTED UNTIL THE MUTANT SAID SO. Reading the LAST arm
+ * `plans[0]` IS LOAD-BEARING AND WAS NOT TESTED UNTIL THE MUTANT SAID SO. Reading the LAST arm
  * instead survived the whole file, because in every shape there the last arm is `identity()`, which
  * this refuses — so the fast arm never engaged and the two readings agreed. The separating shape has
  * a first arm the fusion refuses and a last arm it would accept
@@ -79,19 +79,19 @@ export const coalesceStep = function* (
 
   for (const t of stream) {
     /**
-     * ⚠️ THE FAST ARM IS LAZY WHERE THE GENERAL LOOP IS EAGER, and that is safe for THIS shape only
+     * THE FAST ARM IS LAZY WHERE THE GENERAL LOOP IS EAGER, and that is safe for THIS shape only
      * — `optional-hop.ts`'s argument, which applies verbatim. The eager `[...]` below means the
      * whole arm runs before any row is yielded, so making it lazy reorders side effects relative to
      * downstream consumption; item 1480 declined exactly that for the general case and
      * `sideeffect-in-branch.test.ts` exists because the interaction matters. A single vertex step
      * has no side effects, so for this shape the two orders are indistinguishable.
      *
-     * ⚠️ AND AN EMPTY BUCKET FALLS THROUGH TO THE REMAINING ARMS, NOT TO ALL OF THEM. Re-running arm
+     * AND AN EMPTY BUCKET FALLS THROUGH TO THE REMAINING ARMS, NOT TO ALL OF THEM. Re-running arm
      * 0 would be answer-equivalent and wasteful; `plans.slice(1)` is what the general loop does after
      * arm 0 produces nothing. The `from` index is the whole correctness question in this branch.
      */
     /**
-     * ⚠️ `isVertex` IS A FALLBACK AND IT IS REDUNDANT — the mutant removing it SURVIVED, correctly. A
+     * `isVertex` IS A FALLBACK AND IT IS REDUNDANT — the mutant removing it SURVIVED, correctly. A
      * non-vertex has no `adjFrom`/`adjTo`, so the bucket is empty and the fast arm falls through to
      * arm 1; and arm 0 IS that hop, which yields nothing for a non-vertex on the general path too
      * (`traverseToVertex` is lenient). Kept because that agreement rests on `traverseToVertex` being

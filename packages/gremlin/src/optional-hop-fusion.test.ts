@@ -11,12 +11,12 @@ import { traversal } from './traversal.js';
  * Item 1483 fuses `optional(<one vertex step>)` into a single loop — no per-traverser input array,
  * no sub-plan dispatch, no materialized output. 1.26x, 3/3.
  *
- * ⚠️ THE FUSION IS LAZY WHERE `optionalStep` IS EAGER, and that is only safe because a vertex step
+ * THE FUSION IS LAZY WHERE `optionalStep` IS EAGER, and that is only safe because a vertex step
  * has no side effects. Item 1480 declined the same change for the general case for exactly that
  * reason, and `sideeffect-in-branch.test.ts` exists because the ordering is observable. So the gate
  * is narrow on purpose, and most of these tests are about what it REFUSES.
  *
- * ⚠️ AND IT MUST MATCH `optionalStep` EXACTLY on the shapes it does claim — including the
+ * AND IT MUST MATCH `optionalStep` EXACTLY on the shapes it does claim — including the
  * easy-to-miss one: a NON-VERTEX traverser passes through, because `traverseToVertex` is lenient and
  * yields nothing for a non-vertex, which makes `optionalStep` take its empty branch.
  */
@@ -53,7 +53,7 @@ describe('the fused optional answers what optionalStep answered', () => {
   });
 
   /**
-   * ⚠️ THE NON-VERTEX BRANCH IS UNREACHABLE THROUGH THE PUBLIC API, and this test records that
+   * THE NON-VERTEX BRANCH IS UNREACHABLE THROUGH THE PUBLIC API, and this test records that
    * rather than asserting a behaviour the engine never produces. A STATIC frontier-type check
    * rejects the plan before execution ("out() moves from a vertex, but the frontier is a scalar"),
    * so `optional(out(E))` can never see a scalar traverser by this route.

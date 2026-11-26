@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2022 — mutation round on the shared per-row binding merge.
 #
-# ⚠️⚠️ **FIRST, DOES THE TEST FILE REACH THE NEW CODE AT ALL?** Item 2018 wrote 13 tests for a new
+# **FIRST, DOES THE TEST FILE REACH THE NEW CODE AT ALL?** Item 2018 wrote 13 tests for a new
 # path and every walk mutant SURVIVED them, because rungs above answered each shape and the new code
 # never ran. The `count-never-fused` mutant below is that check made permanent: it forces
 # `fusableProjectedCount` to return false, so the fused case declines everywhere. It is
@@ -53,7 +53,7 @@ MUTANTS=(
   "merge-order-reversed@@  const merged = new Map(outer);@@s@  const merged = new Map(outer);@  const merged = new Map(inner);@"
   "merge-inner-dropped@@  for (const [k, v] of inner) {@@s@  for (const \[k, v\] of inner) {@  for (const [k, v] of []) {@"
   "merge-outer-dropped@@  const merged = new Map(outer);@@s@  const merged = new Map(outer);@  const merged = new Map();@"
-  # ⚠️ EXPECTED SURVIVOR, AND IT IS A FACT ABOUT THE DATA RATHER THAN A MISSING TEST. The two sides
+  # EXPECTED SURVIVOR, AND IT IS A FACT ABOUT THE DATA RATHER THAN A MISSING TEST. The two sides
   # OVERLAP only on the outer binding's keys, and those keys hold the SAME values on both sides
   # (`t` carries `binding`; `b` carries `binding` plus its pattern's own variables). So "inner wins"
   # and "outer wins" cannot differ. On the CLAUSE path there is no overlap at all — that cache is
@@ -63,7 +63,7 @@ MUTANTS=(
   "product-first-row@@          yield mergeBinding(b, next.value);@@s@          yield mergeBinding(b, next.value);@          yield mergeBinding(next.value, b);@"
   "product-cached-rows@@          yield mergeBinding(b, t);@@s@          yield mergeBinding(b, t);@          yield mergeBinding(t, b);@"
   "clause-cached-rows@@        yield mergeBinding(binding, c);@@s@        yield mergeBinding(binding, c);@        yield mergeBinding(c, binding);@"
-  # ⚠️ EXPECTED SURVIVOR: answer-equivalent by construction. Merging an EMPTY incoming binding adds
+  # EXPECTED SURVIVOR: answer-equivalent by construction. Merging an EMPTY incoming binding adds
   # nothing, so always merging returns the same rows — it just pays a Map per row, which the `bare`
   # check exists to avoid (measured 1.93x on a 20,000-row scan). A pure perf gate, so the A/B is the
   # only evidence, exactly as item 2017's `always` mutant and `count-shortcut.ts`' `seenBefore` gate.

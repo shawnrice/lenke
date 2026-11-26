@@ -1,14 +1,14 @@
 /**
  * `V(id, …)[.hasLabel(L)].values(k)` answered by resolving the ids, with no traverser (item 1650).
  *
- * ⚠️ THE ORACLE IS THE ENGINE'S GENERAL PATH. A route choice is answer-equivalent by definition, so
+ * THE ORACLE IS THE ENGINE'S GENERAL PATH. A route choice is answer-equivalent by definition, so
  * what must be pinned is that the two routes agree — including on ORDER, which for Gremlin is a
  * TinkerPop contract compared ordered by the differential fuzzer, not an unspecified-order liberty.
  * Each case therefore compares the shortcut's output against the same query with a step appended
  * that forces the pipeline (`.identity()` lands in the residual, which the rung refuses), rather
  * than against a hand-written list.
  *
- * ⚠️ AND AGAINST A LAZINESS CONTRACT, which is the part a value comparison cannot see. `asStringId`
+ * AND AGAINST A LAZINESS CONTRACT, which is the part a value comparison cannot see. `asStringId`
  * raises on a non-string id, and the general path raises it from INSIDE a generator
  * (`sourceFromIds`), so `V('a', 5).values(k)` yields `a`'s value and only THEN raises. A rung that
  * resolved its ids eagerly would move the fault earlier — invisible to `toArray`, observable to a
@@ -27,14 +27,14 @@ const g = new Graph();
 
 g.addVertex({ id: 'a', labels: ['P'], properties: { k: 1, s: 'one' } });
 g.addVertex({ id: 'b', labels: ['P', 'Q'], properties: { k: 2, s: 'two' } });
-// ⚠️ A STORED PRESENT NULL, which `values(k)` must EMIT — null is a first-class stored value in this
+// A STORED PRESENT NULL, which `values(k)` must EMIT — null is a first-class stored value in this
 // engine, not an absence. `k in props` is the test, so a null-valued key is present.
 g.addVertex({ id: 'c', labels: ['Q'], properties: { k: null, s: 'three' } });
 // `d` LACKS `k` entirely, so `values('k')` must drop it rather than emit undefined.
 g.addVertex({ id: 'd', labels: ['P'], properties: { s: 'four' } });
 
 /*
- * EDGES, for the arm item 2374 admitted. ⚠️ Until then `matchSeededShape` gated on `kind !== 'V'` and
+ * EDGES, for the arm item 2374 admitted. Until then `matchSeededShape` gated on `kind !== 'V'` and
  * `E(id).values(k)` fell to the general machinery — **649.1 ns against the vertex twin's 209.5, 3.1x**,
  * closed to 215.6 by sharing this rung's body rather than copying it.
  *
@@ -176,7 +176,7 @@ const EDGE_CASES: readonly (readonly [string, Plan, Plan])[] = [
   ],
 ];
 
-describe('⚠️ the EDGE arm agrees with the walk it replaces (item 2374)', () => {
+describe('the EDGE arm agrees with the walk it replaces (item 2374)', () => {
   for (const [label, short, general] of EDGE_CASES) {
     test(label, () => {
       /* The rung must actually be TAKEN, or the case compares the general path with itself. */
@@ -189,7 +189,7 @@ describe('⚠️ the EDGE arm agrees with the walk it replaces (item 2374)', () 
 
   test('an edge id and a vertex id are DIFFERENT id spaces', () => {
     /*
-     * ⚠️ THE ONE CASE THE SHARED BODY COULD GET WRONG, and a value comparison against the general path
+     * THE ONE CASE THE SHARED BODY COULD GET WRONG, and a value comparison against the general path
      * would NOT catch it if both routes resolved the same map. `a` is a vertex id and `e1` an edge id, so
      * `E('a')` and `V('e1')` must each find nothing — a rung that resolved through the wrong map would
      * answer `1` or `10` here.
@@ -199,7 +199,7 @@ describe('⚠️ the EDGE arm agrees with the walk it replaces (item 2374)', () 
   });
 });
 
-describe('⚠️ the id-seeded values rung agrees with the walk it replaces', () => {
+describe('the id-seeded values rung agrees with the walk it replaces', () => {
   for (const [label, short, general] of CASES) {
     test(label, () => {
       const viaPipeline = toArray(general, g);
@@ -211,7 +211,7 @@ describe('⚠️ the id-seeded values rung agrees with the walk it replaces', ()
   }
 });
 
-describe('⚠️ the rung is actually TAKEN, and declines where it should', () => {
+describe('the rung is actually TAKEN, and declines where it should', () => {
   /**
    * Without this the file can pass vacuously: the rung being unreachable leaves every answer test
    * green (`rung-precedence-decides-speed`).
@@ -240,9 +240,9 @@ describe('⚠️ the rung is actually TAKEN, and declines where it should', () =
   }
 });
 
-describe('⚠️ the result is ONE-SHOT, like the general path', () => {
+describe('the result is ONE-SHOT, like the general path', () => {
   /**
-   * ⚠️ WHETHER `run`'s RESULT CAN BE ITERATED TWICE MUST NOT DEPEND ON WHICH RUNG FIRED.
+   * WHETHER `run`'s RESULT CAN BE ITERATED TWICE MUST NOT DEPEND ON WHICH RUNG FIRED.
    * `run` returns a generator chain for nearly every plan, so a second pass yields nothing — and
    * item 1651 found that the `{ [Symbol.iterator], drain }` wrapper this rung used to return made
    * its shape RE-ITERABLE, so `V(id).values(k)` and `V(id).values(k).identity()` disagreed on an
@@ -271,7 +271,7 @@ describe('⚠️ the result is ONE-SHOT, like the general path', () => {
   });
 });
 
-describe('⚠️ the fault is LAZY, like the general path', () => {
+describe('the fault is LAZY, like the general path', () => {
   /**
    * `asStringId` raises for a non-string id, and `sourceFromIds` is a generator, so the general path
    * yields what it can before raising. Resolving the ids eagerly would be invisible to `toArray` and

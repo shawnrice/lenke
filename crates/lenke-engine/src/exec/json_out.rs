@@ -573,7 +573,7 @@ fn write_node_ext_or_dense(out: &mut String, store: &Store, n: u32) {
 
 /// A `{id, label}` endpoint stub for the flat edge `elementMap` — `id`/`label` NULL when
 /// absent (matching the `node_id`/`node_label` closures).
-/// 🛑 PRICED AND OPEN (item 722): this and the two other `labels_of(id).first()` sites below use
+/// PRICED AND OPEN, NOT BUILT (item 722): this and the two other `labels_of(id).first()` sites below use
 /// the WORST of the three label reads the store offers. `labels_of` builds a `Vec<String>`,
 /// cloning every label, sorts it, and takes the smallest; `min_label_name` does the same bucket
 /// probe with no allocation; and `min_label_map` inverts the buckets ONCE for the whole store,
@@ -585,7 +585,7 @@ fn write_node_ext_or_dense(out: &mut String, store: &Store, n: u32) {
 /// map here means plumbing it through the render path — which is why item 722 priced it and left
 /// it rather than guessing a threshold it could not place.
 ///
-/// ⚠️ THESE SITES ARE ON THE GREMLIN `elementMap` / `valueMap` PATH ONLY — `try_fused_map_json` is
+/// THESE SITES ARE ON THE GREMLIN `elementMap` / `valueMap` PATH ONLY — `try_fused_map_json` is
 /// reached from `try_run_gremlin_json_inner`, not from `try_run_gql_json` (item 723). Item 721's
 /// 3.4x label-count measurement was taken on the GQL path and so does NOT price these; it prices
 /// `labels_of_refs` in `render.rs`. A change here needs its own harness, pointed at a Gremlin

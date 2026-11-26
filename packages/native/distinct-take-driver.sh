@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Item 1738: what is inside `take`'s 60.6% on `RETURN DISTINCT n.k AS k`?
 #
-# ⚠️ BOTH NON-BASE ARMS ARE CEILINGS, NOT CANDIDATES -- they break the answer on purpose. The
+# BOTH NON-BASE ARMS ARE CEILINGS, NOT CANDIDATES -- they break the answer on purpose. The
 # question is attribution: a profile gave `take` 60.6% SELF with `propOf` 8.7%, `add` 9.7% and
 # `get properties` 5.7% as separate frames, which is implausible for a body that is two branches, a
 # property read, a set add and a conditional push. V8 charges inlined callees to the caller frame,
@@ -15,7 +15,7 @@
 #             as base; replacing it with a constant would have collapsed 97 rows to 1 and measured
 #             the push too.
 #
-# ⚠️ Both preserve a NON-ZERO `sink`, because the probe throws when a shape returns nothing -- an
+# Both preserve a NON-ZERO `sink`, because the probe throws when a shape returns nothing -- an
 # assertion worth keeping rather than defeating.
 set -u
 

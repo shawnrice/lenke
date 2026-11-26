@@ -1,10 +1,10 @@
 // The filtered chain count over flat slot runs (item 1688), and the shapes that must decline it.
 //
-// ⚠️ EVERY AGREEMENT TEST IS AGAINST AN INDEPENDENT ROUTE, not a hand-computed number: the same
+// EVERY AGREEMENT TEST IS AGAINST AN INDEPENDENT ROUTE, not a hand-computed number: the same
 // question asked as a `COUNT { … }` subquery cannot reach this arm, so a disagreement is a real
 // defect rather than two copies of the same mistake.
 //
-// ⚠️ AND A ROUTE CHOICE IS ANSWER-EQUIVALENT WHEN IT IS *TIGHTENED*. A clause wrongly relaxed here
+// AND A ROUTE CHOICE IS ANSWER-EQUIVALENT WHEN IT IS *TIGHTENED*. A clause wrongly relaxed here
 // returns a WRONG COUNT and these tests catch it; a clause wrongly tightened silently abandons the
 // arm and every answer stays right. `filteredChainCsrApplies` has its own assertions below for that
 // second direction, which is `perf-gate-needs-its-own-test`'s rule.
@@ -21,7 +21,7 @@ import { filteredChainCsrApplies } from './filtered-chain-csr.js';
  * walk counts are `N * F^k` by arithmetic however the traversal behaves. Labels and `k` are spread so
  * the filters below actually exclude something.
  *
- * ⚠️ THE LABEL AND THE PROPERTY ARE MIXED DIFFERENTLY FROM THE DEGREE, AND THAT IS A BUG FIX. The
+ * THE LABEL AND THE PROPERTY ARE MIXED DIFFERENTLY FROM THE DEGREE, AND THAT IS A BUG FIX. The
  * first version of this fixture labelled `i % 4 === 0` while taking the degree from
  * `1 + ((i * 2654435761) % 4)` — and `i % 4 === 0` forces that product's low bits to zero, so every
  * `Q` vertex had degree 1, whose single edge is the `F` type. `(b:Q)-[:E]->` therefore counted ZERO,
@@ -38,7 +38,7 @@ const countOf = (q: string): number => Number(query(g, q)[0].c);
 const viaSubquery = (pattern: string, where = ''): number =>
   Number(query(g, `MATCH (a:P) RETURN sum(COUNT { (a)${pattern}${where} }) AS c`)[0].c);
 
-describe('⚠️ the fixture itself, before anything measured against it is believed', () => {
+describe('the fixture itself, before anything measured against it is believed', () => {
   /**
    * An answer INVARIANT to the property under test cannot validate a fixture. The in-degree
    * distribution is what a 3-walk count collapses on, and the label/degree correlation above is what
@@ -103,7 +103,7 @@ describe('the arm agrees with an independent route, every filter position', () =
   }
 });
 
-describe('⚠️ equivalent spellings must agree, which is this repo’s opening defect class', () => {
+describe('equivalent spellings must agree, which is this repo’s opening defect class', () => {
   /**
    * A clause `WHERE b.k = 3` and an inline `(b {k: 3})` are one question written twice. A rung that
    * takes one and declines the other makes them cost 100-300x differently while returning identical
@@ -130,7 +130,7 @@ describe('⚠️ equivalent spellings must agree, which is this repo’s opening
   });
 });
 
-describe('⚠️ the shapes that must DECLINE, each still answering correctly', () => {
+describe('the shapes that must DECLINE, each still answering correctly', () => {
   /**
    * An undirected leg walks two adjacency indexes and must count a self-loop ONCE — item 1097 fixed
    * a half-answer bug there, and a single CSR run cannot express it. If the arm took these it would
@@ -153,10 +153,10 @@ describe('⚠️ the shapes that must DECLINE, each still answering correctly', 
   }
 
   /**
-   * ⚠️ A SELF-LOOP IS THE CASE THE UNDIRECTED EXCLUSION EXISTS FOR, so it gets a fixture of its own
+   * A SELF-LOOP IS THE CASE THE UNDIRECTED EXCLUSION EXISTS FOR, so it gets a fixture of its own
    * rather than relying on the shared graph happening to contain one.
    */
-  test('⚠️ an undirected chain over a self-loop agrees', () => {
+  test('an undirected chain over a self-loop agrees', () => {
     const h = new Graph();
     const a = h.addVertex({ id: 'a', labels: ['P'], properties: { k: 1 } });
     const b = h.addVertex({ id: 'b', labels: ['P'], properties: { k: 2 } });
@@ -222,11 +222,11 @@ describe('a write between two counts is seen', () => {
   });
 
   /**
-   * ⚠️ A PROPERTY WRITE MUST BE SEEN THOUGH `topologyVersion` DOES NOT MOVE. The masks read
+   * A PROPERTY WRITE MUST BE SEEN THOUGH `topologyVersion` DOES NOT MOVE. The masks read
    * properties and are therefore rebuilt per call; if one were cached on that signal it would go
    * stale here with no signal to catch it.
    */
-  test('⚠️ a property write changes the count with the topology unchanged', () => {
+  test('a property write changes the count with the topology unchanged', () => {
     const h = build(60);
     const before = Number(query(h, Q)[0].c);
     const tv = h.topologyVersion;
@@ -261,11 +261,11 @@ describe('filteredChainCsrApplies — the route choice as a pure function', () =
   });
 
   /**
-   * ⚠️ THE DIRECTION NO DIFFERENTIAL TEST CAN SEE. Each of these, if wrongly relaxed, is caught by
+   * THE DIRECTION NO DIFFERENTIAL TEST CAN SEE. Each of these, if wrongly relaxed, is caught by
    * the agreement tests above — but a clause wrongly TIGHTENED keeps every answer right and silently
    * abandons the arm, so only this assertion covers it.
    */
-  test('⚠️ each exclusion declines on its own', () => {
+  test('each exclusion declines on its own', () => {
     // An undirected leg anywhere.
     expect(filteredChainCsrApplies([leg(true), leg(), leg()], false)).toBe(false);
     expect(filteredChainCsrApplies([leg(), leg(true), leg()], false)).toBe(false);

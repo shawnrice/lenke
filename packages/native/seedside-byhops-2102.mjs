@@ -1,12 +1,12 @@
 /*
  * Item 2102 — is item 2101's 71.5x seed-side gap GENERAL, or specific to a three-segment chain?
  *
- * 🔑 THE QUESTION MATTERS MORE THAN THE NUMBER. `MATCH (a)-[:E]->(b) WHERE b.k = $x` — one hop, the
+ * THE QUESTION MATTERS MORE THAN THE NUMBER. `MATCH (a)-[:E]->(b) WHERE b.k = $x` — one hop, the
  * selective predicate on the FAR node — is one of the most common shapes there is. If it scans too,
  * item 2101 is a general planner finding rather than a long-chain curiosity, and the guidance ("write
  * from the selective end") applies to almost every query rather than to share dialogs.
  *
- * ⚠️ ONLY THE HOP COUNT VARIES. Same fixture, same index, same predicate on the far node, same answer
+ * ONLY THE HOP COUNT VARIES. Same fixture, same index, same predicate on the far node, same answer
  * asserted between the two spellings at every depth — so a difference between depths is the depth and
  * not the shape. [[vary-only-the-projection]]'s discipline, applied to the pattern length.
  */
@@ -21,7 +21,7 @@ const g = new Graph();
 
 for (let i = 0; i < NODES; i += 1) {
   /*
-   * ⚠️ `tag` IS HIGHLY SELECTIVE (one vertex in 2,000) because that is what makes a seed worth having.
+   * `tag` IS HIGHLY SELECTIVE (one vertex in 2,000) because that is what makes a seed worth having.
    * A predicate matching a tenth of the graph would be answered as well by a scan, and the probe would
    * report "no gap" for a reason that has nothing to do with seeding.
    */
@@ -94,7 +94,7 @@ for (const [depth, [fwd, rev]] of Object.entries(pairs)) {
   const a = timeIt(fwd);
   const b = timeIt(rev);
 
-  // ⚠️ The two spellings must be ONE question, or the ratio means nothing.
+  // The two spellings must be ONE question, or the ratio means nothing.
   if (a.answer !== b.answer) {
     throw new Error(`${depth}: the spellings disagree — ${a.answer} vs ${b.answer}`);
   }

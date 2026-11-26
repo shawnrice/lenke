@@ -1,7 +1,7 @@
 /**
  * The GQL PLANNER: every rewrite that runs between parsing a linear query and compiling it.
  *
- * ⚠️ THIS CODE SPENT ITS LIFE UNDER THE HEADING `// --- shared bucket/adjacency primitives`, and
+ * THIS CODE SPENT ITS LIFE UNDER THE HEADING `// --- shared bucket/adjacency primitives`, and
  * that mislabel has cost real time (item 1664). It is not shared primitives and it is not
  * adjacency — it is `inlineAggregateCall`, `inlineCorrelatedCall`, `inlineTrailingLet`,
  * `fuseAnchorThenHop`, the `dropUnread*` family and `compileLinear`, i.e. the optimizer, sitting in
@@ -11,7 +11,7 @@
  * route assertion, and still delivered 1.44x of an available 11.3x because it ran outside
  * `inlineTrailingLet` instead of inside it.
  *
- * ⚠️ SO THE COMPOSITION IN `compileLinear` IS THE MOST LOAD-BEARING THING HERE. Each rewrite's
+ * SO THE COMPOSITION IN `compileLinear` IS THE MOST LOAD-BEARING THING HERE. Each rewrite's
  * nesting is a measured choice with a comment saying why, and "answer-equivalent" does NOT mean
  * "order-independent": a rewrite that emits a clause another pass folds must run INSIDE that pass,
  * or the clause stands and a standing `LET` is off every one of the twenty-one rungs.
@@ -580,7 +580,7 @@ const compileClause = (rawClause: Clause): CClause => {
  * Rewrite an output ALIAS appearing inside an `ORDER BY` key expression into the expression the
  * alias names, so the two spellings of one sort key reach the same rung (item 1929).
  *
- * ⚠️⚠️ THIS IS AN ABSENCE OF A RUNG, NOT A SLOW ONE, and that is why no profile nominated it — the
+ * THIS IS AN ABSENCE OF A RUNG, NOT A SLOW ONE, and that is why no profile nominated it — the
  * general matcher is not a hot frame. Measured at 200,000 vertices, one shape per process, with the
  * route read off `compileLinear` rather than inferred:
  *
@@ -588,26 +588,26 @@ const compileClause = (rawClause: Clause): CClause => {
  *   MATCH (n:T) RETURN n.n AS x ORDER BY x          48.16 ms   nodeProjection
  *   MATCH (n:T) RETURN n.n AS x ORDER BY n.n        49.72      nodeProjection
  *   MATCH (n:T) RETURN n.n AS x ORDER BY n.n + 1    96.58      nodeProjection (deferredRoute)
- *   MATCH (n:T) RETURN n.n AS x ORDER BY x + 1     320.49      ⬅ NO RUNG AT ALL, 3.32x
+ *   MATCH (n:T) RETURN n.n AS x ORDER BY x + 1     320.49      <- NO RUNG AT ALL, 3.32x
  *
  *   MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY b.n + 1   122.69   hopProjection
- *   MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY x + 1     392.88   ⬅ NO RUNG, 3.20x
+ *   MATCH (a:T)-[:E]->(b:T) RETURN b.n AS x ORDER BY x + 1     392.88   <- NO RUNG, 3.20x
  * ```
  *
  * The two spellings are the SAME QUESTION — `x` IS `n.n`, by the projection's own definition — and
  * the alias one is the more natural to write. `deferredSortKeys` and the hop arm both substitute an
  * alias only when the key is EXACTLY a bare name, so a name nested one level inside an operator
  * survives into their row-locality test (`nameRead !== nodeVar`) and the whole query falls to the
- * general path. ⚠️ Normalizing HERE rather than in either arm is deliberate: there are two such
+ * general path. Normalizing HERE rather than in either arm is deliberate: there are two such
  * arms today, both would need the same edit, and every rung added later would need it again.
  *
- * 🔑 ONLY `cheapPureExpr` ALIASES ARE SUBSTITUTED, which is what makes this free rather than merely
+ * ONLY `cheapPureExpr` ALIASES ARE SUBSTITUTED, which is what makes this free rather than merely
  * equivalent. Substituting duplicates the aliased expression's EVALUATION — once for the column and
  * once for the key — so a property, variable, literal or parameter is safe (same value, and a
  * property read cannot fault: an absent key is null), while a computed or faulting alias is not.
  * This is the same predicate items 1926-1928 use for the same reason, from the other direction.
  *
- * ⚠️ AND A COLLIDING OUTPUT NAME DECLINES THE WHOLE PASS. In the `ORDER BY` scope the output columns
+ * AND A COLLIDING OUTPUT NAME DECLINES THE WHOLE PASS. In the `ORDER BY` scope the output columns
  * are OVERLAID on the binding, so if a projection also aliases something to `n`, then substituting
  * `x` -> `n.n` would make `n` resolve to that COLUMN instead of the element and read a property of
  * the wrong value. `deferredSortKeys` declines for exactly this (`outNames.has(nameRead)`) and
@@ -616,7 +616,7 @@ const compileClause = (rawClause: Clause): CClause => {
 /**
  * `count(b)` → `count(*)` when `b` is bound by a NON-OPTIONAL pattern (item 2177).
  *
- * ⚠️⚠️⚠️ **THIS IS THE "EQUIVALENT SPELLINGS MUST COST THE SAME" BUG CLASS, FOUND LIVE.** Every count rung
+ * **THIS IS THE "EQUIVALENT SPELLINGS MUST COST THE SAME" BUG CLASS, FOUND LIVE.** Every count rung
  * gates on a STAR projection, so naming the variable instead of `*` fell off ALL of them onto the general
  * matcher — same answer, two orders of magnitude apart:
  *
@@ -627,22 +627,22 @@ const compileClause = (rawClause: Clause): CClause => {
  *                                                RETURN count(c)   15.91 ms   300000   80x
  * ```
  *
- * 🔑 Both readings are from one process per shape, and the ANSWERS ARE IDENTICAL — which is precisely why
+ * Both readings are from one process per shape, and the ANSWERS ARE IDENTICAL — which is precisely why
  * no correctness test could ever have caught it. The repo's own warning describes this shape: a planner
  * that recognizes one spelling and scans for another meaning exactly the same thing.
  *
- * ⚠️ **WHY IT IS SOUND:** `count(x)` counts rows where `x` is NON-NULL; `count(*)` counts rows. A plain
+ * **WHY IT IS SOUND:** `count(x)` counts rows where `x` is NON-NULL; `count(*)` counts rows. A plain
  * `MATCH` only emits rows where the pattern matched, so a pattern variable is always bound there and the
- * two agree. 🔑 Under `OPTIONAL MATCH` they DIVERGE — a null-padded row is counted by `count(*)` and not by
+ * two agree. Under `OPTIONAL MATCH` they DIVERGE — a null-padded row is counted by `count(*)` and not by
  * `count(b)` — which is exactly what `unoptionalizeForAggregate`'s own comment states ("A STAR count is the
  * one aggregate that sees a null-filled row"). So a variable appearing in ANY optional pattern refuses the
  * rewrite.
  *
- * ⚠️ `count(DISTINCT b)` is NOT rewritten: it counts distinct VALUES, not rows.
- * ⚠️ Only PATTERN variables qualify. `count(a.k)` must stay as it is — a missing property is null, so it
+ * `count(DISTINCT b)` is NOT rewritten: it counts distinct VALUES, not rows.
+ * Only PATTERN variables qualify. `count(a.k)` must stay as it is — a missing property is null, so it
  * genuinely counts fewer rows than `count(*)`.
  *
- * 🔑 Runs OUTSIDE `unoptionalizeForAggregate`, which can itself clear `optional` from a clause: a shape it
+ * Runs OUTSIDE `unoptionalizeForAggregate`, which can itself clear `optional` from a clause: a shape it
  * un-optionalizes becomes eligible here, and running first would miss that.
  */
 const normalizeCountOfBoundVar = (clauses: readonly Clause[]): readonly Clause[] => {
@@ -653,15 +653,15 @@ const normalizeCountOfBoundVar = (clauses: readonly Clause[]): readonly Clause[]
   }
 
   /*
-   * ⚠️⚠️ **ONLY NON-OPTIONAL PATTERNS CONTRIBUTE, AND THAT IS THE WHOLE TEST** — a first version also
+   * **ONLY NON-OPTIONAL PATTERNS CONTRIBUTE, AND THAT IS THE WHOLE TEST** — a first version also
    * collected an optional clause's variables and subtracted them, which a surviving mutant showed to be
    * both REDUNDANT and WRONG:
    *
-   * 🔑 Redundant, because a variable bound ONLY by optional patterns never enters this set, so the
+   * Redundant, because a variable bound ONLY by optional patterns never enters this set, so the
    * subtraction had nothing to remove. (The mutant dropping it answered all three OPTIONAL cases
    * correctly.)
    *
-   * ⚠️ And wrong, because `patternVars` of an optional clause also names variables bound EARLIER:
+   * And wrong, because `patternVars` of an optional clause also names variables bound EARLIER:
    * `MATCH (x:P) OPTIONAL MATCH (x)-[:E]->(y) RETURN count(x)` has `x` in both sets, yet `x` is never
    * null there — the OPTIONAL extends the row, it does not null the anchor. The subtraction refused that
    * shape for no reason.
@@ -679,7 +679,7 @@ const normalizeCountOfBoundVar = (clauses: readonly Clause[]): readonly Clause[]
   }
 
   /**
-   * Is `name` bound by a plain pattern? 🔑 Then every row that pattern produces has it non-null, so
+   * Is `name` bound by a plain pattern? Then every row that pattern produces has it non-null, so
    * `count(name)` and `count(*)` agree — and a LATER `OPTIONAL MATCH` cannot change that, because it only
    * adds columns to the row.
    */
@@ -700,7 +700,7 @@ const normalizeCountOfBoundVar = (clauses: readonly Clause[]): readonly Clause[]
 
     changed = true;
 
-    /* 🔑 `star: true` with NO args is the shape every count rung gates on. */
+    /* `star: true` with NO args is the shape every count rung gates on. */
     return { ...it, expr: { ...expr, args: [], star: true } };
   });
 
@@ -736,13 +736,13 @@ export const normalizeAliasSortKeys = (clauses: readonly Clause[]): readonly Cla
 
   for (const it of proj.items) {
     /*
-     * ⚠️ EXPLICIT ALIASES ONLY, not `it.alias ?? columnName(it.expr)`. An un-aliased item's column
+     * EXPLICIT ALIASES ONLY, not `it.alias ?? columnName(it.expr)`. An un-aliased item's column
      * is named after its expression (`n.n`), and no sort key can REFERENCE that name as a variable
      * — `ORDER BY n.n` parses as a `prop`, not as a `var` called "n.n" — so the fallback could
      * never match a substitution site. Mutation confirmed it: keying the map on `it.alias` alone
      * changed no answer. Dropped rather than kept as an unreachable branch.
      *
-     * 🔑 `outNames` above DOES keep the fallback, because the overlay check needs every column
+     * `outNames` above DOES keep the fallback, because the overlay check needs every column
      * name that could shadow a binding, aliased or not.
      */
     if (it.alias !== undefined && cheapPureExpr(it.expr)) {
@@ -755,12 +755,12 @@ export const normalizeAliasSortKeys = (clauses: readonly Clause[]): readonly Cla
   }
 
   /*
-   * ⚠️ THE OVERLAY CHECK, over the whole substitution set rather than per key: if any expression
+   * THE OVERLAY CHECK, over the whole substitution set rather than per key: if any expression
    * this pass could introduce reads a name that is also an output column, the rewrite is refused
    * outright. Conservative on purpose — the alternative is reproducing the sort scope's shadowing
    * rules in a rewrite that cannot see the binding.
    *
-   * 🔑 IT ALSO SUBSUMES A GUARD I WROTE SEPARATELY AND THEN REMOVED (item 1929). That guard
+   * IT ALSO SUBSUMES A GUARD I WROTE SEPARATELY AND THEN REMOVED (item 1929). That guard
    * excluded an alias whose expression reads its OWN name (`RETURN n AS n`), and its mutant
    * survived the battery. The proof it is subsumed: an alias name is ALWAYS in `outNames`, so if
    * the name is among the expression's free variables then that free variable is in `outNames`,
@@ -780,12 +780,12 @@ export const normalizeAliasSortKeys = (clauses: readonly Clause[]): readonly Cla
      * A key that is EXACTLY a bare name is left alone: `outputColumnSorts` WANTS it as a column
      * reference, and rewriting it would look like taking the query off the faster arm.
      *
-     * ⚠️ REMOVING IT CHANGES NO ANSWER AND NO ROUTE, because `ordered-rows.ts` normalizes in the
+     * REMOVING IT CHANGES NO ANSWER AND NO ROUTE, because `ordered-rows.ts` normalizes in the
      * OPPOSITE direction — its `aliasOf` maps a projected `prop` key back to its alias — so
      * `ORDER BY x` rewritten to `ORDER BY n.n` round-trips straight back to `x`. Measured:
      * `ORDER BY n.n` reads 49.72 ms against `ORDER BY x`'s 49.87, i.e. the same arm.
      *
-     * 🔑 IT IS STILL COVERED, and that distinction is the point. The mutant that removes it SURVIVED
+     * IT IS STILL COVERED, and that distinction is the point. The mutant that removes it SURVIVED
      * the battery's first run and is caught now, because the test observes the output PLAN (each
      * key's free variables) rather than the rows or the route — where the substitution is visible
      * even though nothing downstream behaves differently. So this is a real short-circuit (it skips
@@ -840,7 +840,7 @@ const inlineTrailingLetOnce = (clauses: readonly Clause[]): readonly Clause[] =>
   //
   // One reference is the only case where substituting changes nothing observable.
   /*
-   * ⚠️ THE GUARD NOW COVERS EVERY NON-CHEAP BINDING, not just subqueries (item 1926). `boundExprs`
+   * THE GUARD NOW COVERS EVERY NON-CHEAP BINDING, not just subqueries (item 1926). `boundExprs`
    * used to admit only `cheapPureExpr` or a subquery; it now admits ANY expression, because this
    * once-read proof is what makes admission sound and it never depended on the expression being
    * cheap or total — read exactly once, it is evaluated once per row either way.
@@ -851,12 +851,12 @@ const inlineTrailingLetOnce = (clauses: readonly Clause[]): readonly Clause[] =>
    */
   const guardedNames = [...bound].filter(([, e]) => !cheapPureExpr(e)).map(([n]) => n);
   /*
-   * ⚠️ OCCURRENCES, NOT NAMES, AND COUNTED BY THE SUBSTITUTION ITSELF (items 1926/1927). The
+   * OCCURRENCES, NOT NAMES, AND COUNTED BY THE SUBSTITUTION ITSELF (items 1926/1927). The
    * first version of this guard counted how many guarded NAMES appear via `freePredicateVars`, a
    * `Set`, which cannot carry multiplicity — so `RETURN pow(a, a)` scored 1, passed, and the
    * substitution then replaced BOTH, doubling the very work the guard exists to hold constant.
    *
-   * 🔑 Item 1927 made the count exact for free: `substituteVarsDeep` reports how many nodes it
+   * Item 1927 made the count exact for free: `substituteVarsDeep` reports how many nodes it
    * replaced, which IS the occurrence count, at every depth, with no second walk to keep in step
    * with the first. So the guard now runs AFTER substituting rather than before — the work is
    * discarded when it fails, which costs one wasted map over a projection and buys a count that
@@ -866,7 +866,7 @@ const inlineTrailingLetOnce = (clauses: readonly Clause[]): readonly Clause[] =>
   const substituted = (e: Expr): { readonly expr: Expr; readonly count: number } | null => {
     const { expr: out, count } = substituteVarsDeep(e, bound);
 
-    // ⚠️ THE POST-CHECK IS THE WHOLE SAFETY ARGUMENT for substituting at depth. `substituteVarsDeep`
+    // THE POST-CHECK IS THE WHOLE SAFETY ARGUMENT for substituting at depth. `substituteVarsDeep`
     // is a WHITELIST — it descends scalar operators and leaves `exists`/`countSubquery`/
     // `valueSubquery`/`letIn` alone, because those bind names of their own and a blind
     // substitution inside them would CAPTURE. An arm it does not descend leaves the name in
@@ -879,7 +879,7 @@ const inlineTrailingLetOnce = (clauses: readonly Clause[]): readonly Clause[] =>
     }
 
     /*
-     * ⚠️ NO `guardedNames.length > 0 ?` TERNARY HERE, and a surviving mutant is why (item 1927).
+     * NO `guardedNames.length > 0 ?` TERNARY HERE, and a surviving mutant is why (item 1927).
      * Guarding the accumulation looked prudent and was PROVABLY DEAD: `guardedNames` is non-empty
      * only when the binder is the single-item `LET` arm of `boundExprs`, which puts exactly ONE
      * entry in `bound` — so `count` can only be counting that one guarded name. The `with` arm
@@ -893,11 +893,11 @@ const inlineTrailingLetOnce = (clauses: readonly Clause[]): readonly Clause[] =>
   };
 
   /*
-   * ⚠️ THIS USED TO BE ONE LEVEL ONLY, and the reason was stated outright: the arguments are
+   * THIS USED TO BE ONE LEVEL ONLY, and the reason was stated outright: the arguments are
    * replaced where they are BARE NAMES "rather than needing an exhaustive walk over a 40-arm
    * `Expr` union where a missed arm would drop the binder with the name still unbound".
    *
-   * 🔑 ITEM 1927 CHECKED THAT PREMISE INSTEAD OF BELIEVING IT, and the walk does not have to be
+   * ITEM 1927 CHECKED THAT PREMISE INSTEAD OF BELIEVING IT, and the walk does not have to be
    * exhaustive to be safe — only fail-safe. See `substituteVarsDeep`: an arm it misses leaves the
    * name surviving, and the `freePredicateVars` post-check above (which this code ALREADY did,
    * one level up) turns that into a decline.
@@ -935,7 +935,7 @@ const inlineTrailingLetOnce = (clauses: readonly Clause[]): readonly Clause[] =>
     // `n.k`. Caught by `DISTINCT over a LET-bound name`, which exists for exactly that
     // distinction; the rewrite now carries the name it removed.
     //
-    // ⚠️ THE COUNT IS WHAT SAYS "UNCHANGED", NOT REFERENCE IDENTITY (item 1927).
+    // THE COUNT IS WHAT SAYS "UNCHANGED", NOT REFERENCE IDENTITY (item 1927).
     // `substituteVarsDeep` rebuilds every composite node it descends, so `e.expr === it.expr` is
     // false even when it replaced nothing — which would pin an alias onto items the rewrite never
     // touched.
@@ -963,7 +963,7 @@ const inlineTrailingLetOnce = (clauses: readonly Clause[]): readonly Clause[] =>
   }
 
   /*
-   * ⚠️ THE ONCE-READ GUARD, APPLIED HERE because the count comes from the substitution. Read
+   * THE ONCE-READ GUARD, APPLIED HERE because the count comes from the substitution. Read
    * TWICE and inlined twice, a non-cheap binding's work doubles; read ZERO times, its evaluation
    * disappears and with it any fault it raises. One reference is the only case where substituting
    * changes nothing observable — and a CHEAP binding (`prop | var | lit | param`) is exempt,
@@ -989,7 +989,7 @@ const inlineTrailingLetOnce = (clauses: readonly Clause[]): readonly Clause[] =>
 /**
  * Fold trailing `LET` binders into the `RETURN` until none is left to fold (item 1928).
  *
- * ⚠️ A CHAIN NEEDS MORE THAN ONE PASS, and until item 1927 a second pass would have been WASTED.
+ * A CHAIN NEEDS MORE THAN ONE PASS, and until item 1927 a second pass would have been WASTED.
  * `letfixpoint-probe-1927.ts` measured exactly that: the hand-folded intermediate
  * `LET a = n.n + 1 RETURN (a * 2) AS x` still kept its `LET`, because the substitution was one
  * level only. With that lifted, the intermediate folds, so iterating finally reaches the shape:
@@ -999,14 +999,14 @@ const inlineTrailingLetOnce = (clauses: readonly Clause[]): readonly Clause[] =>
  *   chain3  + LET c = b + 3                                    75.21    -> the same
  * ```
  *
- * 🔑 TERMINATION IS STRUCTURAL, NOT A HOPE. `inlineTrailingLetOnce` either returns its input
+ * TERMINATION IS STRUCTURAL, NOT A HOPE. `inlineTrailingLetOnce` either returns its input
  * UNCHANGED or returns `clauses.slice(0, -2)` plus one clause — exactly one clause shorter. So the
  * loop can run at most `clauses.length` times, and the `length` comparison below is what detects
  * the fixed point. The explicit bound is belt-and-braces against a future edit that makes the pass
  * rewrite in place: an off-by-one on a loop bound is where this repo has turned a wrong answer into
  * a NON-TERMINATION that filled 192 GB of swap (CLAUDE.md records the reboot).
  *
- * ⚠️ AND EXPRESSION BLOWUP IS PREVENTED BY A GUARD THAT WAS ALREADY THERE, which is the only reason
+ * AND EXPRESSION BLOWUP IS PREVENTED BY A GUARD THAT WAS ALREADY THERE, which is the only reason
  * iterating is safe at all. The hazard shape is `LET a = … LET b = a + a`: folding `b` leaves a
  * projection reading `a` TWICE, and item 1926's once-read guard then refuses to fold `a` — so each
  * round duplicates nothing and the expression grows linearly in the bindings, never 2^k. Measured
@@ -1030,12 +1030,12 @@ const inlineTrailingLet = (clauses: readonly Clause[]): readonly Clause[] => {
   }
 
   /*
-   * ⚠️ UNREACHABLE UNDER THE PASS'S CURRENT CONTRACT, and a surviving mutant proved it: replacing
+   * UNREACHABLE UNDER THE PASS'S CURRENT CONTRACT, and a surviving mutant proved it: replacing
    * this with `return clauses` failed NOTHING. Each successful fold shortens by exactly one and the
    * shortest result is `[match, return]`, so at most `clauses.length - 2` folds can happen — and
    * iteration `length - 1` then detects the fixpoint and returns above. The loop cannot run out.
    *
-   * 🔑 It stays because the BOUND stays, and the bound is deliberate belt-and-braces: if a future
+   * It stays because the BOUND stays, and the bound is deliberate belt-and-braces: if a future
    * edit ever makes the pass rewrite WITHOUT shortening, this is what keeps the loop finite rather
    * than hanging. Returning `cur` rather than `clauses` is then the better of two correct answers,
    * since every fold already applied is answer-preserving. The mutant is recorded as an expected
@@ -1323,7 +1323,7 @@ const inlineCorrelatedCall = (clauses: readonly Clause[]): readonly Clause[] => 
       }
     }
 
-    // ⚠️ THE ESCAPING NAMES ARE THE WHOLE DIFFICULTY, and they are why item 1661 priced this
+    // THE ESCAPING NAMES ARE THE WHOLE DIFFICULTY, and they are why item 1661 priced this
     // route but did not build it. The body's pattern introduces `x`; the CALL yields only
     // `x.k AS c` and HIDES `x`. The emitted `MATCH` cannot hide it — a plain MATCH binds what it
     // matches — so after the rewrite `x` is live where the call had scoped it away. That is
@@ -1521,13 +1521,13 @@ export const liftStartProps = (clauses: readonly Clause[]): readonly Clause[] =>
     // `WHERE` that means the same thing, and 13.29 after this change — 1.86x, flag cleared, five
     // processes before and eight after.
     //
-    // ⚠️ THE MECHANISM IS NOT SEEDING, and the first version of this comment said it was. Inline
+    // THE MECHANISM IS NOT SEEDING, and the first version of this comment said it was. Inline
     // props ALREADY seed: `indexCandidates` reads `node.pred.props` directly, lifted or not.
     // Mutation proved it — restoring the old refusal left all 3,401 tests green INCLUDING route
     // assertions that count vertex pulls, which is only possible if the seek happens either way.
     // What the lifted form actually saves is NOT YET IDENTIFIED; the measurement is solid and the
     // explanation is open, so anyone extending this should not assume the seed hint is the reason.
-    // ⚠️ A CLAUSE BINDING A PATH VARIABLE DOES NOT LIFT, and the suite found this rather than the
+    // A CLAUSE BINDING A PATH VARIABLE DOES NOT LIFT, and the suite found this rather than the
     // reasoning: `MATCH p = (a:P {k: 1}), (p:P {k: 2}) RETURN count(*)` must RAISE on the
     // collision between the path variable `p` and the node variable `p`, and it raises only
     // because the product-of-counts shortcut DECLINES and the general path gets there. Adding a
@@ -1551,7 +1551,7 @@ export const liftStartProps = (clauses: readonly Clause[]): readonly Clause[] =>
       if (
         name === undefined ||
         props.length === 0 ||
-        // ⚠️ THE BARE-NODE REFUSAL USED TO LIVE HERE AND IT WAS PRICED WRONG (item 1558). Its own
+        // THE BARE-NODE REFUSAL USED TO LIVE HERE AND IT WAS PRICED WRONG (item 1558). Its own
         // comment read "the scan rungs already serve it and the lift gains nothing — measured equal
         // at 3.36 against 3.55 ms", and that equality was an INSTRUMENT ARTIFACT: the three
         // spellings of the group were timed in ONE process, so the clause arm ran second through
@@ -1577,7 +1577,7 @@ export const liftStartProps = (clauses: readonly Clause[]): readonly Clause[] =>
         pattern.segments.some((seg) => seg.rel.quantifier !== undefined) ||
         // A NULL literal means IS NULL and a USER param could BE null — neither lifts (item 260).
         //
-        // ⚠️ A SYNTHETIC PARAM DOES LIFT, and not admitting it had silently disabled this whole
+        // A SYNTHETIC PARAM DOES LIFT, and not admitting it had silently disabled this whole
         // rewrite (item 1556). Auto-parameterization (item 1502) runs BEFORE the parse, so
         // `MATCH (a:P {k: 5})` reaches here as `{k: $__ap0}` — `kind: 'param'`, not `'lit'` — and
         // the old test refused it. Item 778 built this rewrite and measured the pair converging at
@@ -1690,10 +1690,10 @@ const unoptionalizeForAggregate = (clauses: readonly Clause[]): readonly Clause[
 
   const proj = ret.projection;
   /*
-   * ⚠️⚠️⚠️ **THE VARIABLES THIS OPTIONAL CLAUSE ITSELF BINDS — AND OMITTING THIS WAS A WRONG ANSWER**
+   * **THE VARIABLES THIS OPTIONAL CLAUSE ITSELF BINDS — AND OMITTING THIS WAS A WRONG ANSWER**
    * (found at item 2177).
    *
-   * 🔑 Dropping `optional` does not merely stop null-filling: it REMOVES the rows whose pattern did not
+   * Dropping `optional` does not merely stop null-filling: it REMOVES the rows whose pattern did not
    * match. That is invisible to an aggregate over a variable THIS clause binds (it was null on exactly
    * those rows, contributing nothing), but NOT to one over a variable bound EARLIER, which was non-null
    * there and did contribute.
@@ -1703,14 +1703,14 @@ const unoptionalizeForAggregate = (clauses: readonly Clause[]): readonly Clause[
    *                                                RETURN count(x),count(*) answered 3,3  correct
    * ```
    *
-   * ⚠️ The same `count(x)` gave two different answers depending on what sat beside it — the star count
+   * The same `count(x)` gave two different answers depending on what sat beside it — the star count
    * refused the rewrite and so accidentally produced the right answer. The comment below was true and
    * incomplete: a star count is not the ONLY aggregate that sees those rows.
    */
   /*
-   * ⚠️⚠️ **"BORN HERE" MEANS BOUND BY THIS CLAUSE AND NOT BY AN EARLIER ONE, AND THE SUBTRACTION IS THE
+   * **"BORN HERE" MEANS BOUND BY THIS CLAUSE AND NOT BY AN EARLIER ONE, AND THE SUBTRACTION IS THE
    * WHOLE POINT.** `patternVars` of `OPTIONAL MATCH (x)-[:E]->(y)` returns BOTH `x` and `y`, because the
-   * clause REFERENCES the anchor it joins to. 🔑 A first version of this fix used that set directly, so
+   * clause REFERENCES the anchor it joins to. A first version of this fix used that set directly, so
    * `count(x)` still looked local and the wrong answer survived unchanged.
    */
   const earlier = new Set<string>();
@@ -1773,7 +1773,7 @@ const unoptionalizeForAggregate = (clauses: readonly Clause[]): readonly Clause[
  * because `bareDegreeSum` is a closed-form degree sum over the far label's bucket and declines
  * outright when `farLifted !== undefined` — which the clause spelling always sets.
  *
- * ⚠️ THE 11.8x IS FIXTURE-DEPENDENT AND ITEM 1302'S OPEN QUESTION IS STILL OPEN. Start-label
+ * THE 11.8x IS FIXTURE-DEPENDENT AND ITEM 1302'S OPEN QUESTION IS STILL OPEN. Start-label
  * vacuity is ONE variable and it is measured — a 2x2 on one graph, one shape per process, answers
  * identical within each row:
  *
@@ -1829,14 +1829,14 @@ const unoptionalizeForAggregate = (clauses: readonly Clause[]): readonly Clause[
  * keeps its name, and every downstream rewrite and all twenty-odd rungs then see a chain. That is
  * why it runs FIRST in `compileLinear`'s pipeline rather than last.
  *
- * ⚠️ A REPEATED VARIABLE IS ADMITTED, and that was checked rather than assumed. Splicing
+ * A REPEATED VARIABLE IS ADMITTED, and that was checked rather than assumed. Splicing
  * `(a)-[:E]->(b), (b)-[:E]->(a)` produces `(a)-[:E]->(b)-[:E]->(a)`, where the final node names an
  * ALREADY-BOUND variable — sound only if the chain matcher CONSTRAINS to the existing binding
  * instead of rebinding over it. Measured on a 2-cycle: both spellings return the same two rows.
  * `splice-chained-patterns.test.ts` pins it, because a matcher that started rebinding would turn
  * this rewrite into a wrong answer with no other symptom.
  *
- * ⚠️ A QUANTIFIED SEGMENT IS REFUSED, AND I COULD NOT PROVE THE REFUSAL IS NECESSARY. The reason
+ * A QUANTIFIED SEGMENT IS REFUSED, AND I COULD NOT PROVE THE REFUSAL IS NECESSARY. The reason
  * to suspect it: the default path mode is `trail` (no repeated edge WITHIN a path), so two
  * patterns carry two restrictors while a merged pattern carries one across the whole walk, which
  * could drop rows the comma spelling keeps. The reason it is only a SUSPICION: a mutant that
@@ -1848,7 +1848,7 @@ const unoptionalizeForAggregate = (clauses: readonly Clause[]): readonly Clause[
  * about merging two path patterns' restrictors — and that question is not answered here. Anyone
  * widening it needs a discriminating fixture FIRST; without one the mutant stays invisible.
  *
- * ⚠️ AND SO ARE `pathVar`, `selector` AND `mode`. A path variable would have to bind the merged
+ * AND SO ARE `pathVar`, `selector` AND `mode`. A path variable would have to bind the merged
  * path rather than either original; a selector (`ANY SHORTEST`) and an explicit mode both scope to
  * one path pattern. None can survive a merge, so a pattern carrying any of them ends the splice.
  */
@@ -1858,7 +1858,7 @@ const quantified = (p: PathPattern): boolean =>
 /**
  * Nothing scoped to a single path pattern, so two of them may become one.
  *
- * ⚠️ THE DEFAULTS ARE SPELLED OUT BY THE PARSER, NOT LEFT `undefined`, and the first version of
+ * THE DEFAULTS ARE SPELLED OUT BY THE PARSER, NOT LEFT `undefined`, and the first version of
  * this rewrite tested for `undefined` and therefore never fired once — the measurement was flat
  * and looked like a null result. `parse` sets `selector: 'walk'` and `mode: 'trail'` on every
  * pattern, so those two VALUES are what "no selector, default mode" looks like in the AST.
@@ -1903,18 +1903,18 @@ const bareBackReference = (n: NodePattern): boolean =>
  * the left leg turns the fork into a single path, so it inherits the twenty rungs rather than
  * needing a twenty-first.
  *
- * ⚠️ THE EQUIVALENCE TURNS ON THE DIAGONAL, AND IT WAS MEASURED BEFORE THIS WAS WRITTEN. In the
+ * THE EQUIVALENCE TURNS ON THE DIAGONAL, AND IT WAS MEASURED BEFORE THIS WAS WRITTEN. In the
  * comma form the two patterns are independent, so an `a` with ONE out-edge still matches once with
  * `b` and `c` both bound to that edge's target — the two legs may be the SAME EDGE. Had the single
  * path spelling refused a repeated edge (its mode is `trail`), this rewrite would drop rows. On
  * one, two and three out-edges the two spellings return 1/1, 4/4 and 9/9, and the row MULTISETS
  * agree — `fork-as-reversed-chain-1864.mjs` is that experiment, and it ran first.
  *
- * ⚠️ ONE SEGMENT ON THE LEFT ONLY. Reversing a k-segment leg is mechanical — reverse the order,
+ * ONE SEGMENT ON THE LEFT ONLY. Reversing a k-segment leg is mechanical — reverse the order,
  * flip each direction, shift the nodes — but it is not what the measurement covered, and the
  * shape that pays is the one-hop fork. Conservatism recorded as conservatism, per the note above.
  *
- * ⚠️ AND AN UNDIRECTED LEG IS REFUSED. `both` reversed is `both`, so it looks like a free case;
+ * AND AN UNDIRECTED LEG IS REFUSED. `both` reversed is `both`, so it looks like a free case;
  * the reason it is not taken is that `undirectedSide` counts a self-loop in both buckets and item
  * 1097 fixed a half-answer bug there, so an undirected leg under reversal needs its own
  * discriminating fixture rather than an argument from symmetry.
@@ -1970,7 +1970,7 @@ const spliceOnce = (patterns: readonly PathPattern[]): readonly PathPattern[] | 
      * THE FORK: both patterns start on the same variable, reached only once the chain reading
      * above has declined.
      *
-     * ⚠️ AN EXPLICIT `left.start.variable !== joinOn` GUARD WAS HERE AND CAME OUT, because its
+     * AN EXPLICIT `left.start.variable !== joinOn` GUARD WAS HERE AND CAME OUT, because its
      * mutant SURVIVED and the reason is that it is strictly implied: inside
      * `right.start.variable !== joinOn`, the fork test `right.start.variable ===
      * left.start.variable` already forces `left.start.variable !== joinOn`. So `(a)-[:E]->(a)`,
@@ -2006,7 +2006,7 @@ const spliceOnce = (patterns: readonly PathPattern[]): readonly PathPattern[] | 
 /**
  * DROP A `WITH` THAT PROJECTS NOTHING BUT THE VARIABLES ALREADY BOUND — item 2203.
  *
- * ⚠️⚠️ **A `MATCH` FOLLOWING A `WITH` CANNOT REACH ANY HOP SHORTCUT, AND THE SAME QUESTION SPELLED
+ * **A `MATCH` FOLLOWING A `WITH` CANNOT REACH ANY HOP SHORTCUT, AND THE SAME QUESTION SPELLED
  * WITHOUT THE `WITH` IS 35x FASTER.** Measured at 200,000 nodes / fanout 3, all four answering 300000:
  *
  * ```text
@@ -2016,19 +2016,19 @@ const spliceOnce = (patterns: readonly PathPattern[]): readonly PathPattern[] | 
  *     MATCH (a:Person) WITH a MATCH (a)-[:KNOWS]->(b) …         261.28 ms   <- 35x
  * ```
  *
- * 🔑🔑 **`NEXT` IS THE SAME BUG, because the parser DESUGARS it to this.** `parseNextChain` rewrites each
+ * **`NEXT` IS THE SAME BUG, because the parser DESUGARS it to this.** `parseNextChain` rewrites each
  * pre-`NEXT` `RETURN` into a `WITH`, so `A NEXT B` and `A WITH … B` are one mechanism — measured at 257.05
  * and 259.95 ms respectively. Item 2202 found it as a `NEXT` row; it is a `WITH` defect.
  *
- * 🔑 **TWO ADJACENT `MATCH` CLAUSES ARE ALREADY FAST (7.36 ms), so nothing needs merging** — removing the
+ * **TWO ADJACENT `MATCH` CLAUSES ARE ALREADY FAST (7.36 ms), so nothing needs merging** — removing the
  * clause is the whole fix. A `WITH` that survives this pass is left exactly as it was.
  *
- * ⚠️⚠️ **THE DANGEROUS CASE, AND WHY THE GATE COMPARES SETS: a `WITH` NARROWS SCOPE.** In
+ * **THE DANGEROUS CASE, AND WHY THE GATE COMPARES SETS: a `WITH` NARROWS SCOPE.** In
  * `MATCH (a)-[:K]->(b) WITH a MATCH (a)-[:K]->(c) …` the `WITH a` DROPS `b`, so eliding it would leave `b`
  * bound and change what a later clause can reference. So this only fires when the projected names cover
  * EVERY variable bound so far — then the clause is a true no-op. `WITH *` qualifies by definition.
  *
- * ⚠️ DECLINED, each for its own reason: `DISTINCT` (dedupes rows), `ORDER BY` / `SKIP` / `LIMIT` (the
+ * DECLINED, each for its own reason: `DISTINCT` (dedupes rows), `ORDER BY` / `SKIP` / `LIMIT` (the
  * `WITH DISTINCT` arm measured 403.85 ms and is a DIFFERENT question), an alias (renames a column), and
  * any non-`var` expression (computes a value). On the first `WITH` this pass declines, it stops and hands
  * back the remaining clauses untouched — after an unknown projection the bound set is no longer derivable
@@ -2060,7 +2060,7 @@ export const dropPassThroughWith = (clauses: readonly Clause[]): readonly Clause
       continue;
     }
 
-    /* ⚠️ Never elide a trailing `WITH`: there would be no clause left to carry the output. */
+    /* Never elide a trailing `WITH`: there would be no clause left to carry the output. */
     if (i === clauses.length - 1 || !passesThrough(clause, bound)) {
       return [...kept, ...clauses.slice(i)];
     }
@@ -2074,9 +2074,9 @@ const passesThrough = (clause: Clause & { kind: 'with' }, bound: ReadonlySet<str
   const { projection } = clause;
 
   /*
-   * ⚠️⚠️ **A `WITH` CAN CARRY A `WHERE`, AND ELIDING ONE DROPS THE FILTER.** `MATCH (a:P) WITH a WHERE
+   * **A `WITH` CAN CARRY A `WHERE`, AND ELIDING ONE DROPS THE FILTER.** `MATCH (a:P) WITH a WHERE
    * a.k > 1 …` filters the carried rows, so the clause is not a no-op however bare its projection looks.
-   * 🔑 Four existing tests caught this — `TCK WithWhere1/3` twice, the bind-distinction test and the named
+   * Four existing tests caught this — `TCK WithWhere1/3` twice, the bind-distinction test and the named
    * `CALL` YIELD test — because the first version of this gate never looked at the field. (Item 2194's
    * rule is to DUMP the real field values before writing a gate on them; six shapes were dumped and this
    * was not one of them.)
@@ -2110,7 +2110,7 @@ const passesThrough = (clause: Clause & { kind: 'with' }, bound: ReadonlySet<str
   }
 
   /*
-   * ⚠️ EVERY bound variable must survive. A missing one means the `WITH` was NARROWING scope, and
+   * EVERY bound variable must survive. A missing one means the `WITH` was NARROWING scope, and
    * eliding it would leave that variable visible to later clauses.
    */
   for (const name of bound) {
@@ -2211,7 +2211,7 @@ const foldOneMatch = (clause: MatchClause): MatchClause => {
   // every conjunct folded is structurally identical to the same query written with the label in the
   // pattern — no `where` key at all, not a `where` key holding `undefined`.
   //
-  // ⚠️ IT IS NOT A MEASURED WIN, and the first version of this comment claimed it was. With the key
+  // IT IS NOT A MEASURED WIN, and the first version of this comment claimed it was. With the key
   // present the folded hop read 24.30 ns/v against the pattern spelling's 17.06, which looked like
   // the key costing something; after the change the PATTERN arm — which this cannot touch — read
   // 27.57 against the folded clause's 23.25, so that shape simply bounces ~1.6x run to run and the
@@ -2258,7 +2258,7 @@ const foldPageIntoReturn = (clauses: readonly Clause[]): readonly Clause[] => {
     return clauses;
   }
 
-  // 🛑 THE FAULT REFUSAL (item 1056), and it is a WRONG-ANSWER refusal like the aggregation one
+  // THE FAULT REFUSAL (item 1056), and it is a WRONG-ANSWER refusal like the aggregation one
   // rather than a cost one. This fold's justification is that "a row-wise projection preserves row
   // identity", so sorting-then-projecting and projecting-then-sorting give the same ordered rows.
   // True of the ORDER — and not of FAULTS. When the page DROPS rows, the unfolded form evaluates
@@ -2418,7 +2418,7 @@ const inlineTrailingFilter = (clauses: readonly Clause[]): readonly Clause[] => 
  *     MATCH p = (a:P)-[:E]->{1,2}(b:P) LET w = 1 RETURN count(*)   869.6 ms
  *     MATCH p = (a:P)-[:E]->{1,2}(b:P)           RETURN count(*)    10.5 ms     83x
  *
- * ⚠️ AN ALLOWLIST OF CLAUSE KINDS, AND NOT BECAUSE OF LAZINESS — a generic walk for `{kind: 'var'}`
+ * AN ALLOWLIST OF CLAUSE KINDS, AND NOT BECAUSE OF LAZINESS — a generic walk for `{kind: 'var'}`
  * nodes would be WRONG here. Several clauses name a variable as a BARE STRING that no expression
  * walk can see:
  *
@@ -2430,7 +2430,7 @@ const inlineTrailingFilter = (clauses: readonly Clause[]): readonly Clause[] => 
  * So only kinds whose variable reads are entirely `Expr`s are admitted, and everything else refuses.
  * Adding a kind here means checking that claim for it, not just that it "looks read-only".
  *
- * ⚠️ REBINDINGS REFUSE TOO. `LET p = 1` or `WITH 1 AS p` after `MATCH p = …` shadows the pattern's
+ * REBINDINGS REFUSE TOO. `LET p = 1` or `WITH 1 AS p` after `MATCH p = …` shadows the pattern's
  * binding, which probably makes dropping it safe — but "probably" is not a basis for a rewrite, and
  * the shapes are rare enough that refusing costs nothing.
  */
@@ -2527,7 +2527,7 @@ const nameIsUnread = (name: string, where: Expr | undefined, tail: readonly Clau
  * `MATCH p = … RETURN <no mention of p>` drops the PATH VARIABLE, which is worth up to **74x**
  * (item 1567).
  *
- * ⚠️ THE COST IS NOT THE `Path` OBJECTS, IT IS THAT `pathVar` DISQUALIFIES EVERY FAST PATH. Five
+ * THE COST IS NOT THE `Path` OBJECTS, IT IS THAT `pathVar` DISQUALIFIES EVERY FAST PATH. Five
  * separate gates refuse outright on `path.pathVar !== undefined` — the typed-hop seed, the two
  * count rungs, the hop projection and `orient` itself (`pattern.pathVar !== undefined ? pattern :
  * orient(...)`, so the planner does not even choose a direction). Binding a path variable nobody
@@ -2541,7 +2541,7 @@ const nameIsUnread = (name: string, where: Expr | undefined, tail: readonly Clau
  * A path variable is also the one binding a user adds *speculatively* — written while exploring,
  * then left in place when the projection changes to a count.
  *
- * ⚠️ `RETURN *` READS IT. `Projection.star` binds every variable in scope, `p` included, so a star
+ * `RETURN *` READS IT. `Projection.star` binds every variable in scope, `p` included, so a star
  * projection refuses — this is the guard a mutation removes and no other test covers.
  *
  * Deliberately the same narrow shape as {@link dropUnreadGroupBinds} below, and for the same
@@ -2568,7 +2568,7 @@ export const dropUnreadPathVar = (clauses: readonly Clause[]): readonly Clause[]
     return clauses;
   }
 
-  // ⚠️ REBUILD WITHOUT THE KEY, not `pathVar: undefined`. Every gate tests
+  // REBUILD WITHOUT THE KEY, not `pathVar: undefined`. Every gate tests
   // `pathVar !== undefined`, so either spelling works for them — but `compilePattern` spreads
   // `...(pattern.pathVar !== undefined ? { pathVar } : {})`, and leaving an explicit `undefined`
   // here would make the two representations differ for anything comparing pattern shapes.
@@ -2583,12 +2583,12 @@ export const dropUnreadPathVar = (clauses: readonly Clause[]): readonly Clause[]
  *     MATCH (a:P)-[r:E]->{1,2}(b:P) RETURN count(*) AS c      819.6 ms
  *     MATCH (a:P)-[:E]->{1,2}(b:P)  RETURN count(*) AS c       11.4 ms
  *
- * ⚠️ `dropUnreadGroupBinds` ALREADY DROPS AN UNREAD `rel.variable` — but only on a FUSED HOP shape:
+ * `dropUnreadGroupBinds` ALREADY DROPS AN UNREAD `rel.variable` — but only on a FUSED HOP shape:
  * it requires `hopFrom !== undefined` and refuses on `nested`/`unitRest`/`innerQ`. A plain
  * quantified hop has `rel.quantifier` set and NO `hopFrom`, so it falls straight through that pass.
  * This covers exactly that gap and nothing else; the fused-hop case stays where it is.
  *
- * ⚠️ HARMLESS ON A SINGLE HOP, so this does not chase it: `-[r:E]->` unread measures 0.2 ms against
+ * HARMLESS ON A SINGLE HOP, so this does not chase it: `-[r:E]->` unread measures 0.2 ms against
  * 0.2 for the absent spelling. The cost appears only where a binding disqualifies the var-length
  * rungs.
  *
@@ -2715,13 +2715,13 @@ const dropUnreadGroupBinds = (clauses: readonly Clause[]): readonly Clause[] => 
  * The clause rewrites, in the order they RUN: earlier entries first, each handed the previous
  * one's output. `compileLinear` folds them with `reduce`.
  *
- * ⚠️⚠️ **THE ORDER IS LOAD-BEARING, AND EVERY DEPENDENCY IS RECORDED ON THE PASS IT CONSTRAINS.**
+ * **THE ORDER IS LOAD-BEARING, AND EVERY DEPENDENCY IS RECORDED ON THE PASS IT CONSTRAINS.**
  * Item 1662 priced one wrong position: `inlineCorrelatedCall` ran after `inlineTrailingLet` rather
  * than before it, the `LET` it emitted was left standing, and a standing `LET` is off every rung —
  * 1.44x of an available 9.4x, with the whole gap in the composition rather than in either rewrite.
  * So move an entry only with that kind of evidence.
  *
- * 🔑 THIS WAS ONE NESTED CALL EXPRESSION until item 2390 — 18 calls, 17 levels deep over 75 lines,
+ * THIS WAS ONE NESTED CALL EXPRESSION until item 2390 — 18 calls, 17 levels deep over 75 lines,
  * written outermost-first, so it read in the REVERSE of the order it ran. Three costs, each already
  * paid: inserting a pass re-indented every pass under it (the four most recent additions re-indent
  * 14 lines between them), a pass's dependency note sat on whichever neighbour happened to enclose
@@ -2755,7 +2755,7 @@ const PASSES: readonly ((clauses: readonly Clause[]) => readonly Clause[])[] = [
    * a page that actually does something is folded — the two would otherwise race to claim the same
    * clause (item 969).
    *
-   * ⚠️ THE WORD WAS "INSIDE" UNTIL ITEM 2390, AND THAT IS THE OPPOSITE OF WHAT THE CODE DID. In the
+   * THE WORD WAS "INSIDE" UNTIL ITEM 2390, AND THAT IS THE OPPOSITE OF WHAT THE CODE DID. In the
    * old nesting `dropVacuousPage` was the INNER call, so it ran first — which is what this note's
    * own reason requires. Every other dependency note in the block used "INSIDE" for "runs first";
    * this one alone used it for "runs after", and the nesting made that impossible to see. The order
@@ -2769,7 +2769,7 @@ const PASSES: readonly ((clauses: readonly Clause[]) => readonly Clause[])[] = [
   // aggregate body is a projection subquery", which is where the rungs are.
   inlineAggregateCall,
   /*
-   * ⚠️ `inlineCorrelatedCall` RUNS BEFORE `inlineTrailingLet` FOR THE SAME REASON, AND IT RAN AFTER
+   * `inlineCorrelatedCall` RUNS BEFORE `inlineTrailingLet` FOR THE SAME REASON, AND IT RAN AFTER
    * IT UNTIL ITEM 1662 MEASURED WHAT THAT COST. Once that rewrite could emit a `LET` of its own (a
    * computed yield, `RETURN x.k AS c`), running it after the `LET`-folding pass left the `LET`
    * standing, and a standing `LET` is OFF EVERY RUNG — `[match, let, return]` carries none of the
@@ -2784,17 +2784,17 @@ const PASSES: readonly ((clauses: readonly Clause[]) => readonly Clause[])[] = [
    */
   inlineCorrelatedCall,
   inlineTrailingLet,
-  // ⚠️ `normalizeAliasSortKeys` runs AFTER `inlineTrailingLet` so it sees the FOLDED projection:
+  // `normalizeAliasSortKeys` runs AFTER `inlineTrailingLet` so it sees the FOLDED projection:
   // folding a trailing `LET` can itself produce the aliased `ORDER BY` shape this normalizes, and
   // running it first would leave that shape unnormalized. Same composition argument as item 1662's,
   // one pass further out.
   normalizeAliasSortKeys,
   /*
-   * ⚠️ LATE — after `unoptionalizeForAggregate` and after the folding passes, so it sees the final
+   * LATE — after `unoptionalizeForAggregate` and after the folding passes, so it sees the final
    * folded projection AND any clause that pass has already cleared `optional` from: a shape
    * `unoptionalizeForAggregate` un-optionalizes becomes eligible for this one.
    *
-   * ⚠️ THIS NOTE SAID "OUTERMOST" UNTIL ITEM 2390 AND SAT ON `normalizeAliasSortKeys`'s CALL, one
+   * THIS NOTE SAID "OUTERMOST" UNTIL ITEM 2390 AND SAT ON `normalizeAliasSortKeys`'s CALL, one
    * level off the pass it describes: optionality is nothing to an `ORDER BY` alias, while
    * `count(x)` of a bound variable is exactly what un-optionalizing makes foldable. Two passes were
    * already outside it by then, so "outermost" had stopped being true as well. Position unchanged.
@@ -2844,7 +2844,7 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
   // contradicted the chain, where item 510 correctly places it BELOW `countShortcut` as the
   // strictly narrower shape. A list that resembles the precedence for three quarters of its
   // length is worse than one that plainly does not, so this one now matches it exactly.
-  // ⚠️ ONE PRECEDENCE DECISION IS TAKEN HERE RATHER THAN IN THE CHAIN, and it is the only one.
+  // ONE PRECEDENCE DECISION IS TAKEN HERE RATHER THAN IN THE CHAIN, and it is the only one.
   //
   // `count(DISTINCT <one expr over one end>)` over a 1-hop is accepted by BOTH `detectHopAggregate`
   // (which folds it via `distinctCountFold`, materializing nothing but walking every row) and
@@ -2882,7 +2882,7 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     shortestEndpointCount: detectShortestEndpointCount(fast),
     countShortcut: detectCountShortcut(fast, clauses),
     /*
-     * ⚠️ The GROUPED optional-hop count (item 2123), above its ungrouped sibling because it is the
+     * The GROUPED optional-hop count (item 2123), above its ungrouped sibling because it is the
      * narrower shape: a bare `count(*)` cannot reach it.
      */
     optionalGroupedHopCount: detectOptionalGroupedHopCount(fast),
@@ -2898,7 +2898,7 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
     hop2Projection: detectHop2Projection(fast, clauses),
     chainProjection: detectChainProjection(fast, clauses),
     /*
-     * ⚠️ `RETURN DISTINCT <far>.<k>` off the SAME recurrence (item 2119) — the row twin of the fold
+     * `RETURN DISTINCT <far>.<k>` off the SAME recurrence (item 2119) — the row twin of the fold
      * below, which the row spelling was paying 27x to do without.
      */
     chainDistinctLevels: detectChainDistinctLevels(fast, clauses),

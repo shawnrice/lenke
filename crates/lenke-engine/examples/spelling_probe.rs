@@ -830,7 +830,7 @@ fn main() {
             continue;
         }
         if !same_rows {
-            println!("  ⚠ ROW COUNT DIFFERS across spellings — not actually equivalent!");
+            println!("  ROW COUNT DIFFERS across spellings — not actually equivalent!");
             cliffs += 1;
         }
         if same_plan {
@@ -849,7 +849,7 @@ fn main() {
     if cliffs == 0 {
         println!("NO PERF CLIFFS: every equivalent spelling converges on plan or cost.");
     } else {
-        println!("{cliffs} PERF CLIFF(S) — see ✗/⚠ above.");
+        println!("{cliffs} PERF CLIFF(S) — see ✗/above.");
     }
     if gaps > 0 {
         println!("{gaps} capability gap(s) (unparsed variants) — feature gaps, not perf.");

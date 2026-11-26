@@ -8,7 +8,7 @@ import { query } from './index.js';
  * Item 1566: an inline `CALL { … }` with NO scope list is non-correlated, so its body is
  * loop-invariant and runs ONCE instead of once per outer row. 289x at 1,000 driving rows.
  *
- * ⚠️ THE WHOLE RISK IS IN THE GUARD, not the hoist. Three things must stay true:
+ * THE WHOLE RISK IS IN THE GUARD, not the hoist. Three things must stay true:
  *   - a SCOPED `CALL (n) { … }` is correlated and must NOT be hoisted (its rows differ per row);
  *   - a body that WRITES must run per outer row, because ISO runs it per row — hoisting
  *     `CALL { INSERT … }` would insert once instead of N times;
@@ -67,7 +67,7 @@ describe('the hoist does not change answers', () => {
     expect(rows.map((r) => r.c)).toEqual([6, 6, 6, 6, 6, 6]);
   });
 
-  test('⚠️ a SCOPED body is CORRELATED and must NOT be hoisted', () => {
+  test('a SCOPED body is CORRELATED and must NOT be hoisted', () => {
     const rows = query(
       g6(),
       'MATCH (n:P) CALL (n) { MATCH (n)-[:E]->(x) RETURN count(*) AS c } RETURN n.n AS nn, c ORDER BY nn',
@@ -109,7 +109,7 @@ describe('the hoist does not change answers', () => {
   });
 });
 
-describe('⚠️ the guards, each of which a mutant removes', () => {
+describe('the guards, each of which a mutant removes', () => {
   test('a WRITING unscoped body runs ONCE PER OUTER ROW, not once', () => {
     // The guard that matters most: ISO runs a non-correlated subquery per outer row, so its writes
     // happen per row. Hoisting would create ONE `:Q` instead of four.
@@ -132,7 +132,7 @@ describe('⚠️ the guards, each of which a mutant removes', () => {
     expect(countLabel(graph, 'Q')).toBe(7);
   });
 
-  test('⚠️ a NESTED inline CALL that writes blocks the hoist too — found by a surviving mutant', () => {
+  test('a NESTED inline CALL that writes blocks the hoist too — found by a surviving mutant', () => {
     // `bodyIsReadOnly` recurses into a nested `callInline`, and nothing tested that: the
     // `no-recursion` mutant (treat any nested CALL as read-only) survived all 3,921 tests.
     //
@@ -158,7 +158,7 @@ describe('⚠️ the guards, each of which a mutant removes', () => {
     expect(countLabel(graph, 'Q')).toBe(4);
   });
 
-  test('⚠️ the hoist is LAZY — no outer rows means the body never runs', () => {
+  test('the hoist is LAZY — no outer rows means the body never runs', () => {
     // An eager computation would run the body once even with nothing to join it to. A writing body
     // makes that observable: zero outer rows must mean zero inserts.
     const graph = plain();

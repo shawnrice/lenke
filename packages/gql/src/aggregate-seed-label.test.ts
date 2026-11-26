@@ -11,7 +11,7 @@ import { query } from './index.js';
 // LABEL that happens to share the indexed value. The label is therefore rechecked per candidate,
 // guarded on `seeded` so the bucket walk pays nothing for a test it satisfies by construction.
 //
-// ⚠️ THESE TESTS EXIST BECAUSE MUTATION FOUND THE GUARD UNTESTED. Dropping the recheck from both
+// THESE TESTS EXIST BECAUSE MUTATION FOUND THE GUARD UNTESTED. Dropping the recheck from both
 // the fold path and the collecting path SURVIVED the whole 2554-test suite. The row-projecting
 // path's own copy of this guard is covered — its comment records two tests catching the omission
 // as a WRONG ANSWER, not a slow one — but every one of those projects rows, so none of them

@@ -9,7 +9,7 @@ import { describe, expect, it } from 'bun:test';
  * against a ~6 ms unpaged twin** on `rung-gap-screen.mjs`. Items 1776/1777/1778 had already done
  * depths 0 and 1.
  *
- * ⚠️ THE ORACLE HERE IS AN ENUMERATED ROW LIST, NOT ANOTHER SPELLING, and that is forced rather than
+ * THE ORACLE HERE IS AN ENUMERATED ROW LIST, NOT ANOTHER SPELLING, and that is forced rather than
  * chosen. `skip-only-page.test.ts` can use `OFFSET $s` as its oracle because that spelling declined
  * the node rung — but item 1778 gave the parameterized page a rung too, and this item follows it, so
  * at these depths **both spellings take the same rung** (`skip-chain-route-1885.mjs` reads
@@ -20,7 +20,7 @@ import { describe, expect, it } from 'bun:test';
  * `skip-only-page-parity.ts` is the cross-ENGINE half — it reads these depths as positionally
  * identical between the TS rung and native, which is what licences slicing the rung's rows at all.
  *
- * ⚠️ AND EVERY SEQUENCE IS `toStrictEqual`. Item 1884 lost a mutant to `toEqual`, which ignores
+ * AND EVERY SEQUENCE IS `toStrictEqual`. Item 1884 lost a mutant to `toEqual`, which ignores
  * `undefined` entries.
  */
 import { Graph } from '@lenke/core';
@@ -31,7 +31,7 @@ import { query } from './index.ts';
  * A chain long enough for depth 3 and small enough to enumerate. `v0 -> v1 -> … -> v7`, one edge
  * each, so depth d returns `8 - d` rows and the ORDER is the vertex order of the chain's start.
  *
- * ⚠️ `k` IS DISTINCT PER VERTEX, so a positional disagreement is visible where a value-wise one is
+ * `k` IS DISTINCT PER VERTEX, so a positional disagreement is visible where a value-wise one is
  * not — the same reason `skip-only-page-parity.ts` gives for its own fixture.
  */
 const fixture = (): Graph => {
@@ -121,7 +121,7 @@ describe('the SKIP-ONLY page is the unpaged list sliced', () => {
 });
 
 /**
- * ⚠️ THE DECLINED SHAPES, ASSERTED ON THEIR ANSWERS. The route assertions in `routes-fired.test.ts`
+ * THE DECLINED SHAPES, ASSERTED ON THEIR ANSWERS. The route assertions in `routes-fired.test.ts`
  * pin that a bare `LIMIT` does NOT take the rung — the general path is lazy for it and a
  * materializing rung would be a regression — and these pin that the decline still answers correctly,
  * which is the half a route test cannot see.

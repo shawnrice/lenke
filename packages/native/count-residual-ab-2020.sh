@@ -1,14 +1,14 @@
 #!/bin/zsh
 # Item 2020 — the fused `count()` residual's PRE/POST A/B.
 #
-# ⚠️ ONE SHAPE PER PROCESS (item 762), and here that is not boilerplate: this change REDISTRIBUTES
+# ONE SHAPE PER PROCESS (item 762), and here that is not boilerplate: this change REDISTRIBUTES
 # call sites — count shapes leave the generic traverser route — and item 762 records that a shared
 # dispatch site flatters exactly that kind of change by up to 1.56x on a control.
 #
-# ⚠️ CONTROLS ARE NON-COUNT SHAPES the gate cannot reach, so any movement in them is drift or
+# CONTROLS ARE NON-COUNT SHAPES the gate cannot reach, so any movement in them is drift or
 # perturbation ([[executor-edits-perturb]]).
 #
-# ⚠️ RESTORE ON ANY EXIT — item 2018's kill left an arm in the tree; see that script's note. And
+# RESTORE ON ANY EXIT — item 2018's kill left an arm in the tree; see that script's note. And
 # ROUND picks one arm per invocation, because a whole sweep exceeds the 600 s foreground cap and a
 # backgrounded one is reapable.
 set -u
@@ -16,7 +16,7 @@ set -u
 ROOT=/home/shawn/projects/pl-graph
 SRC=$ROOT/packages/gremlin/src/executor/aggregation.ts
 LIVE="  return !('scope' in step) || step.scope === undefined || step.scope === 'global';"
-# ⚠️⚠️ **THE DEAD ARM MUST BE UNAMBIGUOUS, AND `  return false;` IS NOT.** That string appears many
+# **THE DEAD ARM MUST BE UNAMBIGUOUS, AND `  return false;` IS NOT.** That string appears many
 # times in `aggregation.ts`, so (a) `set_arm`'s "already set" check matched a line it did not write
 # and (b) the restore guard saw "a dead arm present" and did nothing — leaving the tree with the
 # count residual DISABLED after the first run. Third time an ambiguous arm string has cost
@@ -50,7 +50,7 @@ if ! grep -F -q -- "$LIVE" "$SRC" && ! grep -F -q -- "$DEAD" "$SRC"; then
   exit 1
 fi
 
-# ⚠️⚠️ **EXACT TRAILING-FIELD MATCH, NOT `grep -F`.** The screen's `ONLY` filter uses `includes`, so
+# **EXACT TRAILING-FIELD MATCH, NOT `grep -F`.** The screen's `ONLY` filter uses `includes`, so
 # `ONLY='edge: outE.has(w).inV'` selects BOTH that row AND `…inV.count` — and a `grep -F` for the
 # shorter name then picks whichever prints first. The first run of this script reported the COUNT
 # row's 11.34 ms as the control's reading, which is the exact "a control that is secretly the target"

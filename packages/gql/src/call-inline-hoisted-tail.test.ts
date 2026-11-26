@@ -3,7 +3,7 @@ import { describe, expect, test } from 'bun:test';
 /**
  * The HOISTED tail of `runCallInline` — item 1818.
  *
- * ⚠️ WHY THIS FILE EXISTS AT ALL. Item 1818 added a second row-to-binding tail, taken only when an
+ * WHY THIS FILE EXISTS AT ALL. Item 1818 added a second row-to-binding tail, taken only when an
  * unscoped (and therefore non-correlated) inline `CALL` body has been hoisted, which reuses the
  * body rows' `Object.entries` instead of recomputing them per outer row. That is a pure
  * ROUTE CHOICE: both tails are built to emit the same bindings, so by construction every existing
@@ -41,7 +41,7 @@ const g = () => {
 
 describe('the hoisted inline-CALL tail emits what the general tail emits', () => {
   /**
-   * ⚠️ A MULTI-COLUMN body, because the measured shape has ONE column and a one-column row cannot
+   * A MULTI-COLUMN body, because the measured shape has ONE column and a one-column row cannot
    * catch a tail that drops, reorders or duplicates entries.
    */
   test('carries every body column onto every outer row', () => {
@@ -60,7 +60,7 @@ describe('the hoisted inline-CALL tail emits what the general tail emits', () =>
   });
 
   /**
-   * ⚠️ A body returning SEVERAL rows, so the tail's own loop is exercised. A tail that emitted only
+   * A body returning SEVERAL rows, so the tail's own loop is exercised. A tail that emitted only
    * the first hoisted row, or that reused one binding object across rows, passes the test above and
    * fails this one.
    */
@@ -82,12 +82,12 @@ describe('the hoisted inline-CALL tail emits what the general tail emits', () =>
   });
 
   /**
-   * ⚠️ THE SHADOWING CASE, which is the sharpest thing either tail has to get right: the body's
+   * THE SHADOWING CASE, which is the sharpest thing either tail has to get right: the body's
    * column has the SAME NAME as a BOUND OUTER VARIABLE. Both tails copy the outer binding first
    * and then set the body's entries over it, so the BODY wins — a tail that seeded from the body
    * and overlaid the outer binding would invert this and still pass every other test here.
    *
-   * ⚠️ AND THE COLLISION HAS TO BE WITH THE VARIABLE, NOT WITH A PROJECTED COLUMN — this test's
+   * AND THE COLLISION HAS TO BE WITH THE VARIABLE, NOT WITH A PROJECTED COLUMN — this test's
    * first cut used `RETURN a.k AS nk` against an outer `n`, where there is no collision at all
    * (the outer binding holds the variable `n`, and `nk` only exists after the final projection), so
    * the inverted-overlay mutant SURVIVED it. Caught by mutating, not by reading. The name below is
@@ -105,7 +105,7 @@ describe('the hoisted inline-CALL tail emits what the general tail emits', () =>
   });
 
   /**
-   * ⚠️ A body that matches NOTHING under an OPTIONAL call must still null-pad, and that arm sits
+   * A body that matches NOTHING under an OPTIONAL call must still null-pad, and that arm sits
    * ABOVE the new tail. A guard written as `hoistedPairs !== undefined` alone, without the
    * empty-body arm keeping its place, would return no rows here.
    */
@@ -123,7 +123,7 @@ describe('the hoisted inline-CALL tail emits what the general tail emits', () =>
   });
 
   /**
-   * ⚠️ THE CORRELATED FORM MUST NOT TAKE THE NEW TAIL, and the assertion is a VALUE and not a
+   * THE CORRELATED FORM MUST NOT TAKE THE NEW TAIL, and the assertion is a VALUE and not a
    * timing: with ISO's variable scope clause the body sees the outer `n`, so `c` is that vertex's
    * own degree. If the hoist (and with it the new tail) ever reached a scoped call, every row would
    * read the same whole-graph number instead — which is exactly the 1-vs-6 observation
@@ -145,7 +145,7 @@ describe('the hoisted inline-CALL tail emits what the general tail emits', () =>
   });
 
   /**
-   * ⚠️ THE UNSCOPED FORM'S ANSWER IS THE WHOLE-GRAPH ONE, pinned here as the twin of the test
+   * THE UNSCOPED FORM'S ANSWER IS THE WHOLE-GRAPH ONE, pinned here as the twin of the test
    * above. This is the observable that proves the body does not see the outer row — the property
    * item 1818 relied on when it concluded the body is loop-invariant, so it is asserted rather
    * than assumed.
@@ -166,7 +166,7 @@ describe('the hoisted inline-CALL tail emits what the general tail emits', () =>
   });
 
   /**
-   * ⚠️ A SET-OP body, because `bodyMore` folds extra parts into `nested` AFTER the first
+   * A SET-OP body, because `bodyMore` folds extra parts into `nested` AFTER the first
    * `runLinearClauses` and the hoist caches the FOLDED result. A tail keyed on the first part's
    * rows would drop the union's second half.
    */
@@ -183,7 +183,7 @@ describe('the hoisted inline-CALL tail emits what the general tail emits', () =>
   });
 
   /**
-   * ⚠️ A body whose rows carry a NULL value, since `Object.entries` captured once must still carry
+   * A body whose rows carry a NULL value, since `Object.entries` captured once must still carry
    * a key whose value is null rather than the key disappearing — the hoisted tail reads a captured
    * pair list, so a mutant that filtered nullish pairs when building it would lose the column
    * entirely and no other test here would notice.

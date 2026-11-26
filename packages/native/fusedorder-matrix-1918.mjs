@@ -11,10 +11,10 @@
 // chain, a dedupe, an edge-filtered hop — so one shape is not enough. This asks every shape that
 // can reach that fold.
 //
-// ⚠️ THE DECLINE IS A `limit` ABOVE THE ROW COUNT, which `gremlin-route-screen.mjs` reports as
+// THE DECLINE IS A `limit` ABOVE THE ROW COUNT, which `gremlin-route-screen.mjs` reports as
 // generic (`[take]`) where the bare spelling is a SHORTCUT. It changes the route and no answer.
 //
-// ⚠️ AND EVERY ROW CARRIES ITS OWN CONTROL: the same values REVERSED must sum differently, or that
+// AND EVERY ROW CARRIES ITS OWN CONTROL: the same values REVERSED must sum differently, or that
 // row's agreement is an artefact of associative input and proves nothing. The first version of the
 // single-shape probe failed exactly this and said so.
 //
@@ -70,7 +70,7 @@ const BIG = 100_000_000;
 /**
  * Each row: a name, the fused steps, and the SAME question with the fusion declined.
  *
- * ⚠️ OBJECTS RATHER THAN TUPLES so the spread below is never inferred as possibly-a-string — a
+ * OBJECTS RATHER THAN TUPLES so the spread below is never inferred as possibly-a-string — a
  * mixed tuple `[string, Step[], Step[]]` makes `...fusedSteps` a lint error about spreading a
  * string, which is noise rather than a finding.
  */
@@ -168,8 +168,8 @@ for (const { name, fused, generic } of ROWS) {
     bad += 1;
   }
 
-  const verdict = sameOrder && sumsAgree ? '✅ same order, same sum' : '❌ DIFFERS';
-  const ctrl = canSeeOrder ? 'control: sees order' : '⚠️ CONTROL VACUOUS — proves nothing';
+  const verdict = sameOrder && sumsAgree ? 'same order, same sum' : 'DIFFERS';
+  const ctrl = canSeeOrder ? 'control: sees order' : 'CONTROL VACUOUS — proves nothing';
 
   console.log(
     `${name.padEnd(20)} ${String(a.length).padStart(7)} vs ${String(b.length).padStart(7)} values   ` +
@@ -183,10 +183,9 @@ for (const { name, fused, generic } of ROWS) {
   }
 }
 
-const vacNote =
-  vacuous > 0 ? `   ⚠️ ${vacuous} row(s) had a VACUOUS control and prove nothing` : '';
+const vacNote = vacuous > 0 ? `   ${vacuous} row(s) had a VACUOUS control and prove nothing` : '';
 
 console.log(
-  `\n${bad === 0 ? '✅' : '❌'} ${ROWS.length - bad}/${ROWS.length} shapes agree on BOTH order and sum${vacNote}`,
+  `\n${bad === 0 ? '' : ''} ${ROWS.length - bad}/${ROWS.length} shapes agree on BOTH order and sum${vacNote}`,
 );
 process.exit(bad === 0 && vacuous === 0 ? 0 : 1);

@@ -1,11 +1,11 @@
 // `V().coalesce(<one hop>, <one hop>).values(k)` fused (item 1998).
 //
-// ⚠️⚠️ **A ROUTE CHOICE, SO ANSWER-EQUIVALENT — the 2,435-test suite passes either way.** The route
+// **A ROUTE CHOICE, SO ANSWER-EQUIVALENT — the 2,435-test suite passes either way.** The route
 // assertions below are the only thing that can see a gate mutant
 // ([[perf-gate-needs-its-own-test]]), and the answer assertions are the only thing that can see a
 // WALK mutant, because the general `coalesceStep` would answer identically.
 //
-// 🔑 THREE THINGS THIS FILE EXISTS FOR, each of which a naive test misses:
+// THREE THINGS THIS FILE EXISTS FOR, each of which a naive test misses:
 //
 //   1. **A SINK.** `coalesce` differs from a plain hop ONLY on the rows arm 0 misses. Item 1995
 //      verified that on a graph where every vertex has an arm-0 edge, `coalesce(out(E), in_(E))` is
@@ -43,7 +43,7 @@ const build = (): Graph => {
   const g = new Graph();
 
   for (const i of ['a', 'b', 'c', 'd', 'e', 'f']) {
-    // ⚠️ `f` HAS NO `n`, which is requirement 3 above.
+    // `f` HAS NO `n`, which is requirement 3 above.
     g.addVertex({ id: i, labels: ['P'], properties: i === 'f' ? {} : { n: i } });
   }
 
@@ -111,7 +111,7 @@ describe('coalesceHopValues: the route', () => {
   });
 
   test('the CSR arm waits for the SECOND ask', () => {
-    // ⚠️ THIS IS A PERFORMANCE POLICY, SO IT IS ANSWER-IDENTICAL AND NO ANSWER TEST CAN SEE IT — the
+    // THIS IS A PERFORMANCE POLICY, SO IT IS ANSWER-IDENTICAL AND NO ANSWER TEST CAN SEE IT — the
     // mutation round's `csr-on-first-ask` (replacing `seenBefore(...)` with `true`) was the one
     // survivor of ten until this test existed. It needs no timing: only the CSR arm carries an
     // eager `drain`, so WHICH walk was handed back is readable straight off the returned object.
@@ -145,7 +145,7 @@ describe('coalesceHopValues: the answers', () => {
     const rows = stableRows(g, () => traversal(V(), coalesce(out('E'), in_('E')), values('n')));
     const bare = toArray(traversal(V(), out('E'), values('n')), g);
 
-    // ⚠️ THIS FIXTURE HAS BOTH KINDS OF SINK, and a route can be broken for one and right for the
+    // THIS FIXTURE HAS BOTH KINDS OF SINK, and a route can be broken for one and right for the
     // other. `e`'s only edge is an F, so arm 1 misses it too and it emits NOTHING. `f`'s only E
     // edge is INBOUND (`a -> f`), so arm 1 finds it and emits `a`. An assertion that the answer
     // equals the bare hop — which is what this test said first — holds only if the graph has no
@@ -220,7 +220,7 @@ describe('coalesceHopValues: the answers', () => {
 
 describe('a residual count() rides the walk (item 2028)', () => {
   /*
-   * ⚠️⚠️ **THIS ONE WAS MEASURED BEFORE BEING BELIEVED, AND MY PREDICTION WAS WRONG.** Unlike
+   * **THIS ONE WAS MEASURED BEFORE BEING BELIEVED, AND MY PREDICTION WAS WRONG.** Unlike
    * `choose`/`branch`, whose generic count path cost **4002 `applyStep` calls** (the sub-plan
    * re-dispatched per traverser), `coalesce`'s cost only TWO — so it was already cheap at 41.22 ms
    * against its own `values` twin's 46.37: **the count was already FASTER than projecting.** Fusing
@@ -231,7 +231,7 @@ describe('a residual count() rides the walk (item 2028)', () => {
    * wrong about magnitudes: this rung's CSR walk is so much cheaper than the generic coalesce path
    * that the allocation is noise. Recorded because the prediction was the wrong one.
    *
-   * ⚠️ ANSWER-EQUIVALENT, so the route assertion is the only thing that can see the rung declining,
+   * ANSWER-EQUIVALENT, so the route assertion is the only thing that can see the rung declining,
    * and the RESIDUAL'S CONTENT is asserted rather than its presence (item 2021).
    */
   const g = build();
@@ -247,7 +247,7 @@ describe('a residual count() rides the walk (item 2028)', () => {
 
   test('the `id()` shape CONSUMES its projection — a perf contract with no answer to see', () => {
     /*
-     * ⚠️⚠️ **A MUTANT MARKING `id` UNCONSUMED SURVIVED BOTH THIS FILE AND THE WHOLE SUITE.** Leaving
+     * **A MUTANT MARKING `id` UNCONSUMED SURVIVED BOTH THIS FILE AND THE WHOLE SUITE.** Leaving
      * `id` in `rest` still answers correctly: the step simply runs over the walk's ELEMENTS and maps
      * them to ids, which is the same result by a slower route. So only the residual's emptiness can
      * see it — the same shape as item 2021's three wrong-residual mutants.
@@ -259,7 +259,7 @@ describe('a residual count() rides the walk (item 2028)', () => {
 
   test('a projection kind the walk cannot serve DECLINES', () => {
     /*
-     * ⚠️ A MUTANT ADMITTING ANY KIND (`return true ? …`) SURVIVED: an element pick plus a residual is
+     * A MUTANT ADMITTING ANY KIND (`return true ? …`) SURVIVED: an element pick plus a residual is
      * broadly answer-equivalent, because the leftover step just runs over elements. It is still a
      * route this item never measured, and the gate is meant to name exactly what it serves — so the
      * decline is asserted rather than left to the next reader to discover.

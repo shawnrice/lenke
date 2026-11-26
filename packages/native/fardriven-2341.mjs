@@ -1,21 +1,21 @@
 /**
- * ✅✅ **ARE THE THREE GQL GATE RELAXATIONS EXPOSED TO ITEM 2339's SHARING PENALTY? (item 2341)**
+ * **ARE THE THREE GQL GATE RELAXATIONS EXPOSED TO ITEM 2339's SHARING PENALTY? (item 2341)**
  *
  * Items 2293 and 2297/2298 shipped 13.2x, 27x and 24.2x by admitting shapes to far-driven rungs — **all
- * measured one shape per process.** ⚠️ Item 2339 then found a second GQL scan-family query costs `hopGql`
+ * measured one shape per process.** Item 2339 then found a second GQL scan-family query costs `hopGql`
  * 1.06-1.14x through shared-rung polymorphism, and item 2340 confirmed the GREMLIN drains are immune.
  * **The GQL ships sit in the family that is NOT immune.**
  *
- * 🔑 Arithmetic already bounds the risk: a 1.14x penalty against a 13-27x win is immaterial. ⚠️ **But the
+ * Arithmetic already bounds the risk: a 1.14x penalty against a 13-27x win is immaterial. **But the
  * penalty on THESE rungs is unmeasured, and assuming 1.14x is exactly the kind of transfer this stretch
  * has been punished for** — so it gets measured rather than reasoned.
  *
- * ⚠️ **THE LABEL IS `Cohort`, NOT `Group`, AND THAT IS ISO CONFORMANCE RATHER THAN TASTE.** `Group` is a
+ * **THE LABEL IS `Cohort`, NOT `Group`, AND THAT IS ISO CONFORMANCE RATHER THAN TASTE.** `Group` is a
  * RESERVED WORD (it opens `GROUP BY`), so a bare `(g:Group)` is a syntax error — the engine says so and
- * names the fix (backticks for a delimited identifier). ✅ Renaming keeps the probe readable; the error
+ * names the fix (backticks for a delimited identifier). Renaming keeps the probe readable; the error
  * message was precise enough to diagnose on the first read.
  *
- * ⚠️ The far-driven shape needs an INDEX and a selective far end, which is what makes it take the rung at
+ * The far-driven shape needs an INDEX and a selective far end, which is what makes it take the rung at
  * all; item 2291 nearly published "an index does not help" from a probe that silently created none, so
  * `seekProof` below asserts the rung is reachable before any timing is believed.
  */
@@ -29,7 +29,7 @@ const WITH = process.env.WITH ?? '';
 
 const graph = new Graph();
 
-/* ✅ A tenant with many users and a FEW groups — the authz shape item 2293 made O(results). */
+/* A tenant with many users and a FEW groups — the authz shape item 2293 made O(results). */
 for (let i = 0; i < USERS; i += 1) {
   graph.addVertex({
     id: `u${i}`,
@@ -55,14 +55,14 @@ for (let i = 0; i < USERS; i += 1) {
 graph.createIndex({ on: 'vertex', kind: 'hash', keys: ['gname'] });
 
 const SHAPES = {
-  /* 🔑 THE FAR-DRIVEN TARGET: a selective far anchor, which is what items 2293/2297 admitted. */
+  /* THE FAR-DRIVEN TARGET: a selective far anchor, which is what items 2293/2297 admitted. */
   farAnchor: () =>
     query(graph, 'MATCH (u:User)-[:MEMBER]->(g:Cohort {gname: $g}) RETURN u.name AS n', {
       g: 'grp7',
     }).length,
-  /* ⚠️ THE PARTNER: a GQL scan-family query, the shape item 2339 showed is the culprit. */
+  /* THE PARTNER: a GQL scan-family query, the shape item 2339 showed is the culprit. */
   scan: () => query(graph, 'MATCH (u:User) WHERE u.score = 5 RETURN u.name AS nm').length,
-  /* ✅ A second far-driven shape, to see whether two far-driven queries interfere with each other. */
+  /* A second far-driven shape, to see whether two far-driven queries interfere with each other. */
   farOther: () =>
     query(graph, 'MATCH (u:User)-[:MEMBER]->(g:Cohort {gname: $g}) RETURN u.team AS t', {
       g: 'grp3',
@@ -70,9 +70,9 @@ const SHAPES = {
 };
 
 /*
- * ⚠️ **THE RUNG MUST BE REACHABLE OR THE TIMING MEANS NOTHING.** A far-driven rung needs the index; with
+ * **THE RUNG MUST BE REACHABLE OR THE TIMING MEANS NOTHING.** A far-driven rung needs the index; with
  * none, the query falls to a whole scan and this probe would compare two scans while claiming to measure a
- * rung. ✅ 1,000 users per group against 20,000 total: a reading anywhere near the scan arm's cost would
+ * rung. 1,000 users per group against 20,000 total: a reading anywhere near the scan arm's cost would
  * say the rung declined.
  */
 const proofRows = SHAPES.farAnchor();

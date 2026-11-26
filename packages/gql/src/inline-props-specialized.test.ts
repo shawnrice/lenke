@@ -16,7 +16,7 @@ import { query } from './index.js';
  *    (u:User) WHERE u.team = $v 12505      212893            12387   219897    flat (control)
  * ```
  *
- * ⚠️ THE CORRECTNESS CONDITION IS THE NULL MATRIX, and it is the whole reason `props` gets its OWN
+ * THE CORRECTNESS CONDITION IS THE NULL MATRIX, and it is the whole reason `props` gets its OWN
  * arm rather than joining `eqProps`'s. The two carriers implement DIFFERENT readings of equality:
  *
  * ```text
@@ -72,7 +72,7 @@ describe('the null matrix survives specialization', () => {
   });
 
   test('the same through a $param, which is the shape that reaches the fast arm', () => {
-    // ⚠️ THE LITERAL AND THE PARAM ARE DIFFERENT ROUTES. A literal `null` can be folded at compile
+    // THE LITERAL AND THE PARAM ARE DIFFERENT ROUTES. A literal `null` can be folded at compile
     // time; a `$param` cannot, so this is the spelling whose value is resolved per element — the
     // one a null rejection in the wrong arm would break.
     expect(countOf(g, 'MATCH (u:User {note: $v}) RETURN count(*) AS c', { v: null })).toBe(
@@ -182,7 +182,7 @@ describe('the specialized inline arm agrees with satisfies on every value', () =
   });
 
   test('a LIST value matches a stored list structurally THROUGH the fast arm', () => {
-    // ⚠️ Unlike `eqProps`, a list DOES reach this carrier — an inline list literal is one of the
+    // Unlike `eqProps`, a list DOES reach this carrier — an inline list literal is one of the
     // shapes `props` carries. `satisfies` records the bug where JS `!==` made such a constraint
     // never match, so `structuralEq` must be the comparison here and not reference equality.
     const list = new Graph();
@@ -223,7 +223,7 @@ describe('the specializer still refuses what it must', () => {
      * `(b {k: a.k})` is a NON-CLOSED inline constraint, and this pins that admitting `props` to
      * the specializer did not reach it.
      *
-     * ⚠️ IT IS NOT A TEST OF `buildNodeCount`'s `bindVar` GUARD, and item 1598's first version of
+     * IT IS NOT A TEST OF `buildNodeCount`'s `bindVar` GUARD, and item 1598's first version of
      * this comment claimed it was. Dropping that guard SURVIVES this test, because a correlated
      * constraint never reaches the guard: `inlinePredOf` runs `freePredicateVars` and returns
      * `null` first, so every production `predFor` call passes `closedProps: true`. The guard's

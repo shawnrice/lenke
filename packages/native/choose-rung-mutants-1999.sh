@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 1999 — mutation round on the fused `choose(<vertex filter>, hop, hop)` route.
 #
-# ⚠️ THE ROUTE IS ANSWER-EQUIVALENT, so the 2,447-test gremlin suite passes with every mutant below.
+# THE ROUTE IS ANSWER-EQUIVALENT, so the 2,447-test gremlin suite passes with every mutant below.
 # The filter is the route's OWN test file ([[perf-gate-needs-its-own-test]]).
 #
 # Harness rules, all earned at item 1998 and kept verbatim:
@@ -40,7 +40,7 @@ print -- "baseline green. mutating.\n"
 MUTANTS=(
   # THE GATE
   "seekable-test-refused@@collectVertexFilters(wrapper.test.steps, graph, false)@@s/collectVertexFilters(wrapper\.test\.steps, graph, false)/collectVertexFilters(wrapper.test.steps, graph)/"
-  # ⚠️ TWO GATE MUTANTS WERE DELETED RATHER THAN GIVEN TEETH. `empty-test-admitted` and
+  # TWO GATE MUTANTS WERE DELETED RATHER THAN GIVEN TEETH. `empty-test-admitted` and
   # `hop-test-admitted` both SURVIVED, and investigating why found the code they mutated was DEAD:
   # `collectVertexFilters` already refuses a non-filter step, and the `every(isVertexFilterStep)`
   # guard in front of it was strictly NARROWER than it (it declined `hasKey`). The mutants are gone

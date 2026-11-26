@@ -1,11 +1,11 @@
 /**
- * ⚠️⚠️ **THE ONLY TESTS THAT CAN SEE `inlineFarIsPlainAnchor`** (item 2297). Admitting a far-driven walk is
+ * **THE ONLY TESTS THAT CAN SEE `inlineFarIsPlainAnchor`** (item 2297). Admitting a far-driven walk is
  * answer-equivalent, so a mutation of the condition survives every differential test
  * (`perf-gate-needs-its-own-test`, items 1038/1044).
  *
- * 🔑 **THE CORRECTNESS CONDITION IS EXHAUSTIVENESS.** `CPredicate` has eight families and only `props` is
+ * **THE CORRECTNESS CONDITION IS EXHAUSTIVENESS.** `CPredicate` has eight families and only `props` is
  * safe to admit: an inline anchor is equality against a non-null literal, which can neither raise nor
- * coerce, so there is no expression for the gate's AST key to miss. ⚠️ Every other family must be refused
+ * coerce, so there is no expression for the gate's AST key to miss. Every other family must be refused
  * BY NAME — a ninth family added later must fail this test rather than slip through. These tests exist to
  * make a forgotten family fail loudly.
  */
@@ -25,13 +25,13 @@ describe('inlineFarIsPlainAnchor: props only, everything else refused by name', 
     expect(inlineFarIsPlainAnchor(undefined)).toBe(true);
   });
 
-  test('⚠️ refuses an EMPTY props list — nothing to filter on is not an anchor', () => {
+  test('refuses an EMPTY props list — nothing to filter on is not an anchor', () => {
     expect(inlineFarIsPlainAnchor({ props: [] })).toBe(false);
   });
 
   test('admits `eqProps`, because the CLAUSE path already runs that exact compiled predicate (item 2298)', () => {
     /*
-     * ✅ Instrumenting the three spellings showed `farPred` IDENTICAL for the clause form and the inline
+     * Instrumenting the three spellings showed `farPred` IDENTICAL for the clause form and the inline
      * `WHERE` — `[props:0, eqProps:1]` in both — and the clause form was already admitted. So admitting
      * `eqProps` gives the walk nothing new; it removes a discrimination between two spellings of one
      * predicate. Worth 24.2x (102.13 → 4.22 ms).
@@ -41,7 +41,7 @@ describe('inlineFarIsPlainAnchor: props only, everything else refused by name', 
     );
   });
 
-  test('⚠️ refuses EVERY family that is NOT props or eqProps, each with its own witness', () => {
+  test('refuses EVERY family that is NOT props or eqProps, each with its own witness', () => {
     const refused = [
       'where',
       'cmpProps',
@@ -59,14 +59,14 @@ describe('inlineFarIsPlainAnchor: props only, everything else refused by name', 
     }
 
     /*
-     * ⚠️ THE LIST MUST STAY COMPLETE. `CPredicate` had exactly eight families at item 2298; two are
+     * THE LIST MUST STAY COMPLETE. `CPredicate` had exactly eight families at item 2298; two are
      * admitted (`props`, `eqProps`) and these six are refused. A ninth added later makes this fail,
      * which is the point — a forgotten family would be admitted silently otherwise.
      */
     expect(refused.length + 2).toBe(8);
   });
 
-  test('⚠️ `nullProps` is refused in particular: `{k: null}` is IS NULL, not an equality (item 260)', () => {
+  test('`nullProps` is refused in particular: `{k: null}` is IS NULL, not an equality (item 260)', () => {
     expect(inlineFarIsPlainAnchor({ props: [], nullProps: [{ key: 'k' }] } as never)).toBe(false);
     expect(inlineFarIsPlainAnchor({ ...plainAnchor, nullProps: [{ key: 'z' }] } as never)).toBe(
       false,

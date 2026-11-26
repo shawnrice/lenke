@@ -13,18 +13,18 @@ import { V, dedupe, in_, out, toArray, traversal, values } from './index.js';
  * two-type specialization at **1.03x the single-type walk, 45.1% headroom**. This file is the
  * correctness half of building it.
  *
- * ⚠️ ORDER IS THE CONTRACT, AND IT IS WHY THIS FILE ASSERTS ARRAYS RATHER THAN MULTISETS. Gremlin
+ * ORDER IS THE CONTRACT, AND IT IS WHY THIS FILE ASSERTS ARRAYS RATHER THAN MULTISETS. Gremlin
  * stream order is a TinkerPop contract the differential fuzzer compares ORDERED — unlike GQL, whose
  * row order is unspecified, which is exactly why item 1431's edge-index trick was available there
  * and not here. The new walk must emit bucket `t0` in full, then bucket `t1` minus `t0`, which is
  * what the general `i`/`j` loops do at `labels.length === 2`. A specialization that got this right
  * as a SET and wrong as a SEQUENCE would pass every multiset test and fail the fuzzer.
  *
- * ⚠️ AND THE ORACLE IS A HAND WALK, NOT ANOTHER QUERY. The two-type and many-type paths are two
+ * AND THE ORACLE IS A HAND WALK, NOT ANOTHER QUERY. The two-type and many-type paths are two
  * branches of one function, so comparing one spelling against another can compare a route to
  * itself — item 930's point. `expected()` below reads the adjacency directly.
  *
- * ⚠️ `toArray` TAKES `drain`, SO A PLAIN `toArray` NEVER RUNS THE GENERATOR. The walk has two arms —
+ * `toArray` TAKES `drain`, SO A PLAIN `toArray` NEVER RUNS THE GENERATOR. The walk has two arms —
  * a `function*` and an eager `drain()` — and the eager one is taken whenever `rest` is empty. Every
  * case here is therefore run TWICE: bare (eager `drain`) and with a trailing `dedupe()`, which makes
  * `rest` non-empty and forces the lazy arm. Item 1412 built that split; nothing until now ran both
@@ -97,7 +97,7 @@ const bothArms = (g: Graph, ...hop: readonly unknown[]): { eager: unknown[]; laz
 });
 
 describe('the two-type hop emits t0 then t1-minus-t0, in order (item 1442)', () => {
-  test('⚠️ `out(E,F)` matches a hand walk EXACTLY, as a sequence', () => {
+  test('`out(E,F)` matches a hand walk EXACTLY, as a sequence', () => {
     const g = build();
     const { eager, lazy } = bothArms(g, out('E', 'F'));
 
@@ -109,7 +109,7 @@ describe('the two-type hop emits t0 then t1-minus-t0, in order (item 1442)', () 
     expect(eager.length).toBeGreaterThan(3);
   });
 
-  test('⚠️ the REVERSED spelling is a different sequence, which is the contract', () => {
+  test('the REVERSED spelling is a different sequence, which is the contract', () => {
     // `out('F','E')` must emit the F bucket first. If the specialization ignored argument order both
     // spellings would agree and this is the only test that would notice.
     const g = build();
@@ -172,7 +172,7 @@ describe('the two-type hop emits t0 then t1-minus-t0, in order (item 1442)', () 
 });
 
 describe('THREE types keep the general walk and agree with it (item 1442)', () => {
-  test('⚠️ `out(E,F,G)` is not the pair specialization and is still right', () => {
+  test('`out(E,F,G)` is not the pair specialization and is still right', () => {
     // THE DECLINE. The specialization is deliberately two-type — a loop over N hoisted locals is the
     // per-vertex array again — so 3+ labels must keep `manyTypes`. `G` carries nothing here, so the
     // answer must equal the two-type spelling while taking a different route; only a measurement or

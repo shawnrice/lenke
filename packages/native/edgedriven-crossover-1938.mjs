@@ -5,14 +5,14 @@
 // walk is unavailable (it counts adjacency and never sees an edge), and the reachable arm is a
 // THIRD walk that iterates edges and tests both endpoints — 34 ns a row against the engine's 245.
 //
-// ⚠️⚠️ BUT MY HAND LOOP HID A DESIGN POINT. It measured a start label covering 50,000 of 50,001
+// BUT MY HAND LOOP HID A DESIGN POINT. It measured a start label covering 50,000 of 50,001
 // vertices, where iterating every edge is obviously right. If the start label is SELECTIVE, the
 // start-driven walk iterates only those few vertices' adjacency — sub-linear — while edge iteration
 // is O(E) regardless. That is item 1688's lesson, which `hop-projection.ts` already records for the
 // FAR label: "candidateVertexSource iterates the label BUCKET, so a selective label makes the
 // existing walk sub-linear where this arm is O(V)".
 //
-// 🔑 SO THE GATE NEEDS SELECTIVITY, NOT JUST NON-VACUITY, and this measures where it flips. The
+// SO THE GATE NEEDS SELECTIVITY, NOT JUST NON-VACUITY, and this measures where it flips. The
 // engine arm is `MATCH (a:T)-[:E]->(b:U) RETURN b.n AS x` with `T` covering a varying fraction;
 // `U` is on every vertex so the FAR label is vacuous and only the START label's selectivity moves.
 //
@@ -25,12 +25,12 @@ const FANOUT = Number(process.env.FANOUT ?? 2);
 const REPS = Number(process.env.REPS ?? 7);
 
 /*
- * ⚠️⚠️ EVERY VERTEX IS AN EDGE SOURCE, SO `|E|` IS CONSTANT across the sweep — and the first version
+ * EVERY VERTEX IS AN EDGE SOURCE, SO `|E|` IS CONSTANT across the sweep — and the first version
  * of this probe got that wrong. It created edges only FROM the T-vertices, so `|E|` shrank with the
  * T count and the edge-driven arm's O(|E|) shrank with it: NO crossover could appear, because the
  * fixture was invariant to the thing being varied. The arm wins 1.47x-2.86x there by construction.
  *
- * 🔑 With `|E|` fixed, edge-driven pays O(|E|) whatever the selectivity while start-driven pays
+ * With `|E|` fixed, edge-driven pays O(|E|) whatever the selectivity while start-driven pays
  * O(tCount x degree) — which is the trade the gate has to decide. `U` is on every vertex so the FAR
  * label stays vacuous and only the START label's selectivity moves.
  */
@@ -65,7 +65,7 @@ const build = (tFrac) => {
 };
 
 /*
- * ⚠️ BOTH ENDS CARRY THE SELECTIVE LABEL, which is the shape item 1936 measured at 7.23x and the
+ * BOTH ENDS CARRY THE SELECTIVE LABEL, which is the shape item 1936 measured at 7.23x and the
  * shape a real schema has (`MATCH (a:Person)-[:KNOWS]->(b:Person)`). With the FAR label vacuous
  * (`b:U`) the engine's start-driven walk is much cheaper — 100 ns a row against 245 — so that
  * spelling understates the target. Both arms are still compared only within a row.
@@ -111,7 +111,7 @@ const time = (fn) => {
 
 console.log(
   `${NODES} vertices / ${NODES * FANOUT} E-edges from EVERY vertex (|E| constant), median of ${REPS}.\n` +
-    '⚠️ Arms are compared only WITHIN a row (same graph). `agree` must be true.\n',
+    'Arms are compared only WITHIN a row (same graph). `agree` must be true.\n',
 );
 console.log('T frac   T count   rows    engine    hand edge    ratio   agree');
 console.log('-'.repeat(68));
@@ -135,6 +135,6 @@ for (const tFrac of [1, 0.5, 0.2, 0.05, 0.01, 0.002]) {
 }
 
 console.log(
-  '\n⚠️ A ratio ABOVE 1 means the edge-driven arm wins and the gate should route to it; BELOW 1\n' +
+  '\nA ratio ABOVE 1 means the edge-driven arm wins and the gate should route to it; BELOW 1\n' +
     "   means the engine's start-driven walk is already the better choice at that selectivity.",
 );

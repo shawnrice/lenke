@@ -6,7 +6,7 @@ import { describe, expect, it } from 'bun:test';
  * interpolating caller: **1.46-2.06x** (insert 6708→4596, point 11082→6075, agg 13693→6684,
  * longer 24225→13100 ns).
  *
- * ⚠️ THIS IS A REWRITE OF USER QUERY TEXT, so the risk is not slowness — it is a silent change of
+ * THIS IS A REWRITE OF USER QUERY TEXT, so the risk is not slowness — it is a silent change of
  * meaning. Two halves below, and the first is the one that matters:
  *
  *  1. **The allowlist's REFUSALS**, each tied to the measurement or the semantic fact that put it
@@ -54,7 +54,7 @@ describe('what the allowlist LIFTS', () => {
     expect(out?.params).toEqual({ __ap0: 7, __ap1: 'abc' });
   });
 
-  it('⚠️ uses the DECODED string value, not the source span', () => {
+  it('uses the DECODED string value, not the source span', () => {
     // A string token's `value` is DECODED, so its source span is longer than its value by the
     // quotes and by every escape — which is why the span is bounded by the next token's `pos` and
     // the VALUE is what goes into the params. Escapes here are backslash-based (doubled quotes are
@@ -66,8 +66,8 @@ describe('what the allowlist LIFTS', () => {
   });
 });
 
-describe('⚠️ what the allowlist REFUSES, and why each one is in the list', () => {
-  // ⚠️ EACH ROW ASSERTS ON THE REWRITTEN TEXT, not on the fixture. The first version of this block
+describe('what the allowlist REFUSES, and why each one is in the list', () => {
+  // EACH ROW ASSERTS ON THE REWRITTEN TEXT, not on the fixture. The first version of this block
   // checked that a refusable token existed in the INPUT and that the query did not throw — a
   // tautology and a near-tautology. Two mutants walked straight through it: widening the allowlist
   // to `lbrace`/`comma` (which lifts PATH QUANTIFIER bounds) and to `keyword` (which lifts `LIMIT`
@@ -109,7 +109,7 @@ describe('⚠️ what the allowlist REFUSES, and why each one is in the list', (
     expect(normalizeLiterals('MATCH (a:P)-[:E]->(b:P) RETURN b')).toBeUndefined();
   });
 
-  it('⚠️ never lifts null, true or false — they are KEYWORDS, not literal tokens', () => {
+  it('never lifts null, true or false — they are KEYWORDS, not literal tokens', () => {
     expect(normalizeLiterals('MATCH (n:P {k: null}) RETURN n')).toBeUndefined();
     expect(normalizeLiterals('MATCH (n:P) WHERE n.k IS NULL RETURN n')).toBeUndefined();
     expect(normalizeLiterals('MATCH (n:P) WHERE n.flag = true RETURN n')).toBeUndefined();
@@ -120,11 +120,11 @@ describe('⚠️ what the allowlist REFUSES, and why each one is in the list', (
     expect(normalizeLiterals("MATCH (n:P) WHERE n.s = 'unterminated")).toBeUndefined();
   });
 
-  it('⚠️ the LIFTED literal is gone from the text, so a bad span cannot leave it behind', () => {
+  it('the LIFTED literal is gone from the text, so a bad span cannot leave it behind', () => {
     // The off-by-one mutant (`tokens[i + 1].pos - 1`) leaves a fragment of the source literal in
     // place, which only shows up as a parse failure and a silent fallback — correct answers at full
     // cost. This is the assertion that makes it loud.
-    // ⚠️ THE EXACT TEXT, not just "the literal is absent". `not.toContain('1234')` is too weak:
+    // THE EXACT TEXT, not just "the literal is absent". `not.toContain('1234')` is too weak:
     // the off-by-one leaves ONE character behind, so `$__ap0 4 RETURN` still passes a
     // does-not-contain check. Pinning the whole string is what makes the mutant loud — and it also
     // pins the trailing space the rewriter emits, which a reader would otherwise have to guess at.
@@ -167,7 +167,7 @@ describe('the lifted spelling answers exactly as the literal one', () => {
     });
   }
 
-  // ⚠️ Each pair is the SAME question written with a literal and with an explicit parameter. If the
+  // Each pair is the SAME question written with a literal and with an explicit parameter. If the
   // rewrite changed meaning, the lifted form would diverge from the hand-written param form — which
   // is the only reference that cannot itself be rewritten.
   for (const [name, lit, par, params] of [
@@ -225,7 +225,7 @@ describe('the lifted spelling answers exactly as the literal one', () => {
     });
   }
 
-  it('⚠️ a USER param named like a synthetic one is not shadowed', () => {
+  it('a USER param named like a synthetic one is not shadowed', () => {
     // The synthetic namespace is `__ap<n>`, so this cannot collide today. The test exists so that a
     // future namespace change fails here rather than silently taking the wrong value.
     const rows = query(g, 'MATCH (n:P) WHERE n.k = $__ap0 RETURN count(*) AS c', { __ap0: 3 });
@@ -237,7 +237,7 @@ describe('the lifted spelling answers exactly as the literal one', () => {
   it('the same shape with different literals answers differently (the cache is not over-sharing)', () => {
     // The failure this guards is the whole mechanism going wrong: if the rewritten text cached a
     // plan but the VALUES did not follow, every call would answer with the first call's constant.
-    // ⚠️ It asserts the VALUE followed the plan, not that seven answers differ. The first version
+    // It asserts the VALUE followed the plan, not that seven answers differ. The first version
     // projected `n.id`, which reads back as null (item 1500 learned this and I repeated it), so the
     // seven answers collapsed to two distinct row COUNTS and the test failed for the wrong reason.
     for (let k = 0; k < 7; k += 1) {

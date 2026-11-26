@@ -1,13 +1,13 @@
 /**
- * ⚠️⚠️⚠️ **ITEM 2260's "PURE KEY-TYPE EFFECT" IS CONFOUNDED BY CARDINALITY, AND THIS SEPARATES THEM
+ * **ITEM 2260's "PURE KEY-TYPE EFFECT" IS CONFOUNDED BY CARDINALITY, AND THIS SEPARATES THEM
  * (item 2261).**
  *
  * Item 2260 measured, at a fixed `hopProjection` route, a STRING `ORDER BY` key at 344 ns/row against a
- * NUMERIC one at 197, and called the ~147 ns difference a key-TYPE effect. ⚠️ But the fixture's string
+ * NUMERIC one at 197, and called the ~147 ns difference a key-TYPE effect. But the fixture's string
  * property had **9973 distinct values** and its numeric one **97** — so the two sorts differ in TIE DENSITY
  * as well as in type, and a sort's comparison count depends on both.
  *
- * 🔑 **A 2x2 SETTLES IT.** Four properties, each on the same vertices and read through the same route:
+ * **A 2x2 SETTLES IT.** Four properties, each on the same vertices and read through the same route:
  *
  *     nameHi   string, 9973 distinct       kHi   number, 9973 distinct
  *     nameLo   string,   97 distinct       kLo   number,   97 distinct
@@ -16,7 +16,7 @@
  * - If **cardinality** is the cause, `nameHi` ≈ `kHi` and `nameLo` ≈ `kLo`.
  * - If both matter, the four separate — and the 2x2 gives each term its own size.
  *
- * ⚠️ Item 2260's own lesson applies: the route is read, not assumed. All four arms are the same query shape
+ * Item 2260's own lesson applies: the route is read, not assumed. All four arms are the same query shape
  * with only the key property changed, so `compileLinear` cannot route them differently — but the unsorted
  * control is printed too, because a term that moves it is not the sort's.
  */
@@ -39,7 +39,7 @@ for (let i = 0; i < N; i += 1) {
     id: `v${i}`,
     labels: ['Person'],
     properties: {
-      /* ⚠️ The SAME underlying index drives all four, so the orderings correspond exactly. */
+      /* The SAME underlying index drives all four, so the orderings correspond exactly. */
       nameHi: `n${i % HI}`,
       nameLo: `n${i % LO}`,
       kHi: i % HI,
@@ -114,9 +114,9 @@ console.log(
 );
 
 /*
- * 🔑🔑 **AND THE FLOOR: IS THE TYPE EFFECT INTRINSIC TO COMPARING STRINGS?** ~141-166 ns/row over
+ * **AND THE FLOOR: IS THE TYPE EFFECT INTRINSIC TO COMPARING STRINGS?** ~141-166 ns/row over
  * 150,000 rows is ~8.8 ns per comparison (N log2 N ~= 2.55M), which is the right order for a JS string
- * compare against a numeric one. ⚠️ A ratio without a floor is an upper bound (this session's own rule), so
+ * compare against a numeric one. A ratio without a floor is an upper bound (this session's own rule), so
  * the same arrays are sorted by `Array.prototype.sort` with nothing else in the way. **If the floor shows
  * the same type gap, the engine's sort is at it and there is nothing to win.**
  */
@@ -156,25 +156,25 @@ const fs = floorOf(() => strs.slice(), bare);
 const fn = floorOf(() => nums.slice(), bare);
 
 /*
- * 🔑🔑🔑 **THE FAIR FLOOR (item 2262): THE ENGINE'S OWN COMPARATOR.** Item 2261's floor used a bare `<`,
+ * **THE FAIR FLOOR (item 2262): THE ENGINE'S OWN COMPARATOR.** Item 2261's floor used a bare `<`,
  * which the engine is NOT allowed to use — `sort`/`min`/`max` need a TOTAL ORDER (nulls last, a fixed type
  * rank so a mixed column is deterministic) for cross-engine byte-identity. A comparator that handles one
  * type with one operator is not the contract, so that ratio was an upper bound.
  *
  * `compareValues` is exported, so the floor can use **the engine's actual comparator with nothing else in
- * the way**: same contract, bare `Array.prototype.sort`, no pipeline. ✅ That is the fairest floor available
+ * the way**: same contract, bare `Array.prototype.sort`, no pipeline. That is the fairest floor available
  * and it cannot be a strawman (item 1682's trap).
  */
 const fsTotal = floorOf(() => strs.slice(), compareValues);
 const fnTotal = floorOf(() => nums.slice(), compareValues);
 
 /*
- * ⚠️⚠️ **AND THE FLOOR IS STILL INCOMPLETE FOR THE SAME CLASS OF REASON.** The two arms above sort a FLAT
+ * **AND THE FLOOR IS STILL INCOMPLETE FOR THE SAME CLASS OF REASON.** The two arms above sort a FLAT
  * array of primitives; the engine sorts **ROW OBJECTS by an extracted key**, which is strictly more work —
  * a field load per comparison, and objects rather than primitives in the array. So those ratios are still
  * upper bounds.
  *
- * 🔑 This arm is the complete floor: the engine's comparator, over `{ n }` rows, extracting the key the way
+ * This arm is the complete floor: the engine's comparator, over `{ n }` rows, extracting the key the way
  * a row sort must. Nothing is left between it and the engine but the engine's own pipeline.
  */
 const strRows = strs.map((n) => ({ n }));

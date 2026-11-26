@@ -10,7 +10,7 @@
  * So this prints the SERIES, and summarises it the way that note prescribes: drop the first three
  * reps as warm-up (visibly the JIT tiering up), take the MEDIAN of the rest.
  *
- * ⚠️ ONE SHAPE PER PROCESS. A second query shape in the same process pollutes the dispatch — item
+ * ONE SHAPE PER PROCESS. A second query shape in the same process pollutes the dispatch — item
  * 762's redistribution trap is exactly a change that moves which call sites are polymorphic, which
  * is what this is measuring.
  *

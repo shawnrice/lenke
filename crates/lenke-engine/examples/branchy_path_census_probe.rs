@@ -10,7 +10,7 @@
 //! than only the one item 1205 fixed — the method's "grep the pattern elsewhere" step, with the
 //! grep being a measurement.
 //!
-//! ⚠️ READ THE RATIO, NOT THE TIMES. The two fixtures hold the same number of rows and the same
+//! READ THE RATIO, NOT THE TIMES. The two fixtures hold the same number of rows and the same
 //! ~50% selectivity (printed, as the check), so a row whose PERIODIC and RANDOM timings differ is
 //! branchy by construction. A row where they agree is already branchless — or its branch is not
 //! where the time goes, which is the same conclusion for a would-be optimizer.
@@ -144,12 +144,12 @@ fn main() {
         let (pt, pn) = ask(&periodic);
         let (rt, rn) = ask(&random);
 
-        // ⚠️ A ROW WHOSE TWO FIXTURES ANSWER DIFFERENT NUMBERS OF ROWS IS NOT COMPARABLE. Printed
+        // A ROW WHOSE TWO FIXTURES ANSWER DIFFERENT NUMBERS OF ROWS IS NOT COMPARABLE. Printed
         // so that it cannot be read as a result by accident.
         let rows = if pn == rn {
             format!("{pn}")
         } else {
-            format!("{pn} vs {rn}  ⚠️ DIFFER")
+            format!("{pn} vs {rn}  DIFFER")
         };
 
         println!(

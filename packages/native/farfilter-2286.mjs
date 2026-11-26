@@ -1,15 +1,15 @@
 /**
- * ⚠️⚠️⚠️ **ONE SHAPE PER PROCESS, BECAUSE THE GUIDE'S CLAIM CAME FROM A NINE-SHAPE PROCESS (item 2286).**
+ * **ONE SHAPE PER PROCESS, BECAUSE THE GUIDE'S CLAIM CAME FROM A NINE-SHAPE PROCESS (item 2286).**
  *
  * Item 2283 timed nine query shapes in one process and published the gap between two of them as a rule in
  * `docs/guides/query-cost.md`: an unfiltered hop count at 0.00 ms against 4.6 ms with a far-end filter.
- * 🔑 Item 2285 then showed that extra arms in one process can **erase** a real 2.17x — so the same mechanism
+ * Item 2285 then showed that extra arms in one process can **erase** a real 2.17x — so the same mechanism
  * can just as easily **manufacture** a gap, and this one is in a user-facing document.
  *
- * ✅ `SHAPE` selects exactly one query. Each arm therefore runs in its own process with its own dispatch
+ * `SHAPE` selects exactly one query. Each arm therefore runs in its own process with its own dispatch
  * sites, which is the only configuration item 2285 leaves trustworthy.
  *
- * ⚠️ The fixture is identical in both arms — same graph, same edges, same seed — so the only difference is
+ * The fixture is identical in both arms — same graph, same edges, same seed — so the only difference is
  * the query text. Both arms also print their answer, because a cost comparison between two queries that
  * return different row counts is not a comparison at all.
  */
@@ -71,9 +71,9 @@ const [text, params] = QUERIES[SHAPE];
 const med = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 
 /*
- * ⚠⚠ **INNER ITERATIONS, BECAUSE THE FAST ARM IS SUB-MICROSECOND (item 2303).** This file's first
+ * **INNER ITERATIONS, BECAUSE THE FAST ARM IS SUB-MICROSECOND (item 2303).** This file's first
  * version wrapped ONE query in a `performance.now()` pair with 3 warm-ups, and reported the unfiltered hop
- * count at "0.01 ms" — a figure the guide then quoted. 🔑 At that scale the clock and the JIT dominate: item
+ * count at "0.01 ms" — a figure the guide then quoted. At that scale the clock and the JIT dominate: item
  * 2302 found a median-of-9 understating an indexed lookup by 17x, and `gremlin-spelling-probe` had already
  * solved it at item 1644 by calibrating an inner count until a sample takes at least `SAMPLE_MS` and
  * reporting the PER-CALL time. That is what this now does.

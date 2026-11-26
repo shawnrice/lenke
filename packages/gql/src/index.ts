@@ -227,7 +227,7 @@ const withClock = (
  * So 64 keeps true LRU behaviour affordable. At a larger cap the honest choice would have been
  * FIFO eviction instead, which costs nothing per hit but keeps the wrong entries.
  *
- * ⚠️⚠️ **RAISED 64 -> 512 AT ITEM 2271, AND FIFO TURNED OUT NOT TO BE NEEDED.** The 26% above is an
+ * **RAISED 64 -> 512 AT ITEM 2271, AND FIFO TURNED OUT NOT TO BE NEEDED.** The 26% above is an
  * UNGATED LRU; `parseCacheHit`/`parseCached` only do the `delete` + `set` while `size >= cap`, so BELOW
  * the cap a hit is already free and raising the cap cannot reintroduce that cost for a caller whose
  * distinct-text count fits. What the old cap did cost was never measured until item 2269: a session
@@ -242,7 +242,7 @@ const withClock = (
  *          100       16809         4371    **3.85x** — the window the raise opens
  *         1000       17858        18454    flat (+3.3%) — above both caps, correctly unaffected
  *
- * ⚠️ THE COST IS MEMORY, AND IT IS THE REASON NOT TO GO FURTHER: ~2KB a cached statement, so ~1MB at
+ * THE COST IS MEMORY, AND IT IS THE REASON NOT TO GO FURTHER: ~2KB a cached statement, so ~1MB at
  * 512 against ~128KB at 64. 2000 would be ~4MB and would also put more workloads back INSIDE the
  * tracked-LRU region, where the +3.3% toll lives. 512 is an 8x raise that keeps the cache a rounding
  * error against a graph while covering an application's realistic statement set.
@@ -304,7 +304,7 @@ const seenOnce = new Set<string>();
 /**
  * The LIFT memo — ONE SLOT, deliberately (item 1541).
  *
- * ⚠️ WITHOUT IT, AUTO-PARAMETERIZATION DEFEATS THE PARSE CACHE FOR EVERY TEXT IT HELPS. The lifted
+ * WITHOUT IT, AUTO-PARAMETERIZATION DEFEATS THE PARSE CACHE FOR EVERY TEXT IT HELPS. The lifted
  * statement is cached under the LIFTED text, so `parseCacheHit(originalText)` misses on every
  * repeat call and `normalizeLiterals` re-tokenizes — forever. Item 1540 measured it and confirmed
  * the key against the cache's own state (after four calls of `LET x = 5 RETURN x`, querying
@@ -319,7 +319,7 @@ const seenOnce = new Set<string>();
  * lift happens and the ORIGINAL text is what gets cached. The gap was exactly "did a lift happen",
  * which made the queries this feature exists for the only ones that never hit a cache.
  *
- * ⚠️ WHY ONE SLOT AND NOT AN LRU, WHICH IS WHAT I BUILT FIRST. A `Map` keyed by the original text
+ * WHY ONE SLOT AND NOT AN LRU, WHICH IS WHAT I BUILT FIRST. A `Map` keyed by the original text
  * holds one entry per distinct literal value — the pollution the lifted key exists to avoid — and
  * it made item 1502's ALL-MISS workload (a value interpolated into the text, so every call has a
  * fresh text and nothing can ever hit) **17% slower**: 1367 -> 1598 ns/call over six readings each.
@@ -336,7 +336,7 @@ const seenOnce = new Set<string>();
  * lifted text and values are identical. No `chain` is stored — the lift does not consult it, and
  * the statement is still fetched through `parseCached(lifted.text, chain)`, which verifies it.
  *
- * ⚠️ AND THE VALUES ARE SPREAD PER CALL rather than handed over by reference. `withClock` returns
+ * AND THE VALUES ARE SPREAD PER CALL rather than handed over by reference. `withClock` returns
  * its `params` argument UNCHANGED when the graph has no clock, so a memoised object would reach
  * `execute` directly and be shared by every later call of that text. Nothing is known to mutate it
  * — a user's own params object already flows that way — but a spread of a small object costs ~25 ns
@@ -345,7 +345,7 @@ const seenOnce = new Set<string>();
 /**
  * How many distinct liftable texts stay memoised at once.
  *
- * ⚠️ FOUR, AND THE KNOB IS CALIBRATED, NOT PICKED. Item 1541 shipped ONE slot, and item 1542 then
+ * FOUR, AND THE KNOB IS CALIBRATED, NOT PICKED. Item 1541 shipped ONE slot, and item 1542 then
  * measured what it actually does to a serving mix: a caller rotating N distinct liftable texts
  * round-robin, which is a server with N hot queries. One slot wins at N=1 and loses EVERYTHING at
  * N=2 — two hot literal queries and the memo never hits.
@@ -374,7 +374,7 @@ let liftSlotNext = 0;
 /**
  * How often the slot answered, and how often it was written.
  *
- * ⚠️ THE ROUTE IS OTHERWISE UNTESTABLE, which is the same reason `parseCacheStats` reports `seen`:
+ * THE ROUTE IS OTHERWISE UNTESTABLE, which is the same reason `parseCacheStats` reports `seen`:
  * a memo is answer-equivalent, so every mutant that disables it passes the whole suite. Mutation
  * says so directly — `never-store` and `store-before-parse` both survived 3,858 tests. Counting is
  * what turns "is the slot used?" into an assertion.
@@ -391,14 +391,14 @@ const parseCacheHit = (text: string, chain: number | undefined): Statement | und
 
   // Move to the end: `Map` preserves insertion order, so eviction drops the LEAST RECENTLY used.
   //
-  // ⚠️ ONLY WHILE THE CACHE IS FULL, and that gate is worth 1.24x on a warm call (item 1509). The
+  // ONLY WHILE THE CACHE IS FULL, and that gate is worth 1.24x on a warm call (item 1509). The
   // `delete` + `set` pair is ~25 ns — 24.5% of a 103 ns `RETURN 1 AS v` — and it is recording a
   // recency order that is read by exactly one thing: the eviction in `parseCached`. Below the cap
   // nothing is ever evicted, so the order it maintains is never consulted and the whole pair is
   // bookkeeping for a decision that will not be taken. Most processes live here permanently: the
   // cap is 64 and applications send a handful of distinct texts.
   //
-  // ⚠️ THE APPROXIMATION THIS ACCEPTS, stated precisely: while under the cap no recency is
+  // THE APPROXIMATION THIS ACCEPTS, stated precisely: while under the cap no recency is
   // recorded, so at the moment the cache FILLS its order is insertion order rather than true LRU,
   // and the first eviction may drop a hot entry that a fully-tracked LRU would have kept. From
   // then on every hit is tracked again and the order converges back. It is a choice among 64
@@ -508,12 +508,12 @@ export const parseCacheStats = (): {
  *    parse failure is the safe failure, and taking it costs one wasted parse on a path that was
  *    going to parse anyway.
  *
- * ⚠️ THE GUARD IS AROUND THE PARSE AND NOT AROUND `execute`, deliberately. Retrying a failed
+ * THE GUARD IS AROUND THE PARSE AND NOT AROUND `execute`, deliberately. Retrying a failed
  * `execute` would re-run a statement that may already have written — an INSERT that raised halfway
  * would apply twice. `execute` is called exactly once here, on whichever statement step 2 or 3
  * settled on.
  *
- * ⚠️ USER PARAMS WIN over synthetic ones. They cannot actually collide — the synthetic namespace is
+ * USER PARAMS WIN over synthetic ones. They cannot actually collide — the synthetic namespace is
  * `__ap<n>` — but spreading them last means a future namespace change cannot silently shadow a
  * caller's own binding.
  */

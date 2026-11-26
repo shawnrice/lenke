@@ -9,7 +9,7 @@ import { describe, expect, test } from 'bun:test';
  * vertices), and the gap grows with degree because one side sums squares and the other enumerates
  * pairs.
  *
- * ⚠️⚠️ **ITEM 1864 SHADOWED THE START-START SHAPE, AND THIS FILE SAYS SO RATHER THAN QUIETLY
+ * **ITEM 1864 SHADOWED THE START-START SHAPE, AND THIS FILE SAYS SO RATHER THAN QUIETLY
  * PASSING.** That item splices `(a)-[:E]->(b), (a)-[:E]->(c)` into the single pattern
  * `(b)<-[:E]-(a)-[:E]->(c)` BEFORE any rung is offered the clause list, so the start-start cases
  * below now take the CHAIN count rung and never reach `keyedCountOf` at all — their
@@ -17,12 +17,12 @@ import { describe, expect, test } from 'bun:test';
  * MIXED case is what still uniquely exercises this item's widening, because the splice declines it
  * (the two patterns start on different variables). Keep the mixed case if these are ever pruned.
  *
- * ⚠️ **A RING FIXTURE CANNOT CHECK THIS, which `keyedCountOf`'s own doc says in terms**: with every
+ * **A RING FIXTURE CANNOT CHECK THIS, which `keyedCountOf`'s own doc says in terms**: with every
  * degree 1, `SUM d^2`, `SUM d` and the edge count all coincide, so a wrong formula agrees with a
  * right one. The fixture below is a STAR with uneven out-degrees (3, 2, 1, 0) whose squares
  * (9 + 4 + 1 + 0 = 14) differ from their sum (6) and from any other plausible formula.
  *
- * ⚠️ **AND THE ORACLE IS THE GENERAL MATCHER, not arithmetic I write here.** Every case asserts
+ * **AND THE ORACLE IS THE GENERAL MATCHER, not arithmetic I write here.** Every case asserts
  * against the same query with a `WHERE true` on the clause — which `keyedCountOf` refuses outright
  * ("a clause WHERE can correlate the two sides") and which cannot change the answer. So the two
  * arms are the same question down two different routes, which is what a route change has to
@@ -36,7 +36,7 @@ import { query } from './index.js';
 import { parse } from './parser.js';
 
 /**
- * ⚠️ THE ROUTE IS ASSERTED, NOT INFERRED FROM THE ANSWER. Every case below returns the same number
+ * THE ROUTE IS ASSERTED, NOT INFERRED FROM THE ANSWER. Every case below returns the same number
  * down the general matcher, so a test that only checked answers would pass just as well with this
  * item reverted — which is `perf-gate-needs-its-own-test`'s whole point. `countShortcut` being a
  * FUNCTION is what says the closed form was selected.
@@ -49,7 +49,7 @@ const takesTheRung = (src: string): boolean => {
 };
 
 /**
- * ⚠️ THIS FIXTURE IS BUILT TO MAKE WRONG FORMULAS DISAGREE, which the first version did not: three
+ * THIS FIXTURE IS BUILT TO MAKE WRONG FORMULAS DISAGREE, which the first version did not: three
  * mutants SURVIVED against it because the right and wrong answers COINCIDED. Each addition below
  * exists to break one of those coincidences, and the mutant it kills is named.
  *
@@ -162,7 +162,7 @@ describe('the shared variable may be either end of both patterns', () => {
   });
 
   /**
-   * ⚠️ A FAR-SIDE LABEL must filter the counted edges rather than being ignored. Nothing carries
+   * A FAR-SIDE LABEL must filter the counted edges rather than being ignored. Nothing carries
    * `:U`, so every product collapses to zero — and a rung that dropped the far label would return
    * 19 here.
    */
@@ -175,7 +175,7 @@ describe('the shared variable may be either end of both patterns', () => {
   });
 
   /**
-   * ⚠️ A SELF-LOOP PATTERN IS REFUSED, not answered. `(a)-[:E]->(a)` has the key at BOTH ends;
+   * A SELF-LOOP PATTERN IS REFUSED, not answered. `(a)-[:E]->(a)` has the key at BOTH ends;
    * `repeatsNodeVariable` records that every hop rung over-counted this shape. The answer must
    * still be right, which means the general matcher has to get it.
    */
@@ -198,7 +198,7 @@ describe('the shared variable may be either end of both patterns', () => {
   });
 
   /**
-   * ⚠️ AN INLINE CONSTRAINT MUST LAND ON THE END THAT WROTE IT, and nothing tested this until a
+   * AN INLINE CONSTRAINT MUST LAND ON THE END THAT WROTE IT, and nothing tested this until a
    * mutant swapping the key's and the far's inline predicates SURVIVED. The two ends are read
    * differently — the key's predicate gates which CANDIDATES are summed, the far's filters which
    * EDGES each side counts — so a swap changes the answer without changing the shape.
@@ -222,7 +222,7 @@ describe('the shared variable may be either end of both patterns', () => {
   });
 
   /**
-   * ⚠️ THE DIAGONAL IS PART OF THE ANSWER. `b` and `c` are distinct variables with no inequality
+   * THE DIAGONAL IS PART OF THE ANSWER. `b` and `c` are distinct variables with no inequality
    * between them, so the pair (x, x) matches — which is exactly what squaring the degree gets
    * right for free, and what a rung that tried to exclude it would get wrong.
    */

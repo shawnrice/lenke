@@ -1,26 +1,26 @@
 /**
  * THE SAME QUESTION IN BOTH SURFACE LANGUAGES: where do the two TS engines disagree on cost? (item 2132)
  *
- * 🔑 THIS COMPARISON HAS PRODUCED A WIN TWO TICKS RUNNING, which is why it becomes an instrument rather
+ * THIS COMPARISON HAS PRODUCED A WIN TWO TICKS RUNNING, which is why it becomes an instrument rather
  * than a thing I remember to try:
  *
  *   - item 2130: Gremlin's filtered chain count had no CSR route where GQL's did — **801x** at three hops.
  *   - item 2131: GQL memoized its unfiltered degree product and Gremlin recomputed it — **>100x**.
  *
- * ⚠️ **THE TWO ARE SEPARATE TS IMPLEMENTATIONS.** There is no shared IR on this side — that is the Rust
+ * **THE TWO ARE SEPARATE TS IMPLEMENTATIONS.** There is no shared IR on this side — that is the Rust
  * engine's property, not this one's — so a gap here is a real missing route in one of them, not a
- * lowering artifact. 🔑 And because each is a faithful answer to the same question, **whichever side is
+ * lowering artifact. And because each is a faithful answer to the same question, **whichever side is
  * faster is a measured FLOOR for the other**: the cheaper engine proves the work can be done for that.
  *
- * ⚠️⚠️ **STEADY STATE, NOT MIN-OF-N, AND THE SERIES IS PRINTED.** Both engines warm up over roughly two
+ * **STEADY STATE, NOT MIN-OF-N, AND THE SERIES IS PRINTED.** Both engines warm up over roughly two
  * reps — GQL read 82.5 then 204 then 0.3 on one shape, Gremlin 80.6 then 150.6 then 14 — so a `min` over
  * all reps reports the warm-up on one side and the steady state on the other, and a `median` over all of
  * them reports neither. Item 2131 found a 30x gap only because the series was printed. Here: 9 reps, drop
  * the first 3, median the rest, and `SERIES=1` shows every reading.
  *
- * ⚠️⚠️ **A PAIR THAT RETURNS DIFFERENT SHAPES IS NOT COMPARABLE ON COST, AND TWO ROWS HERE DO** (item 2136).
+ * **A PAIR THAT RETURNS DIFFERENT SHAPES IS NOT COMPARABLE ON COST, AND TWO ROWS HERE DO** (item 2136).
  * GQL's `RETURN a.age AS k` must yield 200,000 one-key ROW OBJECTS; Gremlin's `values('age')` yields
- * 200,000 raw scalars. 🔑 Hand-written floors over the same 200,000 vertices:
+ * 200,000 raw scalars. Hand-written floors over the same 200,000 vertices:
  *
  * ```text
  *     iterate only                      0.83 ms
@@ -30,12 +30,12 @@
  *     GRM  values(age)                  5.38        <- 1.95x ABOVE its floor
  * ```
  *
- * ⚠️ So `property projection` and `1-hop projection…` flag GQL for a cost its CONTRACT imposes — those
- * rows carry `shapes: 'row-vs-scalar'` and are reported without a flag. 🔑 The row-counting rows are
+ * So `property projection` and `1-hop projection…` flag GQL for a cost its CONTRACT imposes — those
+ * rows carry `shapes: 'row-vs-scalar'` and are reported without a flag. The row-counting rows are
  * unaffected: both languages return one number, so they compare cleanly, and that is where items
  * 2130-2135's wins came from.
  *
- * ⚠️ **THE ANSWERS ARE COMPARED, NOT ASSUMED.** A pair whose answers differ is not a cost finding at all —
+ * **THE ANSWERS ARE COMPARED, NOT ASSUMED.** A pair whose answers differ is not a cost finding at all —
  * it is either a fixture mistake or a conformance divergence, and the row says `ANSWER MISMATCH` rather
  * than a ratio. (Row ORDER is unspecified without an explicit sort, so only counts and sorted scalars are
  * compared here.)
@@ -78,7 +78,7 @@ for (let i = 0; i < N; i += 1) {
 let edges = 0;
 
 /*
- * ⚠️ SPLIT ON THE REPEAT INDEX `d`. `to = (a*k + b) % N` is invariant under `k -> k + N`, so a flat
+ * SPLIT ON THE REPEAT INDEX `d`. `to = (a*k + b) % N` is invariant under `k -> k + N`, so a flat
  * `for (k = 0; k < N*FANOUT; k++)` loop sends one vertex's whole fan-out to the SAME target: out-degree,
  * in-degree and isolated counts all look perfect and the graph is FUNCTIONAL, so every k-hop count is
  * `F^k · N` by construction (items 1516/1518). The assertion below is what proves it is not.
@@ -110,7 +110,7 @@ if (sampleTargets.size !== FANOUT) {
 
 /**
  * Each pair is one QUESTION with a GQL spelling and a Gremlin spelling, plus how to reduce each side's
- * result to something comparable. 🔑 `scalar` pulls one number; `sortedValues` makes a row bag
+ * result to something comparable. `scalar` pulls one number; `sortedValues` makes a row bag
  * order-independent, since row order is unspecified without an explicit sort.
  */
 const scalar = (key) => (rows) => (rows.length === 0 ? null : rows[0][key]);
@@ -127,7 +127,7 @@ const sortedValues = (rows) => {
   const flat = rows.map((r) => (typeof r === 'object' && r !== null ? Object.values(r)[0] : r));
 
   /*
-   * ⚠️ An explicit comparator: the default sort is lexicographic, which would order 10 before 9 and make
+   * An explicit comparator: the default sort is lexicographic, which would order 10 before 9 and make
    * two engines look like they disagree when they do not.
    */
   return `${flat.length}:${[...flat].sort(ascending).slice(0, 4).join(',')}`;
@@ -205,7 +205,7 @@ const PAIRS = [
 ];
 
 /*
- * The loser must cost at least this much for a ratio to be a nomination. 🔑 Below it the two readings are
+ * The loser must cost at least this much for a ratio to be a nomination. Below it the two readings are
  * timer noise — `performance.now()` resolution plus loop overhead — and dividing them means nothing.
  */
 const FLOOR_MS = Number(process.env.XL_FLOOR ?? 1);
@@ -240,29 +240,29 @@ for (const pair of PAIRS) {
   const m = timeIt(() => toArray(grmPlan, graph), grmReduce);
   const agree = String(g.answer) === String(m.answer);
   /*
-   * ⚠️ THE SLOWER SIDE IS THE ONE WITH A MISSING ROUTE, so the ratio is written as "how many times the
+   * THE SLOWER SIDE IS THE ONE WITH A MISSING ROUTE, so the ratio is written as "how many times the
    * loser costs the winner" with the loser named. A bare GQL/Gremlin ratio hides which way to read it.
    */
   const ratio = g.ms > m.ms ? g.ms / m.ms : m.ms / g.ms;
   const loser = g.ms > m.ms ? 'GQL' : 'GRM';
   /*
-   * ⚠️⚠️ **A RATIO NEEDS A FLOOR OR IT CRIES WOLF ON SUB-MILLISECOND ROWS.** `node count` read 0.00 against
-   * 0.01 and flagged 2.3x — a ratio between two readings that are both essentially zero. 🔑 Same guard the
+   * **A RATIO NEEDS A FLOOR OR IT CRIES WOLF ON SUB-MILLISECOND ROWS.** `node count` read 0.00 against
+   * 0.01 and flagged 2.3x — a ratio between two readings that are both essentially zero. Same guard the
    * vacuous screen needed at item 2127: a row is a candidate only when the ratio is large AND the loser
    * costs enough to be worth winning. `FLOOR_MS` is one timer tick's worth of margin.
    */
   let flag = '';
 
   if (!agree) {
-    flag = '  ⚠️⚠️ ANSWER MISMATCH';
+    flag = '  ANSWER MISMATCH';
   } else if (pair.shapes === 'row-vs-scalar') {
     /*
-     * 🔑 NOT A NOMINATION: GQL must build a row object per value and Gremlin must not, which is worth
+     * NOT A NOMINATION: GQL must build a row object per value and Gremlin must not, which is worth
      * ~5.5 ms per 200,000 rows on its own (item 2136). The ratio is printed for reference and not flagged.
      */
     flag = '  (row-vs-scalar: contract, not a defect)';
   } else if (ratio > 2 && Math.max(g.ms, m.ms) > FLOOR_MS) {
-    flag = `  ⚠️ ${loser} is ${ratio.toFixed(1)}x`;
+    flag = `  ${loser} is ${ratio.toFixed(1)}x`;
   }
 
   console.log(
@@ -276,6 +276,6 @@ for (const pair of PAIRS) {
 }
 
 console.log(
-  `\n  ⚠️ A FLAGGED ROW IS A NOMINATION, NOT A RESULT. Confirm it with an A/B of the real rung — a\n` +
+  `\n  A FLAGGED ROW IS A NOMINATION, NOT A RESULT. Confirm it with an A/B of the real rung — a\n` +
     `  micro-probe has mispriced this engine's loops three times (items 591, 2125, and 2130's first half).\n`,
 );

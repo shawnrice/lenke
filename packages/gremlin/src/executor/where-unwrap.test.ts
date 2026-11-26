@@ -1,7 +1,7 @@
 /*
  * Item 2047 — `where(and(…))` unwrapped to `and(…)`.
  *
- * ⚠️⚠️ **THE REWRITE WAS DEAD CODE FOR MOST OF THIS ITEM, and nothing failed.** `KIND_BITS` is typed
+ * **THE REWRITE WAS DEAD CODE FOR MOST OF THIS ITEM, and nothing failed.** `KIND_BITS` is typed
  * `Readonly<Record<string, number>>`, so `KIND_BITS.where` type-checked while being `undefined`;
  * `FILTER_WRAPPER_BITS | undefined` is a no-op; a `where`-only plan kept `kinds === 0`; every
  * kinds-gated pass returned early. The unwrap compiled, shipped into the dist, and changed nothing —
@@ -55,7 +55,7 @@ describe('where() unwrapping (item 2047)', () => {
     expect(kindsOf(traversal(V(), where(not(traversal(out('E'))))), g)).toBe('V,not');
   });
 
-  test('⚠️ where(out) is NOT unwrapped — `out` REPLACES the element', () => {
+  test('where(out) is NOT unwrapped — `out` REPLACES the element', () => {
     /*
      * This is the case that makes the gate three kinds rather than "anything filter-ish":
      * `where(out('E'))` keeps vertices that HAVE an out-edge, while a bare `out('E')` would replace
@@ -64,7 +64,7 @@ describe('where() unwrapping (item 2047)', () => {
     expect(kindsOf(traversal(V(), where(traversal(out('E')))), g)).toBe('V,where');
   });
 
-  test('⚠️ where(dedupe) is NOT unwrapped — dedupe is STATEFUL', () => {
+  test('where(dedupe) is NOT unwrapped — dedupe is STATEFUL', () => {
     /*
      * `where(dedupe())` runs `dedupe` in a SUB-PLAN per traverser, so each sees its own empty state
      * and nothing is filtered; a bare `dedupe()` dedupes across the stream. A keeps-or-drops test
@@ -98,9 +98,9 @@ describe('where() unwrapping (item 2047)', () => {
     expect(kindsOf(traversal(V(), where(traversal(out('E'), out('F')))), g)).toBe('V,where');
   });
 
-  test('⚠️ a multi-step body STARTING WITH `and` is not unwrapped either', () => {
+  test('a multi-step body STARTING WITH `and` is not unwrapped either', () => {
     /*
-     * ⚠️⚠️ **THE MUTANT THAT SURVIVED THE FIRST ROUND.** Relaxing the gate from `=== 1` to `>= 1`
+     * **THE MUTANT THAT SURVIVED THE FIRST ROUND.** Relaxing the gate from `=== 1` to `>= 1`
      * takes `const [only] = step.plan.steps` — the FIRST step — and unwraps to it alone, silently
      * DROPPING the rest of the body. The test above cannot see that: its body starts with `out`, so
      * the kind check declines and the mutant is never exercised. A body that is multi-step AND starts

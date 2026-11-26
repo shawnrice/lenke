@@ -57,7 +57,7 @@ export const profileWindow = async (outPath, body, interval = 1000) => {
   let bodyError;
 
   try {
-    // ⚠️ AWAITED. An un-awaited `body()` closes the window at the body's FIRST suspension and still
+    // AWAITED. An un-awaited `body()` closes the window at the body's FIRST suspension and still
     // returns a well-formed `.cpuprofile`, so an async body silently profiles a few milliseconds
     // and the summary looks like a working run with an implausible ranking (item 1732 got 6 samples
     // and `post` at 91%). Any probe that must return to the event loop mid-window needs this -- and

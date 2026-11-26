@@ -9,7 +9,7 @@
  *     V().out().out().out().count()   239         47x
  *     V().out()x4.count()             231         35x
  *
- * ⚠️ So the question is not "why is a 3-hop count slow" — it is whether the 1-hop shortcut simply
+ * So the question is not "why is a 3-hop count slow" — it is whether the 1-hop shortcut simply
  * stops at depth 1 on one surface while the other carries it deeper. GQL has `two-hop-count`,
  * `three-hop-count` and `four-hop-count` test files, which suggests it does. Item 1590's method
  * says: find the fast side first, then profile it.
@@ -64,7 +64,7 @@ for (let rep = 0; rep < FANOUT; rep += 1) {
   const degs = [...outDeg.values()];
   const branching = degs.filter((d) => d > 1).length;
 
-  // ⚠️ COUNT THE DISTINCT ENDPOINTS AND THE BRANCHING, not just the answer: a k-hop count is
+  // COUNT THE DISTINCT ENDPOINTS AND THE BRANCHING, not just the answer: a k-hop count is
   // `F^k * N` for ANY functional graph, so the answer cannot validate the fixture.
   console.log(
     `fixture: ${NODES} vertices, ${g.edgeCount} edges, ${seen.size} distinct targets, ` +

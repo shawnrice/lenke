@@ -2,13 +2,13 @@
  * WHAT DOES `_MERGE` COST, AND IS IT O(1) AS THE GRAPH GROWS? The upsert clause, priced for the
  * first time (item 1671).
  *
- * ⚠️ FOUND BY A COVERAGE SCREEN, NOT A PROFILE. Screening the GQL surface the way item 1668 screened
+ * FOUND BY A COVERAGE SCREEN, NOT A PROFILE. Screening the GQL surface the way item 1668 screened
  * Gremlin's 104 step kinds: all 15 clause kinds appear somewhere in the measurement corpus, but
  * `_MERGE` appears FIVE times and its seven mentions in CLOSED.md are a parse-error divergence (item
  * 442), an id path and a push site — not one measurement. For a clause real ingest workloads run in
  * a loop, that is the biggest hole in the GQL surface.
  *
- * ⚠️ THE SHAPE IS WHY IT MATTERS. An upsert is a READ then a WRITE, and the read decides the
+ * THE SHAPE IS WHY IT MATTERS. An upsert is a READ then a WRITE, and the read decides the
  * complexity: `resolveMergeEndpoint` → `graph.uniqueLookup(label, key, value)` →
  * `vertexPropertyIndex.equals(key, value)`. So the create-vs-update decision rides the unique
  * constraint's index, and the invariant to check is the same one `by-id-scaling-probe.mjs` checks
@@ -22,7 +22,7 @@
  *   insertPlain   `INSERT` the same vertex     — the floor for the create path, no lookup
  *   lookupOnly    `MATCH … WHERE k = v RETURN` — the read half alone, through the same index
  *
- * ⚠️ EACH ARM GETS A FRESH GRAPH. A `_MERGE` mutates, so re-running one arm over a graph another
+ * EACH ARM GETS A FRESH GRAPH. A `_MERGE` mutates, so re-running one arm over a graph another
  * arm already grew measures a different N than the row claims — and the create arm grows the graph
  * under itself, which is why its keys are drawn from a disjoint range and its count is bounded.
  *
@@ -50,7 +50,7 @@ const build = (n) => {
   return g;
 };
 
-// ⚠️ `$k` RATHER THAN AN INTERPOLATED LITERAL, AND THE FIRST RUN OF THIS PROBE GOT IT WRONG.
+// `$k` RATHER THAN AN INTERPOLATED LITERAL, AND THE FIRST RUN OF THIS PROBE GOT IT WRONG.
 // Splicing the key into the text gives every call a DIFFERENT query string, so the parse+plan
 // cache never hits and the reading is dominated by parsing 500 distinct texts per call — which is
 // why the first run read ~4.2 us an operation. Items 1499-1502 are about exactly that cost. A real
@@ -74,7 +74,7 @@ const ARMS = {
     };
   },
   // The lookup MISSES: keys are drawn from a disjoint range, so each call creates.
-  // ⚠️ This arm grows the graph under itself — OPS is the bound on how far.
+  // This arm grows the graph under itself — OPS is the bound on how far.
   mergeCreate: (n) => {
     const g = build(n);
     let next = n;
@@ -141,7 +141,7 @@ for (const n of SIZES) {
   }
 }
 
-// ⚠️ NORMALISED AGAINST THE LARGEST N, NOT THE SMALLEST, AND THAT IS A CORRECTION TO THIS PROBE'S
+// NORMALISED AGAINST THE LARGEST N, NOT THE SMALLEST, AND THAT IS A CORRECTION TO THIS PROBE'S
 // FIRST RUN. The two create arms ADD `OPS * REPS` vertices to the graph they measure, so at the
 // smallest size that growth is proportionally huge — 3,500 inserts into 10,000 vertices is +35%,
 // against +0.35% at a million — and the index work it triggers lands entirely on the small-N
@@ -166,6 +166,6 @@ for (const r of rows) {
 
 console.log(
   '\nA column that RISES with N is a lost O(1) — an upsert loop would then be O(N^2).\n' +
-    'Flat or falling is the invariant holding. ⚠️ The smallest size reads HIGH on the create arms\n' +
+    'Flat or falling is the invariant holding. The smallest size reads HIGH on the create arms\n' +
     'for the growth reason above, so the trend between the LARGER sizes is the signal.',
 );

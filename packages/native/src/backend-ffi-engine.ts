@@ -18,14 +18,14 @@ import { asByteLength, type ErrorReport, makeFail, parseErrorReport } from './ma
  * A crate-owned `(ptr, len)` pair copied into a JS `Uint8Array`, with `len === 0` answered WITHOUT
  * calling `toArrayBuffer`.
  *
- * ⚠️ ITEM 1606: BUN 1.4.4 MADE A ZERO-LENGTH RESULT THROW, where 1.4.0 returned an empty buffer.
+ * ITEM 1606: BUN 1.4.4 MADE A ZERO-LENGTH RESULT THROW, where 1.4.0 returned an empty buffer.
  * `toArrayBuffer(ptr, 0, 0)` now raises `TypeError: length must be > 0. This usually means a bug in
  * your code.` — and a zero-length result is NOT a bug here: `asByteLength` admits it by contract
  * (it rejects only a negative or non-integer length), and an empty payload is the right answer for
  * serializing an empty graph or dumping an empty schema.
  *
  * It broke three native tests and made `write-fuzz` unreliable — `differential fuzz: write path`,
- * `dropIndex … dumpSchema round-trip` and `an empty graph dumps an empty schema`. ⚠️ It was
+ * `dropIndex … dumpSchema round-trip` and `an empty graph dumps an empty schema`. It was
  * ENVIRONMENTAL: bun auto-upgraded mid-session (`~/.bun/bin/bun` restamped 13:04), so the suite
  * went red with no repo change behind it, and the obvious reading — that the item in flight had
  * broken byte-identity — was wrong. What settled it was running the same test FIVE times on each

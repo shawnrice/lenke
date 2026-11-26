@@ -14,7 +14,7 @@
 //! with no mention anywhere under `exec/` except `aggregation.rs` (the general path) — so the
 //! census says they are the whole of the missing surface.
 //!
-//! ⚠️ BUT A MISSING PATH IS NOT A TARGET, and `collect` is the variant where that gap matters most,
+//! BUT A MISSING PATH IS NOT A TARGET, and `collect` is the variant where that gap matters most,
 //! because its OUTPUT is O(N). `min` over 200,000 rows returns one value, so an arm that skips the
 //! boxing skips almost everything (item 1188 measured 4444x on a boolean). `collect` must produce
 //! every value no matter how clever the arm is. Item 1189's rule is the one that applies: the
@@ -127,7 +127,7 @@ fn main() {
             "MATCH (a:Person) RETURN collect_list(a.{key}) AS c"
         ));
         let count = ask(&format!("MATCH (a:Person) RETURN count(a.{key}) AS c"));
-        // ⚠️ THE DISCRIMINATING QUERY (item 1195). The aggregation still builds the whole
+        // THE DISCRIMINATING QUERY (item 1195). The aggregation still builds the whole
         // N-element `Value::List`; only the EGRESS differs, because a scalar output never
         // reaches `resolve_elem`'s list recursion. If the per-row gap is at egress this
         // collapses toward the floor; if it is in the fold it stays at `collect`.

@@ -16,7 +16,7 @@ import { traversal } from './traversal.js';
  * `dedupe()`'s composite set, `match()`'s candidate dedupe, and the multi-label `dedupe(a, b)`
  * tuple. A collision there silently DROPS a row — the right count with the wrong contents.
  *
- * ⚠️ `V()` may only be the FIRST step, so the mixed stream is built with `union(identity(), …)`
+ * `V()` may only be the FIRST step, so the mixed stream is built with `union(identity(), …)`
  * rather than `union(V(), …)`, which the planner rejects outright.
  */
 
@@ -51,7 +51,7 @@ describe('an element key cannot collide with a primitive key', () => {
 
 describe("match()'s candidate dedupe is where the namespace is actually REACHABLE", () => {
   /**
-   * ⚠️ `dedupe()` NEVER REACHES IT. Its `tupleKey` branch is guarded by an `isComposite` test —
+   * `dedupe()` NEVER REACHES IT. Its `tupleKey` branch is guarded by an `isComposite` test —
    * arrays, plain objects and temporals — so a vertex is deduped by identity in a plain `Set` and
    * never keyed at all. That is why the dedupe tests above pass under a mutant that strips the
    * namespace, and why finding a killing case meant reading the guard rather than guessing.

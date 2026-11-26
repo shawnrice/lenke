@@ -19,7 +19,7 @@ const line = (what, viaSetter, viaMethod) => {
 
   console.log(
     `${what.padEnd(34)} setter=${String(viaSetter).padEnd(22)} ` +
-      `method=${String(viaMethod).padEnd(22)}${same ? '✅ same' : '❌ DIVERGES'}`,
+      `method=${String(viaMethod).padEnd(22)}${same ? 'same' : 'DIVERGES'}`,
   );
 };
 

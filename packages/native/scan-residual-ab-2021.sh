@@ -1,18 +1,18 @@
 #!/bin/zsh
 # Item 2021 — the scan rung's residual path, PRE/POST.
 #
-# ⚠️ ONE SHAPE PER PROCESS (item 762), and load-bearing: this change REDISTRIBUTES call sites — five
+# ONE SHAPE PER PROCESS (item 762), and load-bearing: this change REDISTRIBUTES call sites — five
 # residual shapes leave the traverser pipeline — and item 762 prices a shared dispatch site at up to
 # 1.56x in such a change's favour.
 #
-# ⚠️ CONTROLS: `values` alone (the rung this sits beside, which must not move), `values.dedupe`
+# CONTROLS: `values` alone (the rung this sits beside, which must not move), `values.dedupe`
 # (which keeps its own narrower rung from item 1869), and `hop1: values` (a different rung
 # entirely). Any movement there is drift or perturbation ([[executor-edits-perturb]]).
 #
-# ⚠️ THE DEAD ARM CARRIES A MARKER COMMENT so it greps to exactly one line — item 2020 lost a run to
+# THE DEAD ARM CARRIES A MARKER COMMENT so it greps to exactly one line — item 2020 lost a run to
 # an ambiguous `return false;` and left the tree with the feature disabled.
 #
-# ⚠️ RESTORE ON ANY EXIT, and ROUND picks one arm per invocation so the sweep never has to be
+# RESTORE ON ANY EXIT, and ROUND picks one arm per invocation so the sweep never has to be
 # backgrounded (where it is reapable — item 2018).
 set -u
 
@@ -20,13 +20,13 @@ ROOT=/home/shawn/projects/pl-graph
 SRC=$ROOT/packages/gremlin/src/executor/node-values.ts
 LIVE='  if (steps.length <= 2) {'
 DEAD='  if (steps.length <= 2 || true) { // AB-ARM-DEAD-2021'
-# ⚠️ VERIFIED AGAINST THE SCREEN'S OWN SHAPE LIST. My first draft named 'scan: fold' and
+# VERIFIED AGAINST THE SCREEN'S OWN SHAPE LIST. My first draft named 'scan: fold' and
 # 'scan: dedupe values', neither of which exists there — the awk would have matched nothing and
 # printed nothing, which reads as a missing row rather than a wrong name.
 TARGETS=('order: values order' 'order: values order limit' 'agg: values min' 'agg: values max')
-# ⚠️ CONTROL CHOICE. scan:values is the rung this sits BESIDE and must not move. agg:values mean is
+# CONTROL CHOICE. scan:values is the rung this sits BESIDE and must not move. agg:values mean is
 # REFUSED for byte-identity, so the gate provably cannot reach it. The hop rows are other rungs.
-# ⚠️ AND agg:values min/max turn out to be ALREADY FAST in the PRE arm (6.24 / 5.89 against
+# AND agg:values min/max turn out to be ALREADY FAST in the PRE arm (6.24 / 5.89 against
 # scan:values' 5.41) because fusableValuesAggregate gives them their own route — so they are
 # controls in practice, not targets. The real targets are the two order rows.
 CONTROLS=('scan: values' 'agg: values mean' 'hop1: values' 'hop2: values')
@@ -56,7 +56,7 @@ if ! grep -F -q -- "$LIVE" "$SRC" && ! grep -F -q -- "$DEAD" "$SRC"; then
   exit 1
 fi
 
-# ⚠️ EXACT TRAILING-FIELD MATCH, not `grep -F`: the screen's `ONLY` uses `includes`, so a shorter
+# EXACT TRAILING-FIELD MATCH, not `grep -F`: the screen's `ONLY` uses `includes`, so a shorter
 # shape name selects its longer siblings too and a substring grep reports the WRONG ROW's number
 # (item 2020 measured a control that was secretly the target this way).
 measure() {

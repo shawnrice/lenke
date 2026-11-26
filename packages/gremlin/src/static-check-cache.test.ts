@@ -2,7 +2,7 @@
  * `run`'s memo of a plan's STATIC-CHECK verdict (item 1648): the pass is remembered, a failure never
  * is.
  *
- * ⚠️ WHY A SEPARATE FILE FROM `plan-may-fault.test.ts`, WHICH ALREADY COVERS EVERY THROW SITE. That
+ * WHY A SEPARATE FILE FROM `plan-may-fault.test.ts`, WHICH ALREADY COVERS EVERY THROW SITE. That
  * suite calls `toArray` exactly ONCE per faulting plan, so it cannot see the failure this cache can
  * introduce: mark the plan checked BEFORE the checks run, and every invalid plan throws on its first
  * call and then SILENTLY SUCCEEDS on every call after. One `toArray` per plan is blind to that by
@@ -77,7 +77,7 @@ const FAULTING: readonly (readonly [string, Plan])[] = [
   ],
 ];
 
-describe('⚠️ the same invalid plan throws EVERY time', () => {
+describe('the same invalid plan throws EVERY time', () => {
   for (const [label, plan] of FAULTING) {
     it(`keeps raising for ${label}`, () => {
       expect(() => toArray(plan, graph), `${label}: call 1`).toThrow();
@@ -89,7 +89,7 @@ describe('⚠️ the same invalid plan throws EVERY time', () => {
   }
 
   /**
-   * ⚠️ AND THE SAME PLAN OBJECT AFTER A SUCCESSFUL RUN OF A DIFFERENT ONE, so a shared flag (a
+   * AND THE SAME PLAN OBJECT AFTER A SUCCESSFUL RUN OF A DIFFERENT ONE, so a shared flag (a
    * module-level boolean rather than a per-plan slot) cannot pass this file either.
    */
   it('a valid run in between does not clear the fault', () => {
@@ -124,7 +124,7 @@ describe('a passing plan is checked once', () => {
   });
 
   /**
-   * ⚠️ THE RESET IN `rewritten` MATTERS MORE FOR THIS SLOT THAN FOR THE PREFIX. A rewrite can
+   * THE RESET IN `rewritten` MATTERS MORE FOR THIS SLOT THAN FOR THE PREFIX. A rewrite can
    * INTRODUCE a faulting kind — `fuseLocal` inlines a sub-plan's steps into the top level, which is
    * exactly why `mayFault` is recomputed there — so a verdict inherited through `...plan` would skip
    * a check that should raise.

@@ -1,7 +1,7 @@
 /**
  * DOES `edge-driven-hop-walk.test.ts` HAVE TEETH? (item 1940)
  *
- * ⚠️⚠️ TWO KINDS OF MUTANT HERE, AND THEY NEED DIFFERENT GUARDS:
+ * TWO KINDS OF MUTANT HERE, AND THEY NEED DIFFERENT GUARDS:
  *
  *   - WRONG-ANSWER mutants (a label test dropped, the endpoints swapped) fail the answer tests.
  *   - ROUTE mutants (the coverage gate removed) change NO answer — they only choose a slower walk,
@@ -9,7 +9,7 @@
  *     `labelCoverage` and `EDGE_DRIVEN_MIN_COVERAGE` are unit-tested as pure values
  *     ([[perf-gate-needs-its-own-test]]) and the mutants below aim at those.
  *
- * ⚠️ WRITTEN DIRECTLY, not templated (item 1907); test paths listed from the directory (item 1915).
+ * WRITTEN DIRECTLY, not templated (item 1907); test paths listed from the directory (item 1915).
  *
  *     bun edgedriven-mutants-1940.mjs
  */
@@ -118,7 +118,7 @@ const MUTANTS = [
 /** Names that MUST survive, each with its reason. */
 const EXPECTED_SURVIVORS = new Set([
   /*
-   * ⚠️ SURVIVES, AND I DO NOT KNOW WHICH KIND OF SURVIVOR IT IS — which is the honest state and
+   * SURVIVES, AND I DO NOT KNOW WHICH KIND OF SURVIVOR IT IS — which is the honest state and
    * item 475's rule verbatim: "a surviving mutant on a new guard means REDUNDANT as readily as
    * UNTESTED, and the two have opposite fixes."
    *
@@ -130,7 +130,7 @@ const EXPECTED_SURVIVORS = new Set([
    * What I could NOT do is construct a query where removing it changes an answer. Three attempts:
    *   - a plain `ORDER BY x` — does not set `startDrivenForOrder` at all;
    *   - a windowed `ORDER BY x LIMIT 5` with TIES and the insertion index projected — same;
-   *   - a faulting projection under a window (`b.n / b.id2 ... LIMIT 3`) — ⚠️ this THREW, and I
+   *   - a faulting projection under a window (`b.n / b.id2 ... LIMIT 3`) — this THREW, and I
    *     briefly took that as the mutant biting. It throws on the PRISTINE engine too (the stack
    *     points at a different walk), so it was my expectation standing in for a control. No
    *     control, no finding — the same error class as the frame-attribution trap.
@@ -139,15 +139,15 @@ const EXPECTED_SURVIVORS = new Set([
    * doubt is safety. But it is recorded here as untested rather than dressed up as covered, so the
    * next reader knows a shape that exercises it has not been found.
    */
-  '⚠️ an ORDER BY no longer forces the start-driven arm',
+  'an ORDER BY no longer forces the start-driven arm',
 ]);
 
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
 const HOW_DIED = new Map([
@@ -167,7 +167,7 @@ const verdictOf = (code) => {
   return code !== 0;
 };
 
-/** ⚠️ BOTH STREAMS CONCATENATED, THEN the exit code: `bun test` reports to STDERR (item 767). */
+/** BOTH STREAMS CONCATENATED, THEN the exit code: `bun test` reports to STDERR (item 767). */
 const runTests = () => {
   const r = spawnSync(
     'timeout',
@@ -231,7 +231,7 @@ try {
     const ran = /\d+ pass/.test(r.text) || /\d+ fail/.test(r.text);
 
     if (!ran && r.code !== 124 && r.code !== 137) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-500)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-500)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -259,12 +259,12 @@ try {
 
 if (anchorProblems.length > 0) {
   console.log(
-    `\n⚠️ ${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
+    `\n${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
   );
   process.exitCode = 1;
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

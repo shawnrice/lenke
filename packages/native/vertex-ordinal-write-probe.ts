@@ -4,7 +4,7 @@
  * The question is item 1356's design fork: the only remaining TS multi-hop lever is giving `Vertex`
  * an internal dense slot, and the first thing to know is the write-side penalty.
  *
- * ⚠️ `bench:usage` CANNOT ANSWER IT. Its write rows are ops/sec over 250 ms batches, best of 3, and
+ * `bench:usage` CANNOT ANSWER IT. Its write rows are ops/sec over 250 ms batches, best of 3, and
  * a single run of it moved `read: point lookup` +26% and `write: 100 updates in one statement` -34%
  * between two builds that differ only in one integer field — both rows the change cannot plausibly
  * reach by that much. So its run-to-run variance swamps the effect being measured, and this repo's

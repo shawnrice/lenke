@@ -5,16 +5,16 @@
  * query's first execution** — by running the same text twice on a warm engine and differencing. This
  * splits that figure by frame.
  *
- * 🔑 **THE TEXTS ARE STRUCTURALLY IDENTICAL AND TEXTUALLY DISTINCT**, which is what makes the profile
+ * **THE TEXTS ARE STRUCTURALLY IDENTICAL AND TEXTUALLY DISTINCT**, which is what makes the profile
  * readable: every call MISSES the parse/plan cache (it is keyed on the text) while the plan it
  * produces, and therefore the execution, is the same work every time. Only the alias changes. If the
  * texts differed structurally, execution would vary with them and the profile would mix the two.
  *
- * ⚠️ A TINY GRAPH ON PURPOSE (100 vertices), so execution is as close to zero as it can be — item
+ * A TINY GRAPH ON PURPOSE (100 vertices), so execution is as close to zero as it can be — item
  * 2044's decomposition put it at ~0.4 ms against parse+plan's 1.8. PROBES.md's warning applies in
  * reverse here: a big fixture would bury the question under its own build.
  *
- * ⚠️ AND THE ENGINE IS WARMED FIRST, because a cold process spends ~5 ms in JIT (item 2044) and that
+ * AND THE ENGINE IS WARMED FIRST, because a cold process spends ~5 ms in JIT (item 2044) and that
  * would dominate every frame. The warm-up uses a text NOT in the measured set.
  *
  *     bun parseplan-prof-2045.mjs
@@ -39,7 +39,7 @@ const texts = Array.from(
 );
 
 /*
- * ⚠️⚠️ **WARM=0 IS THE POINT OF THIS KNOB.** 2000 distinct cache-missing texts cost **0.07-0.09 ms
+ * **WARM=0 IS THE POINT OF THIS KNOB.** 2000 distinct cache-missing texts cost **0.07-0.09 ms
  * each**, where item 2044 measured ONE cache-missing text at 2.2 ms — a 25x gap. If that gap is JIT
  * on the parser/planner rather than the parsing itself, the FIRST query of a cold run will be ~1.8 ms
  * and the curve will fall to ~0.05 within a few hundred. That is testable, and it decides whether
@@ -75,7 +75,7 @@ const window = (from, to) => {
 };
 
 /*
- * ⚠️ THE ANSWER IS ASSERTED: every text asks for 5 rows, so a route that answered differently would
+ * THE ANSWER IS ASSERTED: every text asks for 5 rows, so a route that answered differently would
  * make the timing meaningless. Item 2030's rule, applied to a probe whose output is a profile.
  */
 if (rows !== N * 5) {

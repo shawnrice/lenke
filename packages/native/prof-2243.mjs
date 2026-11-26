@@ -3,7 +3,7 @@
  * the native engine still wins (5.09x) DESPITE TS having a shortcut for it, so the gap is inside the
  * shortcut rather than a missing one.
  *
- * ⚠️ At 0.33 ms over 80,000 edges TS is already at ~4 ns/edge, well under the ~73 ns a single property read
+ * At 0.33 ms over 80,000 edges TS is already at ~4 ns/edge, well under the ~73 ns a single property read
  * costs — so the shortcut is NOT reading per-edge properties and the profile has to say what it does
  * instead. `PROF_ARM=load` is subtractable; the query arm runs many reps because one is far too short.
  */
@@ -52,7 +52,7 @@ if (ARM !== 'load') {
 }
 
 /*
- * ⚠️ PRINTED AFTER THE LOOP, OUTSIDE THE MEASURED WORK — a profiling SUBJECT that prints nothing is
+ * PRINTED AFTER THE LOOP, OUTSIDE THE MEASURED WORK — a profiling SUBJECT that prints nothing is
  * indistinguishable from one that silently did nothing (item 2244's smoke test flagged exactly that). One
  * line naming the arm, the rep count and the ANSWER makes a no-op run visible.
  */

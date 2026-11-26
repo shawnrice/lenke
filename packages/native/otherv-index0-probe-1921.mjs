@@ -5,7 +5,7 @@
 // THROWS. So if the case can arise, the guard is load-bearing and needs a test; if it cannot, the
 // guard is dead code and CLAUDE.md says to delete it rather than keep an untestable branch.
 //
-// ⚠️ "PROVE IT IS DEAD BEFORE DELETING IT" is the rule (items 1899/1903 deleted and KEPT one each on
+// "PROVE IT IS DEAD BEFORE DELETING IT" is the rule (items 1899/1903 deleted and KEPT one each on
 // exactly this test). The pass walks only TOP-LEVEL steps, and `traversal()` always puts a source
 // first — but `match.ts` builds plans from step SLICES, so the question is whether such a slice can
 // reach `run` with a leading `otherV`.
@@ -61,6 +61,6 @@ console.log(
 );
 
 console.log(
-  '\n⚠️ IF (2) THREW ON A REACHABLE PATH the guard is load-bearing and needs a test; if the executor\n' +
+  '\nIF (2) THREW ON A REACHABLE PATH the guard is load-bearing and needs a test; if the executor\n' +
     '   refuses such a plan for its OWN reasons before the pass runs, the guard is dead and should go.',
 );

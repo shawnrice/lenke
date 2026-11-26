@@ -2,7 +2,7 @@
  * The GROUPED per-endpoint extremum fold (item 1310) — which walk runs, when it declines, and that
  * the answers are the per-edge walk's.
  *
- * ⚠️ HOW THE ROUTE IS OBSERVED, because this needs stating plainly. The fold is answer-equivalent,
+ * HOW THE ROUTE IS OBSERVED, because this needs stating plainly. The fold is answer-equivalent,
  * so nothing about the VALUES can tell which walk ran, and items 1303/1306/1307 all record how a
  * blunt route assertion lets a "silently stopped firing" mutant through. What distinguishes them
  * here is GROUP EMISSION ORDER: the per-edge walk iterates the START side, the fold iterates the
@@ -221,7 +221,7 @@ describe('the gaps the mutation pass found — each of these let a mutant live',
   test('min(DISTINCT x) must decline — it is an extremum by NAME but not a fold', () => {
     const g = build();
 
-    // ⚠️ THIS DOES NOT TEST THE ACC-KIND GUARD, and a first version of this comment claimed it
+    // THIS DOES NOT TEST THE ACC-KIND GUARD, and a first version of this comment claimed it
     // did. `compileLinear` shows NO rung firing for this shape at all — `routes()` returns `[]` —
     // so `detectGroupedHopAggregate` refuses a DISTINCT aggregate upstream of the fold's
     // admission, and the general path answers it. The acc-kind guard's mutant survives for that
@@ -265,7 +265,7 @@ describe('the gaps the mutation pass found — each of these let a mutant live',
       properties: {},
     });
 
-    // ⚠️ MAX IS THE ARM THAT CATCHES THIS, and `min` alone did not. `extremumFold.step` does not
+    // MAX IS THE ARM THAT CATCHES THIS, and `min` alone did not. `extremumFold.step` does not
     // skip nullish itself, so dropping the guard folds the null through `compareValues` — and
     // where null sits in that total order decides WHICH extremum changes. The earlier null cases
     // asserted `min` only, so the guard looked tested and was not.

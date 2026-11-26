@@ -1,15 +1,15 @@
 #!/bin/zsh
 # Item 2059 — the unindexed `V().has(k,pred).values(key)` scan, LIVE against a KILLED gate.
 #
-# ⚠️ THE KILL SWITCH IS THE CALL SITE, NOT THE RUNG. Killing the rung's gate would leave the chain
+# THE KILL SWITCH IS THE CALL SITE, NOT THE RUNG. Killing the rung's gate would leave the chain
 # calling a function that always declines; killing the call site is what the pipeline actually did
 # before this item, so the KILLED arm is the real baseline.
 #
-# ⚠️ WIDE CONTROLS, because [[executor-edits-perturb]] prices a new walk variant at up to 16% on
+# WIDE CONTROLS, because [[executor-edits-perturb]] prices a new walk variant at up to 16% on
 # UNRELATED rows. The new walk is module-scope and nothing existing was edited, so the prediction is
 # flat controls — but that is the claim under test, not an assumption.
 #
-# ⚠️ ARMS NAMED FOR WHAT THEY ARE (LIVE/KILLED), not PRE/POST (item 2023), and RESTORE REBUILDS
+# ARMS NAMED FOR WHAT THEY ARE (LIVE/KILLED), not PRE/POST (item 2023), and RESTORE REBUILDS
 # (item 2031: a restored SOURCE with a stale DIST measures the experiment under the control's name).
 set -u
 
@@ -25,7 +25,7 @@ restore_live() {
 }
 trap restore_live EXIT INT TERM
 
-# ⚠️⚠️ **A SNAPSHOT TAKEN EARLY AND AN EDIT MADE LATER IS A SILENT REVERT.** This check passes
+# **A SNAPSHOT TAKEN EARLY AND AN EDIT MADE LATER IS A SILENT REVERT.** This check passes
 # whenever SRC == PRISTINE, and since the EXIT trap restores SRC from PRISTINE after every run, it
 # passes trivially even when PRISTINE is stale relative to the source you MEANT to have. That is not
 # hypothetical: a later complexity fix to `index.ts` was reverted by this script's own restore, the
@@ -43,7 +43,7 @@ round() {
     KILLED)
       cp "$PRISTINE" "$SRC" || exit 1
       # `x ?? undefined` is the call site with the rung removed — valid TS, one line, unique anchor.
-      # ⚠️ ONE LINE, because `bun run fmt` collapses the two-line `??` — an anchor written against
+      # ONE LINE, because `bun run fmt` collapses the two-line `??` — an anchor written against
       # the pre-format shape found 0 matches and the script refused, which is the behaviour wanted.
       sed -i "s@?? unindexedHasValuesShortcut(effective, graph)@?? undefined); // KILLED unindexedHasValuesShortcut (@" "$SRC" || exit 1
       grep -cF "// KILLED unindexedHasValuesShortcut" "$SRC" | grep -q '^1$' || { print -- "KILLED ARM NOT SET"; exit 1; }
@@ -57,7 +57,7 @@ round() {
 
   # THE TARGETS: the equality and range forms, one arm per PROCESS (item 2058's whole lesson).
   #
-  # ⚠️⚠️ **EVERY MEASUREMENT MUST HAPPEN IN HERE.** `trap restore_live EXIT` restores the LIVE source
+  # **EVERY MEASUREMENT MUST HAPPEN IN HERE.** `trap restore_live EXIT` restores the LIVE source
   # and REBUILDS when this script exits, so a measurement run AFTER invoking it measures LIVE no
   # matter which ROUND was asked for. That silently turned three follow-up runs into LIVE-vs-LIVE and
   # produced a "the controls are flat" reading that meant nothing. `ARMS`/`ROWS`/`REPS` are env knobs
@@ -66,7 +66,7 @@ round() {
     (cd "$ROOT/packages/native" && NODES=200000 REPS=${REPS:-9} ARM=$a timeout 900 bun predicate-kind-2058.mjs 2>&1 | grep -E "^  $a ")
   done
 
-  # ⚠️ `point: has(k,v)` IS A TARGET, NOT A CONTROL — it is `V().has('k',7).values('n')`, exactly this
+  # `point: has(k,v)` IS A TARGET, NOT A CONTROL — it is `V().has('k',7).values('n')`, exactly this
   # rung's shape, and the first run of this script mislabelled it. `label: has values` is FOUR steps
   # so the rung declines it (item 1870's refusal). The real controls are the two plain scans and the
   # count.

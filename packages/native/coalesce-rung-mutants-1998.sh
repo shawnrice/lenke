@@ -1,15 +1,15 @@
 #!/bin/zsh
 # Item 1998 — mutation round on the fused `coalesce(hop, hop)` route.
 #
-# ⚠️ THE ROUTE IS ANSWER-EQUIVALENT, so the 2,435-test gremlin suite passes with every mutant below
+# THE ROUTE IS ANSWER-EQUIVALENT, so the 2,435-test gremlin suite passes with every mutant below
 # ([[perf-gate-needs-its-own-test]]). The filter is the route's OWN test file, which is the only
 # thing that can see them.
 #
-# ⚠️ A VERDICT NEEDS EVIDENCE OF EXECUTION, NOT AN EXIT CODE, and `bun test` reports to STDERR
+# A VERDICT NEEDS EVIDENCE OF EXECUTION, NOT AN EXIT CODE, and `bun test` reports to STDERR
 # (CLAUDE.md; items 767/772-773 got this wrong in both directions). Each run concatenates both
 # streams, looks for a `N pass`/`N fail` line there, and only then reads the status.
 #
-# ⚠️⚠️ **THE PRISTINE COPY IS VERIFIED GREEN BEFORE IT IS TRUSTED, and the first run of this script
+# **THE PRISTINE COPY IS VERIFIED GREEN BEFORE IT IS TRUSTED, and the first run of this script
 # is why.** It aborted mid-loop on a zsh error (`status` is read-only), leaving mutant 1 in the tree;
 # the next run then copied THAT to "pristine", so every later round restored a mutated file and
 # mutant 1 reported ANCHOR-DID-NOT-APPLY because its anchor was already gone. CLAUDE.md's "restore
@@ -17,11 +17,11 @@
 # poisons the baseline, and the route file is UNTRACKED so `git` could not restore it. The guard
 # below runs the test once against the candidate pristine and refuses to proceed if it is not green.
 #
-# ⚠️ FIELD SEPARATOR IS `@@`, NOT `|`: a sed expression containing `||` (the `!drops ||` guard) gets
+# FIELD SEPARATOR IS `@@`, NOT `|`: a sed expression containing `||` (the `!drops ||` guard) gets
 # chopped by `${rest#*|}` and sed then dies with "unknown command: '|'". That is a silent
 # ANCHOR-DID-NOT-APPLY in the first version of this script.
 #
-# ⚠️ GREP ANCHORS ARE THE LITERAL SOURCE TEXT, UNESCAPED. The sed expression needs `\[1\]`; `grep -F`
+# GREP ANCHORS ARE THE LITERAL SOURCE TEXT, UNESCAPED. The sed expression needs `\[1\]`; `grep -F`
 # does not, and an escaped anchor matches nothing — which the first run reported for three mutants.
 set -u
 
@@ -72,7 +72,7 @@ for spec in "${MUTANTS[@]}"; do
   # RESTORE FIRST, never only after the loop.
   cp "$PRISTINE" "$SRC" || exit 1
 
-  # ⚠️ ASSERT THE ARM IS THE CODE IT CLAIMS BEFORE BUILDING IT (CLAUDE.md). A sed that matches zero
+  # ASSERT THE ARM IS THE CODE IT CLAIMS BEFORE BUILDING IT (CLAUDE.md). A sed that matches zero
   # times leaves the pristine file in place and its pass is a null that looks like a survivor.
   n=$(grep -F -c -- "$anchor" "$SRC")
   sed -i -e "$expr" "$SRC"

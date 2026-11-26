@@ -120,7 +120,7 @@ pub(super) fn try_fused_hop_num_count(input: &Plan, store: &Store) -> Option<u64
     // declines too — answering an exclusion over a CSR hop would need the two-pass trick item 1213
     // used on a sequential column, and that needs its own measurement.
     //
-    // ⚠️ ITEM 1224 MEASURED WHAT THIS IS WORTH BEFORE IT WAS BUILT, as its own control: the
+    // ITEM 1224 MEASURED WHAT THIS IS WORTH BEFORE IT WAS BUILT, as its own control: the
     // two-bound spelling read 4887.7us against the one-bound arm's 772.4 on the identical fixture,
     // 6.3x, purely because it still walked `bounds` and dispatched `num_pred` per EDGE.
     if let Some(c) = canonical_num_conj(&bounds) {
@@ -196,7 +196,7 @@ fn hop_num_count<F: Fn(f64) -> bool>(
 /// Collect the typed-out neighbours whose column cell is present and satisfies `cmp`, in expand
 /// order — [`hop_num_count`]'s projecting twin (item 1243).
 ///
-/// ⚠️ THE BRANCHLESS MOVE IS A COMPACTION HERE, NOT AN ACCUMULATION, and that is why it had to be
+/// THE BRANCHLESS MOVE IS A COMPACTION HERE, NOT AN ACCUMULATION, and that is why it had to be
 /// measured separately rather than read off item 1224. A `count += 1` can be masked outright; a
 /// `Vec::push` cannot, because the write's ADDRESS depends on the predicate. What can be masked is
 /// the INDEX: write the candidate unconditionally and advance the cursor by the mask, so a rejected
@@ -323,7 +323,7 @@ pub(super) fn try_fused_hop_present_count(input: &Plan, store: &Store) -> Option
         None => (is_not_null_on_slot(pred, 1)?, false),
     };
     let col = store.column(&key)?; // absent everywhere -> no rows; the general path answers 0
-                                   // ⚠️ `IS NOT NULL` DECLINES A `Gen` COLUMN, and this cost a WRONG ANSWER before it was here.
+                                   // `IS NOT NULL` DECLINES A `Gen` COLUMN, and this cost a WRONG ANSWER before it was here.
                                    // The sweep below reads the `present` BIT, and `has_value_at`'s own note says why that is only
                                    // the right question for a TYPED variant: "for every typed variant the `present` bit IS this
                                    // question; only `Gen` keeps its null in `data` and has to look." So on a `Gen` column
@@ -352,7 +352,7 @@ pub(super) fn try_fused_hop_present_count(input: &Plan, store: &Store) -> Option
     // sibling. Same disposition as item 1118's `pop_last_node`.
     let (present, nulls) = col.presence_bits();
     let has_nulls = !nulls.is_empty();
-    // ⚠️ HOISTING THESE TWO INVARIANTS OUT MEASURED FLAT, AND THAT IS RECORDED RATHER THAN DONE
+    // HOISTING THESE TWO INVARIANTS OUT MEASURED FLAT, AND THAT IS RECORDED RATHER THAN DONE
     // (item 1287). `nulls_count` is fixed by the SPELLING and `has_nulls` by the COLUMN, so neither
     // depends on `nbr`, and the same hoist on the SCAN twin below is 30x. Here it is nothing:
     //
@@ -414,7 +414,7 @@ pub(super) fn try_fused_hop_project(
     // factored into one closure-returning helper, because two `match` arms are two closure TYPES
     // and unifying them costs the monomorphic comparison this exists to get.
     //
-    // ⚠️ THE SECOND MOVE IS THE LARGER ONE HERE, which item 1243 measured BEFORE building either:
+    // THE SECOND MOVE IS THE LARGER ONE HERE, which item 1243 measured BEFORE building either:
     // at 200,000 nodes the half-selective spelling (`age > 50`, 6544.0us) was SLOWER than the one
     // that keeps every edge (`age >= 0`, 5503.2us). No amount of survivor work explains that
     // ordering and a mispredicted branch per edge does — so the count twin's result does not
@@ -489,7 +489,7 @@ pub(super) fn try_fused_hop_project(
 /// Does this NON-NUMERIC extremum belong to the frontier fold rather than the materialized mask?
 /// (item 1190)
 ///
-/// ⚠️ MEASURED, and it is a regression this very item nearly shipped. A far-endpoint LABEL compiles
+/// MEASURED, and it is a regression this very item nearly shipped. A far-endpoint LABEL compiles
 /// to `Filter{IsLabeled{slot: 1}, Expand}` — so `MATCH (a:L)-[:T]->(b:L) RETURN min(b.k)` is a
 /// FILTERED hop and reaches `try_fused_hop_mask_agg` at exec.rs:1650, SIXTY-TWO LINES BEFORE
 /// `try_frontier_prop_agg` at 1712. Before item 1190 the fused arm declined non-numeric columns
@@ -784,7 +784,7 @@ pub(super) fn try_fused_hop_mask_agg(
 /// `<slot>.<key> IS NOT NULL` as a presence gate — the OTHER spelling of "this element carries a
 /// usable value for `key`" (item 1261).
 ///
-/// ⚠️ IT IS NOT `PropertyExists`, AND THE DIFFERENCE IS THE MASK. `ir.rs` states it: `PropertyExists`
+/// IT IS NOT `PropertyExists`, AND THE DIFFERENCE IS THE MASK. `ir.rs` states it: `PropertyExists`
 /// is true for a PRESENT value "regardless of that value", and it is "the one predicate that
 /// separates an absent property from a present `Null` … which `<var>.<key> IS NOT NULL` cannot". So
 /// `PropertyExists` counts `present || nulls` and this counts `present` ALONE. Admitting one as the
@@ -1005,7 +1005,7 @@ pub(super) fn case_dict_lookup(
 /// form — sees nothing above 32. For a `Num` column that meant no streaming arm at all there, and
 /// it is worth 4.2-5.4x (item 1264's sweep: k=48 6.557ms -> 1.206, k=64 6.766 -> 1.622).
 ///
-/// ⚠️ NUMERIC ONLY, AND SEPARATE FROM THE SHARED MATCHER FOR A MEASURED REASON. Teaching
+/// NUMERIC ONLY, AND SEPARATE FROM THE SHARED MATCHER FOR A MEASURED REASON. Teaching
 /// `eq_disjunction_on_slot` itself to accept `Expr::In` was written first, on the theory that 32
 /// against 33 was a PLAN boundary for every column kind — this engine's named bug class. For
 /// strings that theory is FALSE and the change was a REGRESSION, because a dict column already has
@@ -1343,7 +1343,7 @@ pub(super) fn subst_prop(e: &Expr, slot: usize, key: &str, value: &Value) -> Exp
 /// absent — so the fold is three evaluations whatever the row count, and the sweep is a table
 /// lookup.
 ///
-/// ⚠️ WHY IT EXISTS AT ALL: `try_filtered_count`'s chain had arms for num, membership, dict and
+/// WHY IT EXISTS AT ALL: `try_filtered_count`'s chain had arms for num, membership, dict and
 /// date but NONE for bool, so `WHERE flag = true RETURN count(*)` fell through to materializing a
 /// batch and running `try_filter_keep` over it. Item 1207 priced that at **3.97x on unpredictable
 /// data** (166.2us against 660.1 at 200,000 nodes), measured by the periodic-vs-random detector
@@ -1416,7 +1416,7 @@ pub(super) fn try_stream_dict_pred_count(
         matches.push(eval_const(&Value::Str(dv.clone()))?);
     }
     let null_match = eval_const(&Value::Null)?;
-    // ⚠️ TWO BRANCHLESS REWRITES OF THE SWEEP BELOW HAVE BEEN TRIED AND BOTH MEASURED NOTHING.
+    // TWO BRANCHLESS REWRITES OF THE SWEEP BELOW HAVE BEEN TRIED AND BOTH MEASURED NOTHING.
     // Item 1207's periodic-vs-random detector prices this arm at 1.66x — it IS data-dependent —
     // and the obvious causes are both now ruled out:
     //
@@ -1436,7 +1436,7 @@ pub(super) fn try_stream_dict_pred_count(
         } else {
             null_match
         };
-        // ⚠️ `count += u64::from(hit)` WAS TRIED HERE AND MEASURED NOTHING (item 1208). This arm
+        // `count += u64::from(hit)` WAS TRIED HERE AND MEASURED NOTHING (item 1208). This arm
         // reads 1.66x slower on random values than on the corpus's periodic ones (201.4us against
         // 335.2), so it IS data-dependent — but the accumulation is not where that comes from, and
         // rewriting it branchless left the ratio at exactly 1.66x. The same rewrite was decisive
@@ -1489,7 +1489,7 @@ pub(super) fn try_stream_membership_count(
                     targets.push(c as u32);
                 }
             }
-            // ⚠️ THIS IS WHERE THE DICT-EQUALITY ROW LIVES, and items 1208 and 1209 both looked
+            // THIS IS WHERE THE DICT-EQUALITY ROW LIVES, and items 1208 and 1209 both looked
             // in the wrong function (item 1215). Item 1207's detector prices `d = 'g3' RETURN
             // count(*)` at 1.66-1.70x on random values against the corpus's periodic ones, and
             // both of those items rewrote `try_stream_dict_pred_count` and measured the ratio
@@ -1512,7 +1512,7 @@ pub(super) fn try_stream_membership_count(
             // `codes[i] == want` replaces a `Vec::contains` call — a loop with a bounds check —
             // per row, and the accumulation is branchless.
             //
-            // ⚠️ ITEM 1215 WROTE THIS SAME SPECIALIZATION AND RECORDED IT AS MEASURING NOTHING.
+            // ITEM 1215 WROTE THIS SAME SPECIALIZATION AND RECORDED IT AS MEASURING NOTHING.
             // That verdict was VACUOUS: it was measured on the census fixture, which has no index,
             // so the planner emits an `IndexSeek` and THIS FUNCTION NEVER RUNS. Instrumenting the
             // chain against an INDEXED store shows it serving the equality 18 times (item 1219) —
@@ -1539,12 +1539,12 @@ pub(super) fn try_stream_membership_count(
             // Small target sets get the comparison UNROLLED, so the common membership pays no
             // iterator and no closure per row (item 1222).
             //
-            // ⚠️ THE SHORT-CIRCUIT STAYS HERE, unlike `sweep_num_count`'s (item 1220). There the
+            // THE SHORT-CIRCUIT STAYS HERE, unlike `sweep_num_count`'s (item 1220). There the
             // branch cost more than the `f64` compare it guarded, so evaluating unconditionally
             // won. A string compare is a length test plus a `memcmp`: running it on an absent
             // cell is real wasted work, not a free lane, so `&&` is correct for this column type.
             //
-            // ⚠️ AND A SINGLE TARGET IS UNREACHABLE FROM A QUERY, which is why `[a]` is written
+            // AND A SINGLE TARGET IS UNREACHABLE FROM A QUERY, which is why `[a]` is written
             // for completeness rather than for speed. A lone string equality - `= 'x'` and
             // `IN ['x']` alike - is planned as an `IndexSeek`, whose third arm degrades to a label
             // scan when no index exists; it never enters this function. Measured: the arm serves
@@ -1632,7 +1632,7 @@ pub(super) fn try_stream_membership_count(
 ///   after   0.056  0.107  0.209  0.415  0.830  1.622
 /// ```
 ///
-/// ⚠️ DISTINCT VALUES, OR IT DOUBLE-COUNTS. `k IN [7, 7]` and `k = 7 OR k = 7` are each one row
+/// DISTINCT VALUES, OR IT DOUBLE-COUNTS. `k IN [7, 7]` and `k = 7 OR k = 7` are each one row
 /// set, and two passes over `7` would report twice its size — a WRONG ANSWER, not a slow one.
 /// Neither `normalize_pred` nor either matcher deduplicates (they have no reason to: the general
 /// arm is idempotent in the disjunction), so it happens here, with the same `contains` the
@@ -2158,7 +2158,7 @@ fn sweep_num_count<F: Fn(f64) -> bool>(
 ) -> u64 {
     let mut count = 0u64;
 
-    // ⚠️ THE ACCUMULATION IS BRANCHLESS, AND THAT IS THE POINT (item 1220). Written as
+    // THE ACCUMULATION IS BRANCHLESS, AND THAT IS THE POINT (item 1220). Written as
     // `if present[i] && cmp(data[i]) { count += 1 }` this sweep vectorizes only when LLVM
     // chooses to mask the increment, and WHETHER IT DOES DEPENDS ON THE CLOSURE: the header of
     // `stream_single_bound_count` records a 6.6-7.4x gap between two closures handed to THIS
@@ -2233,7 +2233,7 @@ fn date_conj_on_slot(pred: &Expr, slot: usize) -> Option<(String, Vec<(CompareOp
     Some((key0?, bounds))
 }
 
-/// ⚠️ REJECTED HERE: ITEM 1220'S BRANCHLESS ACCUMULATION, WHICH IS 1.04x SLOWER ON THIS SWEEP
+/// REJECTED HERE: ITEM 1220'S BRANCHLESS ACCUMULATION, WHICH IS 1.04x SLOWER ON THIS SWEEP
 /// (item 1223). Folding the three nested branches into one match yielding a `(is_date, days)` pair
 /// plus `count += u64::from(present[i] & is_date & cmp(days))` measured, over three
 /// order-alternated rounds with the binaries hash-asserted and the numeric control flat at
@@ -2348,15 +2348,15 @@ pub(super) fn try_stream_date_count(
 /// 6.6x the range and 7.4x its own recorded cost, with the two spellings returning the identical
 /// count. So the arm had lost its vectorization while the arm beside it kept it.
 ///
-/// ⚠️ NOT CAUSED BY THE GROWTH OF THIS FILE DURING THIS SESSION, which was the first suspicion:
+/// NOT CAUSED BY THE GROWTH OF THIS FILE DURING THIS SESSION, which was the first suspicion:
 /// measured at `84f50e5f`, the commit before this session's first `fastpath.rs` widening, the same
 /// probe reads 6.65x (609.0 us against 91.6). The regression is long-standing.
 ///
-/// ⚠️ ITEM 453'S FIX WAS TRIED HERE FIRST AND DID NOTHING: a separate `#[inline(never)]` function
+/// ITEM 453'S FIX WAS TRIED HERE FIRST AND DID NOTHING: a separate `#[inline(never)]` function
 /// left the ratio at 6.75x, unchanged. So this is NOT the layout hazard that comment describes, and
 /// the caller routes an ORDERING bound through the two-bound arm instead — see the note there.
 ///
-/// ⚠️ ITEM 1220 IS THE FIRST MECHANISM THAT FITS, THOUGH IT IS NOT YET PROVEN TO BE THIS ONE.
+/// ITEM 1220 IS THE FIRST MECHANISM THAT FITS, THOUGH IT IS NOT YET PROVEN TO BE THIS ONE.
 /// `sweep_num_count` accumulated with `if present[i] && cmp(data[i]) { count += 1 }`, which
 /// vectorizes only when LLVM elects to mask the increment — and that election is per-closure, which
 /// is exactly the shape of a gap between two closures handed to the same function. Making the
@@ -2430,7 +2430,7 @@ fn try_stream_range_count(
         .or_else(|| lower(*op2, *t2).zip(upper(*op1, *t1)))?;
     // Any other PAIR — two equalities, a `<>`, two lower bounds — declines to the caller's
     // general arm rather than getting a half-measure here.
-    // ⚠️ REJECTED HERE: ITEM 1227'S `&&` -> `&`, WHICH MEASURES NOTHING ON THIS SWEEP (item 1228).
+    // REJECTED HERE: ITEM 1227'S `&&` -> `&`, WHICH MEASURES NOTHING ON THIS SWEEP (item 1228).
     // Item 1227 found a `&&` inside the closure worth 4.0x on the HOP sweep, by blocking the
     // vectorization item 1220's branchless accumulation exists to enable. The same substitution on
     // these four arms, three order-alternated rounds with the binaries hash-asserted: PRE
@@ -2470,7 +2470,7 @@ pub(super) struct NumConj {
 
 /// Reduce `bounds` to a [`NumConj`], or `None` when the reduction is not sound.
 ///
-/// ⚠️ A NaN LITERAL DECLINES, and that is the one case worth stating. `num_pred(Gt, x, NaN)` is
+/// A NaN LITERAL DECLINES, and that is the one case worth stating. `num_pred(Gt, x, NaN)` is
 /// false for every `x`, and `num_pred(Ne, x, NaN)` is TRUE for every `x` (this repo's predicates
 /// keep NaN JS-unordered — item 1205), so a NaN bound does not fold into a `min`/`max` at all:
 /// tightening `hi` with it would silently admit or reject the whole column. The general arm stays
@@ -2479,7 +2479,7 @@ pub(super) struct NumConj {
 /// `=` collapses to `[t, t]` inclusive, so `k = 5 AND k > 0` canonicalizes to a range and reaches
 /// the range sweep too — a shape the old arm also walked per row.
 pub(super) fn canonical_num_conj(bounds: &[(CompareOp, f64)]) -> Option<NumConj> {
-    // ⚠️ AN EMPTY CONJUNCTION DECLINES, AND A TEST CAUGHT THIS. `num_conj_on_slot` returns NO
+    // AN EMPTY CONJUNCTION DECLINES, AND A TEST CAUGHT THIS. `num_conj_on_slot` returns NO
     // bounds for a bare presence atom (`has(k)`), and the general arm then counts
     // `present[i] || nulls[i]` — a STORED PRESENT-NULL included. The canonical form of no bounds
     // is the full range `[-inf, +inf]`, which the range sweep gates on `present[i]` ALONE and so
@@ -2580,7 +2580,7 @@ pub(super) fn try_stream_num_count(
     // path that materializes a 200,000-id batch AND a 91,000-entry keep-list is the tell that the
     // per-element cost, not the allocation, was deciding it.
     if let [(op, t)] = bounds.as_slice() {
-        // ⚠️ A SINGLE ORDERING BOUND IS ROUTED THROUGH THE TWO-BOUND ARM, by pairing it with a
+        // A SINGLE ORDERING BOUND IS ROUTED THROUGH THE TWO-BOUND ARM, by pairing it with a
         // VACUOUS companion (item 1205). That looks backwards — the range closure does strictly
         // MORE work — and it is what the measurement says: `x >= 500000` cost 618.4us where
         // `x >= 500000 AND x < 1000000` over the identical 99,835 matching rows cost 91.6, a
@@ -2651,7 +2651,7 @@ pub(super) fn try_stream_num_count(
         // ONE exclusion, as TWO VECTORIZED PASSES rather than one three-term closure: count the
         // range, then subtract the excluded value's own count.
         //
-        // ⚠️ THE OBVIOUS FORM WAS BUILT FIRST AND MEASURED, which is why this one exists. A single
+        // THE OBVIOUS FORM WAS BUILT FIRST AND MEASURED, which is why this one exists. A single
         // closure `|v| v > lo && v < hi && v != x` took the periodic fixture from 386.9us to 112.4
         // (3.44x) but left the RANDOM one at 680.7 — still 6.1x data-dependent, where the plain
         // two-bound range arm beside it is FLAT at 92.5/92.9. A third term breaks the
@@ -2667,13 +2667,13 @@ pub(super) fn try_stream_num_count(
         // cell fails the range test itself (every ordering comparison is false for it), so it is
         // in neither count. `-0.0 == 0.0` holds in both directions, so a signed zero is treated
         // identically by the two passes.
-        // ⚠️ k EXCLUSIONS, NOT ONE (item 1231). `[x]` admitted exactly one and everything else fell
+        // k EXCLUSIONS, NOT ONE (item 1231). `[x]` admitted exactly one and everything else fell
         // to the general arm, which walks `bounds` and dispatches `num_pred` PER ROW — measured at
         // item 1229 as a cliff: one exclusion 51.2us, TWO exclusions 608.8us, 11.9x, for one more
         // literal. k+1 passes is the same trick with the same soundness argument, which does not
         // depend on k.
         //
-        // ⚠️ DUPLICATES MUST BE SUBTRACTED ONCE, which is new at k > 1 and is a WRONG ANSWER if
+        // DUPLICATES MUST BE SUBTRACTED ONCE, which is new at k > 1 and is a WRONG ANSWER if
         // missed: `k <> 73 AND k <> 73` reduces to `ne = [73, 73]`, and two subtractions would
         // under-count by the number of 73s. `canonical_num_conj` does not deduplicate (it has no
         // reason to — the general arm is idempotent in `ne`), so this does. The comparison used for
@@ -2724,7 +2724,7 @@ pub(super) fn try_stream_num_count(
     // (`present || nulls`). A bounded compare counts only typed values (`present`): a null
     // satisfies no numeric predicate.
     //
-    // ⚠️ `bounds.is_empty()` IS LOOP-INVARIANT AND WAS TESTED PER ELEMENT (item 1287) — the shape
+    // `bounds.is_empty()` IS LOOP-INVARIANT AND WAS TESTED PER ELEMENT (item 1287) — the shape
     // item 1220 hoisted out of a sweep, nominated by item 1259 and left open by item 1260. The
     // three arms are the same predicate the single closure expressed, split on the two invariants
     // it re-read per row.
@@ -4041,7 +4041,7 @@ pub(super) fn varlen_step(
 /// which is what WALK semantics require. The count is a set size, so it is byte-identical to the
 /// TS engine's regardless of visitation order.
 ///
-/// 🛑 THIS IS WALK REACHABILITY, AND IT DOES NOT COINCIDE WITH A TRAIL'S AT `min <= 1` — an
+/// THIS IS WALK REACHABILITY, AND IT DOES NOT COINCIDE WITH A TRAIL'S AT `min <= 1` — an
 /// earlier version of this comment argued that it did, and item 757 measured the counterexample.
 /// Two nodes, one edge, `(x:S)-[:R]-{1,3}(y)`:
 ///
@@ -4246,7 +4246,7 @@ pub(super) fn try_varlen_distinctby_count(
 /// they never qualify — and `Acyclic` is not merely unproven there: one node with one self-loop
 /// answers 0 for `ACYCLIC (x)-[:R]->+(y)` (the loop repeats a node) where a BFS says 1.
 ///
-/// ⚠️ A TRAIL IS ALSO EXACT WHEN THE UPPER BOUND IS OPEN AND `min <= 1` (item 1256), which the
+/// A TRAIL IS ALSO EXACT WHEN THE UPPER BOUND IS OPEN AND `min <= 1` (item 1256), which the
 /// previous `max <= 1` refused. The reasoning that produced `max <= 1` is right about edge reuse
 /// but priced only the BOUNDED case: with at most one hop no edge can repeat, and above that "the
 /// walk set can strictly contain the trail set" — true when a LENGTH constraint is in play.
@@ -4278,7 +4278,7 @@ pub(super) fn set_reachability_is_exact(mode: PathMode, min: u32, max: u32) -> b
         // 2-cycle, 3-cycle, chain, chain+back-edge, lollipop, two joined cycles, in-tree,
         // diamond) at both `->*` and `->+`: 18 of 18 agreed.
         PathMode::Trail | PathMode::Simple => max <= 1 || (max == u32::MAX && min <= 1),
-        // ⚠️ ACYCLIC ALONE STAYS REFUSED, and it is the one that genuinely diverges: it forbids
+        // ACYCLIC ALONE STAYS REFUSED, and it is the one that genuinely diverges: it forbids
         // first = last, so one node with one self-loop answers 0 for `ACYCLIC (x)-[:R]->+(y)`
         // where every other mode — and a BFS — answers 1.
         PathMode::Acyclic => false,
@@ -4287,7 +4287,7 @@ pub(super) fn set_reachability_is_exact(mode: PathMode, min: u32, max: u32) -> b
 
 /// How many levels the `min >= 2` frontier walk must run — `max`, or `min + n` when `max` is open.
 ///
-/// ⚠️ ITS OWN FUNCTION SO THE ARITHMETIC CAN BE TESTED, because reverting the cap is
+/// ITS OWN FUNCTION SO THE ARITHMETIC CAN BE TESTED, because reverting the cap is
 /// ANSWER-EQUIVALENT: it only makes the query slower, and no result assertion can see that. Item
 /// 1253 is why this is not a timing test instead — a verdict that depends on how fast the machine
 /// runs is not a verdict. This is the "extract the decision and unit-test it" pattern the repo
@@ -4319,7 +4319,7 @@ pub(super) fn varlen_distinct_endpoint_count(
             }
         }
         let mut next: Vec<u32> = Vec::new();
-        // ⚠️ THE LEVEL COUNT IS CAPPED AT `min + n`, AND WITHOUT IT AN UNBOUNDED PATTERN SPINS
+        // THE LEVEL COUNT IS CAPPED AT `min + n`, AND WITHOUT IT AN UNBOUNDED PATTERN SPINS
         // (item 1258). The loop's only exit was an EMPTY frontier, which on a cyclic graph never
         // happens — so `max = u32::MAX` meant 4.29 BILLION levels. Measured on one node with one
         // self-loop: `MATCH WALK (x)-[:R]->{2,}(y) RETURN count(DISTINCT y)` took **29,253 ms**,
@@ -5334,7 +5334,7 @@ const SEEK_COUNT_CANDIDATE_COST: usize = 96;
 /// mutant of the arithmetic survives all of them. That is the remedy `CLOSED.md` prescribes for a
 /// route choice (`perf-gate-needs-its-own-test`).
 ///
-/// ⚠️ DIVIDES RATHER THAN MULTIPLIES, and the first cut did the opposite. `bucket * 96 > label`
+/// DIVIDES RATHER THAN MULTIPLIES, and the first cut did the opposite. `bucket * 96 > label`
 /// needs a `saturating_mul` to be overflow-free, and saturating is then WRONG in the corner it is
 /// there for: at `bucket == label == usize::MAX` both sides become `usize::MAX`, the comparison is
 /// false, and it answers "use the index" for a bucket that is the whole graph — where the sweep is
@@ -5342,7 +5342,7 @@ const SEEK_COUNT_CANDIDATE_COST: usize = 96;
 /// forms agree everywhere reachable (a bucket is a subset of the label, so `bucket <= label`), and
 /// the unit test pins the boundary either way.
 ///
-/// ⚠️ THE `None` CASE IS PART OF THE DECISION, not a caller's detail, and the mutation run is why it
+/// THE `None` CASE IS PART OF THE DECISION, not a caller's detail, and the mutation run is why it
 /// lives here: `no-index-stops-sweeping` — mapping "no index" to "use the seek" — SURVIVED while
 /// the arm made that choice inline, because it is answer-equivalent and item 1267's route test only
 /// asserts that `try_scan_count` CLAIMS the shape, which it still does via the slower branch. With
@@ -5380,7 +5380,7 @@ pub(super) fn label_len(store: &Store, label: &Option<String>) -> usize {
 /// for a NaN value at its first line — but the agreement is a coincidence of two separate rules, so
 /// it is not relied on here.
 ///
-/// ⚠️ THE STRING CASE IS NOT DONE, deliberately. A `Str`/`Dict` column under an unindexed `k = 'v'`
+/// THE STRING CASE IS NOT DONE, deliberately. A `Str`/`Dict` column under an unindexed `k = 'v'`
 /// seek materializes ids exactly the same way and is presumably the same 4x; it needs its own
 /// measurement and its own equality argument (`Arc<str>` compare, dict code resolution), so it is
 /// recorded rather than guessed at here.
@@ -5448,7 +5448,7 @@ pub(super) fn try_scan_count(
         // column scan), so the count is its length and nothing here needs to know which. Reached
         // through `super::`: a child module sees its parent's private items.
         Plan::IndexSeek { label, key, value } => {
-            // ⚠️ WITH NO INDEX, DO NOT ASK FOR THE IDS. Calling `index_seek_ids` and taking its
+            // WITH NO INDEX, DO NOT ASK FOR THE IDS. Calling `index_seek_ids` and taking its
             // length was the first cut and measured NOTHING (0.145 ms -> 0.140, inside noise):
             // the cost is not the Batch the general aggregate gathers, it is the seek
             // MATERIALIZING a `Vec<u32>` of matches — a push per hit, through the label's id list
@@ -5458,7 +5458,7 @@ pub(super) fn try_scan_count(
             // THE REAL INDEX WINS WHEN THERE IS ONE, so it is asked first: a hash bucket is
             // O(matches) and a sweep is O(label), and the indexed row must not get slower. Only
             // the SCAN FALLBACK is replaced.
-            // ⚠️ AN INDEX IS NOT ALWAYS THE RIGHT ROUTE FOR A COUNT, and item 1267 left that as a
+            // AN INDEX IS NOT ALWAYS THE RIGHT ROUTE FOR A COUNT, and item 1267 left that as a
             // KNOWN UNMEASURED ASSUMPTION ("the preference stays index-first — but it is now a
             // known unmeasured assumption rather than an obvious one"). Measured now, and it is
             // wrong above ~1% selectivity: the sweep is FLAT in matches because it is O(label) and
@@ -8470,7 +8470,7 @@ pub(super) fn try_nhop_sweep_count(
     // **0.74x SLOWER** than the arm that already answers it. Three hops gains at both (4.21 ->
     // 0.77 at the end, 1.21 -> 0.73 at an interior). Same shape of answer as item 301's.
     //
-    // 🛑 AND THE FIRST POSITION IS ADMITTED TOO (item 748), which item 306 never measured. Its
+    // AND THE FIRST POSITION IS ADMITTED TOO (item 748), which item 306 never measured. Its
     // table has rows for UNGATED and for a gate at the LAST position only, and the condition it
     // produced — `gates[hops].is_some()` — excluded the start and the interior TOGETHER. But item
     // 309, nine items later, established that a start gate is this sweep's BEST case: it reverses

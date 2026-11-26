@@ -98,7 +98,7 @@ if (fn === undefined) {
 }
 
 /**
- * ⚠️ YIELD BETWEEN REPS, and the default is `true` because NOT yielding changes what is measured.
+ * YIELD BETWEEN REPS, and the default is `true` because NOT yielding changes what is measured.
  *
  * A `Graph` schedules `queueMicrotask(drainMutations)` on its first write and
  * `setTimeout(this.notify, 1)` through `scheduleNotify`. A pending timer holds `this.notify`, which
@@ -130,7 +130,7 @@ const wall = performance.now() - t0;
 const after = v8.getHeapStatistics();
 
 /**
- * ⚠️ DRAIN THE OBSERVER BEFORE READING IT. `PerformanceObserver` delivers entries in a queued
+ * DRAIN THE OBSERVER BEFORE READING IT. `PerformanceObserver` delivers entries in a queued
  * callback, so a fully SYNCHRONOUS rep loop (`YIELD=0`) buffers every `'gc'` entry and none is
  * delivered before `disconnect()` — the probe then reports **0 pauses and 0.0% GC** for a run whose
  * CPU profile shows `(garbage collector)` at 12-21%. Two instruments disagreeing was the signal; the

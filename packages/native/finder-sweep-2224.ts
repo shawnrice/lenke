@@ -1,9 +1,9 @@
 /**
  * THE SIZE-SWEEP WRAPPER for both cliff finders (item 2224).
  *
- * ⚠️⚠️ **A ONE-SIZE RATIO IS AN UPPER BOUND, NOT A MEASUREMENT, and that cost three verdicts in one
+ * **A ONE-SIZE RATIO IS AN UPPER BOUND, NOT A MEASUREMENT, and that cost three verdicts in one
  * session** — items 2200 (by-id "4.7x" → 1.5x), 2205 (every row's steep first step was the shared cache
- * transition) and 2223 (per-edge 3.78x → 1.69x). 🔑 The cause is structural rather than incidental: a
+ * transition) and 2223 (per-edge 3.78x → 1.69x). The cause is structural rather than incidental: a
  * hand-rolled FLOOR is more cache-friendly than a general engine at small sizes and loses that advantage at
  * scale, so the `vs floor` column shrinks as the graph grows.
  *
@@ -12,7 +12,7 @@
  *   - a ratio that FALLS with size is a mid-size artifact — the engine amortizes, nothing to build;
  *   - a ratio that RISES is a real target, and gets worse exactly where it matters.
  *
- * ⚠️ ONE PROCESS PER SIZE, spawned rather than looped in-process: items 762 and 2172-2175 established that
+ * ONE PROCESS PER SIZE, spawned rather than looped in-process: items 762 and 2172-2175 established that
  * shapes timed in sequence pollute each other's dispatch, and item 2214 measured a 2.6x that was purely
  * first-row JIT warm-up.
  *
@@ -28,7 +28,7 @@ const ratiosOf = (out: string): Map<string, number> => {
   const found = new Map<string, number>();
 
   for (const line of out.split('\n')) {
-    /* ⚠️ Anchored on the RATIO TOKEN (`1.23x`), because a shape name can contain anything. */
+    /* Anchored on the RATIO TOKEN (`1.23x`), because a shape name can contain anything. */
     const m = /^(\S+)\s+(.+?)\s+(\d+)\s+(\d+)\s+(\d+\.\d\d)x/.exec(line.trim());
 
     if (m !== null) {
@@ -40,7 +40,7 @@ const ratiosOf = (out: string): Map<string, number> => {
 };
 
 /**
- * 🔑 THE VERDICT IS THE DIRECTION, not the magnitude.
+ * THE VERDICT IS THE DIRECTION, not the magnitude.
  *
  * A ratio that grows by more than 25% across the sweep is the only thing worth opening; everything else is
  * the FLOOR losing its cache advantage as the graph outgrows cache (item 2223 measured the floor's per-edge

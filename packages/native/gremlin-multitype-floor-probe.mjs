@@ -21,7 +21,7 @@
  *   floor-multi-lean hand walk with item 1440's DECLINED change: only present non-empty buckets
  *                    pushed, and a tight no-dedupe loop when exactly one survives
  *
- * ⚠️ `floor-multi-lean` IS THE POINT. It prices the reverted change where no perturbation can reach
+ * `floor-multi-lean` IS THE POINT. It prices the reverted change where no perturbation can reach
  * it. If it lands at `floor-single` while `floor-multi` stays high, item 1440's A/B was drowned and
  * the change was right — a correction worth having. If it lands at `floor-multi`, the change was
  * genuinely worthless and the 1.86x is elsewhere. Either way the answer is no longer confounded.
@@ -68,7 +68,7 @@ const ARMS = [
 ];
 
 /**
- * ⚠️ THE `both` ARMS ANSWER A DIFFERENT MULTISET — twice as many rows — so the digest invariant is
+ * THE `both` ARMS ANSWER A DIFFERENT MULTISET — twice as many rows — so the digest invariant is
  * PER GROUP, not global. An analysis that pooled them would report a false disagreement, or worse,
  * accept an arm that silently changed group.
  */

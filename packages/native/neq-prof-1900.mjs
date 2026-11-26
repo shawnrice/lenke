@@ -1,7 +1,7 @@
 // Item 1900 — the Gremlin surface's largest shape after item 1899: `V().as_(a).out(E).where(neq(a))`
 // at 435 ms / 799,998 rows on the workload screen.
 //
-// ⚠️ ITEM 1898 CALLED THIS PATH-GATED BY CONSTRUCTION, and that is a CLAIM ABOUT A BLOCKER rather
+// ITEM 1898 CALLED THIS PATH-GATED BY CONSTRUCTION, and that is a CLAIM ABOUT A BLOCKER rather
 // than a measurement ([[check-the-blocker-still-holds]]: three such notes were overstated in one
 // session). `where(neq('a'))` reads ONE tagged slot, not the whole path — so this profile asks what
 // the 435 ms is actually spent on before anything is priced.
@@ -38,20 +38,20 @@ const PLANS = {
   neq: traversal(V(), as_('a'), out('E'), where(neq('a'))),
   // The same tag, read back rather than compared — the screen's 3rd shape.
   selectone: traversal(V(), as_('a'), out('E'), select('a')),
-  // ⚠️ THE TWO-TAG FORM, which takes `whereCompareStep` — a DIFFERENT function with the same
+  // THE TWO-TAG FORM, which takes `whereCompareStep` — a DIFFERENT function with the same
   // per-row predicate clone. Item 1900 changed only `whereCurrentStep`, so this is the arm that
   // must NOT move, and its own cost prices the follow-up.
   wherecmp: traversal(V(), as_('a'), out('E'), as_('b'), where('b', neq('a'))),
-  // ⚠️ THE TWO-TAG PAIR, the screen's largest row once item 1912 took the single-tag shapes: it
+  // THE TWO-TAG PAIR, the screen's largest row once item 1912 took the single-tag shapes: it
   // projects a two-key OBJECT per row rather than repeating one end (item 1914).
   seltwo: traversal(V(), as_('a'), out('E'), as_('b'), select('a', 'b')),
-  // ⚠️ THE WORKLOAD SCREEN'S OWN SPELLINGS, which carry a trailing `values('n')` — a FIFTH step.
+  // THE WORKLOAD SCREEN'S OWN SPELLINGS, which carry a trailing `values('n')` — a FIFTH step.
   // Item 1912's first cut served only the four-step shapes and left these two untouched at 406 and
   // 196 ms on the screen, which is how it found that the win had not reached the shape anyone had
   // flagged.
   neqv: traversal(V(), as_('a'), out('E'), where(neq('a')), values('n')),
   selv: traversal(V(), as_('a'), out('E'), select('a'), values('n')),
-  // ⚠️ THE CONTROL THE SCREEN LACKS: the identical walk with NO tag, so the difference is the
+  // THE CONTROL THE SCREEN LACKS: the identical walk with NO tag, so the difference is the
   // bookkeeping and not the hop.
   hop: traversal(V(), out('E'), values('n')),
 };

@@ -15,7 +15,7 @@ import { query } from './index.js';
  * string key at **59.7 ns**, a `Map` keyed on the vertex object 30.5, a `WeakMap` 43.8, a cached
  * reference **16.1**. The Gremlin engine has read the box for ages; this is the GQL side adopting it.
  *
- * ⚠️ WHAT THIS FILE IS FOR: a cache over graph-owned state is wrong only on the SECOND read, so a
+ * WHAT THIS FILE IS FOR: a cache over graph-owned state is wrong only on the SECOND read, so a
  * test that builds a graph and queries it once cannot see any of the four ways it fails.
  * `adjacency-box.test.ts` covers those four at the `@lenke/core` level by reading the box directly.
  * This file covers them THROUGH A GQL QUERY, because the GQL matcher is now a consumer of that
@@ -128,7 +128,7 @@ describe('`expand` through the cached adjacency box', () => {
 
     expect(query(g, 'MATCH (x:N)-[:E]->(y:N) RETURN count(*) AS c')).toEqual([{ c: 2 }]);
 
-    // ⚠️ `removeEdge` takes the EDGE, not its id (`removeVertex` takes either). Passing the id
+    // `removeEdge` takes the EDGE, not its id (`removeVertex` takes either). Passing the id
     // throws inside the graph rather than returning null, which is how this slip surfaced.
     g.removeEdge(g.getEdgeById('e0')!);
 
@@ -163,7 +163,7 @@ describe('`expand` through the cached adjacency box', () => {
     ]);
   });
 
-  test('⚠️ `both` still de-duplicates a SELF-LOOP, which is indexed in both boxes', () => {
+  test('`both` still de-duplicates a SELF-LOOP, which is indexed in both boxes', () => {
     /**
      * A self-loop sits under `adjFrom` AND `adjTo` for the same vertex, so an undirected walk would
      * yield it twice. `expand` drops the duplicate on the in-pass, and that logic is untouched by
@@ -217,7 +217,7 @@ describe('`expand` through the cached adjacency box', () => {
     expect(query(g, 'MATCH (x:N)-[:E|F]->(y:N) RETURN count(*) AS c')).toEqual([{ c: 1 }]);
   });
 
-  test('⚠️ a plain DELETE refuses a vertex with ONLY IN-edges', () => {
+  test('a plain DELETE refuses a vertex with ONLY IN-edges', () => {
     /**
      * `hasIncidentEdges` reads BOTH boxes, and the mutant that dropped `adjTo` SURVIVED item 1618's
      * mutation pass across the whole `gql` and `core` suites — nothing deleted a vertex whose edges

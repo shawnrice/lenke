@@ -1,14 +1,14 @@
 /**
  * MUTATION RUN for item 1864's forked-pattern splice.
  *
- * ⚠️ A REWRITE'S MUTANTS ARE NOT A ROUTE CHOICE'S. Splicing CHANGES THE PATTERN, so a wrong splice
+ * A REWRITE'S MUTANTS ARE NOT A ROUTE CHOICE'S. Splicing CHANGES THE PATTERN, so a wrong splice
  * is a wrong ANSWER and the answer tests have teeth — but a splice that never fires is
  * answer-equivalent and invisible to them, which is why `splice-forked-patterns.test.ts` asserts
  * the AST shape (one pattern, two segments, first direction flipped) rather than a route. Item
  * 1844's own note records why: `countShortcut` fires for both spellings, so a route assertion
  * passes with the rewrite disabled.
  *
- * ⚠️ EVIDENCE OF EXECUTION FROM BOTH STREAMS — `bun test` reports to STDERR.
+ * EVIDENCE OF EXECUTION FROM BOTH STREAMS — `bun test` reports to STDERR.
  */
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, readFileSync, writeFileSync } from 'node:fs';
@@ -67,7 +67,7 @@ const TESTS = [
 /** A timeout (124) or an OOM kill (137) IS the mutant being caught, not a harness failure. */
 const verdictOf = (r) => {
   if (!r.ran) {
-    return '⚠️ DID-NOT-RUN';
+    return 'DID-NOT-RUN';
   }
 
   if (r.status === 124 || r.status === 137) {
@@ -109,7 +109,7 @@ for (const m of MUTANTS) {
   const occurrences = base.split(m.from).length - 1;
 
   if (occurrences !== 1) {
-    console.log(`${m.name.padEnd(40)} ⚠️ ANCHOR MATCHED ${occurrences} TIMES — not applied`);
+    console.log(`${m.name.padEnd(40)} ANCHOR MATCHED ${occurrences} TIMES — not applied`);
     continue;
   }
 

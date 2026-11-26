@@ -4,7 +4,7 @@ import { Graph } from './Graph.js';
 import type { Vertex } from './Vertex.js';
 
 /**
- * ⚠️⚠️ `v.labels = [...]` BYPASSES THE GRAPH'S LABEL MAINTENANCE, and three of the four things the
+ * `v.labels = [...]` BYPASSES THE GRAPH'S LABEL MAINTENANCE, and three of the four things the
  * supported mutators do are skipped (item 1917). `addLabelToVertex` / `removeLabelFromVertex` each
  * call `indexVertexLabel` / `deIndexVertexLabel`, `emit(...)`, the constraint checks and
  * `recordUndo(...)` before `commitElementLabels`. The setter calls `commitElementLabels` alone — or
@@ -17,7 +17,7 @@ import type { Vertex } from './Vertex.js';
  *     events emitted                   setter []          methods ["removed","added"]
  *     labels after a ROLLED BACK tx    setter ["U"]       methods ["T"]
  *
- * ⚠️ THE FIRST IS A REPRODUCIBLE WRONG ANSWER THROUGH THE PUBLIC API, not a theoretical staleness.
+ * THE FIRST IS A REPRODUCIBLE WRONG ANSWER THROUGH THE PUBLIC API, not a theoretical staleness.
  * `effectiveLabel` in the GQL engine drops a label test when the label is carried by EVERY vertex,
  * decided per execution from `verticesByLabel.get(l).size === vertexCount`. After one setter call
  * that read can still say "vacuous" when it is not, so the test is dropped and rows that should not
@@ -26,7 +26,7 @@ import type { Vertex } from './Vertex.js';
  * after `v3.labels = ['U']` — and `v3.hasLabel('T')` is `false` at the time, so the vertex itself is
  * correct and only the index is not.
  *
- * ⚠️ AND THE THIRD IS A TRANSACTION VIOLATION, which is arguably the worse of the two: a label
+ * AND THE THIRD IS A TRANSACTION VIOLATION, which is arguably the worse of the two: a label
  * written inside a transaction that then ABORTS is still there afterwards, because the setter never
  * records an undo entry. The undo log is built from closures over the public mutators, and the
  * setter is not one of them.
@@ -34,7 +34,7 @@ import type { Vertex } from './Vertex.js';
  * These are `test.failing` rather than fixed here because the fix changes PUBLIC API SEMANTICS —
  * routing the setter through the mutators would start emitting events on a plain assignment and
  * would make the write slower, which is an owner decision rather than a bug fix to be slipped in.
- * ⚠️ `test.failing` INVERTS: when the setter is fixed, these FAIL and must be flipped to `test`.
+ * `test.failing` INVERTS: when the setter is fixed, these FAIL and must be flipped to `test`.
  * That is the point — the suite tells you the day the gap closes.
  */
 const seed = (): { g: Graph; a: Vertex } => {

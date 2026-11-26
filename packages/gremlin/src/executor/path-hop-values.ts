@@ -17,7 +17,7 @@
 // the ENTIRE plan: three steps, `rest` is always `[]`, so there is no downstream step left that
 // could ask for a path. A fourth step declines.
 //
-// 🔑 THE LAYOUT WAS READ OFF THE ENGINE, NOT ASSUMED. `pathshape-probe-1920.mjs` printed it, because
+// THE LAYOUT WAS READ OFF THE ENGINE, NOT ASSUMED. `pathshape-probe-1920.mjs` printed it, because
 // CLAUDE.md records hand oracles in this corpus being wrong four times in one stretch and a fusion
 // built on a guessed path layout is a wrong answer no aggregate would show:
 //
@@ -30,10 +30,10 @@
 //     V().out(E).values(n).path()  [V:a V:b "b"]                     <- a SCALAR too: REFUSED
 //     V().out(E).out(E).path()  [V:a V:b V:c]                        <- three deep: REFUSED
 //
-// ⚠️ A SELF-LOOP GIVES `[d, d]` AND THAT IS THE ANSWER, not a case to drop — the generic path does
+// A SELF-LOOP GIVES `[d, d]` AND THAT IS THE ANSWER, not a case to drop — the generic path does
 // the same, and getting it wrong would be a wrong answer on one edge per vertex.
 //
-// ⚠️ THE CEILING WAS PRICED BEFORE ANY OF THIS WAS WRITTEN (`pathfuse-ceiling-1920.mjs`), because
+// THE CEILING WAS PRICED BEFORE ANY OF THIS WAS WRITTEN (`pathfuse-ceiling-1920.mjs`), because
 // the rung must allocate one 2-element array per row where the plain hop allocates none, and if that
 // ate the win there would be nothing to take:
 //
@@ -55,7 +55,7 @@ type WalkSpec = {
   /**
    * The single `by(k)` modulator's key, or `undefined` for a bare `path()` (item 1924).
    *
-   * ⚠️ WITH A KEY THE ROW HOLDS THE PROJECTED VALUES, not the elements — `[near[k], far[k]]` — and
+   * WITH A KEY THE ROW HOLDS THE PROJECTED VALUES, not the elements — `[near[k], far[k]]` — and
    * the two cases below are NOT interchangeable.
    */
   readonly byKey: string | undefined;
@@ -64,14 +64,14 @@ type WalkSpec = {
 /**
  * One path position projected through a `by(k)` modulator, mirroring `evalBy`'s `'key'` arm exactly.
  *
- * ⚠️⚠️ AN ABSENT KEY AND A STORED NULL ARE DIFFERENT VALUES, and a probe is why rather than a
+ * AN ABSENT KEY AND A STORED NULL ARE DIFFERENT VALUES, and a probe is why rather than a
  * reading of the code: `pathby-shape-1924.mjs` prints `path().by(opt)` as `[1, undefined]` for a
- * vertex MISSING `opt` and `[1, null]` for one holding a stored `null`. ⚠️ The first version of that
+ * vertex MISSING `opt` and `[1, null]` for one holding a stored `null`. The first version of that
  * probe used `JSON.stringify`, which renders `undefined` inside an array AS `null` — so it showed
  * both as `null` and hid the distinction entirely. A fusion building `null` for an absent key would
  * have been a wrong answer no JSON comparison could see.
  *
- * ⚠️ AND IT IS `Object.hasOwn`, NOT `in`: `evalBy`'s own note says an inherited name must never leak
+ * AND IT IS `Object.hasOwn`, NOT `in`: `evalBy`'s own note says an inherited name must never leak
  * a prototype function, and `path().by(toString)` answers `[undefined, undefined]`. Using `in` here
  * would put `function toString()` in the row. [[prototype-key-class-not-a-bug]].
  *
@@ -86,15 +86,15 @@ const byVal = (v: Vertex, key: string): unknown => {
 };
 
 /**
- * ⚠️ ONE LOOP, PARAMETERIZED, AT MODULE SCOPE ([[ts-closure-size-is-load-bearing]]), with the eager
+ * ONE LOOP, PARAMETERIZED, AT MODULE SCOPE ([[ts-closure-size-is-load-bearing]]), with the eager
  * `drain` beside it for item 1412's reason — `toArray` prefers it, and items 1889/1891/1893 each
  * found the eager fill was most of the available win.
  *
- * ⚠️ THE ORDER IS THE PIPELINE'S: global vertex order, each vertex's adjacency in its own order,
+ * THE ORDER IS THE PIPELINE'S: global vertex order, each vertex's adjacency in its own order,
  * which is what the generic walk emits. Gremlin results are compared ORDERED against the Rust
  * engine by the differential fuzzer, so this is a requirement and not a liberty.
  *
- * ⚠️⚠️ AND THE DRAIN'S LOOP IS WRITTEN OUT RATHER THAN DELEGATED TO `each`, which item 1913 priced
+ * AND THE DRAIN'S LOOP IS WRITTEN OUT RATHER THAN DELEGATED TO `each`, which item 1913 priced
  * at 1.6-2.0x: a `drain` that iterates a `function*` helper pays the generator FRAME per element.
  * So this is the same loop twice — item 169's named hazard, where an off-by-one can live in one copy
  * and not the other — which is why `path-hop-values.test.ts` reaches BOTH arms on a fixture that can
@@ -127,11 +127,11 @@ const walk = (graph: Graph, spec: WalkSpec): HopWalk => ({
     }
 
     /*
-     * ⚠️ `graph.vertices` IS A PROPERTY, NOT A METHOD — the first cut wrote `graph.vertices()` and
+     * `graph.vertices` IS A PROPERTY, NOT A METHOD — the first cut wrote `graph.vertices()` and
      * every admitted shape threw `TypeError: graph.vertices is not a function`, which the shape
      * probe caught immediately because it prints each case's answer rather than a total.
      *
-     * ⚠️ AND `soleTypeBucket` NEVER RETURNS `undefined` HERE: the gate already restricted this to a
+     * AND `soleTypeBucket` NEVER RETURNS `undefined` HERE: the gate already restricted this to a
      * directed single-type hop, which is exactly what it serves, and an EMPTY bucket still returns a
      * shape (its own note says conflating that with "no such edge" would send a zero-degree vertex
      * down the general path for nothing). The cast mirrors `tagged-hop-values.ts`'s.
@@ -194,11 +194,11 @@ const each = function* (graph: Graph, spec: WalkSpec): Iterable<unknown> {
 /**
  * The `path()` form this rung serves: `'bare'`, or the single `by(k)` modulator's key (item 1924).
  *
- * ⚠️ EXACTLY ONE `by`, because they CYCLE round-robin across path positions: `path().by(n).by(opt)`
+ * EXACTLY ONE `by`, because they CYCLE round-robin across path positions: `path().by(n).by(opt)`
  * projects position 0 through `n` and position 1 through `opt`, which the probe shows as
  * `["a", undefined]`. Two keys is a different answer, so only one is admitted.
  *
- * ⚠️ AND ONLY A `'key'` BY. Item 1899 shipped a gate testing `typeof by === 'string'` when the AST
+ * AND ONLY A `'key'` BY. Item 1899 shipped a gate testing `typeof by === 'string'` when the AST
  * holds `{kind: 'key', key}`, and only measuring BOTH spellings caught it — so the kind is tested
  * here, and a `by(traversal(...))` or a bare `by()` identity falls through.
  */
@@ -225,7 +225,7 @@ const pathForm = (step: Step): 'bare' | { readonly key: string } | undefined => 
 /**
  * `V(), <one directed single-type vertex hop>, path()` — or `undefined` for every other plan.
  *
- * ⚠️ THE GATE IS A SHAPE TEST, NOT A CAPABILITY CLAIM, and each refusal has its own reason:
+ * THE GATE IS A SHAPE TEST, NOT A CAPABILITY CLAIM, and each refusal has its own reason:
  *
  *   - **Exactly three steps.** The warrant for riding past `tracksPath` is that `rest` is `[]`, so
  *     nothing downstream can ask for a path. A fourth step breaks that and declines.

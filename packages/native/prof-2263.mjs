@@ -1,9 +1,9 @@
 /**
- * ⚠️⚠️ **WHAT IS THE SORT PATH'S ~160-190 ns/ROW OF ROW-PIPELINE OVERHEAD? (item 2263)**
+ * **WHAT IS THE SORT PATH'S ~160-190 ns/ROW OF ROW-PIPELINE OVERHEAD? (item 2263)**
  *
  * Item 2262 floored the GQL `ORDER BY` honestly — the engine's own `compareValues` over row objects — and
  * left the engine **2.0-2.5x (string) / 3.8-4.0x (number)** above it, which in absolute terms is
- * **~160-190 ns/row either way**. 🔑 Item 2260 established both arms reach the SAME `hopProjection` rung,
+ * **~160-190 ns/row either way**. Item 2260 established both arms reach the SAME `hopProjection` rung,
  * so this is work inside one route, and item 1966 located it by ablation as *"the deferred arm's KEY
  * EVALUATION — 67%"*. This profiles it directly.
  *
@@ -12,7 +12,7 @@
  *     PROF_ARM=plain    RETURN x.name AS n               23 ns/row
  *     PROF_ARM=sorted   RETURN x.name AS n ORDER BY n   ~380 ns/row
  *
- * ⚠️ Reads are idempotent, so one graph serves every round and the fixture build stays out of the profile —
+ * Reads are idempotent, so one graph serves every round and the fixture build stays out of the profile —
  * the exclusion a write arm cannot have (item 1933's note).
  */
 import { Graph } from '@lenke/core';

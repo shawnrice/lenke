@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2002 — mutation round on the ACYCLIC per-source DFS count route.
 #
-# ⚠️⚠️ **THIS ROUTE IS NOT ANSWER-EQUIVALENT, unlike items 1998/1999's — it computes a count that
+# **THIS ROUTE IS NOT ANSWER-EQUIVALENT, unlike items 1998/1999's — it computes a count that
 # nothing else in the engine computes.** So the filter here is wider: the cross-engine parity test
 # (TS against the Rust engine's INDEPENDENT implementation, on a graph with self-loops, 2-cycles, a
 # triangle and parallel edges) plus the 4,980-test GQL suite. A mutant that changes the answer should
@@ -20,11 +20,11 @@ ROOT=/home/shawn/projects/pl-graph
 SRC=$ROOT/packages/gql/src/executor/acyclic-count.ts
 PRISTINE=$ROOT/crates/lenke-engine/target/acyclic-count.pristine.2002.ts
 
-# ⚠️⚠️ **THE PARITY TEST READS THE BUILT DIST, NOT `src`** ([[fuzzers-read-built-dists]]): it lives in
+# **THE PARITY TEST READS THE BUILT DIST, NOT `src`** ([[fuzzers-read-built-dists]]): it lives in
 # `packages/native` and imports `@lenke/gql`, which resolves to `dist`. So every mutant needs a
 # REBUILD before it is tested, or the whole round measures the pristine build and reports 14
 # survivors. The gql suite reads `src` directly and does not.
-# ⚠️⚠️ **EACH SUITE'S STATUS IS READ SEPARATELY, and the first version of this function did NOT do
+# **EACH SUITE'S STATUS IS READ SEPARATELY, and the first version of this function did NOT do
 # that — it ran both in one `$( ... ; ... )` and read `$?`, which is the status of the LAST command
 # only.** So every mutant caught by the PARITY test but not by the GQL suite was reported SURVIVED.
 # It reported six survivors; `min-ignored` was then caught by hand on the very first check (2 fail).

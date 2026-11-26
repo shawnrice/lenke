@@ -648,7 +648,7 @@ const recordTail = function* (
 /**
  * `outer` extended by `inner` — ONE Map per row, without the intermediate arrays (item 2022).
  *
- * ⚠️⚠️ **THIS LINE WAS 43.5% SELF WITH ANOTHER 21.3% IN THE GARBAGE COLLECTOR** on the GQL surface's
+ * **THIS LINE WAS 43.5% SELF WITH ANOTHER 21.3% IN THE GARBAGE COLLECTOR** on the GQL surface's
  * largest shape. `visitRemaining`'s uncorrelated-tail product (item 121) already matches the tail
  * ONCE and caches it; what was left was `new Map([...outer, ...inner])` run per output row — two
  * array spreads, each materializing a two-element array per entry, a concat, and then the Map insert
@@ -662,10 +662,10 @@ const recordTail = function* (
  *     new Map([...outer, ...inner])    461.4 ms   205 ns/row
  *     THIS — copy, then set            257.4      114           1.79x
  *     a pre-sized Map (knows the keys) 220.5       98           the floor for one Map per row
- *     a no-copy VIEW over both maps      3.5        2           ⬅ see the warning below
+ *     a no-copy VIEW over both maps      3.5        2           <- see the warning below
  * ```
  *
- * ⚠️⚠️ **THE 132x VIEW IS NOT A DEFERRED WIN, IT IS AN UNMEASURED ONE, and the probe flatters it by
+ * **THE 132x VIEW IS NOT A DEFERRED WIN, IT IS AN UNMEASURED ONE, and the probe flatters it by
  * construction.** That arm reads ONE key per row; the engine's consumers vary — `projectRow` reads
  * a key per output column (where a view would indeed be nearly free), while `RETURN *` copies every
  * entry and `DISTINCT`'s `rowKey` iterates the whole binding, and a view pays per access on both. It
@@ -674,7 +674,7 @@ const recordTail = function* (
  * it needs an in-situ A/B with the ITERATING shapes as controls, which is a separate item.
  *
  *
- * ⚠️⚠️ **THE NO-COPY VIEW WAS BUILT, MEASURED IN SITU AND DECLINED (item 2023). Do not rebuild it
+ * **THE NO-COPY VIEW WAS BUILT, MEASURED IN SITU AND DECLINED (item 2023). Do not rebuild it
  * from the 132x figure above — that number is a probe artifact.** A `ReadonlyMap`-shaped view over
  * the two maps, swapped in at the product's cached-rows site, four alternated rounds, one arm per
  * process, arms named COPY and VIEW:
@@ -682,7 +682,7 @@ const recordTail = function* (
  * ```text
  *     consumer                              COPY     VIEW
  *     RETURN b.n AS x, d.n AS y  (2 gets)   349.3    176.2   1.98x FASTER
- *     RETURN *                   (iterates) 326.5    841.5   2.58x SLOWER  ⬅ the refusal
+ *     RETURN *                   (iterates) 326.5    841.5   2.58x SLOWER  <- the refusal
  *     RETURN DISTINCT …          (iterates) 778.1    612.9   1.27x faster
  *     … ORDER BY x, y                       967.2    761.9   1.27x faster
  * ```
@@ -699,7 +699,7 @@ const recordTail = function* (
  *   - IT HOLDS REFERENCES, so it is sound only while every matcher yield site builds a FRESH
  *     binding. Inspected, not proved.
  *
- * ⚠️⚠️ **AND REUSING ONE MAP ACROSS THE INNER LOOP WAS ALSO BUILT, PRICED AND DECLINED (item 2024):
+ * **AND REUSING ONE MAP ACROSS THE INNER LOOP WAS ALSO BUILT, PRICED AND DECLINED (item 2024):
  * 3.76x on this frame, with no type or polymorphism cost — refused because its soundness needs every
  * binding RETAINER enumerated across a LAZY engine and a pattern search cannot prove that, while the
  * one unbounded retainer (grouping, for a whole-group aggregate) needs a copy per row that cancels
@@ -713,7 +713,7 @@ const recordTail = function* (
  * the 2.58x cliff is what a wrong gate costs. Numbers recorded here so that is a decision with
  * evidence rather than an idea with a headline.
  *
- * ⚠️ KEY ORDER IS IDENTICAL AND THAT IS A CONTRACT, not a detail: `visitRemaining` documents the
+ * KEY ORDER IS IDENTICAL AND THAT IS A CONTRACT, not a detail: `visitRemaining` documents the
  * merge order as "outer keys, then `pat`'s, then the tail's — which `RETURN *` projects in", and
  * column order is bytes ([[column-order-is-observable]]). `Map.set` on an EXISTING key keeps that
  * key's original position, so copy-then-set and the spread agree for the overlapping keys too; the
@@ -1239,7 +1239,7 @@ export const runCall = (
       return [b];
     }
 
-    // ⚠️ `new Map(binding)` MUST OBTAIN AN ITERATOR AND STEP IT EVEN WHEN `binding` IS EMPTY, so
+    // `new Map(binding)` MUST OBTAIN AN ITERATOR AND STEP IT EVEN WHEN `binding` IS EMPTY, so
     // it allocates a Map *and* an iterator per row where a fresh Map allocates one object. Measured
     // over 2,000,000 constructions: `new Map()` 32.8-37.8 ms against `new Map(emptyMap)` 85.8-93.0
     // — **2.5x**. A leading `CALL` (the common shape: `CALL degree() RETURN …`) has exactly one
@@ -1283,12 +1283,12 @@ export const runCall = (
  * Clause kinds that cannot change the graph or any side-effect state, so a subquery built only from
  * them answers the same thing however many times it runs.
  *
- * ⚠️ AN ALLOWLIST, because the cost of being wrong is asymmetric: a missed read-only kind loses an
+ * AN ALLOWLIST, because the cost of being wrong is asymmetric: a missed read-only kind loses an
  * optimization, while a missed MUTATING kind would run a write ONCE where ISO runs it per outer row.
  * `insert`, `set`, `remove`, `delete` and `merge` all write; `callNamed` invokes a procedure that
  * may; `for` and `finish` are left out for no reason beyond not having reasoned them through.
  *
- * ⚠️ `CLinear.writes` IS NOT A SUBSTITUTE, though it looks like one. It is `clauses.some(c =>
+ * `CLinear.writes` IS NOT A SUBSTITUTE, though it looks like one. It is `clauses.some(c =>
  * WRITE_CLAUSES.has(c.kind))` over ONE level, and its own doc says pushing it inward would be
  * wrong for the transaction question it exists for — so it reports `false` for a body containing a
  * nested `CALL { INSERT … }`, and `WRITE_CLAUSES` does not list `callNamed` at all. Hoisting on
@@ -1318,7 +1318,7 @@ export const runCallInline = (
   params: Params,
 ): Iterable<Binding> => {
   /**
-   * ⚠️ AN EMPTY SCOPE MAKES THE BODY LOOP-INVARIANT, so it runs ONCE rather than once per outer row
+   * AN EMPTY SCOPE MAKES THE BODY LOOP-INVARIANT, so it runs ONCE rather than once per outer row
    * (item 1566). `CALL { … }` with no scope list is NON-CORRELATED by ISO design — the subquery
    * cannot see the outer row at all, which is the scope isolation the form exists for — so every
    * iteration computes the identical rows. It is directly observable:
@@ -1331,10 +1331,10 @@ export const runCallInline = (
    * That identical `c` is the invariance. Without the hoist an O(N) body ran N times: measured
    * 1430.9 ms at N=1000 against 0.6 ms for the correlated spelling, and rising linearly per row.
    *
-   * ⚠️ READ-ONLY IS REQUIRED, not incidental. `CALL { INSERT … }` with no scope is still run once
+   * READ-ONLY IS REQUIRED, not incidental. `CALL { INSERT … }` with no scope is still run once
    * per outer row by ISO and inserts N times; hoisting it would insert once. Hence the allowlist.
    *
-   * ⚠️ AND IT IS COMPUTED LAZILY, inside the closure. An eager computation would run the body even
+   * AND IT IS COMPUTED LAZILY, inside the closure. An eager computation would run the body even
    * when the outer query produced NO rows, which changes both the cost and when a body fault
    * surfaces.
    */
@@ -1344,7 +1344,7 @@ export const runCallInline = (
     clause.bodyMore.every((m) => bodyIsReadOnly(m.part));
   let hoisted: Row[] | undefined;
   /**
-   * ⚠️ THE HOISTED ROWS' ENTRIES, MATERIALIZED ONCE — item 1818. The hoist above stops the BODY
+   * THE HOISTED ROWS' ENTRIES, MATERIALIZED ONCE — item 1818. The hoist above stops the BODY
    * running per outer row; it does not stop the row-to-binding projection below rebuilding
    * `Object.entries(row)` for each outer row, over row objects that by invariance are the SAME
    * objects every time. Measured on `MATCH (n:P) CALL { MATCH (a:P)-[:E]->(x:P) RETURN count(*) }`
@@ -1352,7 +1352,7 @@ export const runCallInline = (
    * against a 0.81 ms single-outer-row floor, i.e. ~550 ns an outer row of pure plumbing on a
    * route whose remaining work is one map copy and one `set`.
    *
-   * ⚠️ The per-row term was confirmed BODY-INDEPENDENT before this was written, which is what
+   * The per-row term was confirmed BODY-INDEPENDENT before this was written, which is what
    * identifies it as plumbing rather than body cost: holding the outer count at 20,000 and making
    * the body cheaper (`MATCH (a:P) RETURN count(*)`) moved it only 12.01 -> 10.71 ms, while holding
    * the body fixed and cutting the outer rows to 207 gave 0.99 ms. See
@@ -1370,7 +1370,7 @@ export const runCallInline = (
       nested = hoisted;
     } else {
       /**
-       * ⚠️ THE SEED MAP IS NOW ALLOCATED ONLY WHEN A SCOPED NAME IS ACTUALLY PRESENT (item 1818).
+       * THE SEED MAP IS NOW ALLOCATED ONLY WHEN A SCOPED NAME IS ACTUALLY PRESENT (item 1818).
        * It used to be a `new Map()` per outer row unconditionally, including on the hoisted path
        * where `clause.scope.length === 0` guarantees nothing is ever put in it — an allocation per
        * outer row to hand `undefined` to `runLinearClauses` anyway.
@@ -1389,7 +1389,7 @@ export const runCallInline = (
       }
 
       /**
-       * ⚠️ AN EMPTY SEED IS PASSED AS `undefined`, NOT AS AN EMPTY MAP, AND THAT IS THE WHOLE
+       * AN EMPTY SEED IS PASSED AS `undefined`, NOT AS AN EMPTY MAP, AND THAT IS THE WHOLE
        * OPTIMIZATION (item 1661). `runLinearClauses` starts from `[initial ?? new Map()]`, so an
        * empty Map and `undefined` are the same start — but its FAST-PATH GATE is
        * `if (initial === undefined)`, because the rungs assume an empty start. Handing it an empty
@@ -1408,7 +1408,7 @@ export const runCallInline = (
        * the general loop and is unaffected — a separate and much harder target, priced in the
        * same item.
        *
-       * ⚠️ COMPUTED INSIDE THE `else`, not above the branch. On the hoisted path there is no body
+       * COMPUTED INSIDE THE `else`, not above the branch. On the hoisted path there is no body
        * run to seed, so computing it there would add work to every outer row after the first and
        * buy nothing — on exactly the shape this change helps least.
        */
@@ -1443,7 +1443,7 @@ export const runCallInline = (
     }
 
     /**
-     * ⚠️ A SEPARATE TAIL FOR THE HOISTED PATH, rather than one tail that computes its pairs either
+     * A SEPARATE TAIL FOR THE HOISTED PATH, rather than one tail that computes its pairs either
      * way (item 1818). Folding the two would put an extra array allocation per outer row on the
      * CORRELATED path, which is the path that does not benefit — and `executor-edits-perturb`
      * records that a new variant costs unrelated shapes up to 16%, so the general tail below is
@@ -1579,8 +1579,8 @@ export const runTxControl = (tx: TxControl, graph: Graph): void => {
  * A rung that can only decide at RUN time: call it if present, and pass its answer through only when it
  * did not decline.
  *
- * ⚠️ Hoisted purely to keep the chain under its `complexity` cap (35) — adding item 2151's rung inline
- * took it to 37. 🔑 The two-step `if` reads the same either way; what it must NOT become is a `??`, which
+ * Hoisted purely to keep the chain under its `complexity` cap (35) — adding item 2151's rung inline
+ * took it to 37. The two-step `if` reads the same either way; what it must NOT become is a `??`, which
  * would conflate "declined" with "answered `undefined`".
  */
 const lateRungRow = (
@@ -1590,7 +1590,7 @@ const lateRungRow = (
 ): Row[] | undefined => (rung === null ? undefined : rung(graph, params));
 
 export const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] => {
-  // ⚠️ READ, NOT COMPUTED (item 1510). `CLinear.writes` is settled by `compileLinear`; this used
+  // READ, NOT COMPUTED (item 1510). `CLinear.writes` is settled by `compileLinear`; this used
   // to be `linear.clauses.some((c) => WRITE_CLAUSES.has(c.kind))` on every call, which is a
   // closure allocation plus a `Set` lookup per clause to re-derive a property of the compiled
   // query. 14.7% of an 82 ns `RETURN 1 AS v`.
@@ -1615,7 +1615,7 @@ export const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] 
  * actually depend on that: `distinctProjection` must precede `nodeProjection` (which does not
  * dedupe), and `countShortcut` must precede everything (it never materializes a row at all).
  *
- * ⚠️ DECLINED, WITH ITS NUMBERS (item 1511): gating this whole ladder on a construction-time
+ * DECLINED, WITH ITS NUMBERS (item 1511): gating this whole ladder on a construction-time
  * `CLinear.hasFastPath` ("does ANY of the nineteen rungs exist for this shape?"), so a query no
  * detector claims skips all nineteen `!== null` tests. The ladder is 9.2% of a 78 ns
  * `RETURN 1 AS v`, and the gate works — it just does not pay for itself. One arm per process,
@@ -1638,7 +1638,7 @@ export const runLinear = (linear: CLinear, graph: Graph, params: Params): Row[] 
  * (item 1510 learned that by breaking five test files). Not worth it for a win confined to queries
  * with no MATCH.
  *
- * ⚠️ AND THE IN-SWEEP READING OF THAT A/B SAID THE OPPOSITE. Run as one multi-arm process, `one`
+ * AND THE IN-SWEEP READING OF THAT A/B SAID THE OPPOSITE. Run as one multi-arm process, `one`
  * measured 1.10x FASTER rather than 1% slower — because in the PRE arm this function sees both
  * rung-having and rung-less shapes, and in the POST arm only rung-having ones, so its inline caches
  * are cleaner. Item 762's redistribution trap, and the giveaway was exactly the one it names: a
@@ -1651,7 +1651,7 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
   // Item 573's degree algebra sits ABOVE `countShortcut`, which cannot answer a quantified hop
   // at all (`plainRel` is false for one), so the order is not a priority contest — it is the
   // only rung that matches this shape.
-  // ⚠️ THE ONLY RUNG THAT MAY DECLINE AT RUNTIME (item 1399), and the ladder already had the
+  // THE ONLY RUNG THAT MAY DECLINE AT RUNTIME (item 1399), and the ladder already had the
   // mechanism: this function's contract is "returns `undefined` when every detector declined and
   // the general clause loop must run", so falling through is what the other rungs do by not
   // existing. `varLengthCount` cannot decide at COMPILE time whether a depth-4 trail's endpoint
@@ -1666,12 +1666,12 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
   /*
    * ITEM-2151-SHORTEST-COUNT: `ANY SHORTEST`/`ANY` + `count(*)` from the BFS's distance map.
    *
-   * 🔑 PLACED HERE, BESIDE `varLengthCount`, because it answers the same KIND of question (a quantified
+   * PLACED HERE, BESIDE `varLengthCount`, because it answers the same KIND of question (a quantified
    * walk's `count(*)`) on a disjoint set of shapes: that rung refuses any selector, this one requires
-   * `any`/`anyShortest`. ⚠️ Neither can steal the other's shape, so the order between them is free —
+   * `any`/`anyShortest`. Neither can steal the other's shape, so the order between them is free —
    * written after it only for reading.
    *
-   * ⚠️ Without this the shape falls through to the general matcher, where a windowed profile put
+   * Without this the shape falls through to the general matcher, where a windowed profile put
    * `withBinding` at 34.4% self against the BFS's own 6.9%: five times the walk's cost spent building a
    * row per endpoint that `count(*)` then discards.
    */
@@ -1690,7 +1690,7 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
   // The OPTIONAL-hop count (item 510). Below the plain one because it is strictly narrower —
   // three clauses with the middle one optional — and never competes with it for a shape.
   /*
-   * ⚠️ ABOVE the ungrouped rung (item 2123) and the two cannot compete: `optionalGroupedHopCount` needs
+   * ABOVE the ungrouped rung (item 2123) and the two cannot compete: `optionalGroupedHopCount` needs
    * a TWO-item projection (`a.k, count(*)`) and `optionalHopCount` a bare `count(*)`, so the shapes are
    * disjoint by construction and either order answers the same queries. It sits here because the
    * narrower gate reads first.
@@ -1762,7 +1762,7 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
    * one extra null check and nothing more, which the controls confirm is flat.
    */
   /**
-   * ⚠️ THIS BRANCH IS NOT PINNED BY ANY TEST, and that is true of all twenty-one rungs rather than of
+   * THIS BRANCH IS NOT PINNED BY ANY TEST, and that is true of all twenty-one rungs rather than of
    * this one. `routes-fired.test.ts` asserts that each DETECTOR fires for its shape — which is what
    * catches a compile-time regression — but removing the branch that CONSUMES it is
    * answer-equivalent and the whole suite passes. Item 1619 checked whether row ORDER could
@@ -1772,17 +1772,17 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
    * here there is no arithmetic. Recorded rather than papered over.
    */
   /*
-   * ⚠️ FALLS THROUGH ON `null` (item 2104): this rung DECLINES AT EXECUTION TIME when `orient` says
+   * FALLS THROUGH ON `null` (item 2104): this rung DECLINES AT EXECUTION TIME when `orient` says
    * the generic matcher would seed from the other end of the pattern. Measured at 59x — a vacuous
    * `LIMIT`, which defeated the rung's length gate, made the query 25.56 ms -> 0.43.
    */
   /*
-   * ⚠️⚠️ **ABOVE `hop2Projection` DELIBERATELY, AND THAT IS THE ONLY PRECEDENCE CHANGE HERE (item 2119).**
+   * **ABOVE `hop2Projection` DELIBERATELY, AND THAT IS THE ONLY PRECEDENCE CHANGE HERE (item 2119).**
    * `hop2Projection` claims `RETURN DISTINCT <far>.<k>` over a two-hop chain and costs **517.5 ms where
    * the `count(DISTINCT)` twin costs 18.8 on the same 97 values** — 27x to do strictly less, because the
    * count had the level recurrence and the row spelling did not.
    *
-   * 🔑 A NARROW GATE ABOVE A BROAD RUNG is item 1583's own fix shape. ⚠️ The risk item 418 names — a
+   * A NARROW GATE ABOVE A BROAD RUNG is item 1583's own fix shape. The risk item 418 names — a
    * branch ahead of a hot dispatch costing the shape it does NOT claim 1.12x — is why
    * `detectChainDistinctLevels` refuses a second column, an aggregate, `ORDER BY`, `SKIP`, `LIMIT`, and
    * any item reading a variable other than the far one.
@@ -1800,7 +1800,7 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
   /**
    * THREE OR MORE segments, the same walk one level deeper (item 1814).
    *
-   * ⚠️ ITS POSITION IS FOR READING, NOT FOR CORRECTNESS OR COST, and the two rungs cannot compete:
+   * ITS POSITION IS FOR READING, NOT FOR CORRECTNESS OR COST, and the two rungs cannot compete:
    * `detectChainProjection` requires `segments.length >= 3` and `detectHop2Projection` requires
    * exactly 2, so the shapes are disjoint by construction and either order answers the same
    * queries. It sits here because that is where a reader looks for it. The branch itself is not
@@ -1808,7 +1808,7 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
    * 1.12x — which is why it goes BELOW both hop rungs rather than above them.
    */
   /*
-   * ⚠️ FALLS THROUGH ON `null` (item 2105): this rung DECLINES AT EXECUTION TIME when the far node
+   * FALLS THROUGH ON `null` (item 2105): this rung DECLINES AT EXECUTION TIME when the far node
    * carries a genuine index seek. Measured **934x** — a vacuous `LIMIT`, which defeated the rung's
    * length gate, made a three-hop row projection 2129.12 ms -> 2.28. The largest of the two.
    */
@@ -1827,12 +1827,12 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
   /**
    * The same two rungs under `ORDER BY <output columns>` — item 1827.
    *
-   * ⚠️ DISJOINT FROM EVERY PROJECTION RUNG ABOVE, not merely ordered after them: those gate on
+   * DISJOINT FROM EVERY PROJECTION RUNG ABOVE, not merely ordered after them: those gate on
    * `plainRowProjectionIgnoringDistinct`, which refuses an `orderBy`, and these two REQUIRE one. So
    * no ordering between them can starve anything — the lesson item 1825 learned by writing an
    * untestable precedence dependency and having a mutant walk through it.
    *
-   * ⚠️ `null` IS A DECLINE, passed through from `sortedRows`: the walk it wraps can hand the query
+   * `null` IS A DECLINE, passed through from `sortedRows`: the walk it wraps can hand the query
    * back per call, and answering that with `[]` would be rows missing rather than a slower route.
    */
   if (linear.chainOrderedProjection) {
@@ -1905,7 +1905,7 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
   /**
    * One hop under `RETURN DISTINCT <SEVERAL columns>` — item 1825.
    *
-   * ⚠️ ITS POSITION IS FOR READING, NOT FOR CORRECTNESS OR COST. `detectHopDistinctProjection`
+   * ITS POSITION IS FOR READING, NOT FOR CORRECTNESS OR COST. `detectHopDistinctProjection`
    * requires TWO OR MORE columns and `distinctProjection` serves exactly one, so the two cannot
    * both accept a shape and either order answers the same queries. That disjointness is deliberate:
    * the first cut accepted one column as well and depended on sitting here, which is the
@@ -1948,13 +1948,13 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
 /**
  * The four REDUCING rungs at two and three-plus segments — items 1824, 1830 and 1832.
  *
- * ⚠️ EXTRACTED BECAUSE LINT SAID SO, AND THAT WAS THE RIGHT SIGNAL. Adding these took `runLinear`
+ * EXTRACTED BECAUSE LINT SAID SO, AND THAT WAS THE RIGHT SIGNAL. Adding these took `runLinear`
  * to a cyclomatic complexity of 37 against a limit of 35 — the rung chain outgrowing its budget
  * one branch at a time, which is exactly the accumulation `executor-edits-perturb` warns about from
  * the other direction. Raising the limit would have hidden it; this keeps the chain readable and
  * leaves the budget meaningful for whoever adds the next rung.
  *
- * ⚠️ ORDER IS PRESERVED EXACTLY, and it has to be: these are called at the point the four branches
+ * ORDER IS PRESERVED EXACTLY, and it has to be: these are called at the point the four branches
  * occupied, in the order they occupied it. They are mutually disjoint by construction (a folded
  * aggregate needs `foldedAggs`; a grouped count needs `countedGroups` with one key), so no ordering
  * between THEM can starve anything — but their position relative to the plain projection rungs
@@ -1966,7 +1966,7 @@ const fastPath = (linear: CLinear, graph: Graph, params: Params): Row[] | undefi
 /**
  * THE SCAN-AND-HOP AGGREGATE GROUP, extracted from `fastPath` — item 1853.
  *
- * ⚠️ EXTRACTED FOR THE COMPLEXITY GATE, exactly as `deepWidthReductions` was at item 1832 and as
+ * EXTRACTED FOR THE COMPLEXITY GATE, exactly as `deepWidthReductions` was at item 1832 and as
  * `fastPath` itself was at item 204: adding a THIRTIETH rung took `fastPath` to 36 against a limit
  * of 35. The four below are a natural group — all of them aggregate over a scan or a hop — and
  * their ORDER IS PRESERVED EXACTLY, which is the only thing that matters: each comment records a
@@ -2008,21 +2008,21 @@ const scanAggregates = (linear: CLinear, graph: Graph, params: Params): Row[] | 
 /**
  * The two deep projection rungs under a SKIP-ONLY, UNORDERED page — item 1885.
  *
- * ⚠️ EXTRACTED FOR THE COMPLEXITY GATE, as `deepWidthReductions` below it was: written inline,
+ * EXTRACTED FOR THE COMPLEXITY GATE, as `deepWidthReductions` below it was: written inline,
  * these two branches took `fastPath` to **37 against a limit of 35**. Nothing else changed — the
  * order and the decline contract are the ones that were inline.
  *
- * ⚠️ DISJOINT FROM EVERY PROJECTION RUNG, not merely ordered after them: the base rungs gate on
+ * DISJOINT FROM EVERY PROJECTION RUNG, not merely ordered after them: the base rungs gate on
  * `plainRowProjectionIgnoringDistinct`, which refuses a `skip`, and the ORDERED pair REQUIRES an
  * `orderBy` where `skipOnlyPage` refuses one. So no ordering here can starve anything — the lesson
  * item 1825 learned by writing an untestable precedence dependency and having a mutant walk
  * through it.
  *
- * ⚠️ `null` IS A DECLINE passed through from `pagedRows`, the same contract `sortedRows` has: the
+ * `null` IS A DECLINE passed through from `pagedRows`, the same contract `sortedRows` has: the
  * walk it wraps can hand the query back per call, and answering that with `[]` would be rows
  * missing rather than a slower route. `undefined` here means "no paged rung claimed this".
  *
- * ⚠️⚠️ EXPORTED FOR ONE TEST, AND THE REASON IS A SURVIVING MUTANT. `fastPath`'s own note above
+ * EXPORTED FOR ONE TEST, AND THE REASON IS A SURVIVING MUTANT. `fastPath`'s own note above
  * records that the branch CONSUMING a rung is pinned by nothing — "removing the branch that
  * consumes it is answer-equivalent and the whole suite passes" — which is true of all the rungs and
  * was true of this pair: a mutant replacing this call with `undefined` passed 92 tests. The route
@@ -2059,7 +2059,7 @@ export const pagedWidthProjections = (
 /**
  * The chain `count(*)` rung and `countShortcut`, in that order (item 2087).
  *
- * ⚠️⚠️ **ABOVE `countShortcut`, AND THE FIRST ATTEMPT PUT IT 357 LINES BELOW.** `count(*)` over a
+ * **ABOVE `countShortcut`, AND THE FIRST ATTEMPT PUT IT 357 LINES BELOW.** `count(*)` over a
  * labelled chain fell to `countShortcut`'s per-edge tally — **100.57 ms/rep against 19.15 here, 5.25x**
  * — while `count(c.k)`, the query doing strictly MORE work, took 20.51 because it had a level
  * recurrence. The rung was willing the whole time: placed in `deepWidthReductions`, its gate ACCEPTED
@@ -2067,11 +2067,11 @@ export const pagedWidthProjections = (
  * never entered, because `countShortcut` answers first. Timing alone cannot tell a DECLINED rung from
  * a STARVED one.
  *
- * 🔑 It is safe above `countShortcut` only because it declines at EXECUTION time when every label is
+ * It is safe above `countShortcut` only because it declines at EXECUTION time when every label is
  * vacuous — the case that rung answers better still (`twoHopUnfilteredCsrCount`, 12.57 ms/rep against
  * this one's ~20). That is `varLengthCount`'s pattern, one rung further up, for its reason.
  *
- * ⚠️ HOISTED OUT OF ITS CALLER because adding the branch took that function to a complexity of 36
+ * HOISTED OUT OF ITS CALLER because adding the branch took that function to a complexity of 36
  * against a cap of 35 — the fifth time this gate has been hit in this file, and the fix is always a
  * module-scope helper rather than a raised cap.
  */
@@ -2098,11 +2098,11 @@ const chainStarCountOrCountShortcut = (
 /**
  * Ask a rung that can DECLINE AT EXECUTION TIME, collapsing its two-step protocol to one call.
  *
- * ⚠️ **IT EXISTS FOR THE COMPLEXITY CAP, AND THAT IS THE SIXTH TIME.** Items 2104 and 2105 gave three
+ * **IT EXISTS FOR THE COMPLEXITY CAP, AND THAT IS THE SIXTH TIME.** Items 2104 and 2105 gave three
  * rungs an execution-time decline, and each call site is a nested `if` — which took this function to 36
  * against a cap of 35. `bun run lint` is a gate, so the branch gets hoisted rather than the cap raised.
  *
- * 🔑 THE TWO ABSENCES ARE DIFFERENT AND BOTH MAP TO `undefined`: a rung that is `null` at COMPILE time
+ * THE TWO ABSENCES ARE DIFFERENT AND BOTH MAP TO `undefined`: a rung that is `null` at COMPILE time
  * never claimed the shape, and one that returns `null` at RUN time claimed it and then found a better
  * route in the graph. Neither is an answer, so the caller falls through identically — which is why one
  * helper can serve both and why its return type is `Row[] | undefined` rather than `| null`.
@@ -2118,11 +2118,11 @@ const declinableRung = (rung: RowsFn | null, graph: Graph, params: Params): Row[
 /**
  * The two OPTIONAL-hop count rungs, asked together (item 2123).
  *
- * ⚠️ **HOISTED FOR THE COMPLEXITY CAP, AND THAT IS THE EIGHTH TIME.** Adding the grouped rung's branch
+ * **HOISTED FOR THE COMPLEXITY CAP, AND THAT IS THE EIGHTH TIME.** Adding the grouped rung's branch
  * took `fastPath` to 36 against a cap of 35. `bun run lint` is a gate, so the branch moves rather than
  * the cap.
  *
- * 🔑 THE TWO CANNOT COMPETE: the grouped rung needs a TWO-item projection (`a.k, count(*)`) and the
+ * THE TWO CANNOT COMPETE: the grouped rung needs a TWO-item projection (`a.k, count(*)`) and the
  * ungrouped one a bare `count(*)`, so the shapes are disjoint by construction and either order answers
  * the same queries. The narrower gate is asked first because that is how a reader expects to find it.
  */
@@ -2140,13 +2140,13 @@ const optionalHopCounts = (linear: CLinear, graph: Graph, params: Params): Row[]
 
 const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row[] | undefined => {
   /*
-   * ⚠️ ABOVE `chainFoldedAggregate`, WHICH ANSWERS THE SAME SHAPES BY WALKING EVERY PATH. This arm
+   * ABOVE `chainFoldedAggregate`, WHICH ANSWERS THE SAME SHAPES BY WALKING EVERY PATH. This arm
    * is a level recurrence — O(k·(|V| + |E|)) against O(paths) — and measured 234-1515x on its hand
    * ceiling at depths 3 and 4 (item 2009/2010). It is strictly NARROWER (no carried `WHERE`, no
    * relationship variable, no union types, single-name labels), so everything it declines lands on
    * the rung below exactly as before.
    */
-  // ⚠️ Falls through on `null` since item 2409 — the weighted `sum`/`avg` fold's execution-time bail
+  // Falls through on `null` since item 2409 — the weighted `sum`/`avg` fold's execution-time bail
   // on a value it may not multiply. `min`/`max`/`count` never return it.
   if (linear.chainFoldLevels) {
     const rows = linear.chainFoldLevels(graph, params);
@@ -2156,7 +2156,7 @@ const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row
     }
   }
 
-  // ⚠️ Falls through on `null` — the composed walk's execution-time decline (item 2105).
+  // Falls through on `null` — the composed walk's execution-time decline (item 2105).
   if (linear.chainFoldedAggregate) {
     const rows = linear.chainFoldedAggregate(graph, params);
 
@@ -2165,7 +2165,7 @@ const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row
     }
   }
 
-  // ⚠️ Falls through on `null` — the composed walk's execution-time decline (item 2104).
+  // Falls through on `null` — the composed walk's execution-time decline (item 2104).
   if (linear.hop2FoldedAggregate) {
     const rows = linear.hop2FoldedAggregate(graph, params);
 
@@ -2175,7 +2175,7 @@ const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row
   }
 
   /*
-   * ⚠️ ABOVE `chainGroupedCount`, which answers the same shapes by walking every path AND refuses the
+   * ABOVE `chainGroupedCount`, which answers the same shapes by walking every path AND refuses the
    * `LET … GROUP BY` spelling on a clause count (a 2.96x cliff, item 2012). This arm is a backward
    * level recurrence — O(k·(|V| + |E|)) against O(paths) — and takes both spellings. Strictly
    * narrower otherwise, so everything it declines lands below exactly as before.
@@ -2184,7 +2184,7 @@ const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row
     return linear.chainGroupedLevels(graph, params);
   }
 
-  // ⚠️ Falls through on `null` — the composed walk's execution-time decline (item 2105).
+  // Falls through on `null` — the composed walk's execution-time decline (item 2105).
   if (linear.chainGroupedCount) {
     const rows = linear.chainGroupedCount(graph, params);
 
@@ -2193,7 +2193,7 @@ const deepWidthReductions = (linear: CLinear, graph: Graph, params: Params): Row
     }
   }
 
-  // ⚠️ Falls through on `null` — the composed walk's execution-time decline (item 2104).
+  // Falls through on `null` — the composed walk's execution-time decline (item 2104).
   if (linear.hop2GroupedCount) {
     const rows = linear.hop2GroupedCount(graph, params);
 
@@ -2452,7 +2452,7 @@ export const rowKeyOf = (row: Row): string => Object.values(row).map(valueKey).j
  *   - no two DISTINCT primitives share a `valueKey`, and the type prefixes (`n`/`s`/`b`) keep `5`
  *     and `'5'` apart, which raw values do too.
  *
- * ⚠️ TWO KEY SPACES, NOT ONE. Non-primitives still key through `valueKey` (an element keys by
+ * TWO KEY SPACES, NOT ONE. Non-primitives still key through `valueKey` (an element keys by
  * `@id`, not by object identity — two row objects can hold different instances for one id). Putting
  * those strings in the SAME set as raw values would let a string COLUMN collide with an element's
  * key: the row `['@v1']` and the row `[<vertex v1>]` are different rows that would both key as
@@ -2461,7 +2461,7 @@ export const rowKeyOf = (row: Row): string => Object.values(row).map(valueKey).j
 export type OneColumnKeys = { readonly prims: Set<unknown>; readonly refs: Set<string> };
 
 /**
- * ⚠️ EXPORTED FOR THE FUSED DISTINCT WALKS (item 1843), and the export is the point rather than a
+ * EXPORTED FOR THE FUSED DISTINCT WALKS (item 1843), and the export is the point rather than a
  * convenience. `chain-projection.ts` dedupes INSIDE its walk instead of materializing every row and
  * calling `distinctRows` afterwards — and the one thing it must not do is key rows itself. The two
  * key spaces below are not an implementation detail: items 1561 and 1562 each found a silent answer
@@ -2472,7 +2472,7 @@ export const newOneColumnKeys = (): OneColumnKeys => ({ prims: new Set(), refs: 
 /**
  * The single column's value, read PER ROW and positionally.
  *
- * ⚠️ NOT by a name taken once from `rows[0]`: ISO set operations compare positionally and the two
+ * NOT by a name taken once from `rows[0]`: ISO set operations compare positionally and the two
  * sides may alias differently (`… AS a` vs `… AS b`), so one name would read `undefined` off the
  * other side and collapse it to a single row. `for…in` takes the first own enumerable key with no
  * allocation; a `Row` is a plain object literal, whose prototype carries no enumerable keys.
@@ -2503,7 +2503,7 @@ const hasOneColumnKey = (keys: OneColumnKeys, v: unknown): boolean =>
  * TWO-COLUMN KEYING (item 1886), and it is **built out of the one-column keyer rather than beside
  * it** — the second column goes through `addOneColumnKey` unchanged.
  *
- * ⚠️ THAT REUSE IS THE SAFETY ARGUMENT, not a tidiness one. Items 1561 and 1562 each found a silent
+ * THAT REUSE IS THE SAFETY ARGUMENT, not a tidiness one. Items 1561 and 1562 each found a silent
  * ANSWER change in exactly this area, and `newOneColumnKeys`' own note says "a second keyer in
  * another file would be the third". The two key spaces that note describes — primitives by
  * SameValueZero, non-primitives by `valueKey` so an element keys by `@id` rather than object
@@ -2511,7 +2511,7 @@ const hasOneColumnKey = (keys: OneColumnKeys, v: unknown): boolean =>
  * column 1 must not collide any more than they may in a one-column set: the row `['@v1', x]` and the
  * row `[<vertex v1>, x]` are different rows.
  *
- * ⚠️ WHY NOT ONE `Map` KEYED BY A JOINED STRING — that is exactly what this replaces. `rowKeyOf` is
+ * WHY NOT ONE `Map` KEYED BY A JOINED STRING — that is exactly what this replaces. `rowKeyOf` is
  * `Object.values(row).map(valueKey).join('\x01')`: two array allocations, two `valueKey` calls, a
  * string build and a string hash **per row**. Measured on the shape item 1825 left open
  * (`distinct2-key-1886.mjs`, 20,000 one-hop rows, 679 distinct pairs, one shape per process, both
@@ -2569,7 +2569,7 @@ export const addTwoColumnKey = (keys: TwoColumnKeys, a: unknown, b: unknown): bo
   addOneColumnKey(secondColumnKeys(keys, a), b);
 
 /**
- * Is the pair present? ⚠️ IT MUST NOT INSERT, which is why it cannot be written in terms of
+ * Is the pair present? IT MUST NOT INSERT, which is why it cannot be written in terms of
  * `secondColumnKeys`: that creates the bucket on first sight, and `oneColumnSetOp`'s twin PROBES
  * the right-hand set once per left row. An inserting probe would grow the right set while reading
  * it — harmless for the answer here, but one map allocation per distinct left value for nothing.
@@ -2586,7 +2586,7 @@ const hasTwoColumnKey = (keys: TwoColumnKeys, a: unknown, b: unknown): boolean =
  * exactly, including why a name taken once from `rows[0]` will not do (ISO set operations compare
  * positionally and the two sides may alias differently).
  *
- * ⚠️ TWO SEPARATE READERS RATHER THAN ONE FUNCTION RETURNING BOTH, because anything returning both
+ * TWO SEPARATE READERS RATHER THAN ONE FUNCTION RETURNING BOTH, because anything returning both
  * would allocate a pair per row — and the per-row allocation is precisely what this replaces. Each
  * walks `for…in`, which takes own enumerable keys in order with no allocation; a `Row` is a plain
  * object literal, whose prototype carries no enumerable keys.
@@ -2625,7 +2625,7 @@ const isOneColumn = (rows: readonly Row[]): boolean => isWidth(rows, 1);
 
 export const distinctRows = (rows: readonly Row[]): Row[] => {
   /**
-   * ⚠️ THE TWO-COLUMN ARM (item 1886). Width is taken from `rows[0]`, which is the same assumption
+   * THE TWO-COLUMN ARM (item 1886). Width is taken from `rows[0]`, which is the same assumption
    * the one-column arm below makes and the same one item 1561 got wrong for `union`'s MIXED-width
    * concatenation — `distinctUnion` is the caller that can hand this mixed widths and it does not
    * come through here. Everything else is one width by construction (a projection) or by ISO
@@ -2670,7 +2670,7 @@ export const distinctRows = (rows: readonly Row[]): Row[] => {
  * `UNION` (not `ALL`): DISTINCT across both sides WITHOUT materializing their concatenation
  * (item 1564).
  *
- * ⚠️ IT ALSO FIXES A SILENT ANSWER CHANGE I INTRODUCED AT ITEM 1561, and that is the more important
+ * IT ALSO FIXES A SILENT ANSWER CHANGE I INTRODUCED AT ITEM 1561, and that is the more important
  * half. `distinctRows` decides the one-column fast path from `rows[0]` alone, and `union` was its
  * ONE caller that hands it rows of MIXED WIDTH — `[...left, ...right]`, where ISO-invalid unequal
  * degree is accepted by this engine (item 1563). A one-column left therefore put two-column right
@@ -2692,7 +2692,7 @@ const distinctUnion = (left: readonly Row[], right: readonly Row[]): Row[] => {
   const out: Row[] = [];
 
   /**
-   * ⚠️ THE TWO-COLUMN ARM (item 1886), and BOTH SIDES are checked for exactly the reason the
+   * THE TWO-COLUMN ARM (item 1886), and BOTH SIDES are checked for exactly the reason the
    * one-column arm below checks both: this is the one caller that can be handed MIXED widths
    * (`union` concatenates sides whose unequal degree this engine accepts, item 1563), and item 1561
    * shipped a silent answer change by keying a two-column right side on its first column alone.
@@ -2748,7 +2748,7 @@ const distinctUnion = (left: readonly Row[], right: readonly Row[]): Row[] => {
  * de-duplicates — so a row's key is computed ONCE rather than the three times the string path
  * needed (right set, left probe, trailing `distinctRows`).
  *
- * ⚠️ BOTH SIDES ARE CHECKED. Set-operation arity is equal, so a one-column left implies a
+ * BOTH SIDES ARE CHECKED. Set-operation arity is equal, so a one-column left implies a
  * one-column right — but an EMPTY left declines rather than assuming, and checking both means a
  * mismatch that slipped past validation falls to the general path instead of mis-keying.
  */
@@ -2757,7 +2757,7 @@ const distinctUnion = (left: readonly Row[], right: readonly Row[]): Row[] => {
  * over the left that both probes and de-duplicates, so a row's pair is keyed ONCE rather than the
  * three times the string path needs (right set, left probe, trailing `distinctRows`).
  *
- * ⚠️ BOTH SIDES ARE CHECKED, as in the one-column twin: set-operation arity is equal, so a
+ * BOTH SIDES ARE CHECKED, as in the one-column twin: set-operation arity is equal, so a
  * two-column left implies a two-column right — but an EMPTY right declines rather than assuming,
  * and checking both means a mismatch that slipped past validation falls to the string path instead
  * of mis-keying.
@@ -2839,7 +2839,7 @@ const inKeysOf = (right: readonly Row[]): ((r: Row) => boolean) => {
 /**
  * Combine two row sets per a set operator.
  *
- * ⚠️ `rightKeys` IS BUILT ONLY WHERE IT IS READ. It used to be the function's first statement, so
+ * `rightKeys` IS BUILT ONLY WHERE IT IS READ. It used to be the function's first statement, so
  * **every `UNION` and `UNION ALL` paid a full key pass over its right side and discarded it** —
  * neither union branch mentions `rightKeys`. Each discarded key cost a `rowKeyOf`, which allocates
  * an array (`Object.values`), maps `valueKey` over it and joins a string, plus the `Set` holding
@@ -2859,7 +2859,7 @@ export const combineRows = (op: SetOp, left: readonly Row[], right: readonly Row
       // Rust engine: ir.rs "Except/Intersect always dedup; the ALL variants are
       // not distinguished here").
       //
-      // ⚠️ TWO `rowKeyOf` PASSES LIVE HERE, which is why item 1561's one-column keying reached
+      // TWO `rowKeyOf` PASSES LIVE HERE, which is why item 1561's one-column keying reached
       // `UNION` at 4.01x and `EXCEPT` at only 1.25x: the gain was confined to the trailing
       // `distinctRows` while the right-side set and the per-left-row probe still built strings.
       // Item 1562 keys both the same way.
@@ -2871,7 +2871,7 @@ export const combineRows = (op: SetOp, left: readonly Row[], right: readonly Row
     }
     case 'intersect':
       return (
-        // ⚠️ THE TWO-COLUMN TWIN FIRST, and the order cannot matter: the two gate on DISJOINT widths
+        // THE TWO-COLUMN TWIN FIRST, and the order cannot matter: the two gate on DISJOINT widths
         // (`isWidth(…, 2)` against `isOneColumn`), so each declines what the other claims. Written
         // in width order for reading.
         twoColumnSetOp(left, right, true) ??

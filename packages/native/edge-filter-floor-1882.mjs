@@ -13,13 +13,13 @@
  * fused walk; keep it and all four steps run through the generic traverser pipeline. Every one of
  * the family's seven filtered spellings is generic.
  *
- * ⚠️ THIS FILE IS THE PRICE, AND IT IS ONE SHAPE PER PROCESS. Item 1874 retracted a 1.73x that was
+ * THIS FILE IS THE PRICE, AND IT IS ONE SHAPE PER PROCESS. Item 1874 retracted a 1.73x that was
  * a within-process cross-row ratio and item 1870 measured a control moving 1.7x purely by running
  * last. So `SHAPE` selects exactly one traversal and the comparison is made BETWEEN runs:
  *
  *     for s in filtered unfiltered hop; do SHAPE=$s bun edge-filter-floor-1882.mjs; done
  *
- * ⚠️ AND IT REPORTS ns PER EDGE VISIT, not only ns a row. The filtered shape emits ~46% of the rows
+ * AND IT REPORTS ns PER EDGE VISIT, not only ns a row. The filtered shape emits ~46% of the rows
  * the unfiltered one does, so a per-ROW ratio flatters it — item 1858 declined a target for exactly
  * this reason ("it visits the same 200,000 vertices and emits 7x fewer rows, so the per-ROW figure
  * overstates it badly"). Both shapes visit the SAME edges; that is the invariant denominator.

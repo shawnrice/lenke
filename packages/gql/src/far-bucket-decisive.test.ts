@@ -1,14 +1,14 @@
 /**
- * ⚠️⚠️ **THE ONLY TESTS THAT CAN SEE THIS CHANGE** (item 2293). Letting `hop2Projection` hand a query to
+ * **THE ONLY TESTS THAT CAN SEE THIS CHANGE** (item 2293). Letting `hop2Projection` hand a query to
  * the orienting matcher is ANSWER-EQUIVALENT — both routes return the same rows in the same order — so
  * every mutation of a condition inline in the gate survives the differential tests. That is
  * `perf-gate-needs-its-own-test`, learned at items 1038/1044, and it is why the arithmetic is extracted.
  *
- * 🔑 The two constants carry different jobs and are tested separately:
+ * The two constants carry different jobs and are tested separately:
  *
  *   `FAR_BUCKET_DECISIVE` is the RATIO at which reversing is right. Item 2104 rejected bucket-size
  *   evidence because `orient` reverses on 4-against-40, and giving up this rung's fused walk for a 10x
- *   ratio costs 13.8x on `hop2distinct` (items 1821/1822). ⚠️ So the test that matters most is that a
+ *   ratio costs 13.8x on `hop2distinct` (items 1821/1822). So the test that matters most is that a
  *   10x ratio still DECLINES.
  *
  *   `FAR_BUCKET_TINY` is COST, not correctness: without it the unindexed path paid for a second seed
@@ -19,7 +19,7 @@ import { describe, expect, test } from 'bun:test';
 import { FAR_BUCKET_DECISIVE, FAR_BUCKET_TINY, farBucketIsDecisive } from './executor/matching.ts';
 
 describe('farBucketIsDecisive: a RATIO, not merely "smaller"', () => {
-  test('⚠️ ITEM 2104s CASE STILL DECLINES: 4 far against 40 near is 10x and must keep the fused walk', () => {
+  test('ITEM 2104s CASE STILL DECLINES: 4 far against 40 near is 10x and must keep the fused walk', () => {
     expect(farBucketIsDecisive(4, 40)).toBe(false);
   });
 
@@ -37,7 +37,7 @@ describe('farBucketIsDecisive: a RATIO, not merely "smaller"', () => {
     expect(farBucketIsDecisive(400_000, 1)).toBe(false);
   });
 
-  test('⚠️ an EMPTY far bucket does not fire — zero would satisfy any ratio, and an empty label is not evidence about orientation', () => {
+  test('an EMPTY far bucket does not fire — zero would satisfy any ratio, and an empty label is not evidence about orientation', () => {
     expect(farBucketIsDecisive(0, 400_000)).toBe(false);
     expect(farBucketIsDecisive(0, 0)).toBe(false);
   });

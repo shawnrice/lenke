@@ -7,7 +7,7 @@
 # and single-run against single-run has not survived repetition here. The targets' win dwarfs the
 # drift, which is exactly why it has to be measured rather than assumed.
 #
-# ⚠️ EACH ARM ASSERTS IT IS THE CODE IT CLAIMS BEFORE MEASURING — `foldProjectedNumeric` must appear
+# EACH ARM ASSERTS IT IS THE CODE IT CLAIMS BEFORE MEASURING — `foldProjectedNumeric` must appear
 # in `aggregation.ts` in POST and never in PRE.
 set -e
 set -u

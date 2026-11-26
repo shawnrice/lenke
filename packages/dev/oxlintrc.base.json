@@ -147,7 +147,7 @@
       }
     },
     {
-      // ⚠️ TO RE-MEASURE THIS LIST, USE A CONFIG WITHOUT THESE OVERRIDES. Running
+      // TO RE-MEASURE THIS LIST, USE A CONFIG WITHOUT THESE OVERRIDES. Running
       // `oxlint -A all -D import/no-cycle` still applies them, so every file listed here
       // reports clean and the list looks finished. That misreading nearly booked a false
       // win: 31 files were still cyclic while the measurement said 0.

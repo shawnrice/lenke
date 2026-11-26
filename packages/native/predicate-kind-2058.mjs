@@ -10,7 +10,7 @@
  * `k` is `i % 50`, so **no equality predicate keeps every vertex** and the two always moved together.
  * It said what instrument would settle it: a CONSTANT-VALUED property, so an equality can keep all.
  *
- * 🔑 **THE THREE ARMS, each scanning 200,000 vertices and emitting 200,000 rows:**
+ * **THE THREE ARMS, each scanning 200,000 vertices and emitting 200,000 rows:**
  *
  *     A  V().values(n)                 no predicate at all      -> the fused floor
  *     B  V().has('c', 1).values(n)     EQUALITY, keeps all      -> A + route + equality eval
@@ -19,10 +19,10 @@
  *   B - A  = having a `has` at all (route + the cheapest predicate)
  *   C - B  = what a RANGE predicate costs over an EQUALITY one, route held constant
  *
- * ⚠️ ITS OWN FIXTURE, NOT THE SHARED SCREEN'S. Adding a property to `gremlin-workload-screen.mjs`
+ * ITS OWN FIXTURE, NOT THE SHARED SCREEN'S. Adding a property to `gremlin-workload-screen.mjs`
  * would change every row's memory footprint and perturb rows this item has no business touching.
  *
- * ⚠️ EMISSIONS ARE ASSERTED EQUAL. Item 2057's first reading was 1.15x because one arm emitted 50x
+ * EMISSIONS ARE ASSERTED EQUAL. Item 2057's first reading was 1.15x because one arm emitted 50x
  * fewer rows and the route cost hid inside the materialization it saved.
  *
  *     bun predicate-kind-2058.mjs
@@ -49,19 +49,19 @@ const ARMS = {
   'B has(c,1)       equality': () => traversal(V(), has('c', 1), values('n')),
   'C has(k,gte(0))  range': () => traversal(V(), has('k', gte(0)), values('n')),
   /*
-   * ⚠️ ARM D IS THE ONE THAT ACTUALLY ISOLATES PREDICATE KIND. B and C differ in TWO things — the
+   * ARM D IS THE ONE THAT ACTUALLY ISOLATES PREDICATE KIND. B and C differ in TWO things — the
    * predicate kind AND the property read (`c` against `k`) — so `C - B` is not a predicate-kind
    * figure. D is a RANGE over the SAME constant property B reads, so `D - B` varies kind alone.
    */
   'D has(c,gte(0))  range': () => traversal(V(), has('c', gte(0)), values('n')),
   /*
-   * ⚠️⚠️ ARMS E AND F EXIST BECAUSE ITEM 2058 COULD NOT TELL "PER SCANNED VERTEX" FROM "PER EMITTED
+   * ARMS E AND F EXIST BECAUSE ITEM 2058 COULD NOT TELL "PER SCANNED VERTEX" FROM "PER EMITTED
    * ROW" — every arm above scans 200,000 AND emits 200,000, so the two counts are the same number
    * and ~47 ns was attributed to the scan. The workload screen's `point: has(k,v)` scans 200,000 and
    * emits 4,000, and item 2059's fusion left it FLAT while lifting B by ~3x. These arms vary the
    * surviving fraction while holding the scan at 200,000, which is what separates the two.
    *
-   * ⚠️ THEY BREAK THE `rows === NODES` ASSERTION ON PURPOSE, so the check below is per-arm.
+   * THEY BREAK THE `rows === NODES` ASSERTION ON PURPOSE, so the check below is per-arm.
    */
   'E has(k,gte(25)) half': () => traversal(V(), has('k', gte(25)), values('n')),
   'F has(k,7)       1-in-50': () => traversal(V(), has('k', 7), values('n')),
@@ -71,7 +71,7 @@ const ARMS = {
 const EMITS_ALL = new Set(['A', 'B', 'C', 'D']);
 
 /*
- * ⚠️⚠️ **ONE ARM PER PROCESS IS THE RULE, AND RUNNING ALL FOUR TOGETHER BROKE IT.** CLAUDE.md: "In the
+ * **ONE ARM PER PROCESS IS THE RULE, AND RUNNING ALL FOUR TOGETHER BROKE IT.** CLAUDE.md: "In the
  * PRE arm every query shape funnels through one dispatch site; in the POST arm some are routed
  * elsewhere… The fix is **one shape per PROCESS**, so no other shape pollutes the dispatch." All four
  * arms here share `filterStream`'s callback site and the specialized-closure call inside it, so each
@@ -137,5 +137,5 @@ console.log(
     `\n  B - A = ${(B - A).toFixed(1)} ns/vertex   <- having a \`has\` AT ALL (route + a predicate)` +
     `\n  D - B = ${(D - B).toFixed(1)} ns/vertex   <- PREDICATE KIND ALONE: range vs equality, SAME property \`c\`` +
     `\n  C - D = ${(C - D).toFixed(1)} ns/vertex   <- PROPERTY ALONE: \`k\` vs \`c\`, both range` +
-    `\n  C - B = ${(C - B).toFixed(1)} ns/vertex   ⚠️ NOT a predicate-kind figure — kind AND property both differ\n`,
+    `\n  C - B = ${(C - B).toFixed(1)} ns/vertex   NOT a predicate-kind figure — kind AND property both differ\n`,
 );

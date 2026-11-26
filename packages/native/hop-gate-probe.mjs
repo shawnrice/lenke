@@ -9,7 +9,7 @@
  * This is the instrument for the other seven. Each shape names which endpoint carries the gate, so
  * a change that reaches one and not another is visible rather than averaged away.
  *
- * ⚠️ ONE SHAPE PER PROCESS (items 737, 762): `SHAPE=<key>` selects. Running them together moved a
+ * ONE SHAPE PER PROCESS (items 737, 762): `SHAPE=<key>` selects. Running them together moved a
  * row 20% by POSITION in item 1600's own probe.
  *
  *     SHAPE=far-count node hop-gate-probe.mjs
@@ -57,7 +57,7 @@ for (let i = 0; i < NODES; i += 1) {
 }
 
 /**
- * ⚠️ THE TARGET IS SPLIT ON THE REPEAT INDEX, NOT ON `k`. `to = (a * k + b) % N` is INVARIANT under
+ * THE TARGET IS SPLIT ON THE REPEAT INDEX, NOT ON `k`. `to = (a * k + b) % N` is INVARIANT under
  * `k -> k + N`, so a loop over `k < NODES * FANOUT` gives every one of a vertex's FANOUT edges the
  * SAME target — out-degree, in-degree and isolated counts all look perfect and the graph is
  * FUNCTIONAL (CLAUDE.md, items 1516/1518). `Math.floor(k / NODES)` is what makes the fanout branch.

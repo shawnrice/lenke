@@ -7,17 +7,17 @@
 // win on that basis). So this prices the shape OUTSIDE the engine first, and the engine is touched
 // only if the ceiling justifies it.
 //
-// 🔑 THE TWO ARMS, on identical data and producing identical output:
+// THE TWO ARMS, on identical data and producing identical output:
 //
 //     rows      `rows.sort((a, b) => cmp(a[col], b[col]))`      what the engine does
 //     perm      extract the column, sort an index array, permute
 //
-// ⚠️ THE COMPARATOR IS THE SAME in both arms, so this measures the ACCESS SHAPE and nothing else —
+// THE COMPARATOR IS THE SAME in both arms, so this measures the ACCESS SHAPE and nothing else —
 // an object property load per comparison against a typed array-element load. Using a cheaper
 // comparator in one arm would measure the comparator instead, which is the confound item 1961 found
 // in its own probe.
 //
-// ⚠️ AND BOTH ARMS MUST BE STABLE. `Array.prototype.sort` is stable, so the index arm keeps arrival
+// AND BOTH ARMS MUST BE STABLE. `Array.prototype.sort` is stable, so the index arm keeps arrival
 // order on ties exactly as the row arm does — item 605 makes tie order observable, so an arm that
 // lost it would be measuring a different (and wrong) operation. The answer guard below compares the
 // full ordered sequence of a tag column, not just the keys.

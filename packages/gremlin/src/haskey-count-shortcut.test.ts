@@ -19,7 +19,7 @@ import type { Plan } from './index.js';
 //     V().hasLabel(L).has('age', gt(-1)).count()   2.573 ms -> 2.560   (control, took the rung)
 //     V().hasLabel(L).has('age').count()           7.543    -> 2.496   3.0x
 //
-// ⚠️ THE TESTS THAT MATTER ASSERT THE DECISION, for the reason `has-count-shortcut.test.ts` states:
+// THE TESTS THAT MATTER ASSERT THE DECISION, for the reason `has-count-shortcut.test.ts` states:
 // a count shortcut is ANSWER-PRESERVING by design, so a mutant that never claims the shape passes
 // every row assertion in the package. Each route assertion below therefore has an ANSWER assertion
 // beside it, oracled against the general path.
@@ -45,7 +45,7 @@ const build = (opts: { index?: boolean; allOneLabel?: boolean } = {}): Graph => 
 };
 
 describe('a single-key hasKey reaches every count rung (item 1283)', () => {
-  test('⚠️ ROUTE: the shortcut CLAIMS the shape, on both the vacuous and the selective label', () => {
+  test('ROUTE: the shortcut CLAIMS the shape, on both the vacuous and the selective label', () => {
     // A VACUOUS label is dropped by a pre-pass, so on a single-label graph the chain reduces to
     // `V, hasKey, count` and lands on the SINGLE-STEP rung (`vertexStepCount`). With a selective
     // label it stays a two-step chain and lands on `filterChainCount`. Both had to be fixed, and
@@ -90,7 +90,7 @@ describe('a single-key hasKey reaches every count rung (item 1283)', () => {
     }
   });
 
-  test('⚠️ a STORED NULL is PRESENT, which is what forbids a synthetic value predicate', () => {
+  test('a STORED NULL is PRESENT, which is what forbids a synthetic value predicate', () => {
     // `has('k')` keeps `has1`, `nulled` and `has2` — the stored null included — and drops only the
     // two absent cells. Item 1139 records that synthesising a value predicate instead of
     // `{op:'present'}` would be a silent wrong answer on exactly this vertex.

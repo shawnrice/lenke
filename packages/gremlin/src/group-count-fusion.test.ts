@@ -3,14 +3,14 @@ import { describe, expect, test } from 'bun:test';
 /**
  * The ANSWERS the fused `groupCount` produces — item 1834.
  *
- * ⚠️ A `Map` IS THE ANSWER AND ITS ORDER IS PART OF IT, which is what makes this family different
+ * A `Map` IS THE ANSWER AND ITS ORDER IS PART OF IT, which is what makes this family different
  * from every other rung tested in this session. `groupCount` returns a Map whose iteration order is
  * first-occurrence order of the keys; byte-identity with the Rust engine is a hard invariant, so a
  * fused walk that visited elements in a different order would produce a DIFFERENT ANSWER, not
  * merely a differently-ordered one. Every assertion below therefore compares `[...map]` as an
  * ARRAY, never as a set.
  *
- * ⚠️ AND THE ORACLE IS THE SAME QUERY ON THE SPELLING THE FUSION DECLINES. The fusion requires a
+ * AND THE ORACLE IS THE SAME QUERY ON THE SPELLING THE FUSION DECLINES. The fusion requires a
  * single PROPERTY key and at least two hops, so a one-hop traversal and a multi-key `by` both run
  * the generic pipeline — giving a real second route for the same question rather than a
  * hand-written expectation (items 1827 and 1830's lesson).
@@ -20,7 +20,7 @@ import { Graph } from '@lenke/core';
 import { V, groupCount, hasLabel, out, toArray, traversal, values } from './index.js';
 
 /**
- * ⚠️ THE FIXTURE CARRIES ALL THREE KEY STATES, because they are exactly what the fusion's
+ * THE FIXTURE CARRIES ALL THREE KEY STATES, because they are exactly what the fusion's
  * equivalence rests on: a present value, a STORED null (its own bucket) and an ABSENT key (filtered
  * out, no bucket). A fixture with only present values cannot tell a correct tally from one that
  * invents or drops a null group.
@@ -85,7 +85,7 @@ describe('the fused groupCount', () => {
     }
   });
 
-  /** ⚠️ A STORED null is a bucket; an ABSENT key is filtered out and has none. */
+  /** A STORED null is a bucket; an ABSENT key is filtered out and has none. */
   test('a stored null gets a bucket and an absent key does not', () => {
     const g = build([1, null, undefined, 1]);
     const entries = tally(g, 2);
@@ -101,7 +101,7 @@ describe('the fused groupCount', () => {
   });
 
   /**
-   * ⚠️ THE CROSS-ROUTE ORACLE, ORDER INCLUDED. One hop declines the fusion (it needs two or more),
+   * THE CROSS-ROUTE ORACLE, ORDER INCLUDED. One hop declines the fusion (it needs two or more),
    * so the same question runs the generic pipeline there — and the two widths must agree on the
    * ENTRY ORDER of the Map for a tally keyed by first occurrence to be route-independent.
    */
@@ -116,7 +116,7 @@ describe('the fused groupCount', () => {
   });
 
   /**
-   * ⚠️ A SECOND `by` IS IGNORED BY THIS ENGINE, so the fusion's refusal of it is CONSERVATIVE rather
+   * A SECOND `by` IS IGNORED BY THIS ENGINE, so the fusion's refusal of it is CONSERVATIVE rather
    * than load-bearing — and two mutants say so. Dropping the `bys.length === 1` check, or taking
    * `bys[0]` regardless of how many there are, both SURVIVE this file. Measured rather than
    * reasoned: `groupCount().by('k').by('s')` returns exactly what `.by('k')` returns, so the fused

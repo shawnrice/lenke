@@ -11,12 +11,12 @@
 //     -----------------------------------------------------
 //     hop1: values             50.21       the same 600,000 rows, fused
 //
-// 🔑 THE HYPOTHESIS, which is what this probe tests rather than assumes: on a plan whose path is
+// THE HYPOTHESIS, which is what this probe tests rather than assumes: on a plan whose path is
 // exactly `[near, far]`, `simplePath()` is "near !== far" — the hop MINUS its self-loops — and
 // `cyclicPath()` is its complement, only the self-loops. Both would then be tag-free, exactly as
 // item 1912 found for `where(neq(tag))` and item 1920 for `path()`.
 //
-// ⚠️ READ OFF THE ENGINE, NOT PREDICTED. CLAUDE.md records hand oracles in this corpus being wrong
+// READ OFF THE ENGINE, NOT PREDICTED. CLAUDE.md records hand oracles in this corpus being wrong
 // FIVE times, most recently at item 1921 (`bothE.otherV` was six rows, not five). What these steps
 // yield — the far vertex, or the path? — decides whether one row shape can serve them.
 //
@@ -48,7 +48,7 @@ const vx = (id) => g.getVertexById(id);
 
 g.addEdge({ id: 'e1', from: vx('a'), to: vx('b'), labels: ['E'], properties: {} });
 g.addEdge({ id: 'e2', from: vx('b'), to: vx('c'), labels: ['E'], properties: {} });
-// ⚠️ THE SELF-LOOP is the ONLY edge `simplePath` and `cyclicPath` disagree on at depth one, so it is
+// THE SELF-LOOP is the ONLY edge `simplePath` and `cyclicPath` disagree on at depth one, so it is
 // the whole discrimination.
 g.addEdge({ id: 'e3', from: vx('d'), to: vx('d'), labels: ['E'], properties: {} });
 g.addEdge({ id: 'e4', from: vx('a'), to: vx('c'), labels: ['F'], properties: {} });
@@ -101,7 +101,7 @@ for (const [name, plan] of CASES) {
 }
 
 console.log(
-  '\n⚠️ THE QUESTION TO READ OFF THIS: does `simplePath()` yield the FAR VERTEX (so the row shape is\n' +
+  '\nTHE QUESTION TO READ OFF THIS: does `simplePath()` yield the FAR VERTEX (so the row shape is\n' +
     "   the plain hop's, and the step is only a filter) or the PATH? And is the only difference from\n" +
     '   `out(E)` the self-loop? If both hold at depth one, the shape is tag-free.',
 );

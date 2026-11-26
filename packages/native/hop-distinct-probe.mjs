@@ -11,7 +11,7 @@
  * shape the rung's doc describes dedups on a PROPERTY of a node. If `b.k` is fast and `b` is slow,
  * the gap is node-identity dedup and not the hop.
  *
- * ⚠️ ONE ARM PER PROCESS (`ARM=`). Items 1578/1579 each produced an impossible in-process reading
+ * ONE ARM PER PROCESS (`ARM=`). Items 1578/1579 each produced an impossible in-process reading
  * when arms shared a call site, and item 762's warning applies with full force to a
  * rung-selection question: in a two-arm process the arm routed elsewhere leaves a cleaner
  * dispatch site behind and flatters itself.
@@ -84,7 +84,7 @@ const ARMS = {
   hopcount: 'MATCH (a:P)-[:E]->(b) RETURN count(*) AS c',
   nodeonly: 'MATCH (n:P) RETURN count(DISTINCT n) AS c',
   nodeonlyprop: 'MATCH (n:P) RETURN count(DISTINCT n.n) AS c',
-  // ⚠️ THE CONTROLS THAT MATTER MOST for item 1583's change: shapes `hopAggregate` STILL claims.
+  // THE CONTROLS THAT MATTER MOST for item 1583's change: shapes `hopAggregate` STILL claims.
   // The gate nulls `hopAggregate` only when `distinctCount` accepts, so a non-DISTINCT aggregate
   // over the same hop must be untouched. item 418 measured a branch ahead of a hot dispatch
   // costing the shape it does not claim 1.12x, and these are that shape.

@@ -12,11 +12,11 @@ import { traversal } from './traversal.js';
  * traverser. **19.95x** on `V().local(outE().inV()).values('k').count()` at 20,000 vertices, landing
  * exactly on a hand floor.
  *
- * ⚠️ THIS REWRITE CAN CHANGE ANSWERS IF THE ALLOWLIST IS WRONG, so the tests below are mostly about
+ * THIS REWRITE CAN CHANGE ANSWERS IF THE ALLOWLIST IS WRONG, so the tests below are mostly about
  * what must NOT fuse. `local`'s whole purpose is per-traverser scoping: `local(out(E), count())`
  * counts EACH traverser's neighbours, and fusing it would count the whole stream once.
  *
- * ⚠️ `dedupe` IS THE TRAP. It sits in `ORDER_FREE_STEPS` — order-free is a different property from
+ * `dedupe` IS THE TRAP. It sits in `ORDER_FREE_STEPS` — order-free is a different property from
  * local-transparent — but `local(out(E), dedupe())` dedupes WITHIN each traverser, so a vertex
  * reached from two different sources legitimately appears twice. Fusing it would collapse those.
  * It is deliberately absent from `LOCAL_TRANSPARENT_STEPS`.
@@ -114,7 +114,7 @@ describe('the rewrite itself, and that it is WIRED', () => {
   });
 
   /**
-   * ⚠️ THE WIRING, not just the rewrite. A mutant that stops CALLING a rewrite answers identically
+   * THE WIRING, not just the rewrite. A mutant that stops CALLING a rewrite answers identically
    * by the slow route, so testing `fuseLocal` alone would leave it unwired and undetected — the
    * shape items 1303 and 1447 paid for.
    */

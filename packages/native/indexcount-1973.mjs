@@ -5,16 +5,16 @@
 // fixture with ONE index TS WINS it 1.16x; adding the second index the bench carries (`name`, which
 // this query never reads) took TS to 0.27x. So the variable is the NUMBER OF INDEXES, not the query.
 //
-// 🔑 THIS SWEEPS IT, because "slower with two" and "slower per index" are different findings: the
+// THIS SWEEPS IT, because "slower with two" and "slower per index" are different findings: the
 // first could be one unlucky structure, the second is a scaling defect that an application hits as
 // it adds indexes.
 //
-// ⚠️ ROUNDS ARE HIGH AND THE SERIES IS PRINTED. The TS path on this shape climbs **17x from cold**
+// ROUNDS ARE HIGH AND THE SERIES IS PRINTED. The TS path on this shape climbs **17x from cold**
 // (11.7k -> 204.5k over ten rounds of 200 ops), so a median over few rounds measures the warmup
 // rather than the steady state — CLAUDE.md's rule for the TS per-row path. The figure reported is the
 // median of the LAST THIRD, with the whole series shown so that choice is checkable.
 //
-// ⚠️ NATIVE IS THE CONTROL, not a target: if native also degrades per index then the effect is the
+// NATIVE IS THE CONTROL, not a target: if native also degrades per index then the effect is the
 // fixture or the harness, not the TS index layer.
 //
 //     bun indexcount-1973.mjs
@@ -38,7 +38,7 @@ for (let i = 0; i < USERS; i += 1) {
     name: `user${String(i)}`,
     score: i % 100,
     /*
-     * ⚠️ `ACTIVE_ALL=0` MATCHES THE USAGE BENCH, which sets `active: i % 3 === 0` — true for one
+     * `ACTIVE_ALL=0` MATCHES THE USAGE BENCH, which sets `active: i % 3 === 0` — true for one
      * user in three, where this probe originally set it true for all. That is the last unexplained
      * difference between the two fixtures after index count and shape pollution were both refuted.
      */
@@ -54,7 +54,7 @@ for (let i = 0; i < USERS; i += 1) {
 }
 
 /*
- * ⚠️⚠️ `MIXED=1` APPENDS ONE ISOLATED NON-USER VERTEX, and it is the whole experiment now. This
+ * `MIXED=1` APPENDS ONE ISOLATED NON-USER VERTEX, and it is the whole experiment now. This
  * probe's fixture is users-only, which makes `User` a VACUOUS label — and
  * [[label-vacuity-gates-fast-paths]] records that the GQL fast paths REQUIRE vacuity (43 gates
  * across 7 files), so a users-only fixture measures an arm no real schema can reach. The usage

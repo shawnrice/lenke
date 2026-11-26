@@ -1,6 +1,6 @@
 // An exhaustive PATTERN x FORM matrix across the engines (item 1242).
 //
-// ⚠️ WHY THIS EXISTS BESIDE THE FUZZER, which already generates these shapes at random: an
+// WHY THIS EXISTS BESIDE THE FUZZER, which already generates these shapes at random: an
 // exhaustive small matrix and a random large sample fail DIFFERENTLY. The fuzzer explores wide and
 // shallow; a matrix explores a chosen INTERSECTION exhaustively. Item 1236's gap was precisely an
 // intersection — paths over flat groups were generated, nested units were generated, and their
@@ -12,7 +12,7 @@
 // and without a bound path, and the path accessors where a path exists. 144 comparisons, a second
 // or so.
 //
-// ⚠️ AGREEMENT IS THE ASSERTION, NOT CORRECTNESS. Where the engines agree this says they agree —
+// AGREEMENT IS THE ASSERTION, NOT CORRECTNESS. Where the engines agree this says they agree —
 // item 1237 needed a separate argument (mode-insensitivity) to establish WHICH was right when they
 // did not. A failure here means "one of these is wrong", not "TS is wrong"; the shapes with
 // hand-verified expectations live in `nested-group-path-conformance.test.ts`.
@@ -46,7 +46,7 @@ const NDJSON = [
  * names an inner GROUP variable where the family has one, so the group-list form below runs only
  * where it means something.
  *
- * ⚠️ THE GROUP-LIST FORM WAS ADDED BY MUTATION, NOT BY DESIGN. The first version of this matrix
+ * THE GROUP-LIST FORM WAS ADDED BY MUTATION, NOT BY DESIGN. The first version of this matrix
  * read the endpoint and the path accessors and never an inner list — so reverting item 1241's fix
  * left all 144 comparisons GREEN, and so did the nested-group conformance file (its group-list
  * case uses a NESTED unit, which routes elsewhere). Item 1241 had therefore shipped with no

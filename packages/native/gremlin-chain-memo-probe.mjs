@@ -7,14 +7,14 @@
  * and a flat `SlotMemo` allocated per call and discarded on return — so the obvious question is
  * whether the same cache applies.
  *
- * ⚠️ BUT IT IS NOT THE SAME SITUATION, AND THIS PROBE EXISTS TO SETTLE WHICH IT IS BEFORE ANYTHING
+ * BUT IT IS NOT THE SAME SITUATION, AND THIS PROBE EXISTS TO SETTLE WHICH IT IS BEFORE ANYTHING
  * IS BUILT. The GQL CSR is EAGER over the whole graph, so the whole build is saved. Gremlin's memo is
  * LAZY — `len[slot] === undefined` means "not resolved yet" — so its per-call cost is already
  * proportional to what the traversal touched, not to the graph. There may be far less to save, and
  * `check-the-blocker-still-holds` cuts the other way too: "it is lazy so there is nothing there" is a
  * claim about the numbers, not a substitute for them.
  *
- * ⚠️ THE ROUTE HAS TWO ADMISSION CONDITIONS and a probe that misses either measures a different arm:
+ * THE ROUTE HAS TWO ADMISSION CONDITIONS and a probe that misses either measures a different arm:
  *
  *     oneWalkThroughout(hops) && seeds.length > max(vertexCount >> 4, 1024)
  *
@@ -50,14 +50,14 @@ const build = () => {
 
   let e = 0;
 
-  // ⚠️ TWO SEPARATE FIXTURE TRAPS ARE AVOIDED HERE, and the second one caught the first draft of
+  // TWO SEPARATE FIXTURE TRAPS ARE AVOIDED HERE, and the second one caught the first draft of
   // this probe.
   //
   // 1. SPLIT ON THE REPEAT INDEX `r`. `(a*i + b) % N` is invariant under `i -> i + N`, so a single
   //    loop over `i < N*FANOUT` would give one vertex's edges the SAME target every time — a
   //    functional graph, with flawless degree statistics.
   //
-  // 2. ⚠️ THE OUT-DEGREE MUST VARY, which a fixed FANOUT does not do, and no endpoint-distinctness
+  // 2. THE OUT-DEGREE MUST VARY, which a fixed FANOUT does not do, and no endpoint-distinctness
   //    check can detect. For an OUT-REGULAR graph the number of k-walks from every vertex is exactly
   //    `F^k` whatever the structure, so the whole count is `N * F^k` by arithmetic — the first draft
   //    read 6,400,000 / 25,600,000 / 102,400,000 at 100,000 x 4, exactly `N*F^3,4,5`, while its
@@ -84,7 +84,7 @@ const build = () => {
 };
 
 /**
- * ⚠️ CHECKS DEGREE **VARIANCE**, NOT JUST DISTINCT ENDPOINTS, and the first draft of this probe is
+ * CHECKS DEGREE **VARIANCE**, NOT JUST DISTINCT ENDPOINTS, and the first draft of this probe is
  * why. Distinct endpoints rule out a FUNCTIONAL graph; they say nothing about an OUT-REGULAR one,
  * whose k-walk count is `N * F^k` by arithmetic. Both have to be excluded for a walk count to be
  * evidence about the walk.
@@ -200,7 +200,7 @@ const seriesOf = {};
 
   for (const h of [3, 4, 5]) {
     if (Number(answers[`chain${h}`]) === N * FANOUT ** h) {
-      console.log(`⚠️ chain${h} is EXACTLY N*F^${h} — fixture suspect`);
+      console.log(`chain${h} is EXACTLY N*F^${h} — fixture suspect`);
     }
   }
 }

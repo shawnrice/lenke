@@ -8,12 +8,12 @@ import { optionalSingleHop } from './optional-hop.js';
 /**
  * `V().branch(values(k)).option(m, <arm>)….none(<arm>).values(k)` answered WHOLESALE (item 2015).
  *
- * ⚠️⚠️ **IT IS THE THIRD AND LAST RECONVERGING-BRANCH SHAPE, and the two before it took the other
+ * **IT IS THE THIRD AND LAST RECONVERGING-BRANCH SHAPE, and the two before it took the other
  * two halves of the square.** Item 1999's rung is a vertex-FILTER test with HOP arms; item 2014's is
  * a HOP test with VALUE arms; this is a VALUE test with HOP-or-identity arms. The remaining corner —
  * a hop test with hop arms — is `coalesce`'s shape and item 1998 has it.
  *
- * 🔑 **THE TEST IS ONE PROPERTY READ, AND `branch`'s OPTION LOOKUP IS A MAP GET.** `branchStep` runs
+ * **THE TEST IS ONE PROPERTY READ, AND `branch`'s OPTION LOOKUP IS A MAP GET.** `branchStep` runs
  * the test as a sub-plan per traverser (`applyPlanToStream(test, [t], …)`, taking the first result
  * and breaking), then `tupleKey`s that result and `indexOf`s it in a precomputed key array, then
  * runs the chosen arm as a SECOND sub-plan. For a `values(k)` test the first of those is
@@ -31,7 +31,7 @@ import { optionalSingleHop } from './optional-hop.js';
  *     hand ceiling                                   6.12 ms    29 ns/row    1.6x remaining
  * ```
  *
- * ⚠️ THE POST ARM'S OWN SPREAD WAS 9.35-13.73 ACROSS THREE ROUNDS of `rung-control-ab-2015.sh`,
+ * THE POST ARM'S OWN SPREAD WAS 9.35-13.73 ACROSS THREE ROUNDS of `rung-control-ab-2015.sh`,
  * which is this row's noise floor and is why the figure above is a median of arm minima rather than
  * a single run. The six CONTROL shapes in that A/B — `hop`, `hopIn`, `optional`, `coalesce`,
  * `chooseConst`, `chooseTwoArm` — none moved beyond that floor; `chooseTwoArm` read 1.03x on minima
@@ -39,7 +39,7 @@ import { optionalSingleHop } from './optional-hop.js';
  * is not optional for a new rung: [[executor-edits-perturb]], where a new walk variant cost
  * UNRELATED rows up to 16% and item 1466 declined a 3.3x on exactly that ground.
  *
- * ⚠️⚠️ **NO CSR ARM HERE, AND THAT IS A MEASUREMENT RATHER THAN AN OMISSION — the fixture's
+ * **NO CSR ARM HERE, AND THAT IS A MEASUREMENT RATHER THAN AN OMISSION — the fixture's
  * dominant arm touches no adjacency at all.** Item 1999's rung gives BOTH arms a CSR because its
  * test (`has('n', 0)` over `n = i % 97`) sends 96 of 97 vertices into a hop. This shape's test is
  * the value itself, with `option(0)` and `option(1)` the only routed values — so **95 of every 97
@@ -49,7 +49,7 @@ import { optionalSingleHop } from './optional-hop.js';
  * the hand ceiling above is a BUCKET walk and is still the honest floor (item 1951's rule): there
  * are almost no buckets to walk.
  *
- * ⚠️ AND THE BARE HOP IS NOT THIS ROW'S FLOOR EITHER, for the same reason — a hop walks every
+ * AND THE BARE HOP IS NOT THIS ROW'S FLOOR EITHER, for the same reason — a hop walks every
  * vertex's adjacency where this shape walks 2/97 of them, so the hop row on the screen is the
  * SLOWER computation. Comparing against it would have hidden the entire 7.2x.
  */
@@ -68,7 +68,7 @@ const armOf = (plan: Plan): Arm | null => {
 };
 
 /**
- * ⚠️⚠️ **THE OPTION KEYS ARE KEYED RAW, AND THE GATE BELOW IS WHAT MAKES THAT EQUAL `tupleKey`.**
+ * **THE OPTION KEYS ARE KEYED RAW, AND THE GATE BELOW IS WHAT MAKES THAT EQUAL `tupleKey`.**
  * `branchStep` matches by VALUE through `tupleKey([match])` — TinkerPop keys `.option()` through a
  * Java `Map`, so a structurally-equal list or map token matches. A `Map` keyed on the raw value uses
  * SameValueZero instead, and the two agree for a string, a boolean and a FINITE number (`+0`/`-0`
@@ -84,9 +84,9 @@ const armOf = (plan: Plan): Arm | null => {
  * widened this without widening the lookup would answer a different arm, which is a wrong answer
  * rather than a slow one.
  *
- * ⚠️ FIRST WINS on a duplicate option key, because `branchStep` uses `indexOf` on the key array.
+ * FIRST WINS on a duplicate option key, because `branchStep` uses `indexOf` on the key array.
  *
- * ⚠️⚠️ **IT ALSO REFUSES `undefined`, AND `branchWalk` DEPENDS ON THAT RATHER THAN MERELY BENEFITING
+ * **IT ALSO REFUSES `undefined`, AND `branchWalk` DEPENDS ON THAT RATHER THAN MERELY BENEFITING
  * FROM IT.** A vertex LACKING the test key reads as `undefined`, and the walk relies on no option
  * being keyed `undefined` so that such a vertex falls through to the fallback — which is where
  * `branchStep` sends it, since `values(k)` produces nothing for it and `sawResult` stays false.
@@ -96,7 +96,7 @@ const keyable = (k: unknown): boolean =>
   typeof k === 'string' || typeof k === 'boolean' || (typeof k === 'number' && Number.isFinite(k));
 
 /**
- * ⚠️ ONE LOOP, PARAMETERIZED, AT MODULE SCOPE — [[ts-closure-size-is-load-bearing]], where a walk
+ * ONE LOOP, PARAMETERIZED, AT MODULE SCOPE — [[ts-closure-size-is-load-bearing]], where a walk
  * written inline in a returned closure gave UNRELATED queries a new slow mode at 4x.
  */
 type BranchSpec = {
@@ -115,7 +115,7 @@ const branchWalk = (graph: Graph, spec: BranchSpec): HopWalk => ({
     for (const v of graph.vertices) {
       const props = (v as Element).properties;
       /*
-       * ⚠️⚠️ **NO `testKey in props` CHECK, AND A SURVIVING MUTANT IS WHY.** `projectValues` yields
+       * **NO `testKey in props` CHECK, AND A SURVIVING MUTANT IS WHY.** `projectValues` yields
        * a key that is PRESENT (`k in props`), so a `values(k)` test over a vertex LACKING `k`
        * produces nothing at all: `branchStep`'s `sawResult` stays false, no option can match, and
        * the traverser goes to `default`. So the presence test LOOKS load-bearing — and it is
@@ -124,7 +124,7 @@ const branchWalk = (graph: Graph, spec: BranchSpec): HopWalk => ({
        * answer by the same route. Item 2015's mutation round deleted the check and caught nothing,
        * which is the definition of dead code rather than a missing test (item 1999's lesson).
        *
-       * ⚠️ THE COUPLING IS REAL AND IS PINNED: this is correct ONLY while `keyable` refuses
+       * THE COUPLING IS REAL AND IS PINNED: this is correct ONLY while `keyable` refuses
        * `undefined`, so the route test asserts `option(undefined)` DECLINES. Widen `keyable` to
        * admit it and this line silently starts answering the fallback where the engine answers that
        * option.
@@ -132,7 +132,7 @@ const branchWalk = (graph: Graph, spec: BranchSpec): HopWalk => ({
       const arm = byValue.get(props[testKey]) ?? fallback;
 
       /*
-       * ⚠️ NO MATCH AND NO `none()` DROPS THE ROW, which is the opposite of `choose`'s absent-else.
+       * NO MATCH AND NO `none()` DROPS THE ROW, which is the opposite of `choose`'s absent-else.
        * `branchStep`'s `if (target)` runs nothing when neither an option nor a default was found, so
        * the traverser vanishes — while `chooseStep` PASSES IT THROUGH. Item 2014's rung carries the
        * other rule for the other step, and conflating them would be a wrong answer each way.
@@ -155,7 +155,7 @@ const branchWalk = (graph: Graph, spec: BranchSpec): HopWalk => ({
     }
   },
   /*
-   * ⚠️⚠️ THE EAGER `drain` IS NOT OPTIONAL, AND ITEM 1998 PAID FOR LEARNING THAT TWICE. `toArray`
+   * THE EAGER `drain` IS NOT OPTIONAL, AND ITEM 1998 PAID FOR LEARNING THAT TWICE. `toArray`
    * PREFERS `drain` when a walk offers one (item 1412), so a walk without one is measured against
    * controls that have it with its generator hand tied — item 1998's route read 72.70 ms
    * generator-only against a 47.05 control and the whole remaining 1.55x was the missing drain.
@@ -163,7 +163,7 @@ const branchWalk = (graph: Graph, spec: BranchSpec): HopWalk => ({
    * fill it reads 10.58 (1.73x), so the drain was a THIRD of the residual over the ceiling — worth
    * its duplicated loop and not more.
    *
-   * ⚠️ THE TWO FILLS ARE THE SAME LOOP WRITTEN TWICE — item 169's rule. Gremlin results are compared
+   * THE TWO FILLS ARE THE SAME LOOP WRITTEN TWICE — item 169's rule. Gremlin results are compared
    * ORDERED, so a divergence between them is a cross-engine failure rather than a style question,
    * and `battery-2015.mjs` compares them positionally across three asks.
    */
@@ -218,17 +218,17 @@ const pickFor = (
   }
 
   /*
-   * 🔑 **A TERMINAL THIS WALK DOES NOT PROJECT STILL GETS THE WALK (item 2028).** `count()` used to
+   * **A TERMINAL THIS WALK DOES NOT PROJECT STILL GETS THE WALK (item 2028).** `count()` used to
    * decline the ENTIRE plan here, so the route census read this family's count shape GENERIC with
    * **4002 `applyStep` calls** — the sub-plan re-dispatched per traverser, which is exactly the cost
    * the rung exists to remove. The same decision item 1956 made for the edge-filter rung and item
    * 2027 for the `optional` one; a `pickFor` audit found four rungs still carrying the gap.
    *
-   * ⚠️ IT IS NOT CONSUMED: this walk has nothing to contribute to a count beyond yielding the
+   * IT IS NOT CONSUMED: this walk has nothing to contribute to a count beyond yielding the
    * elements, so `count` stays in `rest` and runs over this stream. Since item 2020 that residual is
    * counted on the walk's `drain`.
    *
-   * ⚠️ AND THE GATE NEED NOT CHECK `count`'s SCOPE, where item 2020's FUSED count must: an
+   * AND THE GATE NEED NOT CHECK `count`'s SCOPE, where item 2020's FUSED count must: an
    * unconsumed terminal is still executed by its own step, so `Scope.local` is honoured by
    * `countStep` itself. Item 2020 replaces the count, so there the scope is refused at the gate.
    */
@@ -293,7 +293,7 @@ export const branchValueHop = (plan: Plan, graph: Graph): HopValues | undefined 
     return undefined;
   }
 
-  // ⚠️ AN ABSENT `none()` IS ADMITTED as a DROP, not declined — see `branchWalk`. A PRESENT one must
+  // AN ABSENT `none()` IS ADMITTED as a DROP, not declined — see `branchWalk`. A PRESENT one must
   // be an arm this rung can serve, or the whole shape declines: reading a refused `none()` as an
   // absent one would drop rows the engine emits.
   const fallback = wrapper.default === undefined ? undefined : armOf(wrapper.default);

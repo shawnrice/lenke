@@ -1,15 +1,15 @@
 /**
- * ⚠️⚠️ **DOES A PROTOTYPE METHOD SURVIVE MULTIPLE INSTANCES WHERE AN ARROW FIELD DOES NOT? (item 2282)**
+ * **DOES A PROTOTYPE METHOD SURVIVE MULTIPLE INSTANCES WHERE AN ARROW FIELD DOES NOT? (item 2282)**
  *
- * 🔑 Item 2281 found that `new Graph()` mints a new function object per instance for every arrow-field
+ * Item 2281 found that `new Graph()` mints a new function object per instance for every arrow-field
  * method, so a call site seeing 9 graphs goes **megamorphic** — 46 ns became 222 ns, 4.8x. With ONE graph
- * there is nothing to fix. ⚠️ But **multiple graphs is a real deployment shape here**: per-tenant or
+ * there is nothing to fix. But **multiple graphs is a real deployment shape here**: per-tenant or
  * per-room graphs, the NDJSON fork/merge path, and every test file.
  *
- * ✅ This is the mechanism in ISOLATION, before touching the engine: two classes identical but for how the
+ * This is the mechanism in ISOLATION, before touching the engine: two classes identical but for how the
  * method is declared, each measured with 1 instance and with 9 round-robin.
  *
- * ⚠️ If `proto` at 9 instances matches `proto` at 1, the fix is real and the engine can have it. If both
+ * If `proto` at 9 instances matches `proto` at 1, the fix is real and the engine can have it. If both
  * declarations degrade equally, the megamorphism is about the RECEIVER's hidden class, not the function
  * object, and converting methods would buy nothing.
  */

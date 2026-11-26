@@ -7,7 +7,7 @@
 # ([[executor-edits-perturb]]: up to 16% on unrelated rows). CLAUDE.md: single-run against
 # single-run has not survived repetition here before.
 #
-# ⚠️ EACH ARM ASSERTS IT IS THE CODE IT CLAIMS BEFORE MEASURING. CLAUDE.md records an A/B where one
+# EACH ARM ASSERTS IT IS THE CODE IT CLAIMS BEFORE MEASURING. CLAUDE.md records an A/B where one
 # of the two files was never written, so the "after" reading was the "before" code — a null that
 # looks like a result. `hopExistence` must appear in `dispatch.ts` exactly in POST and never in PRE,
 # and a mismatch exits non-zero instead of measuring.

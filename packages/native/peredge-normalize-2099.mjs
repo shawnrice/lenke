@@ -2,17 +2,17 @@
  * Item 2099 — the workload screen reports ms and OUTPUT rows. For a hop row the work is per INPUT
  * EDGE, so dividing by output rows invents variation that is not there.
  *
- * ⚠️⚠️ THE TRAP, CONCRETELY. `edge: outE.has(w).inV` reads 24.54 ms for 171,428 rows = **143 ns a
+ * THE TRAP, CONCRETELY. `edge: outE.has(w).inV` reads 24.54 ms for 171,428 rows = **143 ns a
  * row**, which looks like 5x a bare `values` scan's 28. But its `has(w, gt(3))` filters 600,000 edges
  * down to those rows, so the engine did 600,000 edges' work: **41 ns an input edge**, which is
  * ordinary. The row is FUSED (the census shows `edgef: outE has inV values` at 0 `applyStep` calls),
  * so there was never a route gap to find.
  *
- * 🔑 WHAT THIS COMPUTES: the screen's own ms, divided by the INPUT the shape actually walks rather
+ * WHAT THIS COMPUTES: the screen's own ms, divided by the INPUT the shape actually walks rather
  * than the rows it emits. A row whose per-input cost is ordinary is not a target however its per-row
  * figure reads — and a row whose per-input cost is HIGH is one even if it emits few rows.
  *
- * ⚠️ The input size per shape is DECLARED here, not inferred: `V()` shapes walk `NODES` vertices,
+ * The input size per shape is DECLARED here, not inferred: `V()` shapes walk `NODES` vertices,
  * one-hop shapes walk `NODES * FANOUT` edges, two-hop shapes walk the product. Getting it wrong is
  * the same error this probe exists to correct, so each entry says which it is.
  */
@@ -43,7 +43,7 @@ const rows = [
   { name: 'pathdep: path().by(k)', ms: 22.61, out: 300000, input: EDGES, kind: 'edges' },
   { name: 'coalesce: hop + identity', ms: 18.91, out: 300000, input: EDGES, kind: 'edges' },
   { name: 'agg: hop values min', ms: 15.79, out: 1, input: EDGES, kind: 'edges' },
-  // ⚠️ A SCAN, not a hop: its input is the vertex count, which is why it is marked differently.
+  // A SCAN, not a hop: its input is the vertex count, which is why it is marked differently.
   { name: 'scan: values (reference)', ms: 2.81, out: NODES, input: NODES, kind: 'vertices' },
 ];
 
@@ -65,7 +65,7 @@ for (const r of rows) {
 }
 
 /*
- * 🔑 THE READING. Excluding `tree` (closed three times over: items 1922/1925/1954), the hop rows
+ * THE READING. Excluding `tree` (closed three times over: items 1922/1925/1954), the hop rows
  * should cluster — and a row standing OUT on ns/INPUT is the only kind of target this screen can
  * honestly nominate.
  */
@@ -81,22 +81,22 @@ console.log(
 );
 
 /*
- * ⚠️⚠️ **THE HONEST READING, CORRECTING THIS PROBE'S FIRST CONCLUSION.** I wrote that "the per-row view
+ * **THE HONEST READING, CORRECTING THIS PROBE'S FIRST CONCLUSION.** I wrote that "the per-row view
  * invents variation the per-input view does not show" — and at this fixture size that is OVERSTATED.
  * `NODES * FANOUT` edges produce `NODES * FANOUT` rows, so for nine of these eleven rows output EQUALS
  * input and the normalization changes nothing at all.
  *
- * 🔑 It corrects exactly ONE row — `edge: outE.has(w).inV`, whose `has(w, gt(3))` filters 300,000 edges
+ * It corrects exactly ONE row — `edge: outE.has(w).inV`, whose `has(w, gt(3))` filters 300,000 edges
  * to 171,428 rows: **143.2 ns a row becomes 81.8 ns an input edge**, which moves it from apparent
  * outlier to the middle of the pack. That is a real correction and it is one row, not a general effect.
  */
 console.log(
-  '\n  ⚠️ the normalization changes ONE row: edge: outE.has(w).inV, 143.2 ns/row -> 81.8 ns/edge.\n' +
+  '\n  the normalization changes ONE row: edge: outE.has(w).inV, 143.2 ns/row -> 81.8 ns/edge.\n' +
     '     For the rest, output == input at this fixture, so the two views agree.',
 );
 
 /*
- * 🔑 AND THE BAND HAS NO HIDDEN TARGET. Excluding `tree` (closed at 1922/1925/1954), the hop rows run
+ * AND THE BAND HAS NO HIDDEN TARGET. Excluding `tree` (closed at 1922/1925/1954), the hop rows run
  * 52.6 -> 179.1 ns an input edge in a smooth gradient that tracks how much each shape does per edge.
  * The two dearest are the `store` rows, which item 2098 already priced at 2.1x and left blocked on an
  * owner-level statefulness question. There is no outlier left in this band to nominate.

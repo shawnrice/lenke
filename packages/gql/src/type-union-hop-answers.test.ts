@@ -7,12 +7,12 @@ import { describe, expect, test } from 'bun:test';
  * fell to the general matcher at **651 ns a row against the single-type spelling's 91**.
  * `walkUnion` takes it: 7.61x, and 19.72x with a `RETURN DISTINCT` on top.
  *
- * ⚠️ THE DOUBLE-COUNT IS THE WHOLE RISK, and it is invisible on an ordinary fixture. Iterating the
+ * THE DOUBLE-COUNT IS THE WHOLE RISK, and it is invisible on an ordinary fixture. Iterating the
  * `E` bucket and then the `F` bucket visits an edge carrying BOTH labels twice, where `[:E|F]` must
  * yield it once. So every fixture below that tests the union carries a MULTI-LABEL edge, and the
  * oracle is the two-clause spelling (`MATCH … MATCH …`), which cannot reach this rung at all.
  *
- * ⚠️ AND THE GUARD IS A RUN-TIME ONE, which is why an answer test can reach it: the walk reads
+ * AND THE GUARD IS A RUN-TIME ONE, which is why an answer test can reach it: the walk reads
  * `graph.multiTypeEdgeCount` per execution and only pays for de-duplication when the graph actually
  * holds such an edge. A fixture with no multi-label edge therefore exercises the FAST arm, and one
  * with a multi-label edge exercises the DEDUPING arm — both are tested, because a bug in either is
@@ -79,7 +79,7 @@ const singleLabelled = (): Graph =>
 /**
  * THE CHAIN WIDTHS — item 1847, the three-segment-and-up twin of the two-segment rung above.
  *
- * ⚠️ BOTH CHAIN WALKS MUST BE REACHED, and the projection decides which. `farEndOnly` routes a
+ * BOTH CHAIN WALKS MUST BE REACHED, and the projection decides which. `farEndOnly` routes a
  * projection reading ONLY the far variable to the blocked level-synchronous `sweepUnion`, and
  * anything reading an interior variable to the depth-first `walkUnion`. They are different code
  * with the same double-count hazard, so every case below is asked in both shapes: `RETURN d.n`
@@ -149,7 +149,7 @@ describe('a type-alternation chain of three or more segments', () => {
   });
 
   /**
-   * ⚠️ MORE STARTS THAN ONE SWEEP BLOCK, so the block boundary and the `cur`/`nxt` swap are
+   * MORE STARTS THAN ONE SWEEP BLOCK, so the block boundary and the `cur`/`nxt` swap are
    * actually crossed. `SWEEP_BLOCK` is 4096 and `nxtLen` is state on the sweep object; a walk that
    * mismanaged it would be correct on a small fixture and wrong on a large one.
    */
@@ -183,7 +183,7 @@ describe('a type-alternation chain of three or more segments', () => {
 
 describe('a type-alternation hop', () => {
   /**
-   * ⚠️ THE ORACLE IS THE TWO-CLAUSE SPELLING. `MATCH (a)-[:E|F]->(b) MATCH (b)-[:E|F]->(c)` asks
+   * THE ORACLE IS THE TWO-CLAUSE SPELLING. `MATCH (a)-[:E|F]->(b) MATCH (b)-[:E|F]->(c)` asks
    * the same question with two clauses, which this rung requires exactly two clauses to claim — so
    * it runs the general matcher and is a genuine second implementation rather than a hand-written
    * expectation.
@@ -215,7 +215,7 @@ describe('a type-alternation hop', () => {
   });
 
   /**
-   * ⚠️ THE EXPLICIT DOUBLE-COUNT CASE, stated as a count rather than only as an agreement: with
+   * THE EXPLICIT DOUBLE-COUNT CASE, stated as a count rather than only as an agreement: with
    * every edge carrying both labels, `[:E|F]` must yield exactly the paths `[:E]` yields, because
    * the two label sets select the same edges.
    */

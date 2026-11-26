@@ -7,7 +7,7 @@
  * NaN check, and two call layers. This scans the column ONCE and, when it qualifies, sorts with the
  * reduced comparator instead.
  *
- * ⚠️ THIS IS NOT A SECOND DERIVATION OF "WHICH ROW SORTS FIRST", which is what `sortRowsByColumns`'s
+ * THIS IS NOT A SECOND DERIVATION OF "WHICH ROW SORTS FIRST", which is what `sortRowsByColumns`'s
  * own note forbids ("a second derivation ... is the one thing byte-identity cannot survive"). It is
  * branch ELIMINATION, and the reduction is exact in both directions:
  *
@@ -39,13 +39,13 @@
  * PRISTINE side. The control moved up to 16% the WRONG way, which makes these numbers conservative
  * rather than flattered. Quote ~1.45x as the floor of the range.
  *
- * ⚠️ LOAD CONTAMINATION VOIDED AN EARLIER RUN, AND THE GAUGE IS HOW IT WAS CAUGHT. One run read
+ * LOAD CONTAMINATION VOIDED AN EARLIER RUN, AND THE GAUGE IS HOW IT WAS CAUGHT. One run read
  * every absolute ~1.8x high — the control went 82-92 ms to 154-165 — because 48 foreign
  * `while :; do :; done` spinners had the box at load 25. The RATIOS still looked plausible (1.23x,
  * 1.53x), which is the trap: a contaminated run does not announce itself in the ratio. Re-run gated
  * on `/proc/loadavg`, and distrust any reading whose control absolute has moved off its usual band.
  *
- * ⚠️ A NUMERIC ARM WAS BUILT, MEASURED AND DROPPED — do not rebuild it without reading this.
+ * A NUMERIC ARM WAS BUILT, MEASURED AND DROPPED — do not rebuild it without reading this.
  * It classified an all-number, NaN-free column and used the same reduced comparator (for numbers
  * `compareValues` also ends in `x < y ? -1 : x > y ? 1 : 0`, so the reduction was equally exact).
  * Six readings across four runs: **0.93x, 1.05x, 1.06x, 1.11x, 1.14x, 1.18x** — it STRADDLES 1.0,
@@ -61,12 +61,12 @@
  * alone), so the same scan is cheap relative to the saving. THE OPEN QUESTION IS THEREFORE A
  * CHEAPER CLASSIFICATION, NOT THIS ARM. Rebuilding the arm as written will measure ~1.0x again.
  *
- * ⚠️ **THE GREMLIN SIDE ANSWERED THAT QUESTION AT ITEM 1807, AND THE ANSWER IS TO STOP SCANNING.**
+ * **THE GREMLIN SIDE ANSWERED THAT QUESTION AT ITEM 1807, AND THE ANSWER IS TO STOP SCANNING.**
  * Its `fusedProjectedOrder` already walks every value before sorting, to raise the graph-element
  * fault — so the type test rides that pass and the separate scan disappears: **1.19x on the
  * descending row, 1.10x ascending, control flat**, with the numeric arm included for free.
  *
- * ⚠️ **AND IT DOES NOT TRANSFER HERE, FOR A REASON THAT IS IN THE TWO SCANS' SHAPES** (item 1808).
+ * **AND IT DOES NOT TRANSFER HERE, FOR A REASON THAT IS IN THE TWO SCANS' SHAPES** (item 1808).
  * Gremlin classifies a FLAT ARRAY — `acc[i]`, an element read — while this one classifies
  * `rows[i][col]`, a PROPERTY read on a `Row` object, once per row. That is the cost the six
  * straddling readings above are made of, and it is also why the same reduction nets 1.45x on
@@ -80,11 +80,11 @@
  * only by sorted queries. Measure the projection's own rows as controls before trying it; that loop
  * runs for every query in the engine.
  *
- * ⚠️ A SECOND THING WAS WRONG AND IS FIXED: `ordered-rows.ts`'s call-site comment claimed "~1.06x
+ * A SECOND THING WAS WRONG AND IS FIXED: `ordered-rows.ts`'s call-site comment claimed "~1.06x
  * on a numeric one" and "why the numeric arm is KEPT". `SortColumnKind` is `'string' | 'generic'`.
  * There is no numeric arm, and a comment at the call site that describes one is worse than silence.
  *
- * ⚠️ THE SCAN IS PURE COST AND BUYS NO WARM-UP — tested, because the OPPOSITE looked true. A
+ * THE SCAN IS PURE COST AND BUYS NO WARM-UP — tested, because the OPPOSITE looked true. A
  * three-arm run put POST ahead of a NO-SCAN floor build in both rounds, which is impossible if the
  * floor is really the floor, and the tempting story was that the scan pre-touches every `row[col]`
  * so the comparator's ~20M property reads start monomorphic. REFUTED by an arm that runs the scan
@@ -92,12 +92,12 @@
  * PRE by the scan's own cost. The floor anomaly was drift. Do not reach for "the scan also warms
  * the cache" as an argument.
  *
- * ⚠️ THE COMPARATOR BODIES ARE THE if/return FORM BECAUSE `no-nested-ternary` IS AN ERROR HERE, and
+ * THE COMPARATOR BODIES ARE THE if/return FORM BECAUSE `no-nested-ternary` IS AN ERROR HERE, and
  * `compareValues` itself ends that way. The arms above were measured with the equivalent nested
  * ternary, so the reshape was RE-MEASURED rather than assumed equivalent -- this repo has a recorded
  * habit of executor reshapes costing unrelated rows a few percent.
  *
- * ⚠️ REJECTED, WITH NUMBERS — SORTING NATIVELY VIA A COMPOSITE KEY (item 1717). Once the
+ * REJECTED, WITH NUMBERS — SORTING NATIVELY VIA A COMPOSITE KEY (item 1717). Once the
  * comparator is a bare `<`, what is left is ~20M JS->native crossings, and V8's comparator-LESS
  * `Array.prototype.sort()` avoids them entirely: for surrogate-free strings it sorts by code unit,
  * which is the same order this arm produces. The floor is real and large — 1,000,000 keys of the
@@ -121,7 +121,7 @@
  *
  * `mapBucket` is REFUTED outright: building the Map costs more than the comparator saves.
  *
- * ⚠️ AND THE `composite` 1.37x IS WITHDRAWN — IT WAS MEASURED ON UNREPRESENTATIVE DATA (item
+ * AND THE `composite` 1.37x IS WITHDRAWN — IT WAS MEASURED ON UNREPRESENTATIVE DATA (item
  * 1718). Those arms used synthetic keys drawn as a PERMUTATION, so all 1,000,000 were DISTINCT. The
  * engine's own rows carry 200,000 distinct names over 1,000,000 rows, and on THOSE the composite is
  * **166.6 ms against the comparator's 30.5 — 5.5x WORSE**. So it is refuted on SPEED as well as on
@@ -129,7 +129,7 @@
  * worth keeping: a sort arm must be measured on the engine's real key distribution, because both
  * V8's interned-string pointer compare and TimSort's run detection depend on it.
  *
- * ⚠️ AND IT IS DECLINED ON MEMORY, WHICH IS THE NUMBER THAT DECIDES IT. Measured peak
+ * AND IT IS DECLINED ON MEMORY, WHICH IS THE NUMBER THAT DECIDES IT. Measured peak
  * `heapUsed` over the same 1,000,000-row sort: the comparator path adds **0 MB**, the composite
  * adds **111 MB** — peak 51 -> 162 MB, **3.2x** — because it materializes a second array of
  * 1,000,000 strings. It scales linearly, so a 10M-row sort would add ~1.1 GB. This engine runs in
@@ -144,7 +144,7 @@
  * ever wanted over memory this is the mechanism and 1.37x/111 MB is the trade — but not by
  * default, and not without an explicit opt-in.
  *
- * ⚠️ FULL SORT ONLY, deliberately. `boundedTopKeyed`'s heap does O(n log cap) comparisons, not
+ * FULL SORT ONLY, deliberately. `boundedTopKeyed`'s heap does O(n log cap) comparisons, not
  * O(n log n), so an O(n) scan is a much larger fraction of its work and could cost more than it saves.
  * The scan pays for itself here because ~20M comparisons are replaced in exchange for ~1M tests.
  */
@@ -155,7 +155,7 @@ import type { Row } from './core.js';
 /**
  * Which reduced comparator a column admits, or `generic` for the untouched `compareSort`.
  *
- * ⚠️ THERE IS NO `'number'` MEMBER, AND THAT IS A MEASURED DECISION, NOT AN OVERSIGHT — see the
+ * THERE IS NO `'number'` MEMBER, AND THAT IS A MEASURED DECISION, NOT AN OVERSIGHT — see the
  * dropped-arm record in this module's header before adding one back.
  */
 export type SortColumnKind = 'string' | 'generic';
@@ -163,7 +163,7 @@ export type SortColumnKind = 'string' | 'generic';
 /**
  * Classify one sort column by scanning its values once.
  *
- * ⚠️ IT EXITS ON THE FIRST DISQUALIFYING VALUE, so a column that does not qualify pays a partial scan
+ * IT EXITS ON THE FIRST DISQUALIFYING VALUE, so a column that does not qualify pays a partial scan
  * rather than a whole one — a mixed column usually disqualifies within a few rows. The cost this must
  * stay under is the sort it is trying to help, and a full scan is ~1/20 of a 1,000,000-row sort's
  * comparisons.
@@ -198,7 +198,7 @@ export const sortColumnKind = (rows: readonly Row[], col: string): SortColumnKin
 /**
  * The reduced comparator for a classified column, or `undefined` for `generic`.
  *
- * ⚠️ ONE EXPRESSION SERVES BOTH KINDS, and that is not a shortcut: the reduction above lands on the
+ * ONE EXPRESSION SERVES BOTH KINDS, and that is not a shortcut: the reduction above lands on the
  * same `x < y ? -1 : x > y ? 1 : 0` for strings and for numbers, because `compareCodePoints`' own
  * surrogate-free fast path is that expression. Writing two identical bodies would invite them to drift.
  *

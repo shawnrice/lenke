@@ -6,12 +6,12 @@
  * entirely on amortization, and `chainCsrFor` memoizes on `graph.topologyVersion`, so ANY topology
  * write drops the generation whole.
  *
- * ⚠️ MEASURED THROUGH THE ENGINE'S OWN BUILD, not the hand-rolled one. The ceiling probe's 254 ms is
+ * MEASURED THROUGH THE ENGINE'S OWN BUILD, not the hand-rolled one. The ceiling probe's 254 ms is
  * my own CSR builder; `buildChainCsr` may be cheaper or dearer, and the decision depends on which.
  * The THREE-hop row already takes `slotChainCount`, so timing its first call in a fresh process
  * against its later ones prices the engine's real build directly.
  *
- * ⚠️ AND THE INTERLEAVED ARM IS THE ONE THAT DECIDES IT. A serving workload that writes between
+ * AND THE INTERLEAVED ARM IS THE ONE THAT DECIDES IT. A serving workload that writes between
  * reads invalidates the memo on every write, so the build is paid per read rather than once. If the
  * three-hop row is already slower under interleaving than it is cold, that exposure exists today and
  * widening it to the commonest two-hop shape is a different proposition from a free 4x.
@@ -60,7 +60,7 @@ console.log(
 );
 console.log(`  3-hop WARM (min of 4)         ${warmMin.toFixed(2)} ms`);
 /**
- * ⚠️⚠️ `cold - warm` IS NOT THE BUILD COST, and item 1860 quoted it as though it were — reporting
+ * `cold - warm` IS NOT THE BUILD COST, and item 1860 quoted it as though it were — reporting
  * 221 ms for a build that is really ~158. The first call in a process also pays the JIT tiering up,
  * and item 1861 measured exactly how much: with the dense arm KILLED, so no CSR is built at all,
  * `cold - warm` still read **157 ms**. A subtraction that large cannot be attributed to one of two
@@ -68,7 +68,7 @@ console.log(`  3-hop WARM (min of 4)         ${warmMin.toFixed(2)} ms`);
  * the code is warm and the only thing a write changes is that the memo must be rebuilt.
  */
 console.log(
-  `  => cold-warm (build AND JIT)   ${(cold.ms - warmMin).toFixed(2)} ms   ⚠️ NOT the build alone`,
+  `  => cold-warm (build AND JIT)   ${(cold.ms - warmMin).toFixed(2)} ms   NOT the build alone`,
 );
 
 // THE TWO-HOP ROW, which does NOT use the CSR today — the shape item 1860 declined.
@@ -77,7 +77,7 @@ const twoWarm = Math.min(once(TWO).ms, once(TWO).ms, once(TWO).ms);
 console.log(`  2-hop today (min of 3)        ${twoWarm.toFixed(2)} ms   (no CSR)`);
 
 /**
- * ⚠️ THE INTERLEAVED ARM. One `addVertex` with one edge advances `topologyVersion`, which drops the
+ * THE INTERLEAVED ARM. One `addVertex` with one edge advances `topologyVersion`, which drops the
  * memoized generation — so each read below pays the build again. This is the serving shape
  * `bun run bench:usage` exists for, and it is where a memo that costs 20x its query is dangerous
  * rather than merely cold once.
@@ -104,7 +104,7 @@ console.log(`  => a write costs this row      ${(interMean / warmMin).toFixed(2)
  * rebuild. This is the number item 1695's criterion needs — "safe iff the walk costs more than the
  * rebuild" — and it is the one to quote, not `cold - warm` above.
  *
- * ⚠️ WITH THE DENSE ARM KILLED THIS GOES TO ~0 (444.41 against a 437.31 warm), which is the control
+ * WITH THE DENSE ARM KILLED THIS GOES TO ~0 (444.41 against a 437.31 warm), which is the control
  * that says the subtraction really is isolating the rebuild rather than some other per-write cost.
  */
 console.log(`  => ONE rebuild costs           ${(interMean - warmMin).toFixed(2)} ms   (direct)`);

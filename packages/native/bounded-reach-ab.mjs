@@ -4,7 +4,7 @@
  * `detectReachableShortcut` required `q.max === null`, so an UNBOUNDED `->+` got a BFS over the
  * reached set while a BOUNDED `{1,3}` was sent to path enumeration.
  *
- * ⚠️ TWO CONTROLS THAT CANNOT MOVE, and they are different kinds:
+ * TWO CONTROLS THAT CANNOT MOVE, and they are different kinds:
  *   - `ACYCLIC {1,3}` is REFUSED by the gate on purpose (ACYCLIC genuinely diverges from set
  *     reachability — on one node with a self-loop it answers 0 where a BFS answers 1), so it keeps
  *     the enumeration path. If it moves, the gate is admitting something it must not.
@@ -12,7 +12,7 @@
  *     gate perturbed the arm that was already there.
  *   - a plain 2-hop chain reaches a different rung entirely.
  *
- * ⚠️ ONE SHAPE PER PROCESS; arms asserted by `maxDepth` in the built dist.
+ * ONE SHAPE PER PROCESS; arms asserted by `maxDepth` in the built dist.
  *
  *     bun bounded-reach-ab.mjs
  */
@@ -141,13 +141,13 @@ console.log(`\n# bounded-reach-ab — ${ROUNDS} alternated rounds, N=${NODES} F=
 for (const name of Object.keys(SHAPES)) {
   const pre = Math.min(...rounds.map((x) => x.PRE[name].ms));
   const post = Math.min(...rounds.map((x) => x.POST[name].ms));
-  // ⚠️ THE ANSWER GUARD IS CROSS-ARM: a rung that returned different rows would be the fastest
+  // THE ANSWER GUARD IS CROSS-ARM: a rung that returned different rows would be the fastest
   // thing in this table.
   const same = rounds[0].PRE[name].digest === rounds[0].POST[name].digest;
 
   console.log(
     `${name.padEnd(24)} PRE ${pre.toFixed(2).padStart(8)} ms   POST ${post
       .toFixed(2)
-      .padStart(8)} ms   ${(pre / post).toFixed(2)}x${same ? '' : '   ⚠️ ANSWER DIFFERS'}`,
+      .padStart(8)} ms   ${(pre / post).toFixed(2)}x${same ? '' : '   ANSWER DIFFERS'}`,
   );
 }

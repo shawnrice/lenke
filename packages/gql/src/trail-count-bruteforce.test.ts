@@ -201,7 +201,7 @@ describe('bounded trail/walk counts agree with enumeration', () => {
     // trail with an endpoint label and declines at RUN TIME only when the label actually filters, so
     // the label spelling is the one that can reach the depth-4 terms with a non-trivial mask.
     //
-    // ⚠️ THIS IS WHY IT MATTERS. Item 1399's three mutants — dropping that runtime decline, ignoring
+    // THIS IS WHY IT MATTERS. Item 1399's three mutants — dropping that runtime decline, ignoring
     // TRAIL mode, relaxing the compile gate — ALL SURVIVED its nine tests, because on its fixtures
     // the closed form answered a filtering label correctly anyway (44.2 ms against the declined
     // path's 435.8, same count). That makes the gate look removable and is NOT enough to remove it:
@@ -353,7 +353,7 @@ describe('bounded trail/walk counts agree with enumeration', () => {
     // 14.4 at 20,000 vertices. The fix builds the CSR from the in-adjacency, which the trail
     // correction inherits because it only ever sees `{off, nbr}`.
     //
-    // 🛑 THE SOURCE MUST BE SELECTIVE, and this is the whole reason the test is shaped this way.
+    // THE SOURCE MUST BE SELECTIVE, and this is the whole reason the test is shaped this way.
     // Item 586: over ALL sources, reversing every path is a bijection between the forward and
     // backward path sets, so `(a:P)-[:K]->{3}(b)` and its `<-[:K]-` twin return the SAME NUMBER
     // whatever the engine does. A total count cannot witness a direction bug. `makeGraph` gives

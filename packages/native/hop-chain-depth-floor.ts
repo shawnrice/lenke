@@ -34,7 +34,7 @@ for (let i = 0; i < NODES; i += 1) {
   g.addVertex({ id: `u${i}`, labels: ['User'], properties: { k: i % 97, n: i } });
 }
 
-/** ⚠️ Split on the REPEAT INDEX — items 1516/1518; a linear `(a*k+b)%N` makes the graph functional. */
+/** Split on the REPEAT INDEX — items 1516/1518; a linear `(a*k+b)%N` makes the graph functional. */
 let edges = 0;
 
 for (let k = 0; k < NODES * FANOUT; k += 1) {
@@ -201,7 +201,7 @@ const stacked = (depth: number): unknown[] => {
 };
 
 /**
- * ⚠️ THREE ABLATION ARMS (item 1634), separating the two things the ENGINE's stacked walk does per
+ * THREE ABLATION ARMS (item 1634), separating the two things the ENGINE's stacked walk does per
  * EDGE that `stacked` above does not. The engine measures 1218.36 ms against `stacked`'s 984.85 at
  * 50,000/5 — **1.24x** — and its windowed profile splits as `walk` 57.9%, `pick` 19.0%,
  * `get properties` 15.6%. The two candidates:
@@ -389,7 +389,7 @@ const stackedBoth = (depth: number): unknown[] => {
 };
 
 /**
- * ⚠️ TWO MORE ABLATIONS (item 1634), because the first three REFUTED both candidates. Bookkeeping is
+ * TWO MORE ABLATIONS (item 1634), because the first three REFUTED both candidates. Bookkeeping is
  * +4.8%, the `pick` CALL is +0.0% — V8 inlines a monomorphic closure called once per row — and both
  * together are +6.0% against the ENGINE's +23.4%. So ~17 points were unexplained, and the profile
  * naming `pick` at 19.0% was a nomination that priced at nothing (item 1104, in reverse).
@@ -514,7 +514,7 @@ const stackedVarKey = (depth: number): unknown[] => {
 };
 
 /**
- * ⚠️ THE SIXTH ABLATION, and it exists because five accounted for only 7.8 of the engine's 21.7
+ * THE SIXTH ABLATION, and it exists because five accounted for only 7.8 of the engine's 21.7
  * points. The `BOOKKEEPING` arm above under-modelled the engine: it reads `FWDS[d]`, a FLAT boolean
  * array, where the engine destructures a NESTED TUPLE — `const [, fwd] = hops[d]` with
  * `hops: readonly (readonly [string, boolean])[]`. That is a load of an inner array, then an indexed

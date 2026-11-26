@@ -1,12 +1,12 @@
 /**
- * ⚠️⚠️ **WHY IS A LITERAL `INSERT` 2.17x SLOWER THAN A PARAMETERIZED ONE? (item 2328)**
+ * **WHY IS A LITERAL `INSERT` 2.17x SLOWER THAN A PARAMETERIZED ONE? (item 2328)**
  *
  * `bun run bench:usage` reports `write: append node` at 345.7k ops/s and `write: append node [params]` at
- * 750.6k. 🔑 The literal row interpolates `i` into the query TEXT, so every call has a different text; the
+ * 750.6k. The literal row interpolates `i` into the query TEXT, so every call has a different text; the
  * params row reuses one text. **But `normalizeLiterals` exists exactly so a literal-bearing text can still
  * hit the parse cache** (item 2271 raised `PARSE_CACHE_CAP` to 512 for 3-4x on multi-statement sessions).
  *
- * ✅ So there are two possibilities and `parseCacheStats()` distinguishes them directly rather than by
+ * So there are two possibilities and `parseCacheStats()` distinguishes them directly rather than by
  * inference: **either the cache is MISSING on every literal call** (normalization is not reached on this
  * path), **or it is HITTING and the 2.17x is the normalization work itself.** Those have opposite fixes, so
  * guessing would be the expensive path — mechanism guesses have been punished repeatedly this session.
@@ -19,17 +19,17 @@ const ROUNDS = Number(process.env.ROUNDS ?? 7);
 const ARM = process.env.ARM ?? 'literal';
 
 /*
- * ⚠️ A FRESH GRAPH PER TIMED BLOCK, because every arm GROWS the graph — `grows: true` in the bench row.
+ * A FRESH GRAPH PER TIMED BLOCK, because every arm GROWS the graph — `grows: true` in the bench row.
  * Reusing one graph would make later reps insert into a larger graph than earlier ones and confound the
  * arm with |V|.
  */
 let seq = 0;
 
 const ARMS = {
-  /* ⚠️ A DIFFERENT TEXT EVERY CALL — the bench's literal row. */
+  /* A DIFFERENT TEXT EVERY CALL — the bench's literal row. */
   literal: (g, i) => {
     /*
-     * ⚠️ THE INTERPOLATION IS THE SUBJECT OF THIS PROBE, so the rule has to be suppressed here — and it
+     * THE INTERPOLATION IS THE SUBJECT OF THIS PROBE, so the rule has to be suppressed here — and it
      * is worth recording that **the repo already lints against this pattern**: `lenke/no-raw-interpolation`
      * forbids it for INJECTION reasons, and it happens to prevent the 2.02x cache cost too. The bench row
      * being reproduced predates the rule.
@@ -37,7 +37,7 @@ const ARMS = {
     // eslint-disable-next-line lenke/no-raw-interpolation -- this probe exists to measure the interpolated form
     query(g, `INSERT (:Event {name: 'ev${i}', score: ${i % 100}, seq: ${i}})`);
   },
-  /* ✅ ONE text, values bound — the bench's params row. */
+  /* ONE text, values bound — the bench's params row. */
   params: (g, i) => {
     query(g, 'INSERT (:Event {name: $n, score: $s, seq: $q})', {
       n: `evp${i}`,
@@ -46,7 +46,7 @@ const ARMS = {
     });
   },
   /*
-   * ✅ THE DISCRIMINATING ARM: one FIXED literal text, repeated. If the literal cost were normalization
+   * THE DISCRIMINATING ARM: one FIXED literal text, repeated. If the literal cost were normalization
    * work, this would be as slow as `literal`; if it is cache misses, this is as fast as `params`.
    */
   fixedLiteral: (g) => {
@@ -55,10 +55,10 @@ const ARMS = {
 };
 
 /*
- * ⚠️⚠️ **THE EVICTION HARM IS THE REAL QUESTION, AND IT NEEDS A MIXED WORKLOAD (item 2328).** A new text
- * MUST be parsed — that cost is unavoidable and no admission policy recovers it. 🔑 What an admission
+ * **THE EVICTION HARM IS THE REAL QUESTION, AND IT NEEDS A MIXED WORKLOAD (item 2328).** A new text
+ * MUST be parsed — that cost is unavoidable and no admission policy recovers it. What an admission
  * filter recovers is what the single-use STORE does to OTHER queries' entries: 2000 stores into a
- * 512-entry cache wipe it four times over. ✅ So the measurement that matters is a HOT query's cost alone
+ * 512-entry cache wipe it four times over. So the measurement that matters is a HOT query's cost alone
  * versus the same query interleaved with literal spam. The Rust engine already ships a "second sighting"
  * filter for this hazard (it had made a cache 1.16x WORSE on an all-miss path); whether the TS side needs
  * one is this measurement, not an argument from the Rust item.
@@ -69,41 +69,41 @@ ARMS.hotAlone = (g, i) => {
 
 ARMS.hotWithSpam = (g, i) => {
   query(g, 'MATCH (e:Event) WHERE e.seq = $q RETURN count(*) AS c', { q: i % 97 });
-  /* ⚠️ One single-use text per hot query — a caller interpolating a value into its text. */
+  /* One single-use text per hot query — a caller interpolating a value into its text. */
   // eslint-disable-next-line lenke/no-raw-interpolation -- the single-use text is what this arm measures
   query(g, `MATCH (e:Event) WHERE e.seq = ${i} RETURN count(*) AS c`);
 };
 
 /*
- * ⚠️⚠️ **THE WORK CONTROL, AND IT IS THE WHOLE COMPARISON.** `hotWithSpam` issues TWO queries an op and
+ * **THE WORK CONTROL, AND IT IS THE WHOLE COMPARISON.** `hotWithSpam` issues TWO queries an op and
  * `hotAlone` ONE, so comparing them directly measures mostly the second query — the arm-length error item
- * 2326 corrected one tick earlier. ✅ `hotWithFixed` issues TWO queries an op where BOTH texts are
+ * 2326 corrected one tick earlier. `hotWithFixed` issues TWO queries an op where BOTH texts are
  * cacheable, so `hotWithSpam` against `hotWithFixed` isolates exactly what a SINGLE-USE text costs: its
  * parse, its store, and whatever its store does to the other entry.
  */
 ARMS.hotWithFixed = (g, i) => {
   query(g, 'MATCH (e:Event) WHERE e.seq = $q RETURN count(*) AS c', { q: i % 97 });
   /*
-   * ⚠️ **THE SECOND TEXT MUST DO THE SAME WORK, NOT MERELY BE A SECOND TEXT.** The first version seeked
+   * **THE SECOND TEXT MUST DO THE SAME WORK, NOT MERELY BE A SECOND TEXT.** The first version seeked
    * `e.score`, which is NOT indexed in this fixture — so it scanned 20,000 rows and the "control" came
-   * out 50x SLOWER than the arm it was controlling for. ✅ Seeking the SAME indexed key with a different
+   * out 50x SLOWER than the arm it was controlling for. Seeking the SAME indexed key with a different
    * ALIAS gives a distinct cacheable text and identical work, which is the only fair comparison.
    */
   query(g, 'MATCH (e:Event) WHERE e.seq = $q RETURN count(*) AS n', { q: i % 97 });
 };
 
 /*
- * ✅✅ **THE CAPACITY CLIFF, WHICH IS HOW THE EVICTION COMPONENT GETS PRICED (item 2329).** Item 2328
+ * **THE CAPACITY CLIFF, WHICH IS HOW THE EVICTION COMPONENT GETS PRICED (item 2329).** Item 2328
  * measured a single-use text at 2.02x but could not split the unavoidable PARSE from the recoverable
  * STORE-AND-EVICT, because the only arm with "parses but does not store" is the sighting filter itself.
  *
- * 🔑 A POOL of distinct texts splits it a different way. Under the cache's capacity every text is stored
+ * A POOL of distinct texts splits it a different way. Under the cache's capacity every text is stored
  * once and hits forever after — parses amortize to nothing and nothing is evicted. Over capacity the same
- * pool thrashes: every text is evicted before it is seen again, so every call parses AND stores. ✅ The two
+ * pool thrashes: every text is evicted before it is seen again, so every call parses AND stores. The two
  * pool sizes differ in NOTHING ELSE, so the step between them is the eviction cost, and it also prices what
  * item 2271's `PARSE_CACHE_CAP = 512` actually buys.
  *
- * ⚠️ The texts vary only by their RETURN ALIAS, so each is a distinct cache key doing IDENTICAL work —
+ * The texts vary only by their RETURN ALIAS, so each is a distinct cache key doing IDENTICAL work —
  * item 2328's correction, where a control that varied the seeked key measured 50x slower than its arm.
  */
 const POOL = Number(process.env.POOL ?? 400);
@@ -120,7 +120,7 @@ ARMS.hotWithPool = (g, i) => {
 const arm = ARMS[ARM];
 
 /*
- * ⚠️ THE HOT ARMS READ, so they need a POPULATED graph — a fresh empty one per block would measure a
+ * THE HOT ARMS READ, so they need a POPULATED graph — a fresh empty one per block would measure a
  * seek over nothing. The write arms still get a fresh graph because they GROW it.
  */
 const seeded = (() => {

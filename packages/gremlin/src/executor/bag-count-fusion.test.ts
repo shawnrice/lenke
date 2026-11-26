@@ -1,13 +1,13 @@
 /*
  * Item 2069 — `aggregate(k).count()` / `store(k).count()` over a fused walk.
  *
- * ⚠️⚠️ **ITEM 1909 REFUSED THE PASS-THROUGH FORM ON A CONTRACT ARGUMENT, so these tests are the
+ * **ITEM 1909 REFUSED THE PASS-THROUGH FORM ON A CONTRACT ARGUMENT, so these tests are the
  * evidence for reaching past it** — the same standing `projected-fold.test.ts` holds for the `cap`
  * pair at item 1911. The argument, quoted from `index.ts`: "a side effect that also PASSES THE STREAM
  * THROUGH is a different emit contract from a barrier that replaces it, and `aggregate` and `store`
  * differ from each other on eagerness in TinkerPop."
  *
- * 🔑 **BOTH HALVES ARE TRUE AND NEITHER IS OBSERVABLE UNDER `count`, because `count` is a
+ * **BOTH HALVES ARE TRUE AND NEITHER IS OBSERVABLE UNDER `count`, because `count` is a
  * NON-CANCELLING FULL CONSUMER.** The declines below are where it becomes observable again, and they
  * are why the gate is `rest.length === 2` with a global `count` and not "a side effect somewhere".
  */
@@ -62,9 +62,9 @@ describe('aggregate/store + count fusion (item 2069)', () => {
     expect(fusableProjectedBagCount([{ kind: 'store', key: 'x' }, { kind: 'count' }])).toBe(true);
   });
 
-  test('⚠️ a NON-BAG first step declines — and this test exists because a mutant survived', () => {
+  test('a NON-BAG first step declines — and this test exists because a mutant survived', () => {
     /*
-     * ⚠️⚠️ REMOVING THE `aggregate`/`store` CHECK FROM THE GATE CHANGED NO ANSWER, because the call
+     * REMOVING THE `aggregate`/`store` CHECK FROM THE GATE CHANGED NO ANSWER, because the call
      * site in `index.ts` independently narrows (`bag.kind === 'aggregate' || bag.kind === 'store'`)
      * before reading `bag.key`. That is defence in depth and worth keeping — but it meant the GATE's
      * own contract had no test, so the mutant survived. Asserted directly here.
@@ -75,9 +75,9 @@ describe('aggregate/store + count fusion (item 2069)', () => {
     ).toBe(false);
   });
 
-  test('⚠️ `count(local)` DECLINES — it counts WITHIN each element, not the stream', () => {
+  test('`count(local)` DECLINES — it counts WITHIN each element, not the stream', () => {
     /*
-     * ⚠️ A local count is a different question entirely: it must not reach a drain of the whole walk.
+     * A local count is a different question entirely: it must not reach a drain of the whole walk.
      * Asserted because the gate reads a `scope` field that most `count` steps do not carry, so a
      * careless widening would admit it silently.
      */
@@ -116,9 +116,9 @@ describe('aggregate/store + count fusion (item 2069)', () => {
     expect(toArray(traversal(V(), out('E'), store('y'), count()), g)).toStrictEqual([5]);
   });
 
-  test('⚠️⚠️ THE BAG IS STILL POPULATED, and with the SAME CONTENTS the generic path produces', () => {
+  test('THE BAG IS STILL POPULATED, and with the SAME CONTENTS the generic path produces', () => {
     /*
-     * ⚠️⚠️ **THIS IS THE ASSERTION THE FUSION COULD MOST EASILY HAVE CHEATED.** Nothing in
+     * **THIS IS THE ASSERTION THE FUSION COULD MOST EASILY HAVE CHEATED.** Nothing in
      * `aggregate(x).count()` reads the bag, so a fusion that skipped filling it would answer 5 and
      * pass every test above — and `ast.ts` exposes `sideEffects` to expression evaluation, so a bag is
      * observable in general. Reading it back through a `cap` in a SEPARATE query cannot see this
@@ -126,7 +126,7 @@ describe('aggregate/store + count fusion (item 2069)', () => {
      * (`aggregate, count, cap`) declines the fusion and takes the generic path, which gives the
      * reference contents — and the fused two-step form must fill the bag the same way.
      *
-     * ⚠️ AND THE FUSED FORM'S OWN BAG IS ASSERTED IN THE NEXT TEST, by calling `countProjectedBag`
+     * AND THE FUSED FORM'S OWN BAG IS ASSERTED IN THE NEXT TEST, by calling `countProjectedBag`
      * directly — from outside the engine the two-step form's bag has no reader, so a unit test of the
      * function is the only place it is visible at all.
      */
@@ -138,9 +138,9 @@ describe('aggregate/store + count fusion (item 2069)', () => {
     expect((viaGeneric[0] as unknown[]).length).toBe(5);
   });
 
-  test('⚠️⚠️ `countProjectedBag` FILLS THE BAG — the one assertion a cheating fusion would pass without', () => {
+  test('`countProjectedBag` FILLS THE BAG — the one assertion a cheating fusion would pass without', () => {
     /*
-     * ⚠️⚠️ **CALLED DIRECTLY, BECAUSE THE FUSED SHAPE HAS NO READER FOR ITS BAG.** `aggregate(x).count()`
+     * **CALLED DIRECTLY, BECAUSE THE FUSED SHAPE HAS NO READER FOR ITS BAG.** `aggregate(x).count()`
      * never reads what it collected, so a fusion that returned the right number and filled nothing
      * would satisfy every other test in this file. `ast.ts` exposes `sideEffects` to expression
      * evaluation, so the bag is observable in general and skipping it is not licensed.
@@ -162,9 +162,9 @@ describe('aggregate/store + count fusion (item 2069)', () => {
     expect(ctx.sideEffects.get('x')).toStrictEqual([10, 20, 30, 10, 20, 30]);
   });
 
-  test('⚠️ `countProjectedBag` works on a walk with NO drain, and agrees with the drained one', () => {
+  test('`countProjectedBag` works on a walk with NO drain, and agrees with the drained one', () => {
     /*
-     * ⚠️ THE GENERAL ARM IS NOT DEAD CODE: `values.drain === undefined` falls back to spreading the
+     * THE GENERAL ARM IS NOT DEAD CODE: `values.drain === undefined` falls back to spreading the
      * iterable, and a walk without a drain is reachable. Same contents, same count.
      */
     const ctx = { sideEffects: new Map<string, unknown[]>() };
@@ -174,9 +174,9 @@ describe('aggregate/store + count fusion (item 2069)', () => {
     expect(ctx.sideEffects.get('y')).toStrictEqual([7, 8]);
   });
 
-  test('⚠️ THE EAGERNESS DISTINCTION IS UNTOUCHED — the shape where it is observable still declines', () => {
+  test('THE EAGERNESS DISTINCTION IS UNTOUCHED — the shape where it is observable still declines', () => {
     /*
-     * ⚠️⚠️ `projected-fold.test.ts` pins these two numbers, and they are the reason item 1909's
+     * `projected-fold.test.ts` pins these two numbers, and they are the reason item 1909's
      * argument is real: `aggregate` buffers the whole upstream so a later `limit(0)` cannot cancel the
      * collection (6), while `store` is lazy and is pulled once before `limit(0)` rejects it (1). The
      * fusion must not reach either shape — and re-asserting it HERE is what catches a future widening
@@ -201,7 +201,7 @@ describe('aggregate/store + count fusion (item 2069)', () => {
 
   test('running the same plan TWICE gives the same answer — the bag is per-run', () => {
     /*
-     * ⚠️ A key set or bag shared across two executions of one compiled plan would make the second run
+     * A key set or bag shared across two executions of one compiled plan would make the second run
      * differ. `projected-fold.test.ts` uses the same `twice` guard for the `cap` pair.
      */
     const g = fixture();
@@ -215,7 +215,7 @@ describe('aggregate/store + count fusion (item 2069)', () => {
 describe('a bare trailing aggregate barrier (item 2070)', () => {
   test('THE GATE: `aggregate` alone is claimed, `store` alone is NOT', () => {
     /*
-     * ⚠️⚠️ **THE ASYMMETRY IS THE CONTRACT, and it is the opposite shape from item 2069's.** There,
+     * **THE ASYMMETRY IS THE CONTRACT, and it is the opposite shape from item 2069's.** There,
      * `count()` consumed the stream so eager and lazy were indistinguishable and BOTH bag steps were
      * admitted. Here the residual is the LAST step, so the stream passes through to a caller who may
      * stop early: `aggregate` already materializes its upstream (a drain changes nothing), while
@@ -224,12 +224,12 @@ describe('a bare trailing aggregate barrier (item 2070)', () => {
      */
     expect(fusableProjectedBarrier([{ kind: 'aggregate', key: 'x' }])).toBe(true);
     /*
-     * ⚠️⚠️ **THIS ASSERTED `false` UNTIL ITEM 2112, AND THE REASON ABOVE IS WHY IT COULD.** The gate now
+     * **THIS ASSERTED `false` UNTIL ITEM 2112, AND THE REASON ABOVE IS WHY IT COULD.** The gate now
      * admits `store` too — but it takes a DIFFERENT ARM (`barrierProjectedStore`), lazy as an iterator
      * and eager only via `drain`, so an early-exiting caller still bags only what it pulled. The
      * comment above describes `barrierProjectedBag`, which `store` is still refused from.
      *
-     * 🔑 The invariant that replaced it is BEHAVIOURAL and lives in `store-lazy-barrier.test.ts`: four
+     * The invariant that replaced it is BEHAVIOURAL and lives in `store-lazy-barrier.test.ts`: four
      * consumption patterns through the public API, including the part-way iteration this refusal existed
      * to protect. A gate boolean cannot express that, which is why the stronger test is elsewhere.
      */
@@ -245,7 +245,7 @@ describe('a bare trailing aggregate barrier (item 2070)', () => {
 
   test('the barrier PASSES THE STREAM THROUGH and fills the bag with the projected values', () => {
     /*
-     * 🔑 IT RETURNS THE ROWS, NOT A COUNT — that is what distinguishes this from
+     * IT RETURNS THE ROWS, NOT A COUNT — that is what distinguishes this from
      * `countProjectedBag`. The bag holds the VALUES here, because the `aggregate` sits AFTER the
      * projection; a fusion that banked the elements instead would be a different answer.
      */
@@ -278,9 +278,9 @@ describe('a bare trailing aggregate barrier (item 2070)', () => {
     expect(capped[0]).toStrictEqual([1, 2, 3, 4, 5]);
   });
 
-  test('⚠️⚠️ `store` STILL PASSES THROUGH LAZILY — the behaviour the decline protects', () => {
+  test('`store` STILL PASSES THROUGH LAZILY — the behaviour the decline protects', () => {
     /*
-     * ⚠️⚠️ **THIS IS WHY `store` IS REFUSED, stated as a measurement rather than an intention.** With
+     * **THIS IS WHY `store` IS REFUSED, stated as a measurement rather than an intention.** With
      * a `limit(0)` after it, the lazy `store` is pulled once and then rejected, so its bag holds ONE
      * element; the eager `aggregate` collected the whole upstream first and holds five. If the fusion
      * ever admitted `store`, this test fails — which is the point of asserting it here as well as in

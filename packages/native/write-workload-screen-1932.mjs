@@ -1,22 +1,22 @@
 // Item 1932 — THE SHAPE EVERY SCREEN IS MISSING: A WRITE.
 //
-// ⚠️⚠️ ALL THREE EXISTING SCREENS ARE READ-ONLY. `gql-coverage-screen-1901.mjs`,
+// ALL THREE EXISTING SCREENS ARE READ-ONLY. `gql-coverage-screen-1901.mjs`,
 // `workload-perf-screen.mjs` and `gremlin-workload-screen.mjs` carry 100+ shapes between them and
 // not one of them mutates the graph — a grep for INSERT/SET/REMOVE/DELETE across all three matches
 // only `OFFSET` and `CONTROL SET` in prose. So writes have never been screened, on either surface,
 // while the read side has been screened to its floor (items 1930/1931).
 //
-// 🔑 THAT IS THE COVERAGE MOVE THAT HAS PAID TWICE BEFORE: item 1898 asked what the Gremlin screen
+// THAT IS THE COVERAGE MOVE THAT HAS PAID TWICE BEFORE: item 1898 asked what the Gremlin screen
 // did NOT ask and found all five of the surface's biggest shapes among the answers; item 1927 asked
 // which SPELLINGS a rewrite never saw and found 11 of 13 stranded. Asking what a screen omits beats
 // re-pricing what it carries.
 //
-// ⚠️ A WRITE SCREEN NEEDS A FRESH GRAPH PER REPETITION, which is what makes it different from every
+// A WRITE SCREEN NEEDS A FRESH GRAPH PER REPETITION, which is what makes it different from every
 // read screen here. A read is idempotent, so min-of-N over one fixture is honest; a write is not —
 // the second INSERT runs against a bigger graph than the first, and a DELETE run twice has nothing
 // to delete the second time. So each rep rebuilds, and the BUILD IS EXCLUDED from the timing.
 //
-// ⚠️ AND THE PER-REP REBUILD IS WHY THE DEFAULT SIZE IS SMALL. At 200,000 vertices the rebuild
+// AND THE PER-REP REBUILD IS WHY THE DEFAULT SIZE IS SMALL. At 200,000 vertices the rebuild
 // dominates wall clock and the whole screen takes minutes per row; the question here is per-write
 // cost, not bulk ingest (which `ts-ingest-is-constant-factor` already closed). Raise NODES
 // deliberately for a cache-residency sweep.
@@ -34,7 +34,7 @@ const REPS = Number(process.env.REPS ?? 7);
 const ONLY = process.env.SHAPE;
 
 /**
- * A fresh graph. ⚠️ Rebuilt PER REPETITION and excluded from the timing, because a write is not
+ * A fresh graph. Rebuilt PER REPETITION and excluded from the timing, because a write is not
  * idempotent and timing it over a graph the previous rep already mutated measures a different
  * question each time.
  */
@@ -59,7 +59,7 @@ const build = () => {
 
     g.addEdge({
       id: `e${String(e)}`,
-      // ⚠️ SPLIT ON THE REPEAT INDEX — `to = (a*k + b) % N` is invariant under `k -> k + N`, so a
+      // SPLIT ON THE REPEAT INDEX — `to = (a*k + b) % N` is invariant under `k -> k + N`, so a
       // flat loop would send one vertex's whole fanout to the SAME target and the graph would come
       // out FUNCTIONAL while every degree count looked right (CLAUDE.md; items 1516/1518).
       from: g.getVertexById(String(i + 1)),
@@ -73,12 +73,12 @@ const build = () => {
 };
 
 /*
- * ⚠️⚠️ `rows` IS MEANINGLESS FOR A WRITE, which the first smoke run of this screen demonstrated: a
+ * `rows` IS MEANINGLESS FOR A WRITE, which the first smoke run of this screen demonstrated: a
  * GQL write with no `RETURN` answers an EMPTY array, so nine of twenty rows reported 0 and a `SET`
  * that updated every vertex was indistinguishable from one that matched nothing. The read screens'
  * rule ("a shape returning 0 rows measures a miss") does not transfer.
  *
- * 🔑 SO EVERY SHAPE CARRIES A `verify`, run ONCE OUTSIDE THE TIMER, that counts what actually
+ * SO EVERY SHAPE CARRIES A `verify`, run ONCE OUTSIDE THE TIMER, that counts what actually
  * changed — a post-write query, or the graph's own element counts. A row whose `work` is 0 is a
  * broken row, and now it says so.
  */
@@ -95,7 +95,7 @@ const SHAPES_RUN = {
   'gql: set one prop, one row': (g) =>
     query(g, 'MATCH (n:T) WHERE n.k = $k SET n.n = 1', { k: 's17' }).length,
   'gql: set two props, all rows': (g) => query(g, 'MATCH (n:T) SET n.n = 1, n.w = 2', {}).length,
-  // ⚠️ A NEW property, not an overwrite — a write that WIDENS the row rather than replacing a value
+  // A NEW property, not an overwrite — a write that WIDENS the row rather than replacing a value
   // in it, which is the axis `ts-set-is-o-width` says the cost scales on.
   'gql: set NEW prop, all rows': (g) => query(g, 'MATCH (n:T) SET n.fresh = 1', {}).length,
   'gremlin: property all': (g) => toArray(traversal(V(), property('n', 1)), g).length,
@@ -118,7 +118,7 @@ const SHAPES_RUN = {
   'gql: _MERGE hit': (g) => query(g, '_MERGE (:T {k: $k})', { k: 's17' }).length,
   'gql: _MERGE miss': (g) => query(g, '_MERGE (:T {k: $k})', { k: 'absent-key' }).length,
 
-  // ——— ⚠️ INTERLEAVED, which is the shape CLAUDE.md says costs ~2.5x and UNDERSTATES it ———
+  // ——— INTERLEAVED, which is the shape CLAUDE.md says costs ~2.5x and UNDERSTATES it ———
   // "ONE add_edge clears csr_fresh with nothing to re-arm it, so it demotes EVERY later read for
   // the rest of the session". That is a NATIVE note; whether the TS engine has the same cliff has
   // never been screened, and these two rows are the pair that answers it.
@@ -141,7 +141,7 @@ const SHAPES_RUN = {
 /**
  * What each shape actually CHANGED, counted after the fact. Run once, outside the timer.
  *
- * ⚠️ A `work` of 0 means the row is BROKEN — the write matched nothing, or the shape is wrong — and
+ * A `work` of 0 means the row is BROKEN — the write matched nothing, or the shape is wrong — and
  * the screen prints it as such rather than as a fast write.
  */
 const VERIFY = {
@@ -187,7 +187,7 @@ for (const name of names) {
   let err = '';
 
   for (let r = 0; r < REPS + 2; r += 1) {
-    // ⚠️ FRESH GRAPH, OUTSIDE THE TIMER — a write is not idempotent, so timing it over a graph the
+    // FRESH GRAPH, OUTSIDE THE TIMER — a write is not idempotent, so timing it over a graph the
     // previous rep already mutated measures a different question each time.
     const g = build();
     const t0 = performance.now();
@@ -224,7 +224,7 @@ rows.sort((a, b) => b[0] - a[0]);
 
 console.log(
   `# ${NODES} vertices / ${NODES * FANOUT} edges, median of ${REPS}, FRESH GRAPH PER REP.\n` +
-    '# ⚠️ `work` is what the write actually CHANGED, counted after the timer. A work of 0 or -1 is a\n' +
+    '# `work` is what the write actually CHANGED, counted after the timer. A work of 0 or -1 is a\n' +
     '#   BROKEN ROW, not a fast write — `rows` cannot say this, because a GQL write with no RETURN\n' +
     '#   answers an empty array whether it updated every vertex or matched nothing.\n',
 );
@@ -232,7 +232,7 @@ console.log('      ms     work   shape');
 console.log('-'.repeat(62));
 
 for (const [ms, n, name, err] of rows) {
-  const note = err === '' ? '' : `  ⚠️ ${err}`;
+  const note = err === '' ? '' : `  ${err}`;
 
   console.log(`${ms.toFixed(2).padStart(8)} ${String(n).padStart(8)}   ${name}${note}`);
 }

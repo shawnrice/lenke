@@ -16,7 +16,7 @@ import { V, as_, both, count, limit, match, out, pipe, select, traversal } from 
  *   V().match(…).select('c').count()    6684       -> 6451.8    declined, and that is the CONTROL
  * ```
  *
- * ⚠️ **ITEM 1655 BUILT THIS AND REVERTED IT AS A WRONG ANSWER. Its reason was a BUG, not a semantic
+ * **ITEM 1655 BUILT THIS AND REVERTED IT AS A WRONG ANSWER. Its reason was a BUG, not a semantic
  * difference**, and this file exists mostly to hold that distinction. It concluded "`match()`
  * counts distinct variable BINDINGS; a hop chain counts PATHS" from a fixture where one parallel
  * edge separated them — but TinkerPop 3.7.3, asked directly at item 1793, answers the CHAIN's
@@ -24,7 +24,7 @@ import { V, as_, both, count, limit, match, out, pipe, select, traversal } from 
  * arms. **So the parallel-edge fixture that refuted the rewrite is now the fixture that validates
  * it**, and it is the first thing tested below.
  *
- * ⚠️ **ITEM 1655's SECOND OBJECTION STANDS AND IS WHY THE TAIL MUST BE `count()`**: a `match` step
+ * **ITEM 1655's SECOND OBJECTION STANDS AND IS WHY THE TAIL MUST BE `count()`**: a `match` step
  * emits a TAG MAP, a chain emits the end ELEMENT. Anything that can observe the value is refused.
  */
 
@@ -73,7 +73,7 @@ describe('the rewrite fires exactly where it is equivalent', () => {
   });
 });
 
-describe('⚠️ the rewrite DECLINES everything it cannot prove equal', () => {
+describe('the rewrite DECLINES everything it cannot prove equal', () => {
   test('a repeated tag is a JOIN the chain cannot express', () => {
     // `match(a->b, b->a)` constrains the walk to return to its start; `out(T).out(T)` does not.
     const back = pipe(as_('b'), out('T'), as_('a'));
@@ -90,7 +90,7 @@ describe('⚠️ the rewrite DECLINES everything it cannot prove equal', () => {
   });
 
   test('a tail that can OBSERVE the step value — item 1655 standing objection', () => {
-    // ⚠️ `select(<the LAST tag>)` is the one exception, added at item 1798: it rewrites the step's
+    // `select(<the LAST tag>)` is the one exception, added at item 1798: it rewrites the step's
     // VALUE to that binding, which is exactly the element the chain ends on — so the select itself
     // disappears and the two plans are identical from there. `matchedsel` was 6.6 SECONDS.
     expect(kindsOf(traversal(V(), match(ONE, TWO), select('c'), count()))).toEqual([
@@ -132,7 +132,7 @@ describe('⚠️ the rewrite DECLINES everything it cannot prove equal', () => {
   });
 });
 
-describe('⚠️ the ANSWER is unchanged, on the fixture that refuted item 1655', () => {
+describe('the ANSWER is unchanged, on the fixture that refuted item 1655', () => {
   const g = fixture();
   const answer = (plan: ReturnType<typeof traversal>): unknown[] => toArray(plan, g);
 
@@ -159,7 +159,7 @@ describe('⚠️ the ANSWER is unchanged, on the fixture that refuted item 1655'
   });
 
   /**
-   * ⚠️ **THERE IS NO TS-ONLY ORACLE FOR THE `select` FORM, AND THE OBVIOUS ONE IS VACUOUS.**
+   * **THERE IS NO TS-ONLY ORACLE FOR THE `select` FORM, AND THE OBVIOUS ONE IS VACUOUS.**
    * Comparing `match(…).select('c')` against `out(T).out(T)` here compares the chain to ITSELF,
    * because the first plan is rewritten into the second before it runs. The first cut of this file
    * did exactly that and passed, which proves nothing at all.

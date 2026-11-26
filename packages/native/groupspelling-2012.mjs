@@ -1,7 +1,7 @@
 /**
  * TWO SPELLINGS OF ONE GROUPED COUNT (item 2012).
  *
- * ⚠️⚠️ `detectChainGroupedCount` requires `clauses.length === 2`, and `LET g = a.n … GROUP BY g`
+ * `detectChainGroupedCount` requires `clauses.length === 2`, and `LET g = a.n … GROUP BY g`
  * parses as THREE clauses (`match | let | return`). The aliased form `RETURN a.n AS g, count(*)` is
  * two. Both are legal ISO-GQL and mean the same thing — and `GROUP BY` takes a BOUND NAME, so the
  * LET form is the only way to write it explicitly, which is why the realistic corpus uses it.
@@ -74,6 +74,6 @@ const norm = (rows) =>
 console.log(
   `\n# hop   spellings agree: ${String(norm(got['hop  aliased']) === norm(got['hop  LET+GROUP BY']))}` +
     `\n# chain spellings agree: ${String(norm(got['chain aliased']) === norm(got['chain LET+GROUP BY']))}` +
-    `\n# ⚠️ Agreement is the point: if the two spellings answer the SAME and cost differently, the gap` +
+    `\n# Agreement is the point: if the two spellings answer the SAME and cost differently, the gap` +
     `\n#    is a routing defect, not a cost of the question.`,
 );

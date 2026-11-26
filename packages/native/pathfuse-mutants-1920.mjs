@@ -1,19 +1,19 @@
 /**
  * DOES `path-hop-values.test.ts` HAVE TEETH? (items 1920 and 1924)
  *
- * ⚠️ THE SUBJECT EMITS A TWO-ELEMENT ARRAY PER ROW, so the failure mode is a wrong ORDER or a wrong
+ * THE SUBJECT EMITS A TWO-ELEMENT ARRAY PER ROW, so the failure mode is a wrong ORDER or a wrong
  * END with the right row count — invisible to any assertion that counts rows, which is exactly what
  * made the 14.8x look suspicious enough to verify in the first place.
  *
- * ⚠️⚠️ PER-ARM MUTANTS GO BY FILE ORDER, NOT INTUITION (item 1913). The row expression
+ * PER-ARM MUTANTS GO BY FILE ORDER, NOT INTUITION (item 1913). The row expression
  * `[from, vtx[memo.flat[i]]]` appears TWICE — once in the eager `drain` and once in the lazy `each`
  * — and `walk` (which holds the drain) is defined BEFORE `each`, so **occurrence 0 is the DRAIN**.
  * Item 1913's battery had these labels swapped and the mislabelling hid a real gap.
  *
- * ⚠️ WRITTEN DIRECTLY, not templated (item 1907), and every test path listed from the directory
+ * WRITTEN DIRECTLY, not templated (item 1907), and every test path listed from the directory
  * (item 1915 found a non-existent path in its own first draft).
  *
- * ⚠️⚠️ NINE ANCHORS DRIFTED AT ONCE when item 1924 added the `by(k)` mode, because it rewrote every
+ * NINE ANCHORS DRIFTED AT ONCE when item 1924 added the `by(k)` mode, because it rewrote every
  * row site and the gate. The battery reported ALL NINE in one run rather than throwing on the first
  * — item 1914's harness fix earning itself — and each was RE-ANCHORED onto the new text keeping its
  * original name and intent, because a dead mutant silently loses the coverage item 1920 built.
@@ -129,14 +129,14 @@ const MUTANTS = [
   // ---- the wiring ----
   // ---- item 1924's `by(k)` mode, per arm ----
   [
-    '⚠️ an ABSENT key becomes null instead of undefined',
+    'an ABSENT key becomes null instead of undefined',
     'path',
     'return Object.hasOwn(bag, key) ? bag[key] : undefined;',
     'return Object.hasOwn(bag, key) ? bag[key] : null;',
     1,
   ],
   [
-    '⚠️ `in` replaces Object.hasOwn, leaking a prototype function',
+    '`in` replaces Object.hasOwn, leaking a prototype function',
     'path',
     'return Object.hasOwn(bag, key) ? bag[key] : undefined;',
     'return key in bag ? bag[key] : undefined;',
@@ -203,13 +203,13 @@ const MUTANTS = [
 /** Names that MUST survive, each with its reason. */
 const EXPECTED_SURVIVORS = new Set([
   /*
-   * ⚠️ ROUTE-ONLY: declining the rung sends the shape back through the generic traverser pipeline,
+   * ROUTE-ONLY: declining the rung sends the shape back through the generic traverser pipeline,
    * which builds the SAME `[near, far]` arrays in the SAME order — that equality is the whole point
    * of the item, so by construction no answer test can see which route ran. Its gates are the
    * workload screen's `path: hop path` row (124.55 -> 8.40 ms) and
    * `pathfuse-parity-1920.mjs`. [[perf-gate-needs-its-own-test]].
    *
-   * ⚠️ NOTE WHAT IS **NOT** HERE: every gate mutant above. Because `pathHopValues` is EXPORTED and
+   * NOTE WHAT IS **NOT** HERE: every gate mutant above. Because `pathHopValues` is EXPORTED and
    * unit-tested directly, a mutant that mis-recognizes a shape fails even with the route disabled —
    * which is what keeps this set to one entry instead of six.
    */
@@ -218,10 +218,10 @@ const EXPECTED_SURVIVORS = new Set([
 
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
 const HOW_DIED = new Map([
@@ -241,7 +241,7 @@ const verdictOf = (code) => {
   return code !== 0;
 };
 
-/** ⚠️ BOTH STREAMS CONCATENATED, THEN the exit code: `bun test` reports to STDERR (item 767). */
+/** BOTH STREAMS CONCATENATED, THEN the exit code: `bun test` reports to STDERR (item 767). */
 const runTests = () => {
   const r = spawnSync(
     'timeout',
@@ -313,7 +313,7 @@ try {
     const ran = /\d+ pass/.test(r.text) || /\d+ fail/.test(r.text);
 
     if (!ran && r.code !== 124 && r.code !== 137) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-500)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-500)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -341,12 +341,12 @@ try {
 
 if (anchorProblems.length > 0) {
   console.log(
-    `\n⚠️ ${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
+    `\n${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
   );
   process.exitCode = 1;
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

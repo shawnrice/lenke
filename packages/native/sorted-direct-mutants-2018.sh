@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2018 — mutation round on `sortedRowsDirect` and its gate.
 #
-# ⚠️ A NEW SORT PATH, so most of these are WRONG ANSWERS rather than route choices — but the four
+# A NEW SORT PATH, so most of these are WRONG ANSWERS rather than route choices — but the four
 # GATE refusals are answer-equivalent (the general path answers identically), so those need the
 # route assertions in item 2018's own test file ([[perf-gate-needs-its-own-test]]).
 #
@@ -59,7 +59,7 @@ MUTANTS=(
   "cmp-first-key-only@@      if (c !== 0) {@@s@      if (c !== 0) {@      if (true) {@"
   "cmp-key-index-fixed@@compareSort(a.keys[i], b.keys[i]@@s@compareSort(a.keys\[i\], b.keys\[i\]@compareSort(a.keys[0], b.keys[0]@"
   # ---- THE GATE: answer-equivalent, so ONLY `sortedDirectRoute`'s own assertions see these.
-  # ⚠️ ANCHORED ON THE EXTRACTED FUNCTION'S BODY, which is unique. Inline, `!proj.aggregating`
+  # ANCHORED ON THE EXTRACTED FUNCTION'S BODY, which is unique. Inline, `!proj.aggregating`
   # matched FOUR lines in this file and the mutant silently edited three other decisions too.
   "gate-admits-aggregating@@  !proj.aggregating \&\&\n  !proj.distinct@@SKIPNL"
   "gate-admits-aggregating2@@  !proj.aggregating@@s@^  !proj.aggregating@  true@"
@@ -69,12 +69,12 @@ MUTANTS=(
   "gate-admits-windowed2@@  !windowed@@s@^  !windowed@  true@"
   "gate-admits-needs-output2@@  !proj.orderNeedsOutput@@s@^  !proj.orderNeedsOutput@  true@"
   "gate-admits-unsorted@@  proj.orderBy.length > 0;@@s@  proj.orderBy.length > 0;@  true;@"
-  # ⚠️ "NEVER FIRES" IS THE ROUTE'S OWN NULL, and the last line of the gate is the place to force it:
+  # "NEVER FIRES" IS THE ROUTE'S OWN NULL, and the last line of the gate is the place to force it:
   # a replacement containing `): boolean =>` cannot be detected as applied.
   "gate-never-fires@@  proj.orderBy.length > 0;@@s@  proj.orderBy.length > 0;@  false;@"
 )
 
-# ⚠️ THE `anchors` COLUMN OVER-COUNTS FOR THE `^`-ANCHORED GATE MUTANTS, and that is grep, not sed:
+# THE `anchors` COLUMN OVER-COUNTS FOR THE `^`-ANCHORED GATE MUTANTS, and that is grep, not sed:
 # `grep -F` counts lines CONTAINING "  !proj.distinct", which a FOUR-space line also contains, while
 # sed's `^  ` matches only the two-space one. Verified per pattern: each hits exactly ONE line, all
 # inside `sortedDirectRoute` (618-621). The inline form it replaced really did have four.

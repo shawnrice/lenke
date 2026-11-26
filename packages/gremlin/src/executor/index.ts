@@ -524,12 +524,12 @@ const checkSteps = (
 };
 
 const assertFrontierTypes = (plan: Plan): void => {
-  // ⚠️ THE GATE (item 1507). `checkSteps`' entire frontier walk exists to decide which frontier
+  // THE GATE (item 1507). `checkSteps`' entire frontier walk exists to decide which frontier
   // each step sees, and `checkStep` is the only thing that raises — so a plan with no step that
   // CAN raise cannot fault, and the walk is pure overhead. It was the largest group left after
   // items 1504-1506 at **27.5%** of a 123 ns reused-plan call.
   //
-  // ⚠️ `mayFault` PROPAGATES INTO SUB-PLANS, which is load-bearing here and not in the `kinds`
+  // `mayFault` PROPAGATES INTO SUB-PLANS, which is load-bearing here and not in the `kinds`
   // mask: this function recurses into union/choose arms, so `V().union(inV())` must still be
   // checked. See {@link stepMayFault}.
   if (!plan.mayFault) {
@@ -650,7 +650,7 @@ const ELEMENT_STEP_ON_PATH = new Set([
  * `or(has(k, a), has(k, b), …)` as the single step `has(k, within(a, b, …))`, or `undefined`
  * (item 1312).
  *
- * ⚠️ THIS IS ONE OF THE FOUR CANONICAL INDEX-SEEDING BUGS CLAUDE.md NAMES BY EXAMPLE —
+ * THIS IS ONE OF THE FOUR CANONICAL INDEX-SEEDING BUGS CLAUDE.md NAMES BY EXAMPLE —
  * "`k = $a OR k = $b` vs `k IN [$a, $b]`" — and it is the cross-surface asymmetry this repo keeps
  * paying for: ISO-GQL has folded it since item 1269 (`membershipFromEqChain`) and the Gremlin
  * surface never did. A user picks one language, so the gap cost half of them, exactly as items
@@ -689,7 +689,7 @@ const ELEMENT_STEP_ON_PATH = new Set([
  * and is not eligible; nor is `has`, whose own `or`-chain fold is {@link membershipFromOrChain}
  * beside this one.
  *
- * ⚠️ AND UNLIKE ITEM 1331, THIS NEEDS NO ELEMENT-STREAM GATE — measured, not assumed. All three
+ * AND UNLIKE ITEM 1331, THIS NEEDS NO ELEMENT-STREAM GATE — measured, not assumed. All three
  * filters return FALSE for a non-element, and `or` does not INVERT that false the way `not` does,
  * so both spellings reject a non-element identically. `notfold-soundness-check.ts` carries the
  * reading: element 2 and 2, after `properties()` 0 and 0, after `values()` 0 and 0. The fold that
@@ -815,7 +815,7 @@ const PURE_ELEMENT_FILTERS = new Set<Step['kind']>([
  * `parts.length > 0` test — but if the surface ever admits an empty body, splicing nothing would
  * silently DELETE the step.
  *
- * ⚠️ THIS EXISTS BECAUSE A COMMENT OF MINE WAS FALSE. The `or`-to-membership fold was added to the
+ * THIS EXISTS BECAUSE A COMMENT OF MINE WAS FALSE. The `or`-to-membership fold was added to the
  * same loop as the wrapper flattening, with a comment claiming that an `or` nested inside an `and`
  * would therefore fold too. It would not have: the `and` arm tested branch PURITY first, and an
  * `or` is not a pure element filter, so such a branch was rejected before anything folded. Its own
@@ -1027,7 +1027,7 @@ export const presenceFoldOf = (step: Step): Step | undefined => {
 };
 
 export const flattenFilterWrappers = (plan: Plan): Plan => {
-  // ⚠️ THE GATE (item 1506): see {@link KIND_BITS} for why these are the only kinds that can make
+  // THE GATE (item 1506): see {@link KIND_BITS} for why these are the only kinds that can make
   // this pass change a plan.
   if ((plan.kinds & FILTER_WRAPPER_BITS) === 0) {
     return plan;
@@ -1067,24 +1067,24 @@ export const flattenFilterWrappers = (plan: Plan): Plan => {
     /*
      * `where(and(…))` BECOMES `and(…)` — ONE WRAPPER REMOVED, NOT A BODY SPLICED (item 2047).
      *
-     * 🔑 **WHY THIS IS A DIFFERENT ARGUMENT FROM THE SPLICE ABOVE.** That one inlines a body's steps
+     * **WHY THIS IS A DIFFERENT ARGUMENT FROM THE SPLICE ABOVE.** That one inlines a body's steps
      * into the chain, which is sound only for `PURE_ELEMENT_FILTERS` — `filter(out('T'))` must
      * decline because splicing `out('T')` would REPLACE each vertex with its neighbours. This removes
      * a redundant WRAPPER while leaving the inner step exactly where it was: `where(body)` keeps the
      * element when `body` yields at least one result, and `and`/`or`/`not` each yield the element
      * unchanged or nothing, so `where(S)` and `S` keep precisely the same elements in the same order.
      *
-     * ⚠️ `where(out('T'))` MUST NOT BE TOUCHED, which is why the set is three kinds and not "any
+     * `where(out('T'))` MUST NOT BE TOUCHED, which is why the set is three kinds and not "any
      * filter-ish step": `out` replaces the element, and that spelling is already fused by
      * `singleHopExistence`.
      *
-     * ⚠️ STATEFUL STEPS ARE EXCLUDED BY CONSTRUCTION, and `dedupe` is why the gate is a allowlist
+     * STATEFUL STEPS ARE EXCLUDED BY CONSTRUCTION, and `dedupe` is why the gate is a allowlist
      * rather than "anything that keeps-or-drops". `where(dedupe())` runs `dedupe` in a SUB-PLAN per
      * traverser, so each traverser sees its own empty dedupe state and NOTHING is filtered; a bare
      * `dedupe()` dedupes across the stream. The two are not equivalent, and a keeps-or-drops test
      * would have admitted it.
      *
-     * ⚠️ ONLY THE SUB-PLAN FORM. `{ kind: 'where'; startKey; pred; bys? }` and
+     * ONLY THE SUB-PLAN FORM. `{ kind: 'where'; startKey; pred; bys? }` and
      * `{ kind: 'where'; pred }` are separate members of the step union, so the label-scoped and
      * bare-predicate spellings cannot reach this branch at all — the `'plan' in step` test is what
      * selects the right member.
@@ -1210,7 +1210,7 @@ const bothFromUnion = (step: Step): Step | undefined => {
  * Tails after which the union's EMISSION ORDER cannot be observed, so `union(out, in)` may become
  * `both` (item 1311).
  *
- * ⚠️ THIS LIST IS THE WHOLE SOUNDNESS ARGUMENT, and it is short on purpose. `both` and
+ * THIS LIST IS THE WHOLE SOUNDNESS ARGUMENT, and it is short on purpose. `both` and
  * `union(out, in)` are NOT sequence-equal — item 1308 measured it: on one fixture `both` emits
  * `["b","a","a","c","a","b"]` where the union emits `["b","a","c","a","a","b"]`, because `both`
  * finishes each vertex before moving on and the union does not. They ARE multiset-equal, so only a
@@ -1236,7 +1236,7 @@ const bothFromUnion = (step: Step): Step | undefined => {
  * largest gap it found — because `both(T).count()` is answered from degree sums while the union
  * materialises one traverser per branch per vertex.
  *
- * ⚠️ IT IS NOT A GENERAL NORMALISATION, and item 1308 is why: the two spellings are multiset-equal
+ * IT IS NOT A GENERAL NORMALISATION, and item 1308 is why: the two spellings are multiset-equal
  * but NOT sequence-equal, so rewriting a row-returning traversal would change observable output
  * order. The win was measured on a `count()` terminal, where order is not observable at all, so
  * that is exactly what is admitted — see {@link ORDER_FREE_TAILS}.
@@ -1246,7 +1246,7 @@ const bothFromUnion = (step: Step): Step | undefined => {
  */
 // EXPORTED for its own assertion, like `fuseEdgeHop` and `flattenFilterWrappers` beside it.
 export const fuseUnionBoth = (plan: Plan): Plan => {
-  // ⚠️ THE GATE (item 1505): this pass can only fire on a plan that CONTAINS the kind it fuses, and
+  // THE GATE (item 1505): this pass can only fire on a plan that CONTAINS the kind it fuses, and
   // the mask answers that in one test instead of a walk. `effectivePlan`'s six passes were 32.2% of
   // a 208 ns reused-plan call, almost all of it spent looking for steps that were not there.
   if ((plan.kinds & KIND_BITS.union) === 0) {
@@ -1275,7 +1275,7 @@ export const fuseUnionBoth = (plan: Plan): Plan => {
  * value per element and `is` filters the value stream, where `has` is a filter the count rungs
  * recognise.
  *
- * ⚠️ THE TWO SPELLINGS RETURN DIFFERENT THINGS, which is the whole reason the tail is `count` and
+ * THE TWO SPELLINGS RETURN DIFFERENT THINGS, which is the whole reason the tail is `count` and
  * nothing else. `values(k).is(p)` emits VALUES; `has(k, p)` emits ELEMENTS. They agree on HOW MANY
  * only, and only because this surface's properties are single-valued — verified rather than
  * assumed: `values('k')` over four vertices (one holding `5`, one an ARRAY `[1,2,3]`, one with the
@@ -1301,7 +1301,7 @@ export const fuseUnionBoth = (plan: Plan): Plan => {
 /**
  * `V().hasId(x)` becomes the SEEDED source `V(x)`, and the same for `E()` — ONE id only (item 1643).
  *
- * ⚠️ AN EQUIVALENT-SPELLING GAP, which is the class CLAUDE.md says returns the right answer and costs
+ * AN EQUIVALENT-SPELLING GAP, which is the class CLAUDE.md says returns the right answer and costs
  * 100-300x elsewhere. Measured in a single-purpose instrument at 200,000 vertices, plan reused,
  * 60,000 reps, min of 5:
  *
@@ -1317,7 +1317,7 @@ export const fuseUnionBoth = (plan: Plan): Plan => {
  * reports it as "under 1ms, not compared" at its default size — so the gap has been invisible to the
  * instrument built to catch exactly it.
  *
- * ⚠️⚠️ EXACTLY ONE ID, AND THE TWO REASONS ARE MEASURED NOT ARGUED. The spellings diverge above one:
+ * EXACTLY ONE ID, AND THE TWO REASONS ARE MEASURED NOT ARGUED. The spellings diverge above one:
  *
  * ```text
  *    V().hasId(v3, v1).id()   ->  ["v1", "v3"]        GRAPH order, filtered
@@ -1330,7 +1330,7 @@ export const fuseUnionBoth = (plan: Plan): Plan => {
  * multiplicity difference is a wrong answer outright. One id has neither problem: one element, or
  * none when the id is absent (both spellings give `[]`).
  *
- * ⚠️ IMMEDIATELY AFTER THE SOURCE, deliberately. Filters commute, so `V().hasLabel(P).hasId(x)` is
+ * IMMEDIATELY AFTER THE SOURCE, deliberately. Filters commute, so `V().hasLabel(P).hasId(x)` is
  * equally seedable — but that widens the gate to reasoning about which intervening steps preserve
  * the property, and the shape worth 2.36x is the point lookup. Kept narrow.
  */
@@ -1356,7 +1356,7 @@ export const seedSingleHasId = (plan: Plan): Plan => {
     return plan;
   }
 
-  // ⚠️ A STRING ID ONLY, and a PRE-EXISTING TEST caught this. `V().hasId(5)` answers EMPTY — a
+  // A STRING ID ONLY, and a PRE-EXISTING TEST caught this. `V().hasId(5)` answers EMPTY — a
   // number cannot match a string id — while `V(5)` RAISES "a vertex/edge id must be a string".
   // Seeding a non-string would turn an empty answer into a throw, which is the wrong-answer half of
   // `id-seed.test.ts`'s contract ("a non-string id must not raise"). The other two cases that file
@@ -1370,7 +1370,7 @@ export const seedSingleHasId = (plan: Plan): Plan => {
 };
 
 export const fuseValuesIsCount = (plan: Plan): Plan => {
-  // ⚠️ THE GATE (item 1505): this pass can only fire on a plan that CONTAINS the kind it fuses, and
+  // THE GATE (item 1505): this pass can only fire on a plan that CONTAINS the kind it fuses, and
   // the mask answers that in one test instead of a walk. `effectivePlan`'s six passes were 32.2% of
   // a 208 ns reused-plan call, almost all of it spent looking for steps that were not there.
   if ((plan.kinds & KIND_BITS.values) === 0) {
@@ -1386,7 +1386,7 @@ export const fuseValuesIsCount = (plan: Plan): Plan => {
       continue;
     }
 
-    // ⚠️ THE `is` IS OPTIONAL (item 1585). The rewrite was written for `values(k).is(p).count()`
+    // THE `is` IS OPTIONAL (item 1585). The rewrite was written for `values(k).is(p).count()`
     // and required the `is`, so the PLAIN `values(k).count()` kept materialising one value per
     // element — and the equivalence argument above never needed a predicate. With single-valued
     // properties `values(k)` emits exactly one value per element that HAS `k`, so
@@ -1412,7 +1412,7 @@ export const fuseValuesIsCount = (plan: Plan): Plan => {
 
     const next = [...steps];
 
-    // ⚠️ WITHOUT A PREDICATE THE STEP IS `hasKey`, NOT `has`. `has` carries a required `pred`, and
+    // WITHOUT A PREDICATE THE STEP IS `hasKey`, NOT `has`. `has` carries a required `pred`, and
     // the presence-only filter a user writes as `has('k')` parses to `{ kind: 'hasKey', keys }` —
     // which is exactly "the property is present", i.e. what `values(k)` emitting nothing for a
     // missing key already means. Checked against what `G.has('k')` actually builds rather than
@@ -1459,7 +1459,7 @@ export const fuseValuesIsCount = (plan: Plan): Plan => {
  * on identical answers. The probe could not see it before because every edge in its graph carried
  * one label.
  *
- * ⚠️ UNLIKE `fuseUnionBoth`, THIS NEEDS THE GRAPH, and that is the whole soundness argument.
+ * UNLIKE `fuseUnionBoth`, THIS NEEDS THE GRAPH, and that is the whole soundness argument.
  * `union(out(T), out(U))` CONCATENATES, so an edge carrying BOTH `T` and `U` is emitted **twice**;
  * `out(T, U)` dedupes across buckets and emits it **once**. The two are multiset-equal only when no
  * edge carries both types — exactly `graph.multiTypeEdgeCount === 0`, the same O(1) counter the GQL
@@ -1526,7 +1526,7 @@ const sameDirFromUnion = (step: Step): Step | undefined => {
  * 1447 paid for.
  */
 export const fuseUnionSameDir = (plan: Plan, graph: Graph): Plan => {
-  // ⚠️ THE GATE (item 1505): this pass can only fire on a plan that CONTAINS the kind it fuses, and
+  // THE GATE (item 1505): this pass can only fire on a plan that CONTAINS the kind it fuses, and
   // the mask answers that in one test instead of a walk. `effectivePlan`'s six passes were 32.2% of
   // a 208 ns reused-plan call, almost all of it spent looking for steps that were not there.
   if ((plan.kinds & KIND_BITS.union) === 0) {
@@ -1559,7 +1559,7 @@ export const fuseUnionSameDir = (plan: Plan, graph: Graph): Plan => {
  * barrier, and no dependence on how many traversers precede it. For a sub-plan built only of these,
  * `local(plan)` and `plan` produce the same stream in the same order, so the wrapper is pure cost.
  *
- * ⚠️ AN ALLOWLIST, DELIBERATELY, and a short one. The denylist version of this question — "which
+ * AN ALLOWLIST, DELIBERATELY, and a short one. The denylist version of this question — "which
  * steps are barriers?" — fails OPEN: a step kind nobody classified would be fused and silently give
  * a wrong answer. `count`, `fold`, `order`, `limit`, `dedupe`, `group`, `sample`, `tail`, `range`,
  * `aggregate` and `barrier` all depend on the scope they run in, and `local(order().limit(1))`
@@ -1586,7 +1586,7 @@ const LOCAL_TRANSPARENT_STEPS: ReadonlySet<Step['kind']> = new Set<Step['kind']>
 /**
  * A plan with a new step list and its gate mask RECOMPUTED (item 1505).
  *
- * ⚠️ `{ ...plan, steps }` would carry the OLD `kinds` mask, and that is unsafe in the one direction
+ * `{ ...plan, steps }` would carry the OLD `kinds` mask, and that is unsafe in the one direction
  * that matters: `fuseLocal` runs first and INLINES a sub-plan's steps into the top level, so it can
  * introduce a `union`, a `values` or an edge step that the original mask does not record — and a
  * later pass gated on that mask would skip a fusion it should have made. Recomputing costs one walk
@@ -1604,7 +1604,7 @@ const rewritten = (plan: Plan, steps: readonly Step[]): Plan => ({
   // Recomputed for the same reason as `kinds`: `fuseLocal` inlines sub-plan steps into the top
   // level, so a rewrite can introduce a kind that CAN fault where the original plan had none.
   mayFault: anyMayFault(steps),
-  // ⚠️ RESET, NOT INHERITED (items 1647/1648). Object spread COPIES enumerable own symbol
+  // RESET, NOT INHERITED (items 1647/1648). Object spread COPIES enumerable own symbol
   // properties, so `...plan` would hand this new plan the normalised form — and the static-check
   // verdict — of a DIFFERENT step list. The verdict is the dangerous one: a rewrite can INTRODUCE a
   // faulting kind (`fuseLocal` inlines a sub-plan's steps into the top level, which is why
@@ -1622,7 +1622,7 @@ const rewritten = (plan: Plan, steps: readonly Step[]): Plan => ({
  * `V().local(outE().inV()).values('k').count()` at **5.02 ms against 0.77 ms** for the same chain
  * unwrapped: **6.5x**, on a tail chosen so the count shortcut cannot answer either arm.
  *
- * ⚠️ THE 377x FIRST READING WAS THE COUNT SHORTCUT, NOT THIS. `V().outE().inV().count()` answers in
+ * THE 377x FIRST READING WAS THE COUNT SHORTCUT, NOT THIS. `V().outE().inV().count()` answers in
  * 0.07 ms because a chain count needs no walk, while the `local` wrapper blocks that route — so the
  * unwrapped form was not doing the same work. Two rows doing different work give a ratio, not a
  * budget (item 1465). 6.5x is the honest figure; a count-shortcuttable shape gains more because the
@@ -1631,7 +1631,7 @@ const rewritten = (plan: Plan, steps: readonly Step[]): Plan => ({
  * EXPORTED so the WIRING is assertable and not only the rewrite.
  */
 export const fuseLocal = (plan: Plan): Plan => {
-  // ⚠️ THE GATE (item 1505): this pass can only fire on a plan that CONTAINS the kind it fuses, and
+  // THE GATE (item 1505): this pass can only fire on a plan that CONTAINS the kind it fuses, and
   // the mask answers that in one test instead of a walk. `effectivePlan`'s six passes were 32.2% of
   // a 208 ns reused-plan call, almost all of it spent looking for steps that were not there.
   if ((plan.kinds & KIND_BITS.local) === 0) {
@@ -1661,12 +1661,12 @@ export const fuseLocal = (plan: Plan): Plan => {
 /**
  * The six rewrite passes that read ONLY the plan, memoised on the plan (item 1647).
  *
- * ⚠️ THE MEMO IS THE POINT. `run` calls `effectivePlan` on EVERY invocation, so a spelling that
+ * THE MEMO IS THE POINT. `run` calls `effectivePlan` on EVERY invocation, so a spelling that
  * needs a rewrite to become the fast one paid for the rewrite per call — 117.5 ns of the 225.2 ns
  * gap between `union(out(T), in(T)).count()` and `both(T).count()` (item 1645), of which
  * `fuseUnionBoth` alone was 94.5 ns. That pass is in here.
  *
- * ⚠️ THE CACHE HAS NO KEY, AND THAT IS WHY IT IS THIS PREFIX. A plan is immutable and these six
+ * THE CACHE HAS NO KEY, AND THAT IS WHY IT IS THIS PREFIX. A plan is immutable and these six
  * passes read nothing else, so an entry can never be stale. The whole-chain cache item 1646 priced
  * would have to be keyed on the graph's mutation state, and `Graph` has none that is SYNCHRONOUS:
  * `version` and `epoch(name)` advance on a microtask drain, so the first read after a write sees
@@ -1699,14 +1699,14 @@ const graphFreePrefix = (plan: Plan): Plan => {
  *   V().out('E').out('E').count()          55.9
  * ```
  *
- * ⚠️ **ITEM 1655 BUILT THIS AND REVERTED IT AS A WRONG ANSWER, AND ITS REASON WAS A BUG RATHER THAN
+ * **ITEM 1655 BUILT THIS AND REVERTED IT AS A WRONG ANSWER, AND ITS REASON WAS A BUG RATHER THAN
  * A SEMANTIC DIFFERENCE.** It concluded "`match()` counts distinct variable BINDINGS; a hop chain
  * counts PATHS", from a fixture where one parallel edge made the two disagree. TinkerPop 3.7.3,
  * asked directly at item 1793, answers the CHAIN's number for both — the TS solver was deduping
  * solutions, which items 1793 and 1794 fixed in its two arms. So the spellings do agree, and this
  * is the same normalise-to-the-spelling-with-rungs move as item 1307's `outE(T).inV()` -> `out(T)`.
  *
- * ⚠️ **ITEM 1655's OTHER OBJECTION IS WHY THE TAIL MUST BE `count()` AND NOTHING ELSE**: a `match`
+ * **ITEM 1655's OTHER OBJECTION IS WHY THE TAIL MUST BE `count()` AND NOTHING ELSE**: a `match`
  * step emits a TAG MAP as its value, while the chain emits the end ELEMENT. They are not
  * interchangeable mid-plan, so this refuses anything that could observe the difference. `count()`
  * as the final step observes only how many.
@@ -1722,7 +1722,7 @@ const graphFreePrefix = (plan: Plan): Plan => {
  *     b->a)` constrains the walk to return to its start, while `out(T).out(T)` does not.
  *   * **`count()` is the step immediately after, and the last.** See above.
  *
- * ⚠️ A `both` LEG IS ADMITTED and that is deliberate — `as(a).both(T).as(b)` and `both(T)` are the
+ * A `both` LEG IS ADMITTED and that is deliberate — `as(a).both(T).as(b)` and `both(T)` are the
  * same walk, including the vertex reached twice by a self loop. `match.ts`'s own `bucketEnds`
  * refuses `both`, but that is an internal fast path choosing an index, not a statement about
  * semantics.
@@ -1747,7 +1747,7 @@ const graphFreePrefix = (plan: Plan): Plan => {
  *                                could still read ANOTHER tag (`select('a')`), which the chain
  *                                never bound. Widening this means scanning the rest for tag reads.
  *
- * ⚠️ `count(Scope.local)` counts INSIDE each value — a different question about a different value —
+ * `count(Scope.local)` counts INSIDE each value — a different question about a different value —
  * so it is refused along with everything else.
  */
 const tailIsBlindToTags = (tail: readonly Step[]): boolean => {
@@ -1846,7 +1846,7 @@ export const flattenLinearMatch = (plan: Plan): Plan => {
  * Steps between an `as(x)` and a `select(x)` that cannot produce a traverser WITHOUT that tag:
  * each one derives its output from its input and carries the tag map through `extend`.
  *
- * ⚠️ THE LIST IS A WHITELIST BECAUSE THE DANGEROUS CASES ARE THE INTERESTING ONES. `inject(1)`
+ * THE LIST IS A WHITELIST BECAUSE THE DANGEROUS CASES ARE THE INTERESTING ONES. `inject(1)`
  * starts a traverser with no tags at all, `union(…)` can contain an arm that does, and a second
  * `V()` re-sources the stream — after any of those a `select('a')` legitimately DROPS rows, and
  * dropping the select would count them. Anything not named here declines.
@@ -1891,20 +1891,20 @@ const TAG_PRESERVING = new Set([
  * then has no reader, which is exactly what `dropUnreadAs` (item 1572) already removes. This pass
  * runs INSIDE it for that reason.
  *
- * ⚠️ IT IS A FILTER FOR A TRAVERSER THAT LACKS THE TAG — `selectStep` does `continue` when
+ * IT IS A FILTER FOR A TRAVERSER THAT LACKS THE TAG — `selectStep` does `continue` when
  * `recallTag` misses — so the whole question is whether every traverser reaching the select is
  * guaranteed to carry it. That is what `TAG_PRESERVING` answers, conservatively: an unconditional
  * top-level `as(x)` earlier, and nothing between the two that could introduce a traverser from
  * elsewhere.
  *
- * ⚠️ AND `select` WITH A `by()` CAN FILTER EVEN WHEN THE TAG RESOLVES — `select('a').by('age')`
+ * AND `select` WITH A `by()` CAN FILTER EVEN WHEN THE TAG RESOLVES — `select('a').by('age')`
  * drops a selected element with no `age` — so a modulated select is refused outright.
  */
 // EXPORTED for its own assertion, like `fuseEdgeHop` and `fuseUnionBoth` beside it.
 /**
  * `… id().count()` and `… label().count()` lose the projection (item 2170).
  *
- * 🔑 **BOTH STEPS EMIT EXACTLY ONE VALUE PER ELEMENT** — never dropping one, never multiplying — so a
+ * **BOTH STEPS EMIT EXACTLY ONE VALUE PER ELEMENT** — never dropping one, never multiplying — so a
  * `count()` tail cannot tell them from the elements themselves. Verified on a 5-vertex, 4-edge graph:
  *
  * ```text
@@ -1913,17 +1913,17 @@ const TAG_PRESERVING = new Set([
  *     V().out().count() = V().out().id().count() 4 = 4
  * ```
  *
- * ⚠️ Dropping the projection matters far more than it saves directly: it hands the plan back to the
+ * Dropping the projection matters far more than it saves directly: it hands the plan back to the
  * COUNT RUNGS. `V().id().count()` measured **5.98 ms against `V().count()`'s 0.00** (a counter read), and
  * `V().out().id().count()` **7.71** against the same. The floor-subtracted screen at item 2168 put
  * `V().id().count()` at +3.54 ms over its floor where native pays +1.42.
  *
- * 🔑 This is `dropCountedSelect`'s reasoning (item 1800) with FEWER caveats. That pass has to prove the
+ * This is `dropCountedSelect`'s reasoning (item 1800) with FEWER caveats. That pass has to prove the
  * select cannot FILTER — it `continue`s on a missing tag, and a `by()` drops an element lacking the
- * property — which is what its `TAG_PRESERVING` analysis is for. ⚠️ `id` and `label` have no such case:
+ * property — which is what its `TAG_PRESERVING` analysis is for. `id` and `label` have no such case:
  * every element has both.
  *
- * ⚠️⚠️ **`count(local)` IS REFUSED.** Local scope counts WITHIN each value rather than the stream, so
+ * **`count(local)` IS REFUSED.** Local scope counts WITHIN each value rather than the stream, so
  * `id().count(local)` asks a different question entirely and the projection is not dead.
  */
 const COUNT_PRESERVING: ReadonlySet<string> = new Set(['id', 'label']);
@@ -1943,7 +1943,7 @@ export const dropCountedProjection = (plan: Plan): Plan => {
   }
 
   /*
-   * ⚠️ `labels` on the projection would be read by a later `select`, and there is no later step here —
+   * `labels` on the projection would be read by a later `select`, and there is no later step here —
    * but a tagged projection is refused anyway rather than reasoned about, matching how the sibling
    * passes treat a modulated step.
    */
@@ -1952,8 +1952,8 @@ export const dropCountedProjection = (plan: Plan): Plan => {
   }
 
   /*
-   * ⚠️ A TAGGED projection is refused rather than reasoned about, matching how the sibling passes treat a
-   * modulated step. 🔑 `labels` is not on every `Step` variant, so the read goes through a narrowed view
+   * A TAGGED projection is refused rather than reasoned about, matching how the sibling passes treat a
+   * modulated step. `labels` is not on every `Step` variant, so the read goes through a narrowed view
    * rather than an optional chain the type does not allow.
    */
   if (((prev as { labels?: readonly string[] }).labels?.length ?? 0) > 0) {
@@ -2002,7 +2002,7 @@ export const dropCountedSelect = (plan: Plan): Plan => {
  * `outE(T).otherV()` becomes `outE(T).inV()`, and `inE(T).otherV()` becomes `inE(T).outV()`
  * (item 1921).
  *
- * ⚠️ THIS IS A PATH-DEPENDENCE REMOVAL, NOT A SPEED REWRITE, and that is why it earns its own pass
+ * THIS IS A PATH-DEPENDENCE REMOVAL, NOT A SPEED REWRITE, and that is why it earns its own pass
  * ahead of everything else. `otherV` is in `PATH_DEPENDENT_KINDS` because in general it needs to
  * know which end the traverser ARRIVED from — true after `bothE`, and false after a DIRECTED edge
  * step, where the far end is fixed by the direction alone. So the long spelling made
@@ -2017,17 +2017,17 @@ export const dropCountedSelect = (plan: Plan): Plan => {
  *   V().outE(E).inV().values(n)       46.21        the IDENTICAL answer, 7.1x
  * ```
  *
- * ⚠️ `bothE(T).otherV()` IS REFUSED and must stay so: there the arrival end is not determined by
+ * `bothE(T).otherV()` IS REFUSED and must stay so: there the arrival end is not determined by
  * the step, which is the whole reason `otherV` exists. `V().otherV()` with no edge step before it is
  * refused too.
  *
- * ⚠️⚠️ `readsPath` IS RECOMPUTED HERE, which `rewritten` deliberately does NOT do. Its note explains
+ * `readsPath` IS RECOMPUTED HERE, which `rewritten` deliberately does NOT do. Its note explains
  * why that is normally sound — "a rewrite can merge or remove steps but never introduce a
  * path-dependent one … so a carried-over `true` is at worst stale and only declines an
  * optimisation" — and this pass is the exception that proves it: REMOVING the path-dependent step is
  * the entire point, so a carried-over `true` would decline the optimisation it just enabled.
  *
- * ⚠️ AND THE COMPOSED SHAPE IS WHAT MATTERS, NOT THIS PASS'S OUTPUT. This only gets the plan to
+ * AND THE COMPOSED SHAPE IS WHAT MATTERS, NOT THIS PASS'S OUTPUT. This only gets the plan to
  * `outE(T).inV()`; item 1307's rewrite then takes it to `out(T)`, and the fused walks serve that.
  * [[rewrite-composition-is-not-free]] records three cases where a comment claimed a rewrite composed
  * with its neighbours and it did not, so `other-v-normalize.test.ts` asserts the FINAL shape rather
@@ -2039,7 +2039,7 @@ const EDGE_TO_FAR: Readonly<Record<string, 'inV' | 'outV'>> = { outE: 'inV', inE
  * `V().out(T).simplePath()` becomes `V().as_(t).out(T).where(neq(t))` — a DEPTH-ONE rewrite into a
  * shape item 1912 already fuses (item 1923).
  *
- * ⚠️ WHY A REWRITE AND NOT A RUNG. On a plan whose path is exactly `[near, far]`, `simplePath()` is
+ * WHY A REWRITE AND NOT A RUNG. On a plan whose path is exactly `[near, far]`, `simplePath()` is
  * "near !== far" — the hop MINUS its self-loops — which is precisely what `tagged-hop-values.ts`
  * computes for `where(neq(tag))`. Read off the engine rather than assumed
  * (`pathfam-shape-1923.mjs`): `V().out(E).simplePath()` yields the FAR VERTICES `b, c` where
@@ -2053,28 +2053,28 @@ const EDGE_TO_FAR: Readonly<Record<string, 'inV' | 'outV'>> = { outE: 'inV', inE
  *   V().as_(t).out(E).where(neq(t))       readsPath = false    -> item 1912's rung
  * ```
  *
- * ⚠️ DEPTH TWO IS A DIFFERENT TEST AND IS REFUSED. `V().out(E).out(E).simplePath()` requires all
+ * DEPTH TWO IS A DIFFERENT TEST AND IS REFUSED. `V().out(E).out(E).simplePath()` requires all
  * THREE elements distinct, not just the ends — the probe returned one row where the one-hop form
  * returns two, so a rewrite admitting it would answer a different question.
  *
- * ⚠️ `cyclicPath()` IS **NOT** REWRITTEN, and that is a refusal with a reason rather than an
+ * `cyclicPath()` IS **NOT** REWRITTEN, and that is a refusal with a reason rather than an
  * oversight: it is the complement, so it needs `where(eq(t))`, and item 1912's rung explicitly
  * declines `eq` — "a shape nobody has measured and not what this rung computes". Rewriting into a
  * shape that then declines would add a step for nothing. ~~It stays at 161.82 ms for its 2 rows.~~
  *
- * ✅ **AND IT DOES NOT STAY THERE: item 1986 ANSWERS IT WITHOUT A REWRITE.** The refusal above is
+ * **AND IT DOES NOT STAY THERE: item 1986 ANSWERS IT WITHOUT A REWRITE.** The refusal above is
  * about the rewrite route and is still correct; what it did not consider is that a ONE-HOP cyclic
  * path is exactly the SELF-LOOP edges, so it needs no path tracking and no `where(eq(t))` at all.
  * See `cyclicPathShortcut`, which answers the plan before the path decision: **169.39 -> 43.99 ms**
  * on the workload screen with five sibling controls flat. (The 161.82 quoted above was also stale —
  * the screen had moved to 200.91 by item 1954.)
  *
- * ⚠️ THE TRAILING `values(k)` FORM IS ADMITTED BECAUSE THAT IS WHAT THE SCREEN MEASURES — item
+ * THE TRAILING `values(k)` FORM IS ADMITTED BECAUSE THAT IS WHAT THE SCREEN MEASURES — item
  * 1912's own lesson, where a four-step rung won 17.6x in isolation and left the screen's rows
  * untouched because the screen's spellings carry a fifth step. `tagged-hop-values` admits five steps
  * when the last is a single-key `values`, so the rewrite passes it through.
  *
- * ⚠️ THE SYNTHETIC TAG CANNOT COLLIDE, and the gate is why: the plan is exactly three or four steps,
+ * THE SYNTHETIC TAG CANNOT COLLIDE, and the gate is why: the plan is exactly three or four steps,
  * so there is no other step that could bind or read a tag. Nothing downstream observes it.
  */
 /**
@@ -2082,12 +2082,12 @@ const EDGE_TO_FAR: Readonly<Record<string, 'inV' | 'outV'>> = { outE: 'inV', inE
  *
  * The AST's own comments say so: `coalesce` "yields the first non-empty plan's results per
  * traverser", and an `identity` plan yields the input traverser — which is exactly what `optional`
- * does "if it yields nothing". ✅ Verified empirically before this was written, not just read:
+ * does "if it yields nothing". Verified empirically before this was written, not just read:
  * `V().coalesce(out(E), identity()).values(n)` and `V().optional(out(E)).values(n)` agree on row
  * COUNT and POSITIONALLY on a 200,001-vertex fixture carrying a vertex with no `E` edges — the only
  * rows on which either differs from a bare hop.
  *
- * 🔑 **AND THE PRICES DIFFER BY 4.99x, WHICH IS WHY THIS EXISTS.** `optional` has two dedicated
+ * **AND THE PRICES DIFFER BY 4.99x, WHICH IS WHY THIS EXISTS.** `optional` has two dedicated
  * fused modules (`optional-hop.ts`, `optional-hop-values.ts`, the latter riding item 1889's CSR
  * behind the second-ask policy); `coalesce` has none — item 1629 gave `coalesceStep` a direct
  * adjacency-bucket read worth 1.26x and that is all. Measured, one shape per process:
@@ -2098,17 +2098,17 @@ const EDGE_TO_FAR: Readonly<Record<string, 'inV' | 'outV'>> = { outE: 'inV', inE
  *     coalesce(out(E), identity())       218.23      800,001        273       5.35x of the hop
  * ```
  *
- * ⚠️ **ITEM 1480 PRICED THIS FAMILY AT ~4.7x AND CALLED THE BLOCKER STRUCTURAL** — "the fused walks
+ * **ITEM 1480 PRICED THIS FAMILY AT ~4.7x AND CALLED THE BLOCKER STRUCTURAL** — "the fused walks
  * are SOURCE-ANCHORED, so no sub-plan can reach them". That was true of both spellings when written.
  * `optional` was then given its own rungs and `coalesce` was not, so the structural claim stopped
  * covering the gap and nothing re-checked it. [[check-the-blocker-still-holds]].
  *
- * ⚠️ TOP-LEVEL STEPS ONLY, deliberately: this maps the plan's own step list, so a `coalesce` nested
+ * TOP-LEVEL STEPS ONLY, deliberately: this maps the plan's own step list, so a `coalesce` nested
  * inside a `union` arm or a `local` keeps the general loop. Widening it needs a recursive walk over
  * sub-plans, which is a different change with its own risk, and `applyPlanToStream` is where nested
  * plans are handled.
  *
- * ⚠️ EXACTLY TWO ARMS, and the second exactly one `identity` step. Three arms are not `optional`,
+ * EXACTLY TWO ARMS, and the second exactly one `identity` step. Three arms are not `optional`,
  * and an `identity` with anything after it inside arm 1 is a different question — the test file
  * `coalesce-bucket-hop.test.ts` records that appending `identity()` INSIDE arm 0 is how its own
  * oracle reaches the general loop, so these shapes are genuinely distinguishable.
@@ -2227,7 +2227,7 @@ export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Pl
           dropVacuousLabels(
             fuseUnionSameDir(
               /*
-               * ⚠️ OUTSIDE `dropCountedSelect`, so a plan that loses its `select` can then lose an
+               * OUTSIDE `dropCountedSelect`, so a plan that loses its `select` can then lose an
                * `id`/`label` too — `as(x) … select(x).id().count()` needs both passes to reach a counter.
                */
               dropCountedProjection(dropCountedSelect(flattenLinearMatch(graphFreePrefix(plan)))),
@@ -2262,7 +2262,7 @@ export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Pl
  * the same multiset AND the same order for `count()`, for the elements themselves, for
  * `values(k)`, for the untyped `outE()`/`out()` pair, and for the incoming mirror.
  *
- * ⚠️ THEY DO NOT AGREE ON `path()`, and that is why this runs only when nothing reads the path.
+ * THEY DO NOT AGREE ON `path()`, and that is why this runs only when nothing reads the path.
  * The long spelling puts the EDGE in the traverser's path and `out` does not, so a plan that can
  * observe the path must keep the spelling it was given. `planReadsPath` is the test, and it is
  * conservative in the right direction: it recurses through every plan-bearing field and covers
@@ -2290,7 +2290,7 @@ export const effectivePlan = (plan: Plan, graph: Graph, tracksPath: boolean): Pl
 // returns identical rows by the slow walk, so only an assertion on the REWRITTEN PLAN can
 // tell "it fused" from "it answered anyway" (item 1303 measured that distinction).
 export const fuseEdgeHop = (plan: Plan): Plan => {
-  // ⚠️ THE GATE (item 1505): this pass can only fire on a plan that CONTAINS the kind it fuses, and
+  // THE GATE (item 1505): this pass can only fire on a plan that CONTAINS the kind it fuses, and
   // the mask answers that in one test instead of a walk. `effectivePlan`'s six passes were 32.2% of
   // a 208 ns reused-plan call, almost all of it spent looking for steps that were not there.
   if ((plan.kinds & EDGE_STEP_BITS) === 0) {
@@ -2327,7 +2327,7 @@ export const fuseEdgeHop = (plan: Plan): Plan => {
 /**
  * `order()` immediately followed by `take(n)` becomes a BOUNDED top-k (item 1574).
  *
- * ⚠️ GREMLIN SORTED EVERYTHING AND SLICED, where GQL already took a top-k. The same question, the
+ * GREMLIN SORTED EVERYTHING AND SLICED, where GQL already took a top-k. The same question, the
  * same graph, 200,000 vertices, medians of 5:
  *
  *     GREMLIN  V().values(k).order().limit(10)      55.2 ms    its own full sort: 66.2 (1.2x)
@@ -2336,12 +2336,12 @@ export const fuseEdgeHop = (plan: Plan): Plan => {
  * **10.0x apart on paging**, with `boundedTopK` sitting in the GQL executor since item 1064 and no
  * counterpart here.
  *
- * ⚠️ NOT COVERED BY THE `order()` REFUTATIONS. Items 878/879/890/891/892 closed this function hard —
+ * NOT COVERED BY THE `order()` REFUTATIONS. Items 878/879/890/891/892 closed this function hard —
  * the sort runs at 1.13x its own floor, "no change to `sortByBys` can reach that" — but all of that
  * is about the full sort's CONSTANT FACTORS. A top-k is an ALGORITHMIC change, O(n log n) to
  * O(n log k), which is item 573's recorded distinction.
  *
- * ⚠️ DELIBERATELY NARROW: only a `take` IMMEDIATELY after the order, both global scope. A
+ * DELIBERATELY NARROW: only a `take` IMMEDIATELY after the order, both global scope. A
  * `skip(a).take(b)` between them would need `cap = a + b` and an `order().range(a, b)` likewise;
  * neither fires here rather than risk an off-by-one in a bound that silently drops rows.
  */
@@ -2379,7 +2379,7 @@ const fuseOrderTake = (plan: Plan): Plan => {
 /**
  * `as(l)` whose label NOTHING downstream can read is removed (item 1572).
  *
- * ⚠️ TWO COSTS, AND THE BIGGER ONE IS NOT THE TAG COPY. `as` writes its label by COPYING the whole
+ * TWO COSTS, AND THE BIGGER ONE IS NOT THE TAG COPY. `as` writes its label by COPYING the whole
  * tag map per traverser (`projection.ts`: `new Map(t.tags)` then a spread), which is a real
  * per-element cost — but it is also just another step in front of the hop, and every count/values
  * rung matches a plan PREFIX from the source. So an unread `as` makes them all DECLINE, exactly the
@@ -2389,14 +2389,14 @@ const fuseOrderTake = (plan: Plan): Plan => {
  *     V().out(E).count()               0.0           the spelling that never bound it
  *     V().as(x).out(E).values(k)      30.1     ->  7.7   3.9x, this one IS the tag copy
  *
- * ⚠️ IT REUSES `tagsObservedFrom` RATHER THAN ASKING PER LABEL. The precise question is "does
+ * IT REUSES `tagsObservedFrom` RATHER THAN ASKING PER LABEL. The precise question is "does
  * anything read THIS label", which would mean enumerating every reader's label fields
  * (`select`, `where` keys, `dedupe` labels, `math` names, `addE` tag endpoints) and getting a wrong
  * answer means a `select` finding its tag missing. The coarse question — does anything read tags AT
  * ALL — is already answered by item 1560's allowlist, which is mutation-tested and defaults to
  * "observed". It covers both measured shapes and cannot be wrong about a label it never inspects.
  *
- * ⚠️ TESTED AGAINST THE KEPT SUFFIX, WALKING BACKWARDS. `as` is not tag-blind (it reads `t.tags` to
+ * TESTED AGAINST THE KEPT SUFFIX, WALKING BACKWARDS. `as` is not tag-blind (it reads `t.tags` to
  * copy it), so checking each `as` against the ORIGINAL suffix would let a second unread `as` keep
  * the first one alive — `V().as(x).out(E).as(y).count()` would drop only `y`. Walking from the end
  * and testing what SURVIVES drops both.
@@ -2432,7 +2432,7 @@ export const dropUnreadAs = (plan: Plan): Plan => {
 };
 
 const dropVacuousLabels = (plan: Plan, graph: Graph): Plan => {
-  // ⚠️ THE GATE (item 1506): see {@link KIND_BITS} for why these are the only kinds that can make
+  // THE GATE (item 1506): see {@link KIND_BITS} for why these are the only kinds that can make
   // this pass change a plan.
   if ((plan.kinds & KIND_BITS.hasLabel) === 0) {
     return plan;
@@ -2456,7 +2456,7 @@ const dropVacuousLabels = (plan: Plan, graph: Graph): Plan => {
       return false;
     }
 
-    // ⚠️ MULTIPLE LABELS COUNT TOO, and this used to require exactly one (item 1547). `hasLabel`
+    // MULTIPLE LABELS COUNT TOO, and this used to require exactly one (item 1547). `hasLabel`
     // is ANY-match, so if ONE of the named labels is on every element the whole disjunction is
     // vacuous — `hasLabel(P, Q)` on a graph where every vertex carries `P` removes nothing.
     // Requiring `labels.length === 1` left that filter in the plan, and the plan then takes the
@@ -2468,7 +2468,7 @@ const dropVacuousLabels = (plan: Plan, graph: Graph): Plan => {
     //
     // both answering exactly what the single-label spelling answers.
     //
-    // ⚠️ THE TEST IS SUFFICIENT, NOT COMPLETE, and deliberately. Two labels each on half the
+    // THE TEST IS SUFFICIENT, NOT COMPLETE, and deliberately. Two labels each on half the
     // vertices could UNION to everything while neither bucket covers it alone; deciding that needs
     // a real union and this pass runs on every query. `hasLabel(Q, R)` — half and none — is
     // correctly judged non-vacuous and measured 0.006 against 0.009 ms, so the incomplete case is
@@ -2512,7 +2512,7 @@ const COMMUTING_SOURCE_FILTERS = new Set<Step['kind']>([
 ]);
 
 const assertPlanIsSatisfiable = (plan: Plan): void => {
-  // ⚠️ THE GATE (item 1507). Every fault this can raise requires a `path` step to scan FROM, so a
+  // THE GATE (item 1507). Every fault this can raise requires a `path` step to scan FROM, so a
   // plan without one cannot fault here — and the loop below would otherwise walk every step to
   // discover that. Pure, single-kind precondition; the mask answers it in one test.
   if ((plan.kinds & KIND_BITS.path) === 0) {
@@ -2549,13 +2549,13 @@ const assertPlanIsSatisfiable = (plan: Plan): void => {
 /**
  * `[… , groupCount({ by: k })]` rewritten as `[… , values(k)]`, or `undefined` — item 1834.
  *
- * ⚠️ ONE PROPERTY KEY ONLY. `groupCount` carries either a legacy `by` string or a `bys` modulator
+ * ONE PROPERTY KEY ONLY. `groupCount` carries either a legacy `by` string or a `bys` modulator
  * list; only the single-key PROPERTY form is a plain `values(k)` projection. A modulator that is
  * not a bare property (or more than one of them) groups by something this swap would not reproduce,
  * so it declines rather than guessing.
  */
 /**
- * ⚠️ EXPORTED FOR ITS OWN TEST, like `dropUnreadPathVar` on the GQL side — a route choice is
+ * EXPORTED FOR ITS OWN TEST, like `dropUnreadPathVar` on the GQL side — a route choice is
  * ANSWER-EQUIVALENT, so no value test can see it. Item 1856's four gate mutants all SURVIVED the
  * answer tests for exactly that reason: rejecting the modulator spelling, admitting a non-`key`
  * by, admitting an ambiguous plan and admitting a multi-`by` all leave the answers alone and
@@ -2578,7 +2578,7 @@ export const asGroupCountByKey = (plan: Plan): { plan: Plan } | undefined => {
   }
 
   /**
-   * ⚠️ THE SAME DERIVATION `dispatch` AND `groupCountShortcut` USE — and it was NOT, until item
+   * THE SAME DERIVATION `dispatch` AND `groupCountShortcut` USE — and it was NOT, until item
    * 1856. This read `typeof bys[0] === 'string'`, but `.by('k')` builds `{ kind: 'key', key: 'k' }`
    * while `groupCount({ by: 'k' })` sets the legacy `by` field, so the modulator spelling never
    * matched and the whole fused hop chain declined for it:
@@ -2591,7 +2591,7 @@ export const asGroupCountByKey = (plan: Plan): { plan: Plan } | undefined => {
    * that means exactly the same thing. `keyToBy` is the shared derivation, so the two spellings
    * cannot drift apart again.
    *
-   * ⚠️ THE MAP ORDER WAS CHECKED FIRST, because a `groupCount` returns a Map and its iteration
+   * THE MAP ORDER WAS CHECKED FIRST, because a `groupCount` returns a Map and its iteration
    * order IS part of the answer (item 1834). Both spellings already produced the same order at
    * every width, so routing the modulator through the fused walk preserves its answer exactly
    * rather than merely producing the same groups.
@@ -2614,7 +2614,7 @@ export const asGroupCountByKey = (plan: Plan): { plan: Plan } | undefined => {
 /**
  * `<hop chain>.groupCount().by(k)` answered by the FUSED values walk plus a tally — item 1834.
  *
- * ⚠️ EXTRACTED BECAUSE LINT SAID SO, exactly as `deepWidthReductions` was on the GQL side at item
+ * EXTRACTED BECAUSE LINT SAID SO, exactly as `deepWidthReductions` was on the GQL side at item
  * 1832: this branch took `run`'s loop to a cyclomatic complexity of **40 against a limit of 35**.
  * Raising the limit would hide the accumulation one branch at a time; this keeps the budget
  * meaningful for whoever adds the next fusion.
@@ -2639,10 +2639,10 @@ const fusedHopChainGroupCount = (
   ctx: RunContext,
 ): unknown[] | undefined => {
   /**
-   * ⚠️ `tracksPath` disqualifies every fused walk here for `hopValuesShortcut`'s stated reason: the
+   * `tracksPath` disqualifies every fused walk here for `hopValuesShortcut`'s stated reason: the
    * walk emits bare values and builds no traverser, so it has no path to carry.
    *
-   * ⚠️ AND THREE STEPS IS A MEASURED FLOOR, NOT A TIDY GUARD. `V().groupCount().by(k)` is TWO steps
+   * AND THREE STEPS IS A MEASURED FLOOR, NOT A TIDY GUARD. `V().groupCount().by(k)` is TWO steps
    * and is served by `groupCountShortcut` well above this; without this line it still reached here
    * and paid three shortcut probes that can never admit it, which showed up as the node-level
    * `grouped` row moving **0.83x at the median** in the control A/B. Dropping out early returns it.
@@ -2658,7 +2658,7 @@ const fusedHopChainGroupCount = (
   }
 
   /**
-   * ⚠️ ALL THREE VALUES WALKS, IN THE SAME `??` ORDER THE `projected` PATH USES — and the one-hop
+   * ALL THREE VALUES WALKS, IN THE SAME `??` ORDER THE `projected` PATH USES — and the one-hop
    * two of them are here because fixing the deeper widths alone CREATED an inversion. With only
    * `hopChainValuesShortcut` (which requires two or more hops) the grid read:
    *
@@ -2672,7 +2672,7 @@ const fusedHopChainGroupCount = (
    * can change route — so it is copied rather than re-chosen.
    */
   /**
-   * ⚠️⚠️ THE SHARED CHAIN, NOT A SECOND COPY OF IT (item 1892) — and the second copy is why this
+   * THE SHARED CHAIN, NOT A SECOND COPY OF IT (item 1892) — and the second copy is why this
    * shape was the Gremlin screen's slowest at scale. It listed `hopValuesShortcut`,
    * `startFilteredHopValues` and `hopChainValuesShortcut` by hand, so when item 1889 put the CSR
    * walk at the TOP of `fusedProjectedValues` and items 1883/1884 added two more rungs below it,
@@ -2693,7 +2693,7 @@ const fusedHopChainGroupCount = (
 /**
  * A residual the FUSED VALUES WALK can absorb, instead of wrapping each value in a traverser.
  *
- * ⚠️ EXTRACTED BECAUSE LINT SAID SO, exactly as `asGroupCountByKey` and `fusedHopChainGroupCount`
+ * EXTRACTED BECAUSE LINT SAID SO, exactly as `asGroupCountByKey` and `fusedHopChainGroupCount`
  * were at item 1834: the second residual arm took `run` to a cyclomatic complexity of **36 against
  * a limit of 35**. Raising the limit would hide the accumulation one branch at a time.
  *
@@ -2703,7 +2703,7 @@ const fusedHopChainGroupCount = (
  * replace: placed after it, neither would ever be reached.
  */
 /**
- * ⚠️ EXTRACTED FOR THE COMPLEXITY GATE, as `scanValuesShortcut`, `fusedProjectedResidual` and
+ * EXTRACTED FOR THE COMPLEXITY GATE, as `scanValuesShortcut`, `fusedProjectedResidual` and
  * `scanResidualWalk` were before it — `run` reached 37 against a limit of 35 when the label-seeded
  * fusion was wired inline (item 2037). It decides nothing the call site did not: a null seed has no
  * stream to fuse.
@@ -2711,13 +2711,13 @@ const fusedHopChainGroupCount = (
 const labelSeededFusionFor = (
   residual: Iterable<unknown> | undefined,
   seeded: { stream: Iterable<{ value: unknown }>; steps: readonly Step[] } | null,
-  // ⚠️ `ctx` RATHER THAN `tracksPath` (item 2069) — same reason as `valuesFromIndexOrScan`: the
+  // `ctx` RATHER THAN `tracksPath` (item 2069) — same reason as `valuesFromIndexOrScan`: the
   // residual needs the side-effect bag, and two parameters carrying one context drift apart.
   ctx: RunContext,
   effective: Plan,
 ): Iterable<unknown> | undefined => {
   /*
-   * 🔑 THE RESIDUAL KEEPS ITS PRECEDENCE, and the choice lives HERE rather than at the call site so
+   * THE RESIDUAL KEEPS ITS PRECEDENCE, and the choice lives HERE rather than at the call site so
    * `run` carries one `if` and no `??`: each of those counts against the complexity gate, and `run`
    * sits at the limit (item 2037 hit 37, then 36, before this shape).
    *
@@ -2738,13 +2738,13 @@ const labelSeededFusionFor = (
   }
 
   /*
-   * 🔑 **A TRAILING TERMINAL RIDES `fusedProjectedResidual` (item 2042).** An empty `rest` means the
+   * **A TRAILING TERMINAL RIDES `fusedProjectedResidual` (item 2042).** An empty `rest` means the
    * walk answered the whole plan, which is item 2037's case. A non-empty one is offered to the same
    * fusion every other values walk uses — it takes `order`/`count`/`fold`/`min`/`max`/`aggregate().cap()`
    * and declines the rest, and declining returns `undefined`, leaving the plan exactly where it was
    * before this rung existed.
    *
-   * ⚠️ THE CHOICE LIVES HERE, NOT AT THE CALL SITE: `run` sits at the complexity limit, and item
+   * THE CHOICE LIVES HERE, NOT AT THE CALL SITE: `run` sits at the complexity limit, and item
    * 2037 already spent three attempts discovering that an extra `if` or even a `??` out there costs
    * one point each.
    */
@@ -2755,7 +2755,7 @@ const fusedProjectedResidual = (
   projected: HopValues,
   effective: Plan,
   /*
-   * ⚠️ `ctx` IS HERE ONLY FOR THE SIDE-EFFECT BAG (item 2069). The `aggregate`/`store` + `count` arm
+   * `ctx` IS HERE ONLY FOR THE SIDE-EFFECT BAG (item 2069). The `aggregate`/`store` + `count` arm
    * must populate the bag identically to the generic path — `ast.ts` exposes `sideEffects` to
    * expression evaluation, so a bag is observable in general and this fusion is not licensed to skip
    * it. Threading one parameter was the cost of not weakening that.
@@ -2773,7 +2773,7 @@ const fusedProjectedResidual = (
    * — the reduce was costing more than the walk it reduces, which is the same shape item 1630
    * found for a residual `order()` below.
    *
-   * ✅ **`sum`/`mean` ARE NOW HERE TOO (item 2408), AND THEY WERE THE LARGEST OF THE FOUR.** The
+   * **`sum`/`mean` ARE NOW HERE TOO (item 2408), AND THEY WERE THE LARGEST OF THE FOUR.** The
    * same walk at 200,000 vertices / 1,000,000 edges, one shape per process, median of 9:
    *
    *     V().out(E).values(k)            91.94 ms   <- the FLOOR: it MATERIALIZES all 800,000 values
@@ -2781,7 +2781,7 @@ const fusedProjectedResidual = (
    *     V().out(E).values(k).mean()    224.62
    *     V().out(E).values(k).min()     103.54      <- already folded here since item 1857
    *
-   * ⚠️ THEY WERE REFUSED FOR AN INVARIANT THAT NO LONGER BINDS, not forgotten. This read: "an f64
+   * THEY WERE REFUSED FOR AN INVARIANT THAT NO LONGER BINDS, not forgotten. This read: "an f64
    * addition is order-sensitive in its last ulp … and byte-identity with the Rust engine is a hard
    * invariant." Item **2401** replaced that with a PRECISION contract (`n·ε·Σ|xᵢ|`, explicitly not
    * bit-identical across engines) and item **2400** freed the walk-order premise underneath it, so
@@ -2789,7 +2789,7 @@ const fusedProjectedResidual = (
    * carries the full argument, and item 1918's 12/12 bit-identical FFI measurement is why taking it
    * costs nothing.
    *
-   * ⚠️ TWO FOLDS, NOT ONE WIDENED LOOP: `min`/`max` reduce over `compareTotal`'s total order and
+   * TWO FOLDS, NOT ONE WIDENED LOOP: `min`/`max` reduce over `compareTotal`'s total order and
    * `sum`/`mean` add through `asNumber`, so a single accumulator would have to branch per element on
    * a decision the gate already made per plan.
    */
@@ -2816,16 +2816,16 @@ const fusedProjectedResidual = (
    *
    *     200,000 vertices / 1,000,000 edges, one shape per process, median of 7:
    *       V().out(E)                      4.48 ms    (the walk's drain, item 1889/1893)
-   *       V().out(E).fold()              99.47       ⬅ the same walk, ITERATED
+   *       V().out(E).fold()              99.47       <- the same walk, ITERATED
    *       V().out(E).values(k)           42.99
-   *       V().out(E).values(k).fold()   137.77       ⬅ +95 ms, the same delta
+   *       V().out(E).values(k).fold()   137.77       <- +95 ms, the same delta
    *
-   * ⚠️ BOTH DELTAS ARE ~95 ms OVER 800,000 ELEMENTS, which is what identifies the cost: it is not
+   * BOTH DELTAS ARE ~95 ms OVER 800,000 ELEMENTS, which is what identifies the cost: it is not
    * accumulating a list (an array push is ~2 ns) but ITERATING a walk that can be DRAINED —
    * item 1412's rule, and the profile agrees (73% in `generatorResume` plus the adjacency
    * generator, nothing in the push).
    *
-   * ⚠️ AND `aggregate('x').cap('x')` / `store('x').cap('x')` ARE DELIBERATELY NOT HERE. They
+   * AND `aggregate('x').cap('x')` / `store('x').cap('x')` ARE DELIBERATELY NOT HERE. They
    * measure 1.09x and 1.03x of `fold` so they would ride the same win, but a side effect that
    * also PASSES THE STREAM THROUGH is a different emit contract from a barrier that replaces it,
    * and `aggregate` and `store` differ from each other on eagerness in TinkerPop. One question at
@@ -2848,7 +2848,7 @@ const fusedProjectedResidual = (
   }
 
   /*
-   * `aggregate(k).count()` / `store(k).count()` (item 2069). ⚠️ ITEM 1909's REFUSAL OF THE
+   * `aggregate(k).count()` / `store(k).count()` (item 2069). ITEM 1909's REFUSAL OF THE
    * PASS-THROUGH FORM DOES NOT BIND UNDER `count`, because `count` is a NON-CANCELLING full consumer
    * and the eagerness difference it names is observable only when something stops the stream early.
    * `fusableProjectedBagCount` carries the argument; `projected-fold.test.ts` pins the shape where it
@@ -2858,7 +2858,7 @@ const fusedProjectedResidual = (
    * the same bag — 7.3x, with a traverser per element as the whole difference.
    */
   /*
-   * A BARE TRAILING `aggregate(k)` (item 2070) — the barrier with nothing after it. ⚠️ `store` is NOT
+   * A BARE TRAILING `aggregate(k)` (item 2070) — the barrier with nothing after it. `store` is NOT
    * admitted: the stream passes through to a caller who may stop early, and `store` is lazy by
    * contract where `aggregate` already materializes the upstream. `fusableProjectedBarrier` carries
    * the argument. 47.14 ms fused against 165.64 generic, same 600,000 rows.
@@ -2866,13 +2866,13 @@ const fusedProjectedResidual = (
   if (fusableProjectedBarrier(projected.rest)) {
     const [barrier] = projected.rest;
 
-    // ⚠️ Narrowed, not cast — the gate's boolean does not carry the kind to the type system.
+    // Narrowed, not cast — the gate's boolean does not carry the kind to the type system.
     if (barrier.kind === 'aggregate') {
       return barrierProjectedBag(projected.values, barrier.key, ctx);
     }
 
     /*
-     * ⚠️ `store` TAKES A DIFFERENT ARM, NOT THE SAME ONE (item 2112). `barrierProjectedBag` returns the
+     * `store` TAKES A DIFFERENT ARM, NOT THE SAME ONE (item 2112). `barrierProjectedBag` returns the
      * drained array, which would make the result eager for every consumer — and `run` is the lazy public
      * API. `barrierProjectedStore` is lazy as an iterator and eager via `drain`, over ONE generator, so a
      * caller that `break`s out bags only what it pulled. 1.50x over the generic path (item 2111).
@@ -2886,7 +2886,7 @@ const fusedProjectedResidual = (
     const [bag] = projected.rest;
 
     /*
-     * ⚠️ NARROWED, NOT CAST. `fusableProjectedBagCount` has already established that this step is an
+     * NARROWED, NOT CAST. `fusableProjectedBagCount` has already established that this step is an
      * `aggregate` or a `store`, both of which carry a `key` — but the gate's boolean return does not
      * carry that to the type system, and a cast here would survive the gate being widened later.
      */
@@ -2909,14 +2909,14 @@ const fusedProjectedResidual = (
  * `V()`/`E()` + an optional `hasLabel` + a single-key `values`, answered by a scan that builds no
  * traverser — the vertex rung (item 1481) and its EDGE twin (item 1858).
  *
- * ⚠️ EXTRACTED FOR THE COMPLEXITY GATE, as `fusedProjectedResidual` was at item 1857 and
+ * EXTRACTED FOR THE COMPLEXITY GATE, as `fusedProjectedResidual` was at item 1857 and
  * `asGroupCountByKey` at item 1834: adding the edge twin took `run` to **36 against a limit of
  * 35**, even written as a `??`.
  *
  * The two are DISJOINT BY SOURCE — one matches a `V` source and the other an `E` — so the order
  * cannot change which shapes are answered.
  *
- * ⚠️ ONE `tracksPath` GUARD COVERS BOTH, and for the same reason: each walk emits bare values and
+ * ONE `tracksPath` GUARD COVERS BOTH, and for the same reason: each walk emits bare values and
  * builds no path, so a plan that reads the path must not take either. The vertex rung's own note
  * records that its guard is UNREACHABLE for today's shape list and kept because it belongs to the
  * shortcut's contract; the edge twin inherits exactly that argument.
@@ -2935,7 +2935,7 @@ const scanValuesShortcut = (
       // which plans they answer. It reads last only because it is the narrowest.
       nodeValuesDedupeShortcut(effective, graph) ??
       /*
-       * The EXISTENCE-FILTERED scan (item 2025): `V().where(<one hop>).values(k)`. ⚠️ ADDED LAST on
+       * The EXISTENCE-FILTERED scan (item 2025): `V().where(<one hop>).values(k)`. ADDED LAST on
        * item 1535's rule — its gate requires exactly three steps with a `where` in the middle, which
        * none of the three above can match (each requires `values` immediately after the source or a
        * trailing `dedupe`), so the order is a fact about precedence rather than about these four.
@@ -2943,7 +2943,7 @@ const scanValuesShortcut = (
       nodeValuesWhereShortcut(effective, graph) ??
       /*
        * The same prefix with a FUSED `dedupe` (item 2079) — the one priced row item 2026 left open,
-       * measured at 1.29x with an exact pair. ⚠️ ADDED LAST, and it cannot shadow any sibling: each of
+       * measured at 1.29x with an exact pair. ADDED LAST, and it cannot shadow any sibling: each of
        * them requires `values` immediately after the source or a trailing `dedupe` on a BARE scan,
        * while this needs a `where` in the middle AND a `dedupe` at the end — four steps, which none
        * of the four above admits. Item 1535's rule, stated rather than relied upon.
@@ -2951,7 +2951,7 @@ const scanValuesShortcut = (
       scanWhereValuesDedupe(effective, graph) ??
       /*
        * `V().values(k).is(pred)` (item 2081) — a value filter on the fused scan, measured at 2.81x
-       * with EQUAL emissions. ⚠️ It cannot shadow a sibling: each of those needs `values` immediately
+       * with EQUAL emissions. It cannot shadow a sibling: each of those needs `values` immediately
        * after the source with NOTHING after it, a trailing `dedupe`, or a `where` in the middle, and
        * this needs a trailing `is`. Item 1535's rule, stated rather than relied upon.
        */
@@ -2962,17 +2962,17 @@ const scanValuesShortcut = (
 /**
  * The fused VALUES walks, consulted in `??` order.
  *
- * ⚠️ EXTRACTED FOR THE COMPLEXITY GATE, as `scanValuesShortcut` and `fusedProjectedResidual` were
+ * EXTRACTED FOR THE COMPLEXITY GATE, as `scanValuesShortcut` and `fusedProjectedResidual` were
  * before it: adding the fifth rung took `run` to **36 against a limit of 35**, even written as a
  * `??` chain. Nothing else changed — the order, the guard and the comments are the ones that were
  * inline.
  *
- * ⚠️ THE ORDER IS LOAD-BEARING (item 1535): `??` in this order means no plan an earlier rung already
+ * THE ORDER IS LOAD-BEARING (item 1535): `??` in this order means no plan an earlier rung already
  * admits can change route. The five are in fact disjoint by their position-1 step — a vertex hop, a
  * filter run, an `outE`/`inE`, an `optional`, a second hop — but the ordering rule is what keeps
  * that true if any gate is ever widened.
  *
- * ⚠️ ONE `tracksPath` GUARD COVERS ALL FIVE, for `hopValuesShortcut`'s stated reason: each emits
+ * ONE `tracksPath` GUARD COVERS ALL FIVE, for `hopValuesShortcut`'s stated reason: each emits
  * bare values and builds no traverser, so it has no path to carry and a plan that reads one must
  * not ride any of them.
  */
@@ -2980,12 +2980,12 @@ const fusedProjectedValues = (
   effective: Plan,
   graph: Graph,
   tracksPath: boolean,
-  /* ⚠️ Threaded for `hopValuesCsr`'s `[bag, values]` tail only (item 2116). */
+  /* Threaded for `hopValuesCsr`'s `[bag, values]` tail only (item 2116). */
   ctx: RunContext,
 ): HopValues | undefined =>
   tracksPath
     ? undefined
-    : // ⚠️ THE CSR WALK IS FIRST, AND IT IS THE ONLY DELIBERATE PRECEDENCE CHANGE IN THIS CHAIN
+    : // THE CSR WALK IS FIRST, AND IT IS THE ONLY DELIBERATE PRECEDENCE CHANGE IN THIS CHAIN
       // (item 1889). Every other rung was added BELOW on item 1535's rule — `??` in this order
       // means no plan an earlier rung already admits can change route. This one is added ABOVE
       // because it is FASTER on the narrow shape it claims: at 200,000 vertices / 1,000,000 edges
@@ -2993,12 +2993,12 @@ const fusedProjectedValues = (
       // doing four times the rows. Its gate is as narrow as that claim (`V()`, ONE `out`/`in` with
       // ONE label, a single-key `values`/`id`/nothing), so everything it declines lands on exactly
       // the rung it lands on today.
-      // ⚠️ THE DEDUPE WALK IS FIRST (item 1899), and it is narrow by construction: FOUR steps, with
+      // THE DEDUPE WALK IS FIRST (item 1899), and it is narrow by construction: FOUR steps, with
       // a `values`+`dedupe` pair in positions 2-3 in either order. Every rung below it requires the
       // projection to be the LAST step, so none of them can claim this shape — the ordering is for
       // reading, and item 1535's rule keeps it true if a gate is ever widened.
       (hopValuesDedupe(effective, graph) ??
-      // ⚠️ `ctx` is for the `[bag, values]` tail (item 2116); without it that arm declines.
+      // `ctx` is for the `[bag, values]` tail (item 2116); without it that arm declines.
       hopValuesCsr(effective, graph, ctx) ??
       hopValuesShortcut(effective, graph) ??
       startFilteredHopValues(effective, graph) ??
@@ -3008,23 +3008,23 @@ const fusedProjectedValues = (
       optionalHopValues(effective, graph) ??
       // The COALESCE rung (item 1998): `coalesce(<one hop>, <one hop>)` — the form item 1990's
       // normalization cannot reach, because it has no `identity()` arm to rewrite into `optional`.
-      // ⚠️ ADDED AT THE END on item 1535's rule, so no plan an earlier rung already admits can
+      // ADDED AT THE END on item 1535's rule, so no plan an earlier rung already admits can
       // change route. Its gate is narrow by construction (`V()`, a two-arm `coalesce` of single
       // vertex steps, a single-key `values`/`id`/nothing), so everything it declines lands on
       // exactly the route it lands on today.
       coalesceHopValues(effective, graph) ??
       // The CHOOSE rung (item 1999): `choose(<vertex filter>, <one hop>, <one hop>)`, and the
-      // absent-else pass-through form. ⚠️ ALSO AT THE END on item 1535's rule — and note it must sit
+      // absent-else pass-through form. ALSO AT THE END on item 1535's rule — and note it must sit
       // AFTER the coalesce rung rather than beside it, because the two gates are disjoint by step
       // kind and the chain's order is then a fact about precedence rather than about these two.
       chooseHopValues(effective, graph) ??
       // The CHOOSE-TEST rung (item 2014): `choose(<one hop>, <value arm>, <value arm>)` — the MIRROR
       // of the rung above, which takes a vertex-filter test with HOP arms and explicitly declines a
-      // hop test. ⚠️ BELOW it, so the two cannot contend: their gates are disjoint (a hop test vs a
+      // hop test. BELOW it, so the two cannot contend: their gates are disjoint (a hop test vs a
       // filter test), and the order is then a fact about precedence rather than about these two.
       chooseTestValues(effective, graph) ??
       // The BRANCH rung (item 2015): `branch(values(k)).option(m, <arm>)….none(<arm>)` — the THIRD
-      // and last reconverging-branch shape, a VALUE test with HOP-or-identity arms. ⚠️ BELOW the
+      // and last reconverging-branch shape, a VALUE test with HOP-or-identity arms. BELOW the
       // other two on item 1535's rule; its gate is disjoint from both by step kind (`branch`), so
       // the order is a fact about precedence rather than about these three.
       branchValueHop(effective, graph) ??
@@ -3034,11 +3034,11 @@ const fusedProjectedValues = (
  * THE SAME SCAN WITH A RESIDUAL (item 2021) — `V().values(k)` plus a trailing step the fused
  * residual machinery already knows.
  *
- * ⚠️ EXTRACTED FOR THE COMPLEXITY GATE, as `scanValuesShortcut`, `fusedProjectedResidual` and
+ * EXTRACTED FOR THE COMPLEXITY GATE, as `scanValuesShortcut`, `fusedProjectedResidual` and
  * `fusedValuesWalks` were before it: inlining these five lines took `run` to **38 against a limit of
  * 35**. Nothing else changed.
  *
- * ⚠️ DISJOINT FROM `nodeValuesShortcut` BY CONSTRUCTION — `scanValuesResidual` returns `undefined`
+ * DISJOINT FROM `nodeValuesShortcut` BY CONSTRUCTION — `scanValuesResidual` returns `undefined`
  * when there is no residual, so it cannot shadow that rung's own shape — and disjoint from every hop
  * rung by shape, so it cannot change the route of any plan those answer. `fusedProjectedResidual`
  * has handled a trailing `order`/`count`/`fold`/`min`/`max`/`cap` for the HOP walks since items
@@ -3047,26 +3047,26 @@ const fusedProjectedValues = (
 /**
  * The INDEXED seek, then the UNINDEXED fused scan, for `V().has(k, pred).values(key)` (item 2059).
  *
- * 🔑 **THE ORDER IS THE POINT:** `seededNodeValuesShortcut` visits only the index bucket, so it wins
+ * **THE ORDER IS THE POINT:** `seededNodeValuesShortcut` visits only the index bucket, so it wins
  * whenever the key is seekable; `unindexedHasValuesShortcut` is a FULL SCAN and gates itself on
  * `isIndexed(key)` being false, so the two are DISJOINT rather than merely ordered — which matters,
  * because relying on order alone shipped a regression (see that rung's header).
  *
- * ⚠️ IT IS A MODULE-SCOPE HELPER BECAUSE `run`'s COMPLEXITY GATE IS 35 AND THE CALL SITE TOOK IT TO
+ * IT IS A MODULE-SCOPE HELPER BECAUSE `run`'s COMPLEXITY GATE IS 35 AND THE CALL SITE TOOK IT TO
  * 37 — the same squeeze items 2042 and 2056 hit, where a `??` counts as a branch.
  *
- * ⚠️ `tracksPath` gates both: each yields VALUES and keeps no traverser, so a path-tracking query
+ * `tracksPath` gates both: each yields VALUES and keeps no traverser, so a path-tracking query
  * cannot be served from either. The shapes they admit contain nothing path-dependent, so a mutant
  * deleting this guard survives — it is the SHORTCUTS' CONTRACT, not a statement about today's shapes.
  */
 /**
  * `V().aggregate(k).values(key)` (item 2078), hoisted out of `run` for the complexity gate.
  *
- * ⚠️ `run` SITS AT THE LIMIT (35) AND THIS CALL SITE TOOK IT TO 36 — the same squeeze items 2042,
+ * `run` SITS AT THE LIMIT (35) AND THIS CALL SITE TOOK IT TO 36 — the same squeeze items 2042,
  * 2056 and 2069 each hit, where a `??` or a ternary costs one point. The guard and the call live here
  * so the gate sees one `if` at the call site.
  *
- * ⚠️ `tracksPath` gates it like every values rung: the walk emits bare values and keeps no traverser.
+ * `tracksPath` gates it like every values rung: the walk emits bare values and keeps no traverser.
  */
 const scanBaggedValues = (
   effective: Plan,
@@ -3078,7 +3078,7 @@ const scanBaggedValues = (
 const valuesFromIndexOrScan = (
   effective: Plan,
   graph: Graph,
-  // ⚠️ `ctx` RATHER THAN `tracksPath` (item 2069): the residual below needs the side-effect bag, and
+  // `ctx` RATHER THAN `tracksPath` (item 2069): the residual below needs the side-effect bag, and
   // two parameters carrying the same context is how they drift apart.
   ctx: RunContext,
 ): NodeValues | undefined =>
@@ -3089,7 +3089,7 @@ const valuesFromIndexOrScan = (
 const scanResidualWalk = (
   effective: Plan,
   graph: Graph,
-  // ⚠️ `ctx` RATHER THAN `tracksPath` (item 2069), same reason as its two siblings.
+  // `ctx` RATHER THAN `tracksPath` (item 2069), same reason as its two siblings.
   ctx: RunContext,
 ): Iterable<unknown> | undefined => {
   if (ctx.tracksPath) {
@@ -3097,7 +3097,7 @@ const scanResidualWalk = (
   }
 
   /*
-   * ⚠️ TWO PREFIXES, ONE `??` — the plain scan (item 2021) and the existence-filtered one (2026).
+   * TWO PREFIXES, ONE `??` — the plain scan (item 2021) and the existence-filtered one (2026).
    * They are disjoint by construction: the first needs `values` immediately after the source, the
    * second a `where` between them, and each returns `undefined` unless there IS a residual. Written
    * as a chain rather than two `if`s because the complexity gate on `run` counts branches, which is
@@ -3106,7 +3106,7 @@ const scanResidualWalk = (
   const scanned =
     scanValuesResidual(effective, graph) ??
     scanWhereValuesResidual(effective, graph) ??
-    // ⚠️ THIRD, and reachable only because the `values -> hasKey` count rewrite runs BEFORE this
+    // THIRD, and reachable only because the `values -> hasKey` count rewrite runs BEFORE this
     // (item 2061). It is gated to a `count` residual alone, so it cannot shadow either sibling.
     scanWhereHasKeyCountResidual(effective, graph);
 
@@ -3117,7 +3117,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // Before anything runs: static faults the engine raises at parse time — a plan that
   // cannot succeed on any graph, and an aggregate/sort/vertex-move on the wrong frontier.
   //
-  // ⚠️ ONCE PER PLAN, NOT ONCE PER CALL (item 1648). Both checks are pure functions of the plan and
+  // ONCE PER PLAN, NOT ONCE PER CALL (item 1648). Both checks are pure functions of the plan and
   // a plan is immutable, so a PASS can be remembered on it: see {@link Plan[EFF_CHECKED]} for the
   // ablation that priced this walk at **74% of a `union(out, in).count()` call** and for why only a
   // pass is ever recorded. The flag is written AFTER both return, so a plan that raises is never
@@ -3130,12 +3130,12 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   }
 
   /*
-   * ⚠️ THE `otherV` NORMALIZATION RUNS BEFORE THE PATH DECISION, and it has to: after a DIRECTED
+   * THE `otherV` NORMALIZATION RUNS BEFORE THE PATH DECISION, and it has to: after a DIRECTED
    * edge step `otherV` is exactly `inV`/`outV`, but it is path-dependent by kind, so leaving it in
    * place sets `tracksPath` and `effectivePlan` is then skipped WHOLESALE — taking item 1307's
    * `outE(T).inV()` -> `out(T)` with it. 328.12 ms against the twin spelling's 46.21 (item 1921).
    */
-  // ⚠️ `normalizeCoalesceIdentity` RUNS FIRST so the later passes see an `optional` step rather than
+  // `normalizeCoalesceIdentity` RUNS FIRST so the later passes see an `optional` step rather than
   // a `coalesce` wrapping one — the two-arm form IS `optional` (item 1990), and normalising it early
   // is what lets it reach `optional`'s own fused rungs at all.
   const planned = normalizeDepth1SimplePath(
@@ -3143,7 +3143,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   );
 
   /*
-   * ⚠️ A ONE-HOP `cyclicPath()` ANSWERS THE WHOLE PLAN HERE, BEFORE THE PATH DECISION — and that
+   * A ONE-HOP `cyclicPath()` ANSWERS THE WHOLE PLAN HERE, BEFORE THE PATH DECISION — and that
    * placement is the point (item 1986). `cyclicPath` is in `PATH_DEPENDENT_KINDS`, so one step below
    * this line `tracksPath` is true, `effectivePlan` is skipped WHOLESALE and every fused walk has
    * already declined. A one-hop cyclic path is exactly the SELF-LOOP edges, so it needs no path
@@ -3205,13 +3205,13 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // profiled it as traverser construction (~29%). Same `tracksPath` guard and the same reason: the
   // walk emits bare values and carries no path.
   //
-  // ⚠️ THAT GUARD IS UNREACHABLE FOR THIS SHAPE, and it is kept deliberately. The shortcut admits
+  // THAT GUARD IS UNREACHABLE FOR THIS SHAPE, and it is kept deliberately. The shortcut admits
   // only `V`, `hasLabel` and `values`, none of which is in `PATH_DEPENDENT_KINDS`, so
   // `planReadsPath` cannot be true for a plan it matches — a mutant deleting the guard survives the
   // whole suite (item 1482). It stays because the gate belongs to the SHORTCUT'S CONTRACT, not to
   // today's shape list: widen `matchShape` to admit a path-dependent kind and this guard is what
   // stops that becoming a wrong answer.
-  // ⚠️ `??` RATHER THAN A SECOND `if`, so the EDGE twin (item 1858) costs this function no
+  // `??` RATHER THAN A SECOND `if`, so the EDGE twin (item 1858) costs this function no
   // complexity: the two are DISJOINT BY SOURCE — one matches a `V` source and the other an `E` —
   // so which is present cannot change which shapes are answered. `run` is already at the
   // complexity gate, and a second branch here is what pushed it over at items 1834 and 1857.
@@ -3219,7 +3219,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // The same `tracksPath` guard covers both, and for the same reason: each walk emits bare values
   // and builds no path.
   /*
-   * ⚠️ ONE `??`, NOT AN `if` — the complexity gate. Written as a nested `if` this took `run` to 38
+   * ONE `??`, NOT AN `if` — the complexity gate. Written as a nested `if` this took `run` to 38
    * and then 36 against a limit of 35; the chain adds no branch, which is the same reason every
    * other rung in this function is a `??`. `scanResidualWalk` is item 2021's and is disjoint from
    * `scanValuesShortcut` by construction: it returns `undefined` unless there IS a residual.
@@ -3265,10 +3265,10 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
    * walk reached at all: the census had it generic with 2 dispatches and item 2070 noted it and left
    * it. 16.91 ms against the bare scan's 5.76 at 200,000 vertices, same rows out.
    *
-   * ⚠️ `tracksPath` GATES IT like every values rung: the walk emits bare values and keeps no
+   * `tracksPath` GATES IT like every values rung: the walk emits bare values and keeps no
    * traverser, so a path-tracking query cannot be served from it.
    *
-   * ⚠️ IT CANNOT SHADOW THE RUNGS ABOVE — each of them requires `values` immediately after the source
+   * IT CANNOT SHADOW THE RUNGS ABOVE — each of them requires `values` immediately after the source
    * or a `has`/`hasLabel` there, and this one requires an `aggregate`. Item 1535's rule: the order is
    * a fact about precedence, stated rather than relied upon.
    */
@@ -3284,7 +3284,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
    * priced the generic route this replaces at ~47 ns a vertex against a 25 ns fused scan, for a
    * filter whose predicate closure costs ~3 ns.
    *
-   * ⚠️ `tracksPath` GATES IT for the same reason the seeded rung is gated: the rung yields VALUES
+   * `tracksPath` GATES IT for the same reason the seeded rung is gated: the rung yields VALUES
    * and keeps no traverser, so a path-tracking query cannot be served from it. The shapes it admits
    * contain nothing path-dependent, so a mutant deleting this guard survives — it is the SHORTCUT'S
    * CONTRACT, not a statement about today's shapes.
@@ -3313,18 +3313,18 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   /**
    * `<hop chain>.groupCount().by(k)` RIDES THE FUSED VALUES WALK AND TALLIES — item 1834.
    *
-   * ⚠️ MEASURED FIRST, AND THE PROFILE REDIRECTED THE FIX (item 1833): `groupCount` after two hops
+   * MEASURED FIRST, AND THE PROFILE REDIRECTED THE FIX (item 1833): `groupCount` after two hops
    * cost **13712 ms against its own `values(k)` floor at 928 — 14.8x** — and the tally was **1.6%**
    * of that profile. The cost was the GENERIC TRAVERSER WALK (`iterLabeled` 24.6%, `otherEndpoint`
    * 20.4%, `traverseToVertex` 11.7%), taken because `hopChainValuesShortcut` requires a trailing
    * `values` step and a `groupCount` is a different terminal. So the fix is not a faster tally; it
    * is letting the tally ride the walk that already exists.
    *
-   * ⚠️ A SYNTHETIC PLAN, so the shortcut's gate is reused rather than restated — the same device
+   * A SYNTHETIC PLAN, so the shortcut's gate is reused rather than restated — the same device
    * items 1824/1830/1832 used on the GQL side. The trailing `groupCount` is swapped for the
    * `values(key)` it groups by; everything the shortcut checks about the hops is unchanged.
    *
-   * ⚠️ AND THE ORDER QUESTION WAS SETTLED BEFORE THIS WAS WRITTEN, because `groupCount` returns a
+   * AND THE ORDER QUESTION WAS SETTLED BEFORE THIS WAS WRITTEN, because `groupCount` returns a
    * **Map** whose iteration order is first-occurrence order of the keys — observable, and
    * byte-identity with Rust is a hard invariant. `gremlin-walk-order-probe.mjs` compared the fused
    * walk against the generic one on the IDENTICAL query (the shortcut forced to decline, arms
@@ -3338,12 +3338,12 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   }
 
   /*
-   * ⚠️⚠️ THE TAGGED HOP RUNG IS CONSULTED BEFORE THE CHAIN AND **WITHOUT THE `tracksPath` GUARD**
+   * THE TAGGED HOP RUNG IS CONSULTED BEFORE THE CHAIN AND **WITHOUT THE `tracksPath` GUARD**
    * (item 1912), which no other fusion here does. Its warrant is that it claims the WHOLE plan —
    * exactly four steps, `rest` always empty — so there is no downstream step left to ask for a
    * path. `taggedHopValues` states the argument in full.
    *
-   * ⚠️ IT CANNOT STEAL FROM ANY RUNG BELOW. Every member of `fusedProjectedValues` is behind the
+   * IT CANNOT STEAL FROM ANY RUNG BELOW. Every member of `fusedProjectedValues` is behind the
    * `!tracksPath` guard and these two shapes make `planReadsPath` TRUE, so each of them reaches no
    * rung at all today — the precedence question `rung-precedence-decides-speed` warns about does not
    * arise, because there is nothing above or below competing for this shape.
@@ -3360,7 +3360,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   }
 
   /*
-   * ⚠️ THE BARE PATH RUNG, ALSO WITHOUT THE `tracksPath` GUARD and on exactly the same warrant
+   * THE BARE PATH RUNG, ALSO WITHOUT THE `tracksPath` GUARD and on exactly the same warrant
    * (item 1920): `V(), <one directed single-type hop>, path()` is three steps and `rest` is always
    * `[]`, so nothing downstream can ask for a path. `pathHopValues` states the argument and lists
    * every refusal with its reason.
@@ -3392,7 +3392,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
   // rides the fused walk at 96.81 ms over 1M edges and `.order()` took it to **471.56 against a
   // hand floor of 146.27 — 3.22x**; the capped spelling returned TEN ROWS in 272.00.
   //
-  // ⚠️ BEFORE the `seedFromIndex` / residual path below, and the ordering matters: the generic
+  // BEFORE the `seedFromIndex` / residual path below, and the ordering matters: the generic
   // residual route is what this replaces, so a later placement would never be reached.
   const residual =
     projected === undefined ? undefined : fusedProjectedResidual(projected, effective, ctx);
@@ -3407,10 +3407,10 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
    * surviving `hasLabel` sits between — which is why the shape fell through to the seed at all.
    */
   /*
-   * ⚠️ ONE early return for BOTH fusions, which keeps `run` inside the complexity gate — a second
+   * ONE early return for BOTH fusions, which keeps `run` inside the complexity gate — a second
    * `if` put it at 36 against a limit of 35 (item 2037).
    *
-   * 🔑 THE `??` PRESERVES THE RESIDUAL'S PRECEDENCE, which the comment above requires, and the
+   * THE `??` PRESERVES THE RESIDUAL'S PRECEDENCE, which the comment above requires, and the
    * SEEDED CALL IS NOT WASTED: `residual` is non-undefined only when `projected !== undefined`, and
    * `seeded` is `null` in exactly that case — so whenever the residual wins, the label fusion was
    * handed a null seed and declined without work.
@@ -3447,7 +3447,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
       continue;
     }
 
-    // ⚠️ `match` is the one step whose cost depends on what comes AFTER it, so it is dispatched
+    // `match` is the one step whose cost depends on what comes AFTER it, so it is dispatched
     // here rather than through `applyStep` (item 1560). Its solver snapshots the tag map once per
     // solution to keep an emitted traverser from sharing the map the search is still rewriting, and
     // that snapshot is DEAD when nothing downstream can read tags — `match(…).count()` being the
@@ -3458,7 +3458,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
     // about what follows the enclosing step: in `union(match(…))` then `select('a')` the inner
     // suffix is empty while the `select` very much reads tags. Steps reached that way keep
     // `matchStep`'s default of "observed", so they stay correct and merely unoptimized.
-    // ⚠️ `values(k)` + a terminal aggregate is FUSED into one generator, and it belongs in THIS
+    // `values(k)` + a terminal aggregate is FUSED into one generator, and it belongs in THIS
     // loop for exactly the reason `match` above does: only here is the next step the whole
     // downstream. In `applyPlanToStream` — which runs for every nested plan — a sub-plan's suffix
     // says nothing about what follows the enclosing step, and the first version of this change put
@@ -3486,7 +3486,7 @@ export const run = (plan: Plan, graph: Graph): Iterable<unknown> => {
 
     if (fuse !== undefined) {
       stream = fusedValuesAggregate(stream, fuse.key, fuse.kind);
-      // ⚠️ Skipping the consumed terminal is NOT observable, and that is worth stating because a
+      // Skipping the consumed terminal is NOT observable, and that is worth stating because a
       // mutant that drops this `i += 1` SURVIVED: the terminal would then run a second time over
       // the one-element stream the fusion just produced, and all four of these reduces are
       // IDEMPOTENT there (`sum` of `[sum]` is `sum`, `mean` of `[mean]` is `mean`, `min`/`max`

@@ -34,7 +34,7 @@ const N = Number(process.env.SPELL_N ?? 200_000);
 const REPS = Number(process.env.REPS ?? 9);
 
 /**
- * ⚠️ THE BISECTION (item 1703). The replica reproduces the 38.7x; an independent fixture with the
+ * THE BISECTION (item 1703). The replica reproduces the 38.7x; an independent fixture with the
  * same query strings does not. Each toggle moves ONE property from the replica's value toward the
  * fixture that shows no gap, so exactly one of them should collapse the ratio.
  *
@@ -145,7 +145,7 @@ for (let r = 0; r < REPS; r += 1) {
   series.push(performance.now() - t0);
 }
 
-/** ⚠️ MEDIAN of the warm reps: this repo's note is that `min` has reversed a verdict's sign. */
+/** MEDIAN of the warm reps: this repo's note is that `min` has reversed a verdict's sign. */
 const warm = series.slice(3).sort((a, b) => a - b);
 
 console.log(

@@ -1,7 +1,7 @@
 // The CSR behind a bounded var-length count is cached ACROSS queries, keyed on
 // `graph.topologyVersion` plus the direction and edge types the query names (item 1676).
 //
-// ⚠️ EVERY TEST HERE IS AN INVALIDATION TEST, AND THE SUITE THAT ALREADY EXISTED CANNOT BE. A cache
+// EVERY TEST HERE IS AN INVALIDATION TEST, AND THE SUITE THAT ALREADY EXISTED CANNOT BE. A cache
 // that never invalidates returns the right answer for every read-only query ever written, so the
 // 4,254 tests in this package all passed on the first build of this cache and would have passed on
 // one with no invalidation at all. The failure mode is "query, write, query", and it needs its own
@@ -69,7 +69,7 @@ describe('a write between two identical queries', () => {
   });
 
   /**
-   * ⚠️ A REMOVED VERTEX IS THE CASE `vertexCount`/`edgeCount` COULD NOT CATCH, which is why the key
+   * A REMOVED VERTEX IS THE CASE `vertexCount`/`edgeCount` COULD NOT CATCH, which is why the key
    * is a version rather than a pair of counts: a delete plus an add leaves both counts where they
    * were while the topology differs. Here the delete also shifts the CSR's vertex NUMBERING, since
    * it numbers by `verticesById` iteration order.
@@ -86,12 +86,12 @@ describe('a write between two identical queries', () => {
   });
 
   /**
-   * ⚠️ THE CASE THAT MADE ITEM 1675 NECESSARY, and the one a four-site counter got wrong. `nbr` is
+   * THE CASE THAT MADE ITEM 1675 NECESSARY, and the one a four-site counter got wrong. `nbr` is
    * built from a TYPE-FILTERED adjacency, and the adjacency boxes are keyed BY EDGE TYPE, so
    * `addLabelToEdge` moves an edge into the `E` bucket without touching `insertEdge`, `edgesById`,
    * or the vertex set. A cache whose key ignored that would answer 3 here forever.
    */
-  test('⚠️ an edge GAINING the queried type is seen by the second query', () => {
+  test('an edge GAINING the queried type is seen by the second query', () => {
     const g = chain();
     const a = g.getVertexById('a')!;
     const c = g.getVertexById('c')!;
@@ -105,7 +105,7 @@ describe('a write between two identical queries', () => {
     expect(countOf(g, CHAIN2)).toBe(6);
   });
 
-  test('⚠️ an edge LOSING the queried type is seen by the second query', () => {
+  test('an edge LOSING the queried type is seen by the second query', () => {
     const g = chain();
 
     g.addLabelToEdge('F', g.getEdgeById('e-bc')!);
@@ -154,7 +154,7 @@ describe('the shape is part of the key, not just the topology', () => {
 
 describe('what the cache must NOT hold', () => {
   /**
-   * ⚠️ THE ENDPOINT PREDICATE IS NOT CACHEABLE AND IS NOT CACHED. A property write does not bump
+   * THE ENDPOINT PREDICATE IS NOT CACHEABLE AND IS NOT CACHED. A property write does not bump
    * `topologyVersion` — deliberately, so that a `SET` does not throw the adjacency away — so if the
    * `passes` vector were cached alongside the CSR it would go stale here with no signal to catch it.
    * It is recomputed per call.
@@ -208,7 +208,7 @@ describe('transactions', () => {
   });
 
   /**
-   * ⚠️ A ROLLBACK MUST NOT LEAVE THE PRE-TRANSACTION CACHE ENTRY SERVING THE POST-ROLLBACK GRAPH,
+   * A ROLLBACK MUST NOT LEAVE THE PRE-TRANSACTION CACHE ENTRY SERVING THE POST-ROLLBACK GRAPH,
    * and it does not, because the undo log replays inverse operations through the same public
    * mutators and so bumps the version again. The entry is rebuilt rather than restored, which
    * over-invalidates by one build and cannot under-invalidate.
@@ -234,7 +234,7 @@ describe('transactions', () => {
 
 describe('the per-shape map is capped', () => {
   /**
-   * ⚠️ THE CAP IS THE ONE PART NO KEY MUTANT CAN REACH, because clearing a cache can only ever
+   * THE CAP IS THE ONE PART NO KEY MUTANT CAN REACH, because clearing a cache can only ever
    * cost a rebuild — it cannot return a wrong answer. So the property to pin is that crossing the
    * cap does not BREAK anything: more distinct shapes than the cap, each queried twice, with no
    * write between them, and every answer still correct.

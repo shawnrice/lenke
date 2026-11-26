@@ -7,7 +7,7 @@
  * entirely ordinary traversal (follow the edges whose weight exceeds 3, give me the targets'
  * property).
  *
- * ⚠️ IT IS NOT A MISSING RUNG, and that was checked BEFORE this file existed. An instrumented
+ * IT IS NOT A MISSING RUNG, and that was checked BEFORE this file existed. An instrumented
  * `applyStep` (the generic pipeline's single entry) shows `outE.has(w).inV.values`, `outE.inV.values`,
  * `out.values` and `out.has(n).values` ALL answer with 0 `applyStep` calls. Every one is fused, so
  * the 9.3x is inside fused code and the question is a profile question, not a route question.
@@ -17,13 +17,13 @@
  * kind of work — one property read, one comparison — at 93 ns an element. ~2.3x for the same shape
  * of work on the other element type.
  *
- * ⚠️ ONE SHAPE, ONE PROCESS. Item 1874 retracted a 1.73x that was a within-process cross-row ratio
+ * ONE SHAPE, ONE PROCESS. Item 1874 retracted a 1.73x that was a within-process cross-row ratio
  * and item 1870 measured a control moving 1.7x purely by running last. Nothing here times a second
  * shape, so no comparison between rows is possible and none is made. The vertex-side comparison
  * above comes from item 1881's screen, where it was a separate row of a separate sort — and even
  * that is a cross-row number, so it motivates the profile rather than standing as a result.
  *
- * ⚠️ AND THE FIXTURE'S SHARE IS PRINTED, because item 1875 took two profiles that were 76% and 40%
+ * AND THE FIXTURE'S SHARE IS PRINTED, because item 1875 took two profiles that were 76% and 40%
  * fixture build before raising REPS. A profile is only as good as the query's share of the process.
  *
  *     REPS=10 node --cpu-prof edge-filter-prof-1882.mjs
@@ -55,7 +55,7 @@ for (let e = 0; e < N * FANOUT; e += 1) {
 
   g.addEdge({
     id: `e${e}`,
-    // ⚠️ THE REPEAT INDEX IS IN THE EXPRESSION — CLAUDE.md's fix for the `(a*k+b) % N` degeneracy,
+    // THE REPEAT INDEX IS IN THE EXPRESSION — CLAUDE.md's fix for the `(a*k+b) % N` degeneracy,
     // which is invariant under `k -> k + N` and silently makes the graph FUNCTIONAL.
     from: g.getVertexById(String(i + 1)),
     to: g.getVertexById(String(((i * 7 + 3 + hop * 2_654_435_761) % N) + 1)),

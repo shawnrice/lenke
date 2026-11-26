@@ -7,14 +7,14 @@
 //     generic   edgef: outE has inV count       4 applyStep calls
 //     generic   edgef: outE has count           3
 //     generic   edgef: outE has values          3
-//     SHORTCUT  edgef: outE has inV values      0   ⬅ the rung item 1882 built
+//     SHORTCUT  edgef: outE has inV values      0   <- the rung item 1882 built
 //
-// 🔑 THE TERMINAL IS THE ONLY DIFFERENCE for the first two, and a COUNT needs strictly less than a
+// THE TERMINAL IS THE ONLY DIFFERENCE for the first two, and a COUNT needs strictly less than a
 // values projection — no cell, no row object, no stream of results. So if `...inV().values(j)` is
 // fused and `...inV().count()` is generic, the count is paying a full generator chain to compute
 // something cheaper than what the fused arm already computes.
 //
-// ⚠️ THE DENOMINATOR IS EDGE VISITS, NOT ROWS. All four shapes visit the same 1,000,000 `E` edges;
+// THE DENOMINATOR IS EDGE VISITS, NOT ROWS. All four shapes visit the same 1,000,000 `E` edges;
 // the filter keeps 3 of 7, and a count returns ONE row. A per-row ratio would be meaningless (item
 // 1882's own note, and item 1858 declined a target for exactly that mistake), so every number here
 // is ns per EDGE VISITED.
@@ -126,7 +126,7 @@ const time = (fn) => {
 };
 
 /*
- * ⚠️ ONE SHAPE PER PROCESS WHEN `ONLY` IS SET, and item 1956 is why it had to be added. Run as a
+ * ONE SHAPE PER PROCESS WHEN `ONLY` IS SET, and item 1956 is why it had to be added. Run as a
  * sweep, this probe reported that item's target at 2.40x AND its untouched control — the already
  * fused `outE has inV values` row — moving 84.3 -> 109.1, a 1.29x regression an isolated
  * re-measure refuted. Six shapes in one process interfere through shared dispatch sites and inline

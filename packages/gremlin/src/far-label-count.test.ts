@@ -20,7 +20,7 @@
  * decline forced with a shape the optimizer may LATER learn fails silently, green, comparing one
  * route to itself — `identity()` is the one step chosen because nothing will absorb it.)
  *
- * ⚠️ EVERY LABEL USED AS A FILTER HERE IS NON-VACUOUS, and that is load-bearing.
+ * EVERY LABEL USED AS A FILTER HERE IS NON-VACUOUS, and that is load-bearing.
  * `dropVacuousLabels` (item 540) deletes a `hasLabel` whose bucket holds every live element, so a
  * fixture where every vertex carries `P` would silently test the BARE plan and report success for a
  * rung that was never reached. This cost a measurement earlier in this item: the start-filtered arm
@@ -263,7 +263,7 @@ describe('the EDGE-DRIVEN arm, reachable only with a two-type edge', () => {
     expect(nm(V(), out('T', 'S'), hasLabel('E'), identity(), count())).toBe(1);
   });
 
-  test('⚠️ the EDGE-hop rung with a non-empty has chain refuses a vertex label', () => {
+  test('the EDGE-hop rung with a non-empty has chain refuses a vertex label', () => {
     // THE SHAPE THAT MAKES A WIDENED `hasChain` OBSERVABLE, and it needs all three of: a non-empty
     // `has` chain (an empty one declines on `filters.length === 0`), an EDGE INDEX (no seekable
     // filter declines at `if (!best)`), and an EQUALITY predicate the hash index can serve.
@@ -279,7 +279,7 @@ describe('the EDGE-DRIVEN arm, reachable only with a two-type edge', () => {
 });
 
 describe('the declines that must survive', () => {
-  test('⚠️ `hasLabel` after an EDGE hop is the EDGE label, not the far vertex', () => {
+  test('`hasLabel` after an EDGE hop is the EDGE label, not the far vertex', () => {
     // THE DANGEROUS CASE, and the reason `hasChain` was not simply widened. After `outE`, the
     // frontier is EDGES, so `hasLabel('T')` tests the edge's own label — all five `T` edges pass.
     // If this were absorbed as a far-VERTEX label test it would ask whether each edge's target is

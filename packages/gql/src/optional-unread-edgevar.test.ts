@@ -8,12 +8,12 @@ import { describe, expect, test } from 'bun:test';
  * a binding with no observable effect. The gate now asks whether the RETURN actually reads the
  * name.
  *
- * ⚠️ THE WHOLE RISK IS "UNREAD" BEING WRONG. The walk does not bind the edge at all, so if a query
+ * THE WHOLE RISK IS "UNREAD" BEING WRONG. The walk does not bind the edge at all, so if a query
  * reads the variable and the rung takes it anyway, the read sees nothing — a wrong ANSWER. So the
  * tests below are mostly about the READING spellings, not the unread one: every place an
  * expression can hide in a projection gets its own case.
  *
- * ⚠️ WHY THE CHECK IS LOCAL AND NOT `dropUnreadEdgeVar`. Widening that rewrite to unquantified
+ * WHY THE CHECK IS LOCAL AND NOT `dropUnreadEdgeVar`. Widening that rewrite to unquantified
  * rels was built and REVERTED: it drops the variable from the AST, which broke the "name a rel
  * variable to force the general matcher" device six other test files use as their ORACLE — 17
  * failures, and the ones that still passed would have been comparing the rung against itself.
@@ -94,7 +94,7 @@ describe('an UNREAD edge variable on an OPTIONAL hop', () => {
 
 describe('a READ edge variable still declines, and answers correctly', () => {
   /**
-   * ⚠️ EVERY PLACE AN EXPRESSION CAN HIDE IN A PROJECTION, because missing one is a wrong answer
+   * EVERY PLACE AN EXPRESSION CAN HIDE IN A PROJECTION, because missing one is a wrong answer
    * rather than a slow query: the walk never binds `e`, so a rung that took these would read a
    * name that is not there.
    */
@@ -117,7 +117,7 @@ describe('a READ edge variable still declines, and answers correctly', () => {
   });
 
   /**
-   * ⚠️ AND THE ANSWER IS CHECKED, not only the refusal — a test that asserted "does not take the
+   * AND THE ANSWER IS CHECKED, not only the refusal — a test that asserted "does not take the
    * rung" would pass just as well if the rung had been deleted. The oracle is the general path,
    * which is where these already run.
    */
@@ -139,7 +139,7 @@ describe('a READ edge variable still declines, and answers correctly', () => {
   });
 
   /**
-   * ⚠️ A SUBQUERY REFUSES CONSERVATIVELY, because `freePredicateVars` does not see inside one — the
+   * A SUBQUERY REFUSES CONSERVATIVELY, because `freePredicateVars` does not see inside one — the
    * same guard `nameIsUnread` makes in `rewrites.ts`. The name need not even appear for the
    * refusal to apply.
    */

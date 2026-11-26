@@ -5,13 +5,13 @@
  * every hop, count and projection rung reaches an edge through one of them, and none of them knows
  * anything about expressions, rows or plans.
  *
- * ⚠️ `edgesOfTypes` vs `edgesOfManyTypes` IS A SELECTIVITY DECISION, NOT A DUPLICATE. A type-filtered
+ * `edgesOfTypes` vs `edgesOfManyTypes` IS A SELECTIVITY DECISION, NOT A DUPLICATE. A type-filtered
  * expand pays to scan a node's whole adjacency and filter, so the cost scales with degree AND with
  * how many types that degree spans. A selective type over a high-degree, many-type node is where
  * the partitioned path wins; a degree-4 single-type fixture is where it can only lose. Keeping both
  * beside each other is what stops one being "simplified" into the other.
  *
- * ⚠️ `NO_EDGES` IS A SHARED FROZEN EMPTY, read on the overwhelmingly common miss. Item 1658 measured
+ * `NO_EDGES` IS A SHARED FROZEN EMPTY, read on the overwhelmingly common miss. Item 1658 measured
  * that removing a per-call allocation here is flat across the whole selectivity sweep — the win was
  * never in the allocation, it was in the SHAPE of what is returned — so this constant exists to
  * avoid the allocation, not because allocating measured slow.
@@ -39,7 +39,7 @@ export const relTypeNames = (label: LabelExpr | undefined): string[] | null | un
     return l && r ? [...l, ...r] : null;
   }
 
-  // ⚠️ A REL WILDCARD IS "ANY TYPE", UNCONDITIONALLY — and that is the opposite of the NODE
+  // A REL WILDCARD IS "ANY TYPE", UNCONDITIONALLY — and that is the opposite of the NODE
   // wildcard, which item 1549 had to leave un-elided (item 1550).
   //
   // `core` refuses an edge with no labels outright: "Cannot add an edge with no labels: every edge
@@ -130,7 +130,7 @@ export const edgesOfTypes = (
  * {@link edgesOfTypes} has already taken every single-bucket case before this is reached, so `i` is
  * bounded by something tiny.
  *
- * ⚠️ THIS CLAIMED "ORDER IS UNCHANGED" AND HAS NOT BEEN TRUE SINCE ITEM 1384 (corrected at 1389).
+ * THIS CLAIMED "ORDER IS UNCHANGED" AND HAS NOT BEEN TRUE SINCE ITEM 1384 (corrected at 1389).
  * The claim was that this yields bucket 0's edges then bucket 1's non-duplicates, so the sequence
  * follows the order the query NAMED its types — and that it mattered, because "unordered result
  * order is still BYTES for cross-engine identity". Item 1384 then added the size sort below, which
@@ -202,7 +202,7 @@ export const edgesOfManyTypes = function* (
  * types when undefined). Shared by the EXISTS-reachable and RETURN-reachable
  * traversals so their neighbour expansion can't drift from each other or native.
  *
- * ⚠️ REJECTED, item 1570: do NOT replace this with a callback/visitor to avoid the array.
+ * REJECTED, item 1570: do NOT replace this with a callback/visitor to avoid the array.
  *
  * The `Vertex[]` here is materialized per EXPANDED VERTEX and both callers immediately iterate it
  * and drop it, so removing the allocation looks free — and a profile of

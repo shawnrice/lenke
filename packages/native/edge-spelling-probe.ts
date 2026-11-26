@@ -1,7 +1,7 @@
 /**
  * Does the TS engine have item 1145's `outE(T).inV()` gap, and at which shapes?
  *
- * ⚠️ WHY THIS EXISTS. Item 1145 priced `outE(T).inV()` against `out(T)` — the SAME hop, confirmed
+ * WHY THIS EXISTS. Item 1145 priced `outE(T).inV()` against `out(T)` — the SAME hop, confirmed
  * identical in a real TinkerPop 3.7.3 console before anything was measured — at **29x to 3120x**,
  * the largest gap of its session. Item 1146 then shipped **2944x** for it. But that fix was in the
  * NATIVE engine: a stray `bind_edge: true` kept the chain three slots wide so `try_scan_count`
@@ -104,7 +104,7 @@ const median = kept[Math.floor(kept.length / 2)];
 const reps = series.map((x) => x.toFixed(1)).join(' ');
 // Item 1183's giveaway: a sub-millisecond median means a closed form answered it without walking,
 // so it is not a floor and a ratio against it means nothing.
-const warn = median < 1 ? '  <-- ⚠️ SUB-MS: a shortcut, not a walk; not comparable as a floor' : '';
+const warn = median < 1 ? '  <-- SUB-MS: a shortcut, not a walk; not comparable as a floor' : '';
 
 console.log(
   `SPELL=${SPELL}\tARM=${ARM}\tN=${N}\tDEG=${DEG}\tanswer=${answer}

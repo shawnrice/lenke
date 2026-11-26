@@ -1,7 +1,7 @@
 /**
  * Item 2014 — answer-equivalence battery for `choose(<one hop>, <value arm>, <value arm>)`.
  *
- * ⚠️⚠️ **THE FIXTURE THAT PRICED THIS RUNG CANNOT CHECK IT.** `coalesce-vs-optional-1990.mjs` gives
+ * **THE FIXTURE THAT PRICED THIS RUNG CANNOT CHECK IT.** `coalesce-vs-optional-1990.mjs` gives
  * every vertex an `n`, so `values(n)` never drops a row there — and dropping is the one thing the
  * three arm kinds disagree about:
  *
@@ -14,7 +14,7 @@
  * A route that emitted `undefined` for a missing key would agree on that fixture and diverge on any
  * graph with a sparse property. So this fixture makes the property sparse on purpose.
  *
- * ⚠️ COMPARED POSITIONALLY against the general path. Gremlin stream order for a single-type step with
+ * COMPARED POSITIONALLY against the general path. Gremlin stream order for a single-type step with
  * no `order()` is compared ORDERED against native by `gremlin-fuzz`'s `unordered` decision
  * ([[order-is-unspecified]] does not cover it), so a route that reorders is WRONG rather than merely
  * different — and a checksum cannot see that (item 1955).
@@ -23,7 +23,7 @@
  * `fusedProjectedValues`' chain with `(false ? chooseTestValues(effective, graph) : undefined)`,
  * rebuild (`npx nx build @lenke/gremlin`), run, keep the output; then restore, rebuild, run, diff.
  *
- * ⚠️⚠️ **THIS LINE USED TO SAY "put `undefined ??` in front", WHICH DISABLES NOTHING** — `undefined
+ * **THIS LINE USED TO SAY "put `undefined ??` in front", WHICH DISABLES NOTHING** — `undefined
  * ?? f()` evaluates `f()`, so following it compares the fused route against ITSELF and reports a
  * clean oracle for any wrong answer whatsoever. It is CLAUDE.md's "assert each A/B arm IS the code
  * it claims" in the one place that rule is hardest to see, because both arms build and both run.
@@ -49,7 +49,7 @@ import {
 const g = new Graph();
 
 /*
- * ⚠️ `n` IS SPARSE AND `m` IS SPARSER. `a`,`c`,`e` have `n`; `b`,`d`,`f` do not — so a `values('n')`
+ * `n` IS SPARSE AND `m` IS SPARSER. `a`,`c`,`e` have `n`; `b`,`d`,`f` do not — so a `values('n')`
  * arm must DROP exactly those three, and only a fixture shaped like this can tell that from emitting
  * `undefined`. `f` additionally has NO edge of any type, so it exercises the else arm as well.
  */
@@ -86,7 +86,7 @@ const SHAPES = {
   'E test, constant/values': () => traversal(V(), choose(out('E'), constant('none'), values('n'))),
   'E test, values/identity': () => traversal(V(), choose(out('E'), values('n'), identity())),
   'E test, identity/constant': () => traversal(V(), choose(out('E'), identity(), constant('none'))),
-  // ⚠️ NO ELSE ARM — per TinkerPop the traverser passes through, which is a different answer from an
+  // NO ELSE ARM — per TinkerPop the traverser passes through, which is a different answer from an
   // empty arm and the thing `chooseStep`'s comment records against the AST's.
   'E test, values, no else': () => traversal(V(), choose(out('E'), values('n'))),
   'E test, constant, no else': () => traversal(V(), choose(out('E'), constant('none'))),
@@ -98,7 +98,7 @@ const SHAPES = {
   'F test': () => traversal(V(), choose(out('F'), values('n'), constant('none'))),
   'multi-type test': () => traversal(V(), choose(out('E', 'F'), values('n'), constant('none'))),
   'untyped test': () => traversal(V(), choose(out(), values('n'), constant('none'))),
-  // ⚠️ SHAPES THE RUNG MUST DECLINE — here so a gate that wrongly admits one shows as a diff.
+  // SHAPES THE RUNG MUST DECLINE — here so a gate that wrongly admits one shows as a diff.
   'HOP ARM (declines)': () => traversal(V(), choose(out('E'), out('E'), constant('none'))),
   'TWO-KEY values (declines)': () =>
     traversal(V(), choose(out('E'), values('n', 'm'), constant('none'))),
@@ -130,9 +130,7 @@ for (const [name, make] of Object.entries(SHAPES)) {
     unstable += 1;
   }
 
-  console.log(
-    `${same ? '  ' : '⚠️'} ${name.padEnd(28)} ${same ? got[0] : got.join('\n     VS  ')}`,
-  );
+  console.log(`${same ? '  ' : ''} ${name.padEnd(28)} ${same ? got[0] : got.join('\n     VS  ')}`);
 }
 
 console.log(`\n${String(unstable)} UNSTABLE`);

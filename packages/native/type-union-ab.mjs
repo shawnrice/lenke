@@ -4,14 +4,14 @@
  * `hopOf` models a hop as ONE `type: string`, so `-[:E|F]->` declined `detectHop2Projection` and a
  * chain of alternations fell to the general matcher. `walkUnion` takes it.
  *
- * ⚠️ THE SINGLE-TYPE CONTROL IS THE REASON THIS FILE EXISTS. `executor-edits-perturb` records a new
+ * THE SINGLE-TYPE CONTROL IS THE REASON THIS FILE EXISTS. `executor-edits-perturb` records a new
  * walk variant costing UNRELATED rows up to 16% five times over, and a cross-run comparison during
  * the build read the single-type row at 169 ns/row against an earlier 102 — which is either a real
  * regression or two different processes. Only a PRE/POST with the control in it can tell, so the
  * control is a first-class arm here and not an afterthought.
  *
- * ⚠️ ONE SHAPE PER PROCESS (item 762, and three times in this session alone).
- * ⚠️ ARMS ASSERTED by `walkUnion` in the built dist, which exists only in POST.
+ * ONE SHAPE PER PROCESS (item 762, and three times in this session alone).
+ * ARMS ASSERTED by `walkUnion` in the built dist, which exists only in POST.
  *
  *     bun type-union-ab.mjs
  */
@@ -19,7 +19,7 @@ import { execFileSync, spawnSync } from 'node:child_process';
 import { copyFileSync, writeFileSync } from 'node:fs';
 
 const ROOT = '/home/shawn/projects/pl-graph';
-// ⚠️ THREE FILES, because the lever landed across them: `hop-sides` holds the shared alternation
+// THREE FILES, because the lever landed across them: `hop-sides` holds the shared alternation
 // helpers (item 1847 moved them there so there is ONE definition), `hop2-projection` the
 // two-segment rung and `chain-projection` the three-and-up rungs. A PRE arm reverting only one
 // would measure a half-reverted engine.
@@ -27,7 +27,7 @@ const TARGETS = ['hop-sides', 'hop2-projection', 'chain-projection'];
 const srcOf = (n) => `${ROOT}/packages/gql/src/executor/${n}.ts`;
 const postOf = (n) => `${ROOT}/crates/lenke-engine/target/pristine-1847-post-${n}.ts`;
 const preOf = (n) => `${ROOT}/crates/lenke-engine/target/pristine-1847-pre-${n}.ts`;
-// ⚠️ THE MARKER MUST BE UNIQUE TO *THIS* ITEM. `claimedByEarlierType` was the first choice and the
+// THE MARKER MUST BE UNIQUE TO *THIS* ITEM. `claimedByEarlierType` was the first choice and the
 // arm assertion rejected it immediately: HEAD already carries it from item 1846's two-segment
 // rung, so it cannot separate the arms. `sweepBlockUnion` exists only in the chain half.
 const MARKER = 'sweepBlockUnion';
@@ -161,7 +161,7 @@ for (const name of Object.keys(SHAPES)) {
   const post = Math.min(...rounds.map((x) => x.POST[name].ms));
   const { rows } = rounds[0].POST[name];
   const rowsPre = rounds[0].PRE[name].rows;
-  const warn = rows === rowsPre ? '' : `  ⚠️ ROWS DIFFER ${rowsPre} vs ${rows}`;
+  const warn = rows === rowsPre ? '' : `  ROWS DIFFER ${rowsPre} vs ${rows}`;
   const perRow = (ms) => ((ms * 1e6) / rows).toFixed(0);
 
   console.log(

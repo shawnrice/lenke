@@ -10,10 +10,10 @@
 # drifts over minutes and a reading taken minutes apart measures the drift. Arms alternate order by
 # round and the reported figure is the MIN OF THE PER-ROUND MEDIANS.
 #
-# ⚠️ ONE SHAPE PER PROCESS, so no other query shape pollutes the dispatch site's inline caches
+# ONE SHAPE PER PROCESS, so no other query shape pollutes the dispatch site's inline caches
 # (CLAUDE.md's two-dist warning, item 762).
 #
-# ⚠️ PER-ARM ASSERTION BEFORE ANY TIMING. Item 2408 lost a whole run to an anchor that matched twice;
+# PER-ARM ASSERTION BEFORE ANY TIMING. Item 2408 lost a whole run to an anchor that matched twice;
 # the assertion caught it. Python does the counting and the swapping because the anchors are
 # multi-line and `grep -c` is line-based, which makes every line-wise count 0 and every assertion
 # vacuous.
@@ -49,13 +49,13 @@ PY
 }
 
 restore_live() {
-  # ⚠️ A KILL BETWEEN THE SWAP AND THE SWAP BACK WOULD LEAVE THE TREE ON THE WRONG ARM — still
+  # A KILL BETWEEN THE SWAP AND THE SWAP BACK WOULD LEAVE THE TREE ON THE WRONG ARM — still
   # compiling, still green, and with the feature silently OFF ([[ab-scripts-need-a-restore-trap]]).
   if [ "$(count_of "$OFF")" = "1" ]; then
     swap "$OFF" "$LIVE" && echo "restored LIVE arm"
   fi
 
-  # ⚠⚠ AND IT MUST REBUILD, WHICH THE FIRST VERSION OF THIS SCRIPT DID NOT. Restoring the SOURCE
+  # AND IT MUST REBUILD, WHICH THE FIRST VERSION OF THIS SCRIPT DID NOT. Restoring the SOURCE
   # while leaving `packages/gql/dist` on whichever arm was built last is worse than not restoring:
   # the tree reads LIVE, `git diff` is empty, and every later probe silently measures the OTHER arm
   # ([[fuzzers-read-built-dists]] — `@lenke/*` resolve to dist). It cost four readings here, each of

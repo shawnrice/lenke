@@ -5,7 +5,7 @@
 // homogeneous arm already at 1.19x of its own ceiling. So the whole gap appears when NON-VACUITY
 // turns something on, and this profile names it before anything is built.
 //
-// 🔑 TWO CANDIDATES, AND THEY WANT DIFFERENT FIXES. A non-vacuous `T` turns on BOTH:
+// TWO CANDIDATES, AND THEY WANT DIFFERENT FIXES. A non-vacuous `T` turns on BOTH:
 //   (a) the per-edge `matchesLabel(far, fl)` in the general closure's inner loop — a far-vertex
 //       deref this file's own comments price at ~180 ns in edge order, and
 //   (b) `candidateVertexSource(graph, startLabel)` switching from every vertex to the label bucket.

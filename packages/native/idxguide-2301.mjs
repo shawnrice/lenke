@@ -1,12 +1,12 @@
 /**
- * ⚠️⚠️ **WHAT DOES AN INDEX ON THE LOOKUP KEY BUY, ON THE PURE-TS ENGINE? (item 2301)**
+ * **WHAT DOES AN INDEX ON THE LOOKUP KEY BUY, ON THE PURE-TS ENGINE? (item 2301)**
  *
  * `bun run bench:usage` prints both columns and the gap is the largest in that table — `ts(-)` 1.9k
- * ops/sec against `ts(+)` 679.2k on a 2-hop recommendation. 🔑 But that harness runs 250 ms batches of
+ * ops/sec against `ts(+)` 679.2k on a 2-hop recommendation. But that harness runs 250 ms batches of
  * MANY shapes in one process, and items 2285/2286/2295 all showed such a sweep both erasing and
  * manufacturing gaps. This measures ONE shape per process, with the index as the only variable.
  *
- * ✅ `SHAPE` picks the query; `INDEX=1` creates the index. Both arms print their answer, because an index
+ * `SHAPE` picks the query; `INDEX=1` creates the index. Both arms print their answer, because an index
  * that changed the answer would invalidate the comparison.
  */
 import { Graph } from '@lenke/core';
@@ -46,7 +46,7 @@ for (let i = 0; i < USERS; i += 1) {
   }
 }
 
-/* ⚠️ AFTER the data, which is how an application adds one to an existing graph. */
+/* AFTER the data, which is how an application adds one to an existing graph. */
 if (INDEX) {
   g.createIndex({ on: 'vertex', kind: 'hash', keys: ['name'] });
 }
@@ -60,10 +60,10 @@ const text = QUERIES[SHAPE];
 const med = (xs) => [...xs].sort((a, b) => a - b)[Math.floor(xs.length / 2)];
 
 /*
- * ⚠⚠ **WARM-UP IS THE WHOLE MEASUREMENT AT THIS SCALE (item 2302).** Item 2301 used 3 warm-up reps and
+ * **WARM-UP IS THE WHOLE MEASUREMENT AT THIS SCALE (item 2302).** Item 2301 used 3 warm-up reps and
  * read the indexed point lookup at 17.3 µs; `bench:usage`, which runs 250 ms BATCHES, reports the same
  * query at 0.63 µs — **27x apart, and the bench is right about the warm steady state an application
- * reaches.** 🔑 `WARM` makes that explicit instead of implicit.
+ * reaches.** `WARM` makes that explicit instead of implicit.
  */
 const WARM = Number(process.env.WARM ?? 3);
 

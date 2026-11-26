@@ -197,14 +197,14 @@ type CountOf<T> = (graph: Graph, params: Params) => T;
 /**
  * The ONE property key this pred list asserts an equality on and nothing else, or `undefined`.
  *
- * ⚠️ ITEM 1607 — THE EXACTNESS DECISION, and it is a CORRECTNESS gate, not a route choice. If this
+ * ITEM 1607 — THE EXACTNESS DECISION, and it is a CORRECTNESS gate, not a route choice. If this
  * says `k` and the chosen seed sought on `k`, the seeded set IS the matching set and the
  * re-validation below can be skipped. If it is wrong, rows appear that should not — so unlike items
  * 1600/1601/1604 the mutants here are wrong answers and the differential tests DO see them. It is
  * still extracted and tested directly, because a gate that is only ever exercised through four
  * other conditions is a gate nobody can read.
  *
- * ⚠️ IT IS COMPUTED FROM `preds`, THE THING BEING SKIPPED — not from the `CNode` the seek came
+ * IT IS COMPUTED FROM `preds`, THE THING BEING SKIPPED — not from the `CNode` the seek came
  * from. Item 1597's sketch put an `exact` flag on the candidate, which would have judged a
  * `CNode.pred` and applied the verdict to a separately-built `InlinePred` list. They express the
  * same constraints today; nothing makes them, and a flag that crosses that gap is a wrong answer
@@ -221,7 +221,7 @@ type CountOf<T> = (graph: Graph, params: Params) => T;
  *     `specializeSingleProp`'s own structure, for the reason its first version shipped a wrong
  *     answer by missing four.
  *
- * ⚠️ THE NULL CASE IS ALREADY CLOSED, upstream, and that is load-bearing here. `{k: null}` means
+ * THE NULL CASE IS ALREADY CLOSED, upstream, and that is load-bearing here. `{k: null}` means
  * IS NULL — stored null OR absent key — which a value bucket cannot represent, and item 1605 fixed
  * `indexCandidates` to decline a null-valued seek entirely. So no null seed can reach this verdict,
  * and `eqProps`'s null rejection cannot be skipped either. Had this item shipped first, that bug
@@ -234,7 +234,7 @@ type CountOf<T> = (graph: Graph, params: Params) => T;
  * Does this chosen seed make the predicate redundant? The two-line verdict, extracted so it can be
  * tested DIRECTLY (item 1607).
  *
- * ⚠️ IT IS EXTRACTED BECAUSE EVERY MUTANT OF IT SURVIVED INLINE. Dropping the key comparison,
+ * IT IS EXTRACTED BECAUSE EVERY MUTANT OF IT SURVIVED INLINE. Dropping the key comparison,
  * accepting any candidate kind, and reporting `eqKey` on a `within` or a `range` candidate all left
  * the suite green — because `soleEqualityKey` is already so narrow that when it answers, the only
  * candidate `indexCandidates` can produce IS the equality on that key. The comparison is therefore
@@ -284,14 +284,14 @@ export const soleEqualityKey = (preds: readonly InlinePred[]): string | undefine
 /**
  * The tally's per-element predicate pre-resolved, or `undefined` to keep the `inlineHolds` loop.
  *
- * ⚠️ TWO `InlinePred`s, NOT ONE, and item 1604 is why. The gate here read `preds.length === 1`, and
+ * TWO `InlinePred`s, NOT ONE, and item 1604 is why. The gate here read `preds.length === 1`, and
  * the ISO spelling of a two-conjunct filter arrives as TWO preds — `inlineOf(start)` carries the
  * inline `{score: $s}` and `nodeWhereOf(where)` carries the lifted `u.active = true` — so the
  * clause spelling (one pred holding `eqProps(2)`) specialized and the inline one did not. Keeping
  * that would have opened an EQUIVALENT-SPELLING GAP on the row that nominated the work, which is
  * the defect class this engine is named after.
  *
- * ⚠️ FOUND BY A TRIPWIRE, not by reading. The width-2 specializer was built, the clause row moved
+ * FOUND BY A TRIPWIRE, not by reading. The width-2 specializer was built, the clause row moved
  * 1.27x and the inline row measured FLAT — and the reason was invisible in the predicate, because
  * the inline form's carriers (`props(1) eqProps(1)`) are exactly what `specializeEqPair` admits.
  * A one-line stderr print of `bindVar` and the live carriers at this call site showed the inline
@@ -363,7 +363,7 @@ const buildNodeCount = <T>(
   // `bindVar` must be absent: it means something in the predicate reads the binding back (item
   // 803), and the fast closure never writes one.
   //
-  // ⚠️ MUTATION SAYS THIS GUARD IS UNREACHABLE FROM HERE, and it is kept anyway. Dropping it
+  // MUTATION SAYS THIS GUARD IS UNREACHABLE FROM HERE, and it is kept anyway. Dropping it
   // SURVIVED item 1338's pass and SURVIVED AGAIN at item 1598 — but the REASON changed, and the
   // second reason is the one to keep.
   //
@@ -423,12 +423,12 @@ const buildNodeCount = <T>(
     // unconditionally would tax the unindexed path, which is the common one.
     let seeded: ReadonlySet<Vertex> | undefined;
     /**
-     * ⚠️ ITEM 1608 — REJECTED, WITH ITS NUMBERS, and the reason is CONSISTENCY rather than trust.
+     * ITEM 1608 — REJECTED, WITH ITS NUMBERS, and the reason is CONSISTENCY rather than trust.
      *
      * `effectiveLabel`/`vacuousLabel` (items 1551/1552) drop a label carried by EVERY vertex, and
      * they are used at TEN sites in this file — every one a hop builder. ~~`buildNodeCount` is not
      * among them, so a single-label graph pays a per-candidate label test that is a tautology.~~
-     * ⚠️ **STALE SINCE ITEM 1609, corrected at item 1974: this function DOES elide now** — the
+     * **STALE SINCE ITEM 1609, corrected at item 1974: this function DOES elide now** — the
      * `effectiveLabel(graph, label)` hoist a few lines below is item 1609's, added by the item
      * immediately after this one. Measured at item 1974 with a counter on `evalLabelExpr`: a
      * single-label graph runs **ZERO** label tests for this query and a mixed one runs **200** (one
@@ -456,7 +456,7 @@ const buildNodeCount = <T>(
      *    MATCH (n:P) WHERE n.k = $v RETURN n.k        4 rows
      * ```
      *
-     * ⚠️ **TWO SPELLINGS OF ONE QUESTION, DISAGREEING** — the defect class this engine is named
+     * **TWO SPELLINGS OF ONE QUESTION, DISAGREEING** — the defect class this engine is named
      * after, as a correctness bug rather than a slow path. The ten existing sites do NOT have this
      * problem: measured, a hop count and a hop ROWS query both answer 9 after the same setter write,
      * so they are uniformly elided and agree with each other. Adding an eleventh site here would
@@ -466,7 +466,7 @@ const buildNodeCount = <T>(
      * So the lever is worth 5.6x and its blocker is not the trust question — it is that taking it
      * HERE alone breaks spelling consistency.
      *
-     * ⚠️ WHAT IS FASTER ACROSS THE BOARD, asked and measured rather than chosen. The alternative is
+     * WHAT IS FASTER ACROSS THE BOARD, asked and measured rather than chosen. The alternative is
      * to fix the raw setter so `verticesByLabel` is never stale, which would make the elision sound
      * everywhere. `label-setter-cost-probe.mjs`, 20,000 vertices:
      *
@@ -1004,11 +1004,11 @@ type HopScan = {
  * contributes its `.size` untouched and bucket `i` counts only what no earlier bucket holds. No
  * overlap counter is needed, which is the whole point.
  *
- * ⚠️ SORTED DESCENDING. Bucket 0 is free and later buckets are iterated, so an unsorted walk costs
+ * SORTED DESCENDING. Bucket 0 is free and later buckets are iterated, so an unsorted walk costs
  * whatever order the query named its types — items 1382 and 1384 each shipped that and measured
  * 3.53x and 1.42x equivalent-spelling gaps before fixing it.
  *
- * ⚠️ THE GREMLIN TWIN IS `unionOfBuckets` in `gremlin/src/executor/count-shortcut.ts`, and these two
+ * THE GREMLIN TWIN IS `unionOfBuckets` in `gremlin/src/executor/count-shortcut.ts`, and these two
  * ARE a deliberate pair of copies — this repo treats the surfaces as parallel implementations
  * sharing only core's data types. **But the order defect above drifted across them and had to be
  * fixed twice, two items apart (1382 then 1384).** If you change one, read the other.
@@ -1117,7 +1117,7 @@ const degreeOfTypes = (
 /**
  * The seed AND the equality key it sought on — item 1610, the input the exactness verdict needs.
  *
- * ⚠️ ONE CHOOSE LOOP, NOT TWO. `hopSeek` below delegates here rather than keeping its own copy:
+ * ONE CHOOSE LOOP, NOT TWO. `hopSeek` below delegates here rather than keeping its own copy:
  * this file's own note records what two copies of one seed rule cost before (the far endpoint on a
  * per-edge tally), and the choosing is the dangerous half of the preamble, not the walk around it.
  * Every existing caller of `hopSeek` is untouched.
@@ -1612,7 +1612,7 @@ const farWalkFits = (scan: HopScan): boolean => {
  * vacuous and no `inNear`), because an in-degree counts edges from ANY source; and no
  * edge sits in two of the summed type buckets.
  *
- * ⚠️ REJECTED LEVER — "the far walk is ~4x its start twin" (item 1263). A filtered hop count read
+ * REJECTED LEVER — "the far walk is ~4x its start twin" (item 1263). A filtered hop count read
  * 46.1 ms filtering the far end against 10.7 ms filtering the start, at 200k nodes / 800k edges,
  * which looked like this function still owing what item 137 paid its twin. It owes nothing: the
  * two bodies are already identical, and the gap is MEMORY LOCALITY in the fixture.
@@ -1803,19 +1803,19 @@ const edgesOfVertices = function* (
  * threshold at 2,500 here, ~~inside the region where seeding still wins about 1.8x by
  * interpolation~~ and clear of the one where it loses.
  *
- * ⚠️⚠️ **THAT 1.8x IS INTERPOLATED AND DOES NOT REPRODUCE — DO NOT TREAT IT AS AVAILABLE WORK
+ * **THAT 1.8x IS INTERPOLATED AND DOES NOT REPRODUCE — DO NOT TREAT IT AS AVAILABLE WORK
  * (item 2109).** Margins 8, 3, 1 and 1,000,000 were measured directly, at the 20,000 of this table AND
  * at 200,000, over two shapes with answers asserted equal at every point. The readings are scattered and
  * NON-MONOTONIC — m=1 wins at 12.5% selectivity, m=8 wins at 16.7% and 25% — and the `edgeSeek` arm is
  * flat at ~11-14 ms for every margin including 1,000,000.
  *
- * 🔑 AND IT CANNOT BE DERIVED THE WAY `SEEK_MAX_FRACTION` WAS AT ITEM 2108. That constant compares two
+ * AND IT CANNOT BE DERIVED THE WAY `SEEK_MAX_FRACTION` WAS AT ITEM 2108. That constant compares two
  * measurable RATES over one denominator (ns/node scanned against ns/row seeked), which is why deriving
  * it corrected a 2.1x error. This one trades "an adjacency lookup per seeded vertex" against "the edges
  * of the vertices it skips" — DEGREE-dependent — and the same number is reused for an EDGE-denominated
  * decision below. One ratio cannot serve that.
  *
- * ⚠️ REACHABILITY IS UNRESOLVED, and is recorded as such rather than assumed either way: three
+ * REACHABILITY IS UNRESOLVED, and is recorded as such rather than assumed either way: three
  * instruments gave three answers (a counter on this token said 0 consults; one at `tallyEdges`'s entry
  * said every shape reaches it twice; one logging `worthIt`'s arguments logged nothing). The fixtures
  * differed between runs, which is the likeliest cause and the reason a counter injected into a build is
@@ -2256,20 +2256,20 @@ const labelOnlyHopCount = (
   }
 
   /*
-   * ⚠️⚠️ **THE THIRD ARM: BOTH ENDS CARRYING THE SAME LABEL** (item 2194). The two arms above each need
+   * **THE THIRD ARM: BOTH ENDS CARRYING THE SAME LABEL** (item 2194). The two arms above each need
    * exactly ONE end labelled, so `(a:L)-[:T]->(b:L)` declines to the per-edge `nearThenFar` walk —
    * **+750.9 ms over 40 reps, the entire far-label cost** by item 2193's differential profile.
    *
-   * 🔑 PLACED HERE RATHER THAN BEFORE THE `countEdges` CALL, and that is deliberate: this function is
+   * PLACED HERE RATHER THAN BEFORE THE `countEdges` CALL, and that is deliberate: this function is
    * ALREADY called and already returns `null` for the shape, so a third arm adds no branch ahead of the
-   * hot dispatch. ⚠️ Item 2192 measured a **26% regression on an unrelated row** from adding one branch in
+   * hot dispatch. Item 2192 measured a **26% regression on an unrelated row** from adding one branch in
    * this neighbourhood, and this file's own notes price a branch ahead of a hot dispatch at 1.12x-1.6x
    * (items 159, 418, 469). The arithmetic lives in `both-labelled-hop.ts` because `shortcuts.ts` is AT
    * its 3000 code-line cap.
    */
   /*
-   * ⚠️ NO `cstart`/`cfar` CONDITION, and that was my first gate's mistake: they are compiled-node HANDLES
-   * and are ALWAYS set, so requiring `undefined` made the arm unreachable. 🔑 What matters is that no
+   * NO `cstart`/`cfar` CONDITION, and that was my first gate's mistake: they are compiled-node HANDLES
+   * and are ALWAYS set, so requiring `undefined` made the arm unreachable. What matters is that no
    * PREDICATE filters beyond the label — and this function builds its own scan with `pred: alwaysTrue`
    * and `inNear`/`inFar` undefined, which is exactly what its two sibling arms test for. (Dumped the
    * actual values before rewriting the gate, per item 2163's lesson.)
@@ -2346,7 +2346,7 @@ const buildOneHopCount = <T>(
   // START-ONLY constraint now has `undirectedStartOnlyCount`; everything else still declines,
   // because a degree sum cannot apply a FAR or REL constraint — it never visits the far end or
   // the edge — and ignoring one would be a wrong answer rather than a slow one (item 637).
-  // ⚠️ THESE TWO DECLINES ARE GONE (item 1086). A far label, a far-reading predicate and a rel
+  // THESE TWO DECLINES ARE GONE (item 1086). A far label, a far-reading predicate and a rel
   // constraint each made a constrained undirected hop fall to the general path — a binding and a
   // row per edge, measured by item 1076's own controls at 372.35 ms (far label), 910.25 (far
   // predicate) and 922.25 (rel predicate). `undirectedTally` answers all of them by running the
@@ -2826,7 +2826,7 @@ const walkTwoHopFiltered = (graph: Graph, params: Params, plan: TwoHopPlan): num
   const loop2 = secondBoth && loopsOfTypes(graph, t2);
 
   /**
-   * ⚠️ THE FLAT-ARRAY ARM (item 1690), priced at 51.05x / 30.19x warm and 1.73x / 1.89x with the
+   * THE FLAT-ARRAY ARM (item 1690), priced at 51.05x / 30.19x warm and 1.73x / 1.89x with the
    * whole O(V+E) CSR build inside the timed region. Each clause's reason lives on
    * `twoHopFilteredCsrApplies`, a pure function with its own test, precisely so a wrongly TIGHTENED
    * clause — which silently abandons the arm rather than returning a wrong count — is caught.
@@ -3029,7 +3029,7 @@ const buildFilteredTwoHopCount = <T>(
     !plainRel(s2.rel) ||
     s1.rel.variable !== undefined ||
     s2.rel.variable !== undefined ||
-    // ⚠️ `both` USED TO DECLINE HERE (item 1093), on either leg, and the asymmetry it left is what
+    // `both` USED TO DECLINE HERE (item 1093), on either leg, and the asymmetry it left is what
     // made this worth doing: `buildTwoHopCount` has carried `aBoth`/`cBoth` for the BARE and
     // middle-constrained chain all along, and the THREE-hop count carries `aBoth`/`midBoth`/
     // `dBoth` — so only a START-FILTERED undirected two-hop fell through. Measured at 100,000
@@ -3101,7 +3101,7 @@ const buildFilteredTwoHopCount = <T>(
 /**
  * THE DEGREE PRODUCT OVER FLAT ARRAYS — {@link buildThreeHopCount}'s fast arm (item 1685).
  *
- * ⚠️ ITS OWN FUNCTION BECAUSE THE CALLER SITS ON THE COMPLEXITY BUDGET, which is this file's
+ * ITS OWN FUNCTION BECAUSE THE CALLER SITS ON THE COMPLEXITY BUDGET, which is this file's
  * standing precedent (`hopChainShape`, and `hopChainCount`'s own note). Inlined it took
  * `buildThreeHopCount` to 47 against a maximum of 35.
  *
@@ -3111,7 +3111,7 @@ const buildFilteredTwoHopCount = <T>(
  * lookups for this shape and measured at 242.94x / 297.93x / 278.24x (fanout 3 / 8 / 15), or
  * 4.76x / 4.38x / 3.76x with the whole CSR build inside the timed region.
  *
- * ⚠️ NOT THE LEVER ITEMS 1335 AND 310 REFUTED AT THIS LOOP. Item 1335 read `b`'s own adjacency box
+ * NOT THE LEVER ITEMS 1335 AND 310 REFUTED AT THIS LOOP. Item 1335 read `b`'s own adjacency box
  * instead of the id string (0.99x); item 310 memoized the `d`-side degree per `c` (rejected on
  * alternated rounds). Both keep a HASH LOOKUP per unit. This replaces it with an index.
  *
@@ -3235,7 +3235,7 @@ const buildThreeHopCount = <T>(
     const needsC = cEff !== undefined || cGate !== undefined;
     const binding = new Map<string, unknown>();
     /**
-     * ⚠️ THE SAME ARITHMETIC OVER FLAT ARRAYS (item 1685). This route is a degree product —
+     * THE SAME ARITHMETIC OVER FLAT ARRAYS (item 1685). This route is a degree product —
      * `count = sum over b of indeg(b) * sum over (b->c) of outdeg(c)` — and it pays a STRING-KEYED
      * `edgesFromByLabel.get(id)` for each of those degrees: one per VERTEX for the `a` side and one
      * per MIDDLE EDGE for the `d` side, which item 1684 counted as |V| + |E| lookups. Over a
@@ -3245,12 +3245,12 @@ const buildThreeHopCount = <T>(
      * 4.76x / 4.38x / 3.76x with the whole CSR build inside the timed region — so it wins on a cold
      * first call too, and the ratio holds across fanout because the complexity matches.
      *
-     * ⚠️ NOT THE LEVER ITEMS 1335 AND 310 REFUTED AT THIS EXACT LOOP. Item 1335 replaced the
+     * NOT THE LEVER ITEMS 1335 AND 310 REFUTED AT THIS EXACT LOOP. Item 1335 replaced the
      * id-string lookup with `b`'s own box read (0.99x) and item 310 memoized the `d`-side degree per
      * `c` (rejected on alternated rounds). Both keep a HASH LOOKUP per unit; this replaces it with an
      * index, which is a different operation rather than a cheaper route to the same one.
      *
-     * ⚠️ THE GUARDS ARE NARROW ON PURPOSE, because a degree array cannot express any of what they
+     * THE GUARDS ARE NARROW ON PURPOSE, because a degree array cannot express any of what they
      * exclude:
      *
      *   - every leg DIRECTED: an undirected leg is `undirectedSide`'s sum of two buckets minus the
@@ -3263,14 +3263,14 @@ const buildThreeHopCount = <T>(
      * `bLabel` is the one constraint that survives, because it only narrows which `b` slots are
      * visited and `verticesByLabel` still supplies them.
      */
-    // ⚠️ THE FLAT-ARRAY DEGREE PRODUCT (item 1685), when every leg is directed and nothing
+    // THE FLAT-ARRAY DEGREE PRODUCT (item 1685), when every leg is directed and nothing
     // constrains a position the arm reduces to a number. Each clause's reason lives on
     // `csrDegreeProductApplies`, which is a pure function with its own test precisely so a wrongly
     // TIGHTENED clause — which silently abandons the arm rather than returning a wrong count — is
     // caught. `bLabel` survives because it only narrows which `b` the walk visits.
 
     /**
-     * ⚠️ THE FLAT-ARRAY ARMS (items 1685 and 1689), behind one dispatcher. Each clause's reason
+     * THE FLAT-ARRAY ARMS (items 1685 and 1689), behind one dispatcher. Each clause's reason
      * lives on the predicate it belongs to in `three-hop-degree-product.ts` — pure functions with
      * their own tests, precisely so a wrongly TIGHTENED clause, which silently abandons the arm
      * rather than returning a wrong count, is caught.
@@ -3316,7 +3316,7 @@ const buildThreeHopCount = <T>(
       // Hoisted: the `a` side depends only on `b`, so it is one lookup per VERTEX rather than one
       // per middle edge. Zero here prunes the whole inner loop.
       //
-      // ❌ REJECTED LEVER, with its numbers (item 1335): reading `b`'s OWN adjacency box here —
+      // REJECTED LEVER, with its numbers (item 1335): reading `b`'s OWN adjacency box here —
       // `sideOfVertex(b, toAOut, t1, aEff)` — instead of the id-string lookup. That is item 1334's
       // lever, and it is worth 1.92x on this loop's UNFILTERED twin, where two such lookups per
       // middle ARE the whole loop body. Here it bought nothing: at 200,000 vertices and degree 3,
@@ -3502,7 +3502,7 @@ const buildTwoHopCount = <T>(
     const cLoops = cBoth && loopsOfTypes(graph, t2);
 
     /**
-     * ⚠️ THE CSR DEGREE PRODUCT (item 1890), consulted once per execution and before the middles are
+     * THE CSR DEGREE PRODUCT (item 1890), consulted once per execution and before the middles are
      * iterated. The loop below reads TWO memoized-box `Map.get`s plus a `.size` per middle; this arm
      * reads two `Int32Array` subtractions per slot. Item 1685 made exactly this change for the
      * THREE-segment product and the two-segment one never got it, which is why a two-hop count
@@ -3556,7 +3556,7 @@ const buildTwoHopCount = <T>(
       // queries until an adjacency write clears it, which makes this free on a cold graph and a
       // saving on every repeat.
       //
-      // ⚠️ `twoHopSide`'s own header records the box read as MEASURED FLAT (369.9/384.4/367.7
+      // `twoHopSide`'s own header records the box read as MEASURED FLAT (369.9/384.4/367.7
       // against 384.1/364.2/372.0) and that is NOT a contradiction: there the middle is revisited
       // once per incoming EDGE, so the box is already warm within one query and the memo has
       // nothing left to save. Here each middle is visited EXACTLY ONCE per query, which is the
@@ -3742,7 +3742,7 @@ export const patternCountOf = <T>(
     // correct formula, but its second factor is a per-EDGE predicate evaluation, which is a
     // different cost class from a once-per-middle gate. Recorded as open rather than guessed at.
     //
-    // ⚠️ NOW PRICED (item 1515), which is what "open rather than guessed at" was waiting for. The
+    // NOW PRICED (item 1515), which is what "open rather than guessed at" was waiting for. The
     // four spellings of the two-segment count, TS engine, `BENCH_ONLY` so each is its own process,
     // at BENCH_N=200,000:
     //
@@ -3755,11 +3755,11 @@ export const patternCountOf = <T>(
     // failure family this engine is named for — except these are not equivalent spellings, they
     // are a query and a narrowing of it, and the narrowing is the slow one.
     //
-    // ⚠️ THE START CASE IS NOT A DEFECT AND SHOULD NOT BE CHASED WITH IT. The bare product is O(V)
+    // THE START CASE IS NOT A DEFECT AND SHOULD NOT BE CHASED WITH IT. The bare product is O(V)
     // arithmetic over middles and touches no edge; any start-gated form has to enumerate a→b, so
     // 51.4 → 141.4 is "an edge pass against no edge pass" and is inherent.
     //
-    // ⚠️ AND THE END IS NOT A SEPARATE COST CLASS — item 1515 claimed it was, from end (100.0)
+    // AND THE END IS NOT A SEPARATE COST CLASS — item 1515 claimed it was, from end (100.0)
     // measuring WORSE than start (88.5), and item 1516 refuted that by fixing the fixture: the
     // numbers above are the corrected ones and the sign is REVERSED (start 141.4 > end 132.4). An
     // end predicate becomes the start of the REVERSED pattern (`reversedTwoHop`), so the two are
@@ -3771,7 +3771,7 @@ export const patternCountOf = <T>(
     // segments is the only arity whose unfiltered form touches no edge, so it is the only one a
     // gate can make worse.
     //
-    // ⚠️ BUT THE FORMULA IS NOT THE ANSWER — BUILT AND REFUTED AT ITEM 1517, and the sentence above
+    // BUT THE FORMULA IS NOT THE ANSWER — BUILT AND REFUTED AT ITEM 1517, and the sentence above
     // about "a different cost class" is exactly why. It was implemented properly: `sideOfVertexGated`
     // as the second factor, both the clause and inline spellings routed in, answers verified against
     // brute force and `bun run fuzz` 20/0 green. It measures **265.5 ms against the reversed walk's
@@ -3955,7 +3955,7 @@ export const patternCountOf = <T>(
   //   3 hops   product 250.1ms   sweep 374.9ms   <- the PRODUCT wins, 1.50x
   //   4 hops   product 980.2ms   sweep 512.4ms   <- the SWEEP wins, 1.91x
   //
-  // ⚠️ THE 3-HOP HALF OF THAT IS STALE — re-measured at item 1592, and the product's 1.50x win is
+  // THE 3-HOP HALF OF THAT IS STALE — re-measured at item 1592, and the product's 1.50x win is
   // GONE. Degree is the axis item 301 could not vary (a product's cost grows with degree, a
   // sweep's is O(E) per pass and flat in it), and at 200,000 vertices:
   //
@@ -3966,7 +3966,7 @@ export const patternCountOf = <T>(
   // and at degree 8 over three tight non-overlapping rounds, sweep 1.20x on medians / 1.35x on
   // minima. So the sweep is never slower at three segments and improves with degree.
   //
-  // ⚠️ THE ROUTING STILL DID NOT MOVE, and the reason is a correctness gap rather than a cost one:
+  // THE ROUTING STILL DID NOT MOVE, and the reason is a correctness gap rather than a cost one:
   // routed sweep-first, the gql suite went 4028/10 with every failure an INLINE-gated three-hop
   // count (item 456's tests among them). `longChainCount` ACCEPTS those shapes and then ignores
   // the constraint — it takes `clauseGates` for the clause-`WHERE` spelling but nothing for an
@@ -4142,7 +4142,7 @@ const threeSegmentRoute = <T>(
     endLabel?.kind === 'label' || (endLabel === undefined && startLabel?.kind === 'label');
 
   /**
-   * ⚠️ THE SWEEP IS GIVEN THE CLAUSE'S GATES (item 1705), AND THAT IS THE WHOLE FIX. This used to
+   * THE SWEEP IS GIVEN THE CLAUSE'S GATES (item 1705), AND THAT IS THE WHOLE FIX. This used to
    * read `if (product === null || interiorPred !== undefined || !labelled) return product;` — so
    * ANY clause `WHERE` skipped the sweep, because the call below passed no gates and sweeping would
    * have silently dropped the predicate. Its comment said exactly that, and it was true of the call
@@ -4159,7 +4159,7 @@ const threeSegmentRoute = <T>(
    * correlation, a constant, or an unbound name — and THAT is the case the sweep genuinely cannot
    * take, so it is the only one that still skips.
    *
-   * ⚠️ AND THAT NULL CHECK IS UNREACHABLE TODAY, which a mutation pass established rather than a
+   * AND THAT NULL CHECK IS UNREACHABLE TODAY, which a mutation pass established rather than a
    * reading: removing it SURVIVES the whole suite. `patternCountOf` returns `null` at
    * `interiorPred === null` BEFORE calling this, and `interiorPredOf` declines any conjunct that is
    * not a per-vertex test on `b` or `c` — a stricter rule than `chainGatesOf`'s. So inside this
@@ -4180,7 +4180,7 @@ const threeSegmentRoute = <T>(
     return product;
   }
 
-  // ⚠️ AN INTERIOR CONSTRAINT PREFERS THE SWEEP — a SHAPE test, not the label one below. Numbers
+  // AN INTERIOR CONSTRAINT PREFERS THE SWEEP — a SHAPE test, not the label one below. Numbers
   // and reasons on `interiorConstrained` (item 1708); its own module because of this file's cap.
   if (interiorConstrained(segments, interiorPred)) {
     return swept;
@@ -4392,7 +4392,7 @@ const longChainCount = <T>(
     // re-introduce a guard here, or seed a reading that was chosen for the wrong reason.
     const startSource = sweepStartSeed(graph, params, cstart, pick.startLabel);
 
-    // ⚠️ THE FLAT-ARRAY ARM (item 1688), priced by item 1687 at 92.27x / 66.87x warm and ~3.6x with
+    // THE FLAT-ARRAY ARM (item 1688), priced by item 1687 at 92.27x / 66.87x warm and ~3.6x with
     // the CSR build inside the timed region. Every position's constraint becomes a per-slot mask, so
     // one arm serves a start, interior or end filter; `filteredChainCsrApplies` carries the two
     // exclusions and their reasons — an undirected leg, and a query an index already seeded, where
@@ -4789,7 +4789,7 @@ export type SlotMemo = {
 /**
  * Room for `need` more entries, doubling as needed.
  *
- * ⚠️ EXPORTED FOR ITS OWN UNIT TEST, which is the only thing that guards it (item 1418).
+ * EXPORTED FOR ITS OWN UNIT TEST, which is the only thing that guards it (item 1418).
  *
  * Five mutants were run against this memo's offset arithmetic and four were caught by the query
  * suite. The fifth — `grown.set(m.flat.subarray(0, m.used))` shortened by one — SURVIVED every
@@ -4916,7 +4916,7 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate, startSource }:
   // alternated rounds, consistently the wrong way. At three passes two are refunded and
   // `count 4-hop` goes 550.5 -> 297.5, **1.85x**.
   //
-  // ⚠️⚠️ THAT 1.85x NO LONGER REPRODUCES, AND THE MEMO NOW BUYS NOTHING. Re-priced at item 2369 with an
+  // THAT 1.85x NO LONGER REPRODUCES, AND THE MEMO NOW BUYS NOTHING. Re-priced at item 2369 with an
   // ORACLE (this gate forced off) at 1,000,000 vertices / 3,000,000 edges, `CHAIN_REPS=7`, one case per
   // process, comparing STEADY-STATE reps rather than a min — the rows the original figure was measured on
   // are 297-550 ms and are now 27-36 ms, roughly 12x faster, so whatever the memo saved has been subsumed:
@@ -4934,7 +4934,7 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate, startSource }:
   // run-to-run spread and the honest verdict is FLAT, not a loss. The memo still costs a scratch push per
   // edge and an `Int32Array.from` per slot for that nothing, which makes it a DELETION CANDIDATE — left
   // standing because a null result is not a mandate to remove working code, and because this oracle covers
-  // uniform `:E` chains at one degree. ⚠️ Do NOT re-cite the 1.85x as a live benefit.
+  // uniform `:E` chains at one degree. Do NOT re-cite the 1.85x as a live benefit.
   const slotNbrs: SlotMemo | undefined =
     uniform &&
     passes > 2 &&
@@ -5022,7 +5022,7 @@ const sweepChain = ({ graph, params, legs, startLabel, startGate, startSource }:
   const lastLoops = last.both && loopsOfTypes(graph, last.types);
 
   /**
-   * ⚠️ THE MEMO ALREADY KNOWS THIS DEGREE, AND THE LAST POSITION WAS PAYING A STRING-KEYED MAP
+   * THE MEMO ALREADY KNOWS THIS DEGREE, AND THE LAST POSITION WAS PAYING A STRING-KEYED MAP
    * LOOKUP TO RE-ASK IT (item 1683). `hopSide(graph, idOf[slot], …)` does
    * `edgesFromByLabel.get(id)` — an id STRING through a Map — once per frontier slot, where
    * `memo.len[slot]` is the same number as an `Int32Array` read.
@@ -5645,7 +5645,7 @@ export const keyedCountOf = <T>(
     }
 
     /**
-     * ⚠️ THE SHARED VARIABLE MAY BE EITHER END, AND UNTIL ITEM 1863 ONLY THE ENDPOINT COUNTED.
+     * THE SHARED VARIABLE MAY BE EITHER END, AND UNTIL ITEM 1863 ONLY THE ENDPOINT COUNTED.
      * This read `node.variable !== key || pattern.start.variable === key` — the shared vertex had
      * to be the END of both patterns — which answered the IN-star in closed form and sent the
      * OUT-star, the same question mirrored, to the general matcher:
@@ -5662,7 +5662,7 @@ export const keyedCountOf = <T>(
      * (`(a)-[:E]->(b), (c)-[:E]->(a)`, out-degree x in-degree) falls out at no extra cost — it was
      * declining too, and it is a third spelling of the one question.
      *
-     * ⚠️ THE TEST REFUSES TWO CASES AND ONLY ONE OF THEM IS REACHABLE — recorded because its
+     * THE TEST REFUSES TWO CASES AND ONLY ONE OF THEM IS REACHABLE — recorded because its
      * mutant SURVIVES, and item 1016's rule is that an unexplained survivor is worse than a
      * documented one.
      *
@@ -6168,7 +6168,7 @@ export const valueSet = (): { add: (v: unknown) => boolean } => {
   return {
     add: (v: unknown): boolean => {
       // `null` is a primitive but `typeof null` is 'object', so it is tested first.
-      // ❌ REJECTED, item 1739: collapsing these TWO Set operations into one plus a size delta
+      // REJECTED, item 1739: collapsing these TWO Set operations into one plus a size delta
       // (`const before = prim.size; prim.add(v); return prim.size !== before`) is ~10-11% SLOWER
       // wherever duplicates dominate, which is a dedup's normal case. `Set.add` on a key that is
       // already present costs MORE than `Set.has` on it -- `has` is a pure lookup, `add` takes the
@@ -6271,7 +6271,7 @@ export const valueSet = (): { add: (v: unknown) => boolean } => {
       // an id `5` and an id `'5'` into one value, and a raw key would split them. For a string id
       // — which is every id this engine mints — `String(s)` returns `s` with no allocation, so the
       // common path builds nothing while the equivalence is unchanged.
-      // ⚠️ REJECTED, WITH ITS NUMBERS (item 1589): keying a graph ELEMENT on its own OBJECT
+      // REJECTED, WITH ITS NUMBERS (item 1589): keying a graph ELEMENT on its own OBJECT
       // IDENTITY instead of on `String(v.id)`, in a `Set<object>` with no key built at all.
       //
       // Item 1587 made this look compelling: it is exactly what Gremlin's `dedupe` does ("stable
@@ -6295,7 +6295,7 @@ export const valueSet = (): { add: (v: unknown) => boolean } => {
       // which is item 1584's refutation arriving again by a different route: there identity was
       // added IN FRONT of the key, here it REPLACED it, and both are slower.
       //
-      // ⚠️ So Gremlin's 12x on that shape is NOT its dedup keying, and the three mechanisms tested
+      // So Gremlin's 12x on that shape is NOT its dedup keying, and the three mechanisms tested
       // so far — `valueKey` string building (1584, the only one that paid), identity keying (1584
       // and here), and the per-element binding + `evalFn` (1584, flat) — do not explain it. The
       // next attempt needs a different instrument: a step-by-step comparison of what Gremlin's
@@ -6560,7 +6560,7 @@ const colSortsOf = (
 /**
  * `colSortsOf` for a GROUPED AGGREGATE's N output columns rather than the tally's two (item 1249).
  *
- * ⚠️ THIS EXISTS BECAUSE BOTH GROUPED AGGREGATE RUNGS REFUSED EVERY `ORDER BY` WHILE THEIR TALLY
+ * THIS EXISTS BECAUSE BOTH GROUPED AGGREGATE RUNGS REFUSED EVERY `ORDER BY` WHILE THEIR TALLY
  * SIBLING ADMITTED THEM, which made two spellings of one question cost far apart. Measured at
  * 200,000 nodes / 1,000,000 edges, one shape per process:
  *
@@ -6945,7 +6945,7 @@ export const rowLocal = (e: Expr | undefined): boolean => {
     return false;
   }
 
-  // ⚠️ A `lit` IS `{ kind: 'lit'; value: unknown }` — one field, and that field is DATA, never an
+  // A `lit` IS `{ kind: 'lit'; value: unknown }` — one field, and that field is DATA, never an
   // expression. Stopping here is therefore not an optimization but the structural truth, and
   // descending was a WRONG DECLINE (item 1490).
   //

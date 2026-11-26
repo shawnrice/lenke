@@ -27,7 +27,7 @@ const routes = (src: string): string[] => {
   const q = parse(src) as never as { parts: readonly never[] };
   const cl = compileLinear(q.parts[0]) as unknown as Record<string, unknown>;
 
-  // ⚠️ A RUNG IS A FUNCTION, and filtering on that rather than on "not null, and not the one field
+  // A RUNG IS A FUNCTION, and filtering on that rather than on "not null, and not the one field
   // I know about" is what keeps this helper honest as `CLinear` grows. It used to exclude `clauses`
   // by name and take every other non-null field as a rung — so item 1510's `writes: boolean`, which
   // is not a rung at all, registered as one and failed 13 of these tests. Every rung is
@@ -87,7 +87,7 @@ describe('every hop walk variant takes the rung now', () => {
     'MATCH (a:P)-[:E]->(b:P) RETURN upper(b.s) AS c ORDER BY c LIMIT 3',
     'MATCH (a:P)-[:E]->(b:P) RETURN a.k AS x, b.k + 1 AS c ORDER BY x LIMIT 3',
     'MATCH (a:P)-[e:E]->(b:P) RETURN a.k AS x, e.w AS w, b.k + 1 AS c ORDER BY c, x LIMIT 4',
-    // ⚠️ MOVED UP FROM `REFUSED` AT ITEM 1905, and the move is the point: a `SKIP` with no `LIMIT`
+    // MOVED UP FROM `REFUSED` AT ITEM 1905, and the move is the point: a `SKIP` with no `LIMIT`
     // was refused because ranking-then-projecting emits fewer rows than it projects, so an item
     // faulting on a discarded row would silently not raise. That arm now forces `plan.skip` to 0,
     // re-projects EVERY ranked row and slices AFTER — so fault parity is identical by construction

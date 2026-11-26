@@ -5,7 +5,7 @@
  * row for a laziness that `toArray` immediately discards. Removing it took `RETURN 1 AS v` from
  * 530 to 164 ns (3.24x) and a one-row `INSERT` from 4587 to 4096 (1.12x).
  *
- * ⚠️ WHY THIS NEEDS ITS OWN TEST WHEN THE CHANGE IS ANSWER-EQUIVALENT. Every one of the 3,700+ GQL
+ * WHY THIS NEEDS ITS OWN TEST WHEN THE CHANGE IS ANSWER-EQUIVALENT. Every one of the 3,700+ GQL
  * tests runs through `projectedRows`, so a `mapToArray` that dropped or reordered rows would be
  * caught loudly. What those tests CANNOT see is the hazard the replacement actually carries: an
  * implementation that BUFFERS its input before mapping returns exactly the same array. It would
@@ -78,7 +78,7 @@ describe('mapToArray', () => {
     ).toEqual(['a1', 'b2']);
   });
 
-  it('⚠️ INTERLEAVES pulling with mapping — it must stream, not buffer', () => {
+  it('INTERLEAVES pulling with mapping — it must stream, not buffer', () => {
     // THE TEST THAT HAS TEETH. A `[...it].map(f)` implementation returns the same array and fails
     // only here: it would log pull,pull,pull,map,map,map.
     const log: string[] = [];
@@ -100,7 +100,7 @@ describe('mapToArray', () => {
     expect(log).toEqual(['pull1', 'map1', 'pull2', 'map2', 'pull3', 'map3']);
   });
 
-  it('⚠️ does not over-consume: it stops when the input is exhausted', () => {
+  it('does not over-consume: it stops when the input is exhausted', () => {
     // A generator that would throw if resumed after completion. `for…of` calls `next()` once more
     // to see `done`, which is fine; what must not happen is a second pull AFTER that.
     let finished = 0;

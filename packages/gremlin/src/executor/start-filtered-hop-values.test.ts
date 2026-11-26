@@ -2,7 +2,7 @@
  * `V().hasLabel(L).out(T).values(k)` — a hop with a FILTERED START, which `hopValuesShortcut`
  * declined outright and which `startFilteredHopValues` now answers (items 1534/1535).
  *
- * ⚠️ EVERY EXPECTATION HERE IS DERIVED FROM THE FIXTURE BY HAND, not recorded from the engine.
+ * EVERY EXPECTATION HERE IS DERIVED FROM THE FIXTURE BY HAND, not recorded from the engine.
  * The shape previously declined to the traverser pipeline, so the existing suite has no row that
  * covers it — there was nothing in place to notice a wrong answer, exactly as item 1529 found on
  * the GQL side. A recorded expectation would have tested that the new walk agrees with itself.
@@ -68,7 +68,7 @@ const run = (t: Parameters<typeof toArray>[0]) => toArray(t, g);
 
 describe('item 1535 — a filtered start on a yielded hop', () => {
   /**
-   * ⚠️ THE TWO THINGS THAT NEARLY SHIPPED WRONG, both from seeding the walk out of
+   * THE TWO THINGS THAT NEARLY SHIPPED WRONG, both from seeding the walk out of
    * `graph.verticesByLabel.get(L)` the way `startFilteredHopCount` does. A count cannot observe
    * either one; a yielded stream observes both. See the comment at `tests` in the module.
    */
@@ -235,7 +235,7 @@ describe('item 1535 — a filtered start on a yielded hop', () => {
    * THE `both` ARM (item 1536). Mirrors `hop-values.ts`'s `bothOneType`: the out-bucket then the
    * in-bucket, per vertex, with NO self-loop filter.
    *
-   * ⚠️ A SELF-LOOP YIELDS TWICE under Gremlin's `both`, and that is the opposite of GQL's
+   * A SELF-LOOP YIELDS TWICE under Gremlin's `both`, and that is the opposite of GQL's
    * undirected hop, which emits it once (item 1431's edge pass skips the second). `a -E-> a` sits
    * in both `adjFrom` and `adjTo`, so both passes see it. `both-self-loop.test.ts` records that
    * skipping it in the in-pass SURVIVED the whole 1,214-test suite before that file existed — so

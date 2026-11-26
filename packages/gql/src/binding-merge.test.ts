@@ -1,6 +1,6 @@
 // `mergeBinding` — the per-row binding merge in the matcher's product paths (item 2022).
 //
-// ⚠️⚠️ **KEY ORDER IS THE CONTRACT, NOT THE VALUES.** `visitRemaining` documents the merge order as
+// **KEY ORDER IS THE CONTRACT, NOT THE VALUES.** `visitRemaining` documents the merge order as
 // "outer keys, then `pat`'s, then the tail's — which `RETURN *` projects in", and column order is
 // bytes ([[column-order-is-observable]]). The change replaced
 //
@@ -10,7 +10,7 @@
 // original position, so the two agree even where the sides OVERLAP — which they always do here,
 // because both sides carry the outer binding.
 //
-// 🔑 THE OBSERVABLE IS `RETURN *`: it copies binding entries into the row in binding order, so a
+// THE OBSERVABLE IS `RETURN *`: it copies binding entries into the row in binding order, so a
 // merge that reordered keys shows up as reordered COLUMNS. Every assertion below reads
 // `Object.keys`, not just the values.
 import { describe, expect, test } from 'bun:test';
@@ -58,7 +58,7 @@ const rows = (g: Graph, q: string): Record<string, unknown>[] =>
   [...query(g, q)] as Record<string, unknown>[];
 
 /**
- * ⚠️⚠️ **THE KEY ORDER OF *EVERY* ROW, NOT ROW ZERO — AND TWO MUTANTS PROVED WHY.** The product has
+ * **THE KEY ORDER OF *EVERY* ROW, NOT ROW ZERO — AND TWO MUTANTS PROVED WHY.** The product has
  * two paths: the FIRST outer row streams the tail through `recordTail` while filling the cache, and
  * every LATER row reads the filled cache. They are different merge call sites. Checking
  * `Object.keys(got[0])` exercises only the first, so swapping the merge arguments on the CACHED path
@@ -71,7 +71,7 @@ describe('the uncorrelated product keeps its key ORDER', () => {
 
   test('`RETURN *` over a comma pattern projects outer keys, then each leg’s', () => {
     /*
-     * ⚠️ THIS IS THE SHAPE THE MERGE SERVES — two independent legs, so the tail is uncorrelated and
+     * THIS IS THE SHAPE THE MERGE SERVES — two independent legs, so the tail is uncorrelated and
      * `visitRemaining` forms the product from a cached tail (item 121). `RETURN *` is what makes the
      * merge's key order observable.
      */
@@ -86,7 +86,7 @@ describe('the uncorrelated product keeps its key ORDER', () => {
     const got = rows(g, 'MATCH (a:A), (b:B), (c:A) RETURN *');
 
     expect(got).toHaveLength(8);
-    // ⚠️ ALL EIGHT: row 0 took the first-row path, rows 1-7 the cached one.
+    // ALL EIGHT: row 0 took the first-row path, rows 1-7 the cached one.
     expect(keyOrders(got)).toEqual(Array.from({ length: 8 }, () => ['a', 'b', 'c']));
   });
 
@@ -104,7 +104,7 @@ describe('the uncorrelated product keeps its key ORDER', () => {
 
   test('a CORRELATED second pattern still works — it takes the other branch', () => {
     /*
-     * ⚠️ THE MERGE IS ONLY REACHED ON THE UNCORRELATED PATH; a correlated tail recurses per outer
+     * THE MERGE IS ONLY REACHED ON THE UNCORRELATED PATH; a correlated tail recurses per outer
      * row instead (`tailIsUncorrelated` decides). Both must answer, and this is the control that
      * says the change did not disturb the branch it does not serve.
      */
@@ -134,13 +134,13 @@ describe('the OPTIONAL and multi-clause merges', () => {
     const got = rows(g, 'MATCH (a:A) MATCH (b:B) RETURN *');
 
     expect(got).toHaveLength(4);
-    // ⚠️ ALL FOUR, for the same reason: the clause cache serves rows 2..n from a different call site.
+    // ALL FOUR, for the same reason: the clause cache serves rows 2..n from a different call site.
     expect(keyOrders(got)).toEqual(Array.from({ length: 4 }, () => ['a', 'b']));
   });
 
   test('an EMPTY incoming binding passes the matcher’s own binding through unchanged', () => {
     /*
-     * ⚠️ THE `bare` FAST PATH, which the merge must not have disturbed: a leading MATCH has nothing
+     * THE `bare` FAST PATH, which the merge must not have disturbed: a leading MATCH has nothing
      * to merge, and copying it anyway measured 1.93x on a 20,000-row scan. So this shape must NOT
      * go through `mergeBinding` at all — and the only way to see that from outside is that it still
      * answers correctly with the key order intact.

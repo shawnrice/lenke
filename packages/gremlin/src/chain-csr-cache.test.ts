@@ -1,12 +1,12 @@
 // `slotChainCount`'s adjacency CSR is cached ACROSS traversals, keyed on `graph.topologyVersion`
 // plus the direction and edge labels every hop walks (item 1678).
 //
-// ⚠️ EVERY TEST HERE IS AN INVALIDATION TEST, AND THE 2,017 TESTS ALREADY IN THIS PACKAGE CANNOT BE.
+// EVERY TEST HERE IS AN INVALIDATION TEST, AND THE 2,017 TESTS ALREADY IN THIS PACKAGE CANNOT BE.
 // A cache that never invalidates returns the correct answer for every read-only traversal ever
 // written; the whole suite passed on the first build of this one and would have passed on a broken
 // one. The failure mode is "traverse, write, traverse".
 //
-// ⚠️ THE ROUTE HAS TWO ADMISSION CONDITIONS and a test that misses either exercises a DIFFERENT
+// THE ROUTE HAS TWO ADMISSION CONDITIONS and a test that misses either exercises a DIFFERENT
 // route and proves nothing about this cache:
 //
 //     oneWalkThroughout(hops) && seeds.length > Math.max(graph.vertexCount >> 4, 1024)
@@ -61,7 +61,7 @@ const ring = (): Graph => {
 
 describe('the route is actually being taken', () => {
   /**
-   * ⚠️ FIRST, BECAUSE EVERY OTHER TEST HERE IS VACUOUS IF IT IS NOT. If the fixture fell below the
+   * FIRST, BECAUSE EVERY OTHER TEST HERE IS VACUOUS IF IT IS NOT. If the fixture fell below the
    * seed-width threshold, or the chain were two hops, these would all pass against a route with no
    * cache in it and say nothing. A ring of N has exactly N k-walks for every k, so the arithmetic
    * also pins the traversal.
@@ -129,11 +129,11 @@ describe('a write between two identical traversals', () => {
   });
 
   /**
-   * ⚠️ THE CASE A FOUR-SITE TOPOLOGY COUNTER GOT WRONG (item 1675). The adjacency boxes are keyed BY
+   * THE CASE A FOUR-SITE TOPOLOGY COUNTER GOT WRONG (item 1675). The adjacency boxes are keyed BY
    * EDGE TYPE and `labels` selects buckets from them, so `addLabelToEdge` moves an edge into the `E`
    * bucket through `indexEdgeLabel` without touching `insertEdge`, `edgesById`, or the vertex set.
    */
-  test('⚠️ an edge GAINING the walked label is seen by the second traversal', () => {
+  test('an edge GAINING the walked label is seen by the second traversal', () => {
     const g = ring();
 
     // Added as `F`, so the `:E` chain cannot see it yet.
@@ -151,7 +151,7 @@ describe('a write between two identical traversals', () => {
     expect(countOf(g)).not.toBe(WIDE);
   });
 
-  test('⚠️ an edge LOSING the walked label is seen by the second traversal', () => {
+  test('an edge LOSING the walked label is seen by the second traversal', () => {
     const g = ring();
 
     g.addLabelToEdge('F', g.getEdgeById('e0')!);
@@ -166,7 +166,7 @@ describe('a write between two identical traversals', () => {
 
 describe('the shape is part of the key, not just the topology', () => {
   /**
-   * ⚠️ OUT AND IN CANNOT BE TOLD APART BY A WHOLE-GRAPH WALK COUNT, AND THAT IS A THEOREM, NOT A
+   * OUT AND IN CANNOT BE TOLD APART BY A WHOLE-GRAPH WALK COUNT, AND THAT IS A THEOREM, NOT A
    * FIXTURE PROBLEM. Reversing every edge is a BIJECTION on walks, so the number of k-walks in `G`
    * equals the number in `G` reversed — for every k, on every graph. The first two attempts at this
    * test were a ring and then a star, both of which dutifully reported equal counts, and a mutant
@@ -180,7 +180,7 @@ describe('the shape is part of the key, not just the topology', () => {
    * Forwards from a `:P` vertex the longest run is `a -> b -> c`, two hops, so there is no 3-walk at
    * all. Backwards from `c` it is `c <- b <- a <- hub`, three hops, one per spoke. 0 against WIDE.
    */
-  test('⚠️ an inward chain does not read the outward CSR', () => {
+  test('an inward chain does not read the outward CSR', () => {
     const g = new Graph();
     const hub = g.addVertex({ id: 'hub', labels: ['Q'], properties: {} });
 
@@ -218,7 +218,7 @@ describe('the shape is part of the key, not just the topology', () => {
   });
 
   /**
-   * ⚠️ THE TWO LABELS MUST GIVE DIFFERENT COUNTS, which the first version of this test did not
+   * THE TWO LABELS MUST GIVE DIFFERENT COUNTS, which the first version of this test did not
    * arrange — it built an `:E` ring and an `:F` ring, both counting WIDE, so a mutant that dropped
    * the labels from the cache key answered correctly and SURVIVED. A cache test whose two shapes
    * agree cannot detect a key that conflates them.
@@ -226,7 +226,7 @@ describe('the shape is part of the key, not just the topology', () => {
    * Here `:E` is the full ring (WIDE 3-walks) and `:F` is a single 3-chain (exactly one), so serving
    * either from the other's entry is immediately visible.
    */
-  test('⚠️ a different edge label does not read another label’s CSR', () => {
+  test('a different edge label does not read another label’s CSR', () => {
     const g = ring();
 
     // One `:F` 3-chain, and nothing else carries `:F`.
@@ -262,7 +262,7 @@ describe('the shape is part of the key, not just the topology', () => {
   });
 
   /**
-   * ⚠️ MORE DISTINCT SHAPES THAN THE CAP, which no key mutant can reach: clearing a cache can only
+   * MORE DISTINCT SHAPES THAN THE CAP, which no key mutant can reach: clearing a cache can only
    * cost a rebuild, never return a wrong answer. So the property is that crossing the cap breaks
    * nothing.
    */
@@ -328,7 +328,7 @@ describe('transactions', () => {
   });
 
   /**
-   * ⚠️ A ROLLBACK MUST NOT LEAVE THE PRE-TRANSACTION ENTRY SERVING THE POST-ROLLBACK GRAPH. It does
+   * A ROLLBACK MUST NOT LEAVE THE PRE-TRANSACTION ENTRY SERVING THE POST-ROLLBACK GRAPH. It does
    * not, because the undo log replays inverses through the same public mutators and so bumps the
    * version again — the entry is rebuilt rather than restored, which over-invalidates by one build
    * and cannot under-invalidate.

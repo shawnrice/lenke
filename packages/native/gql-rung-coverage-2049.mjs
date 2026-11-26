@@ -6,12 +6,12 @@
  * 2046/2047). **The GQL engine has never had the same audit**, and it has the larger rung set: 34
  * `detect*` shape detectors against the profile probe's 51 query shapes.
  *
- * 🔑 **THE CORPUS IS READ OUT OF `runtime-profile-probe.mjs`'s SOURCE**, not duplicated here, so the
+ * **THE CORPUS IS READ OUT OF `runtime-profile-probe.mjs`'s SOURCE**, not duplicated here, so the
  * two cannot drift. It is read-only and the parsed count is ASSERTED — a regex that silently matched
  * fewer shapes would understate coverage and invent unreached rungs, which is the failure mode item
  * 2048 just spent a whole item on (a `name: \d+,` pattern that skipped `16_384`).
  *
- * ⚠️ `node` BY NAME, not `process.execPath`: this runs under `bun`, where `process.execPath` IS bun,
+ * `node` BY NAME, not `process.execPath`: this runs under `bun`, where `process.execPath` IS bun,
  * and bun does not honour NODE_V8_COVERAGE (item 2046 lost a run to that).
  *
  *     bun gql-rung-coverage-2049.mjs
@@ -27,14 +27,14 @@ const GQL_SRC = join(HERE, '..', 'gql', 'src', 'executor');
 /*
  * The GQL engine's rung entry points, read from SOURCE.
  *
- * ⚠️⚠️ **`detect*` ALONE WAS NOT THE WHOLE SET (item 2072).** Item 2071 found the GREMLIN audit's
+ * **`detect*` ALONE WAS NOT THE WHOLE SET (item 2072).** Item 2071 found the GREMLIN audit's
  * suffix filter missing fifteen route-deciders while its rung LIST was derived correctly, and the same
  * check here finds the `*Applies` family invisible: `twoHopFilteredCsrApplies`,
  * `twoHopUnfilteredCsrApplies`, `filteredChainCsrApplies`, `csrDegreeProductApplies`,
  * `csrGatedDegreeProductApplies`, `farDrivenPredicatedApplies` — six functions whose entire job is to
  * say whether a rung claims a plan, which is this audit's own definition of a rung.
  *
- * ⚠️ **DECIDERS ONLY, NOT THE WALKS THEY SERVE.** `gql/src/executor` exports 458 consts; `allWalk`,
+ * **DECIDERS ONLY, NOT THE WALKS THEY SERVE.** `gql/src/executor` exports 458 consts; `allWalk`,
  * `shortestWalk`, `walkSegments` and `projectedRows` are implementations, and pulling them in would
  * bury the question exactly as the Gremlin audit's own comment warns. The second pattern is three
  * suffixes plus two named decision predicates, and nothing else.
@@ -55,7 +55,7 @@ const rungs = [
 ].sort();
 
 /*
- * ⚠️ THE FLOOR IS RAISED WITH THE PATTERN. It was 30 for `detect*` alone; widening the pattern without
+ * THE FLOOR IS RAISED WITH THE PATTERN. It was 30 for `detect*` alone; widening the pattern without
  * widening the guard would let a future drift back to 34 pass silently, which is the whole failure
  * mode this guard exists for.
  */
@@ -70,7 +70,7 @@ const shapesBlock = probeSrc.slice(
   probeSrc.indexOf('\n};', probeSrc.indexOf('const SHAPES = {')),
 );
 /*
- * ⚠️⚠️ **MY FIRST EXTRACTION SILENTLY LOST TWO SHAPES AND TRUNCATED A THIRD**, and the audit still
+ * **MY FIRST EXTRACTION SILENTLY LOST TWO SHAPES AND TRUNCATED A THIRD**, and the audit still
  * reported a clean result — which is how a weaker corpus flatters coverage. A single-quoted,
  * single-line pattern missed:
  *
@@ -111,22 +111,22 @@ const NODES = 400;
 const g = new Graph();
 
 /*
- * ⚠️⚠️ THE INDEX IS WHY edgeSeek AND seekIsWorthIt READ AS NEVER ENTERED (item 2073). This fixture
+ * THE INDEX IS WHY edgeSeek AND seekIsWorthIt READ AS NEVER ENTERED (item 2073). This fixture
  * created none, so no seek rung could fire on any of the 51 shapes -- and item 2072 correctly refused
  * to call that an engine gap. The corpus DOES contain seekable equality predicates (n.k = 5, a.k = 5,
  * an inline brace-k form), so an index on k is all that was missing.
  *
- * ⚠️ IT IS CREATED UNCONDITIONALLY HERE, UNLIKE IN THE PROFILE PROBE. This audit measures WHICH RUNGS
+ * IT IS CREATED UNCONDITIONALLY HERE, UNLIKE IN THE PROFILE PROBE. This audit measures WHICH RUNGS
  * ARE REACHED, not what anything costs, so changing which route answers a shape is the point rather
  * than a hazard. The profile probe gates the same index behind INDEXED=1 precisely because there a
  * route change would move every recorded figure.
  *
- * ⚠️⚠️ NO BACKTICKS IN THIS COMMENT. It sits inside the generated driver's TEMPLATE LITERAL, so one
+ * NO BACKTICKS IN THIS COMMENT. It sits inside the generated driver's TEMPLATE LITERAL, so one
  * would terminate it and the error would name an unrelated identifier -- the trap that has now fired
  * at items 2036, 2046, 2049, twice in 2068 and once here. The assertion below is the durable fix.
  */
 g.createIndex({ on: 'vertex', kind: 'hash', keys: ['k'] });
-// ⚠️ AND AN EDGE INDEX: edgeSeek reads graph.edgePropertyIndex, which the vertex index cannot reach
+// AND AN EDGE INDEX: edgeSeek reads graph.edgePropertyIndex, which the vertex index cannot reach
 // however many shapes the corpus gains (item 2073).
 g.createIndex({ on: 'edge', kind: 'hash', keys: ['w'] });
 
@@ -181,7 +181,7 @@ process.stdout.write(JSON.stringify({ ran, failed, shapes: texts.length }));
 `;
 
 /*
- * ⚠️ THE TEMPLATE MUST CONTAIN NO BACKTICK. A backticked identifier in a comment inside it terminates
+ * THE TEMPLATE MUST CONTAIN NO BACKTICK. A backticked identifier in a comment inside it terminates
  * the template, and `node --check` reports the error at a confusing place. This fired three times in
  * one session (items 2036, 2046, 2049), so it is asserted rather than remembered.
  */
@@ -195,7 +195,7 @@ const dir = mkdtempSync(join(tmpdir(), 'gqlcov-'));
 const driverPath = join(HERE, 'gql-rung-coverage-driver-2049-tmp.mjs');
 
 /*
- * ⚠️⚠️ **THE ASSERTION THE GREMLIN TWIN GOT AT ITEM 2068 AND THIS FILE DID NOT (item 2073).** A
+ * **THE ASSERTION THE GREMLIN TWIN GOT AT ITEM 2068 AND THIS FILE DID NOT (item 2073).** A
  * backtick anywhere in the driver's text terminates the template it lives in, and the failure
  * surfaces as a SyntaxError naming whatever identifier follows it — never the real cause. It has
  * fired six times across this session's probes, once in a comment warning about it.
@@ -247,7 +247,7 @@ console.log(
   `\n  ${summary.shapes} shapes x 2 passes (${summary.ran} ran, ${summary.failed} threw); ${rungs.length} detect* rungs\n`,
 );
 console.log(`  REACHED (${rungs.length - unreached.length})`);
-console.log(`\n  ⚠️ NEVER ENTERED (${unreached.length}):`);
+console.log(`\n  NEVER ENTERED (${unreached.length}):`);
 
 for (const r of unreached) {
   console.log(`    ${r}`);

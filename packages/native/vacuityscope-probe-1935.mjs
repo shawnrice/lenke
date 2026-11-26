@@ -1,12 +1,12 @@
 // Item 1935 — HOW WIDE IS THE LABEL-VACUITY CLIFF? Is it one hop gate, or the whole fast-path layer?
 //
 // Item 1934 measured `MATCH (a:T)-[:E]->(b:T)` going 3.31 -> 22.13 ms from ONE off-label vertex in
-// 50,000, because the far-driven walk is gated on `vacuousLabel`. ⚠️ But `vacuousLabel(` has **43
+// 50,000, because the far-driven walk is gated on `vacuousLabel`. But `vacuousLabel(` has **43
 // call sites across 7 files** — hop-projection (18), shortcuts (10), grouped-hop (4),
 // var-length-count (3), plus csr-cache, hop-endpoint-extremum and labels — so the question is
 // whether the cliff is ONE gate or an architectural assumption.
 //
-// 🔑 GREP COUNTS ARE NOT A MEASUREMENT. This runs one shape per gate FAMILY on the same two graphs,
+// GREP COUNTS ARE NOT A MEASUREMENT. This runs one shape per gate FAMILY on the same two graphs,
 // so the scope claim is measured rather than inferred from where the identifier appears.
 //
 //     bun vacuityscope-probe-1935.mjs
@@ -18,12 +18,12 @@ const FANOUT = Number(process.env.FANOUT ?? 2);
 const REPS = Number(process.env.REPS ?? 7);
 
 /*
- * ⚠️⚠️ THE OFF-LABEL VERTEX IS *ADDITIONAL*, NOT RELABELLED — and the first version of this probe
+ * THE OFF-LABEL VERTEX IS *ADDITIONAL*, NOT RELABELLED — and the first version of this probe
  * got that wrong. It relabelled vertex 1 from T to U, which changed BOTH the `T` count and the edge
  * set, so the two graphs answered different questions and `same` came back FALSE on seven of eight
  * rows. The guard caught it; the ratios would otherwise have read 1221x and 248x.
  *
- * 🔑 So both graphs get the SAME N vertices labelled T with the SAME edges, and the non-vacuous one
+ * So both graphs get the SAME N vertices labelled T with the SAME edges, and the non-vacuous one
  * gets ONE EXTRA ISOLATED vertex labelled U. Every `T`-anchored answer is then identical by
  * construction, and the only difference is `graph.vertexCount` — which is precisely what
  * `vacuousLabel` compares against (`verticesByLabel.get('T').size === graph.vertexCount`).
@@ -84,7 +84,7 @@ const time = (g, q) => {
     const ms = performance.now() - t0;
 
     /*
-     * ⚠️ ORDER-INSENSITIVE, because row order is UNSPECIFIED for an unordered result
+     * ORDER-INSENSITIVE, because row order is UNSPECIFIED for an unordered result
      * ([[order-is-unspecified]]) and the two arms take different walks, which emit in different
      * orders. My first version compared `rows[0]` and reported `same: false` on the hop projection
      * for that reason alone — a real difference and an order difference are not the same thing, so
@@ -114,7 +114,7 @@ const time = (g, q) => {
 
 console.log(
   `${NODES} vertices, median of ${REPS}. ONE off-label vertex is the only difference.\n` +
-    '⚠️ `same` must be true or the two graphs are answering different questions.\n',
+    '`same` must be true or the two graphs are answering different questions.\n',
 );
 console.log('shape               vacuous    1 off-label    ratio   same');
 console.log('-'.repeat(62));

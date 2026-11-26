@@ -7,7 +7,7 @@
  * margin is where item 1870's decay becomes possible, and a high absolute is where a win would be
  * worth having — this shape is both.
  *
- * ⚠️ THE CONTROLS ARE ITS OWN SIBLINGS, chosen so each isolates one part of the question:
+ * THE CONTROLS ARE ITS OWN SIBLINGS, chosen so each isolates one part of the question:
  *
  *   - `count(*)` over the same chain  — the walk WITHOUT any distinct keying.
  *   - `count(DISTINCT c)` (the ELEMENT, not a property) — the same keying over a different value

@@ -12,11 +12,11 @@ import { parse } from './parser.js';
  * variable, and the same size — **71.9x**, 819.6 ms to 11.4, converging with the spelling that never
  * bound `r`.
  *
- * ⚠️ `dropUnreadGroupBinds` already drops an unread `rel.variable`, but only on a FUSED HOP: it
+ * `dropUnreadGroupBinds` already drops an unread `rel.variable`, but only on a FUSED HOP: it
  * requires `hopFrom !== undefined` and refuses on `nested`/`unitRest`/`innerQ`. A plain quantified
  * hop has `rel.quantifier` and no `hopFrom`, so it falls through. This covers that gap only.
  *
- * ⚠️ The rewrite is answer-equivalent, so the suite cannot see a mutant in it — the transformation
+ * The rewrite is answer-equivalent, so the suite cannot see a mutant in it — the transformation
  * is tested directly, plus answers for each refusal.
  */
 const clausesOf = (q: string): readonly Clause[] => {
@@ -64,7 +64,7 @@ describe('an unread edge variable on a quantified segment is dropped', () => {
   });
 });
 
-describe('⚠️ the refusals, each of which a mutant removes', () => {
+describe('the refusals, each of which a mutant removes', () => {
   test('the projection READS it', () => {
     expect(edgeVarOf('MATCH (a:P)-[r:E]->{1,2}(b:P) RETURN count(r) AS c')).toBe('r');
   });
@@ -75,7 +75,7 @@ describe('⚠️ the refusals, each of which a mutant removes', () => {
     );
   });
 
-  test('⚠️ a SINGLE HOP is left alone — no quantifier, and it costs nothing there', () => {
+  test('a SINGLE HOP is left alone — no quantifier, and it costs nothing there', () => {
     // Measured 0.2 ms either way, so there is nothing to win and the guard keeps the pass narrow.
     expect(edgeVarOf('MATCH (a:P)-[r:E]->(b:P) RETURN count(*) AS c')).toBe('r');
   });
@@ -102,7 +102,7 @@ describe('⚠️ the refusals, each of which a mutant removes', () => {
     expect(edgeVarOf('MATCH (x:P)((a)-[r:E]->(b)){1,2}(y:P) RETURN count(*) AS c')).toBe('r');
   });
 
-  test('⚠️ a NESTED subpath cannot reach this pass at all, and that is why a mutant survives', () => {
+  test('a NESTED subpath cannot reach this pass at all, and that is why a mutant survives', () => {
     // Removing the `nested !== undefined` guard SURVIVES the suite, and checking why is the point:
     // on a nested segment the OUTER `rel` carries no `variable` — `r` lives on `nested.rel` —
     // so `rel.variable === undefined` already refuses. The guard is belt-and-braces, kept for

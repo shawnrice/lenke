@@ -5,11 +5,11 @@
 // mutants below attack BOTH halves — the arithmetic (which `chain-levels-weighted-sum.test.ts` must
 // catch) and the ROUTE (which only `routes-fired.test.ts` can).
 //
-// ⚠️ A VERDICT NEEDS EVIDENCE OF EXECUTION, NOT AN EXIT CODE. `bun test` writes `N pass` / `N fail`
+// A VERDICT NEEDS EVIDENCE OF EXECUTION, NOT AN EXIT CODE. `bun test` writes `N pass` / `N fail`
 // to STDERR, never stdout. Items 767 and 772-773 each got this wrong in opposite directions, so the
 // runner concatenates both streams, finds a result line there, and only then reads the exit code.
 //
-// ⚠️ AND EVERY MUTANT RUNS UNDER A TIMEOUT AND A MEMORY CAP. A mutant is arbitrary broken code: the
+// AND EVERY MUTANT RUNS UNDER A TIMEOUT AND A MEMORY CAP. A mutant is arbitrary broken code: the
 // weighted loop has a `continue` in it and the bail returns a sentinel, so a mutant can loop forever
 // or fall through to a general path that materializes every row. Exit 124 or 137 IS the catch.
 //
@@ -21,7 +21,7 @@ import { resolve } from 'node:path';
 
 const ROOT = resolve(import.meta.dir, '../..');
 const SRC = resolve(ROOT, 'packages/gql/src/executor/chain-fold-levels.ts');
-// ⚠️ UNDER `target/`, which is gitignored AND survives the reboot a runaway mutant may force. The
+// UNDER `target/`, which is gitignored AND survives the reboot a runaway mutant may force. The
 // scratchpad does not: CLAUDE.md records a pristine copy lost to exactly that and reconstructed by
 // hand from `git diff`.
 const PRISTINE_DIR = resolve(ROOT, 'target/mutants-2409');
@@ -35,7 +35,7 @@ const TESTS = ['src/chain-levels-weighted-sum.test.ts', 'src/routes-fired.test.t
 /**
  * Each mutant is `[label, from, to]`, applied by exact string replacement.
  *
- * ⚠️ EVERY ANCHOR IS COUNTED BEFORE IT IS USED. `[[ambiguous-anchor-strings]]`: item 2408 lost a
+ * EVERY ANCHOR IS COUNTED BEFORE IT IS USED. `[[ambiguous-anchor-strings]]`: item 2408 lost a
  * whole A/B run and had two mutants silently edit the wrong function because a line that had been
  * unique became ambiguous once the change itself was applied.
  */
@@ -47,13 +47,13 @@ const MUTANTS = [
     'const WEIGHTED: ReadonlySet<string> = new Set([]);',
   ],
   /*
-   * ⚠️ THIS ANCHOR MOVED. The first version mutated `if (distinct && name !== 'count')`, which
+   * THIS ANCHOR MOVED. The first version mutated `if (distinct && name !== 'count')`, which
    * SURVIVED — and that was the mutant being unreachable, not a coverage gap: `!node.distinct` in
    * the `weighted` gate keeps a DISTINCT sum out before that line is ever consulted. So the mutant
    * now attacks the gate that actually guards it, which is the reachable one.
    */
   /*
-   * ⚠️⚠️ THIS MUTANT REMOVES BOTH GATES, AND THE REASON IS WORTH RECORDING. A DISTINCT sum is
+   * THIS MUTANT REMOVES BOTH GATES, AND THE REASON IS WORTH RECORDING. A DISTINCT sum is
    * kept off this rung TWICE — by `!node.distinct` in the `weighted` gate and by
    * `distinct && name !== 'count'` below it. The first two versions of this mutant removed ONE of
    * them, and SURVIVED both times: the remaining gate declined the shape, so the engine caught the
@@ -82,7 +82,7 @@ const MUTANTS = [
       weight += 1;`,
   ],
   /*
-   * ⚠️⚠️ THIS ONE WAS A NO-OP AND SURVIVED, which is item 1918's battery defect repeated. It read
+   * THIS ONE WAS A NO-OP AND SURVIVED, which is item 1918's battery defect repeated. It read
    * `total / (weight > 0 ? weight : 1)` — identical to `total / weight` on the only path that
    * reaches it, since `have` is true exactly when `weight >= 1`. It read as a coverage gap in the
    * denominator. Replaced with an off-by-one that actually moves the answer.
@@ -130,7 +130,7 @@ const MUTANTS = [
       }`,
   ],
   /*
-   * ⚠️⚠️ THIS ANCHOR ALSO MOVED, AND THE REASON IS THE ITEM'S SECOND CORRECTION OF ITSELF. The
+   * THIS ANCHOR ALSO MOVED, AND THE REASON IS THE ITEM'S SECOND CORRECTION OF ITSELF. The
    * first version relaxed `!Number.isFinite(cell)` to `typeof cell !== 'number'` and SURVIVED — and
    * `levelsum-inf-probe-2409.mjs` then showed the two are answer-equivalent on all six non-finite
    * and overflow fixtures, so that mutant could not be caught by any test. The guard shipped is now
@@ -174,7 +174,7 @@ const MUTANTS = [
   ],
   // ---------------------------------------------------- a NO-OP CONTROL
   /*
-   * ⚠️⚠️ **THE CONTROL THAT MAKES A CLEAN SWEEP MEAN SOMETHING, and item 2408 is why it is here.**
+   * **THE CONTROL THAT MAKES A CLEAN SWEEP MEAN SOMETHING, and item 2408 is why it is here.**
    * Item 1918's battery carried a mutant that replaced `count += 1` with `count = count + 1 + 0` —
    * the SAME arithmetic. It survived, and read as a coverage gap in the fold rather than a defect in
    * the battery. This one is deliberately a no-op and is EXPECTED to survive: if it does not, the

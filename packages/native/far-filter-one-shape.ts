@@ -2,7 +2,7 @@
  * ONE far-filter shape per PROCESS (item 1631), because the multi-arm floor could not resolve the
  * question it raised.
  *
- * ⚠️ WHY THIS EXISTS. `far-filter-values-floor.ts` runs eight arms in one process and reported
+ * WHY THIS EXISTS. `far-filter-values-floor.ts` runs eight arms in one process and reported
  * `out(E).has(k,eq(1)).id()` at 144.15 ms against the `values(n)` twin's 86.48 — same route, same
  * loop, same composed `pick`, differing only in the inner closure. But `pick` is called through a
  * closure VARIABLE inside that loop, so running several arms in one process makes that call site
@@ -29,7 +29,7 @@ for (let i = 0; i < NODES; i += 1) {
   g.addVertex({ id: `u${i}`, labels: ['User'], properties: { k: i % 97, n: i } });
 }
 
-/** ⚠️ Split on the REPEAT INDEX — items 1516/1518; a linear `(a*k+b)%N` makes the graph functional. */
+/** Split on the REPEAT INDEX — items 1516/1518; a linear `(a*k+b)%N` makes the graph functional. */
 let edges = 0;
 
 for (let k = 0; k < NODES * FANOUT; k += 1) {

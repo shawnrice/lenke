@@ -1,13 +1,13 @@
 // The ACYCLIC route's work ceiling, as arithmetic (item 2002).
 //
-// ⚠️⚠️ **THE CEILING WAS THE ONE THING THIS ROUTE GOT WRONG, and it was wrong in a way no answer
+// **THE CEILING WAS THE ONE THING THIS ROUTE GOT WRONG, and it was wrong in a way no answer
 // test could see.** Sized as `levels * (|V| + |E|)` — copied from `perSourceBudget` — the UNSEEDED
 // count, the 520x case the whole route was built for, DECLINED on the budget and stayed at 869 ms
 // while the seeded case took the route and went 15.28 -> 1.05 ms. The answers were identical either
 // way, because declining falls through to the general clause loop. So a 19x regression against the
 // route's own purpose was invisible to every correctness test, and only the measurement caught it.
 //
-// 🔑 **THAT IS WHY THE BUDGET GETS ITS OWN TEST** ([[perf-gate-needs-its-own-test]]: a route choice
+// **THAT IS WHY THE BUDGET GETS ITS OWN TEST** ([[perf-gate-needs-its-own-test]]: a route choice
 // is answer-equivalent, so extract the arithmetic and test THAT). The claim pinned here is not a
 // specific constant — it is that the ceiling is large enough to ADMIT the shape the route exists
 // for. A mutant that shrinks the factor is answer-equivalent and silently restores the 869 ms.
@@ -25,7 +25,7 @@ const build = (n: number, fanout: number): Graph => {
     g.addVertex({ id: String(i + 1), labels: ['T'], properties: { n: i % 7 } });
   }
 
-  // ⚠️ SPLIT ON THE REPEAT INDEX. `to = (a*k + b) % N` is invariant under `k -> k + N`, so a flat
+  // SPLIT ON THE REPEAT INDEX. `to = (a*k + b) % N` is invariant under `k -> k + N`, so a flat
   // loop over `k < n * fanout` sends one vertex's whole fanout to the SAME target — the graph stays
   // FUNCTIONAL, every degree looks right, and a k-hop count becomes `fanout^k * n` by construction.
   // Here it would also make almost every path non-acyclic, so the route would be measured against
@@ -76,7 +76,7 @@ describe('the ACYCLIC route admits the shape it exists for', () => {
   });
 
   test('the count GROWS with the bound, so a non-decline is not a trivial zero', () => {
-    // ⚠️ `> 0` ALONE IS NOT ENOUGH: a route that declined would return `undefined`, but one that
+    // `> 0` ALONE IS NOT ENOUGH: a route that declined would return `undefined`, but one that
     // returned a WRONG small number would also pass that. A quantified `{1,k}` counts every path of
     // length 1..k, so raising the bound must raise the count.
     const g = build(400, 5);
@@ -94,7 +94,7 @@ describe('the ACYCLIC route admits the shape it exists for', () => {
      * budget should admit it — and the alternative (the general clause loop) would not finish
      * either. Declining returns control instead of sitting in the DFS.
      *
-     * ⚠️ KEPT SMALL ON PURPOSE: 120 vertices, so if the ceiling were removed entirely this test
+     * KEPT SMALL ON PURPOSE: 120 vertices, so if the ceiling were removed entirely this test
      * would TIME OUT rather than consume the machine. [[dogfood-sim-resource-limits]] — this repo
      * has taken the box down four times, and an unbounded search in a unit suite is that shape.
      */

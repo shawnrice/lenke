@@ -12,15 +12,15 @@
 # same element, and nothing in a projection expression can write, so the bag cannot change between
 # two columns of one row. Same values, same order, byte-identical.
 #
-# ⚠️ n=1500, NOT 300. Item 1740 established this shape spreads 18% at 300 runs and 1.3% at 1500 once
+# n=1500, NOT 300. Item 1740 established this shape spreads 18% at 300 runs and 1.3% at 1500 once
 # the warm-up run is dropped. At 300 it cannot resolve the effect at all, and that item measured
 # nothing partly for this reason.
 #
-# ⚠️ CONTROLS. `narrow1` reads ONE property per row on the SAME rung, so it cannot gain from removing
+# CONTROLS. `narrow1` reads ONE property per row on the SAME rung, so it cannot gain from removing
 # a repeated read and can only lose the hoist's extra local -- it must stay flat. `hoprows` takes a
 # DIFFERENT rung (hopProjection) and must not move at all.
 #
-# ⚠️ item 1512, recorded ten lines above the loop being changed, hoisted the env object out of this
+# item 1512, recorded ten lines above the loop being changed, hoisted the env object out of this
 # very loop and measured FLAT (1.01x). So a plausible hoist here has already failed once.
 set -u
 

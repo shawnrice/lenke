@@ -17,7 +17,7 @@ import { compileLinear } from '../gql/src/executor/rewrites.ts';
 // rung would answer this query" while a rung change is being iterated on, which is before a build
 // has happened.
 //
-// ⚠️ The directive has to be ONE line. Written across several, `eslint-disable-next-line` applies to
+// The directive has to be ONE line. Written across several, `eslint-disable-next-line` applies to
 // the next COMMENT line instead of the import and the rule still fires.
 // eslint-disable-next-line boundaries/no-cross-package-relative-import -- internal planner entry point, read pre-build; see above
 import { parse } from '../gql/src/parser.ts';

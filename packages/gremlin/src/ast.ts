@@ -459,7 +459,7 @@ export type AddEEndpoint = { kind: 'tag'; label: string } | { kind: 'plan'; plan
  * The key of `effectivePlan`'s per-plan cache (item 1647). See {@link Plan} for the field and
  * `effectivePlan` for the hit/miss.
  *
- * ⚠️ IT IS A SYMBOL BECAUSE A PLAN IS SERIALIZABLE. `serialize.ts` does
+ * IT IS A SYMBOL BECAUSE A PLAN IS SERIALIZABLE. `serialize.ts` does
  * `JSON.stringify(plan)` as a public API and `traversal.test.ts` round-trips a plan through JSON,
  * so an enumerable own property would change that output — and its value often cannot survive
  * it anyway: a cached result that IS the input plan (the common case, when no pass fires) is a
@@ -480,7 +480,7 @@ export type Plan = {
   /**
    * Does any step anywhere in this plan tree read the traverser path?
    *
-   * ⚠️ CARRIED BY CONSTRUCTION, NOT COMPUTED AT EXECUTION (item 1504). `toArray` used to answer
+   * CARRIED BY CONSTRUCTION, NOT COMPUTED AT EXECUTION (item 1504). `toArray` used to answer
    * this by walking the whole plan tree on EVERY call, which item 1503 measured as part of a
    * 315-456 ns per-call overhead on shapes whose graph work is 2-5 ns. That item also tried the
    * obvious fix — a `WeakMap<Plan, boolean>` memo — and rejected it: 1.52-1.61x for a REUSED plan
@@ -493,7 +493,7 @@ export type Plan = {
    * FIRST, so its own flag is already true or false and the parent just reads it. No walk, no
    * cache, nothing to invalidate.
    *
-   * ⚠️ CONSERVATIVE IN THE SAFE DIRECTION. A plan rewritten by `effectivePlan` keeps this flag via
+   * CONSERVATIVE IN THE SAFE DIRECTION. A plan rewritten by `effectivePlan` keeps this flag via
    * `{ ...plan, steps }`, and a rewrite can only MERGE or REMOVE steps — never introduce a
    * path-dependent one that was not already inside the step it replaced. So a carried-over `true`
    * may be stale, which merely declines an optimisation; a stale `false` is unreachable.
@@ -502,18 +502,18 @@ export type Plan = {
   /**
    * Which GATE KINDS appear among this plan's OWN top-level steps, as a bitmask.
    *
-   * ⚠️ IT EXISTS SO `effectivePlan` CAN SKIP PASSES THAT CANNOT FIRE (item 1505). After item 1504
+   * IT EXISTS SO `effectivePlan` CAN SKIP PASSES THAT CANNOT FIRE (item 1505). After item 1504
    * removed the path walk, a profile of a reused plan put `effectivePlan`'s six rewrite passes at
    * **32.2%** of a 208 ns call — and for a plan like `V().count()` every one of them walks the step
    * list looking for a `local`, a `union`, an edge step or a `values` that is not there. The bit
    * says "do not bother" in one test.
    *
-   * ⚠️ TOP-LEVEL ONLY, DELIBERATELY. Each gated pass iterates `plan.steps` and never recurses, so a
+   * TOP-LEVEL ONLY, DELIBERATELY. Each gated pass iterates `plan.steps` and never recurses, so a
    * `union` buried in a sub-plan is not something they can fuse — including it would make the mask
    * pessimistic and the gate useless. This is why, unlike {@link Plan.readsPath}, there is no
    * inner-plan propagation here.
    *
-   * ⚠️ AND IT MUST BE RECOMPUTED BY ANY PASS THAT CHANGES THE STEPS. `fuseLocal` runs first and
+   * AND IT MUST BE RECOMPUTED BY ANY PASS THAT CHANGES THE STEPS. `fuseLocal` runs first and
    * INLINES a sub-plan's steps into the top level, so it can introduce a `union` or a `values` that
    * was not there before; a later gate reading the original mask would wrongly skip. Every rewrite
    * that returns a new plan therefore recomputes via {@link maskOfSteps} — which costs nothing in
@@ -523,7 +523,7 @@ export type Plan = {
   /**
    * Can `checkStep` raise for any step in this plan's own top-level steps?
    *
-   * ⚠️ A BOOLEAN RATHER THAN A BIT, because the gate set is 25 kinds and the mask is already 13
+   * A BOOLEAN RATHER THAN A BIT, because the gate set is 25 kinds and the mask is already 13
    * bits deep — JS bitwise operators are 32-bit, so there is no room and no reason to crowd it.
    *
    * When false, `checkSteps`' entire frontier walk is skippable: it exists only to decide which
@@ -536,13 +536,13 @@ export type Plan = {
    * `effectivePlan`'s memo of the GRAPH-FREE PREFIX of its rewrite chain. MUTABLE, unlike every
    * field above, and symbol-keyed — see {@link EFF_PREFIX} for why.
    *
-   * ⚠️ IT EXISTS BECAUSE `run` NORMALISES ON EVERY CALL (items 1645/1646). A spelling that needs a
+   * IT EXISTS BECAUSE `run` NORMALISES ON EVERY CALL (items 1645/1646). A spelling that needs a
    * rewrite to become the fast one pays for the rewrite per invocation: `union(out(T), in(T))` is
    * 2.41x `both(T)` for an identical plan, and **117.5 ns of that 225.2 ns gap is `effectivePlan`
    * doing the collapse**. `fuseUnionBoth` alone was 94.5 ns of it, and that pass is inside this
    * prefix.
    *
-   * ⚠️⚠️ AND IT IS THE PREFIX RATHER THAN THE WHOLE CHAIN BECAUSE `Graph` HAS NO SYNCHRONOUS
+   * AND IT IS THE PREFIX RATHER THAN THE WHOLE CHAIN BECAUSE `Graph` HAS NO SYNCHRONOUS
    * MUTATION COUNTER. Item 1646 priced a whole-chain cache keyed on `(graph, graph.version)` and
    * recorded that the prerequisite "is already there". It is not: `version` and `epoch(name)` are
    * REACTIVE counters that advance when the mutation queue DRAINS, on a microtask —
@@ -555,17 +555,17 @@ export type Plan = {
    * so the entry can never be stale. The two passes that take the `graph` run per call, gated as
    * they already were.
    *
-   * ⚠️ ITEM 1503 REFUSED THIS TRADE AND WAS RIGHT ABOUT A `WeakMap`. A `WeakMap<Plan, Plan>` is
+   * ITEM 1503 REFUSED THIS TRADE AND WAS RIGHT ABOUT A `WeakMap`. A `WeakMap<Plan, Plan>` is
    * 1.25x WORSE on a rebuilt plan because the `set` allocates; a field on the plan does not. An
    * `{ version, plan }` object here was also measured and rejected for the same reason — it
    * allocates on every MISS (+7 to +77 ns). A scalar slot allocates nothing.
    *
-   * ⚠️ INITIALISED AT EVERY CONSTRUCTION SITE so every plan has ONE hidden class from birth. Adding
+   * INITIALISED AT EVERY CONSTRUCTION SITE so every plan has ONE hidden class from birth. Adding
    * the slot on first use would give plans in the wild two shapes and make every `plan.steps` read
    * polymorphic — item 159 measured 1.29x from exactly that, and `ts-closure-size-is-load-bearing`
    * a 4x slow mode.
    *
-   * ⚠️ OPTIONAL ON THE TYPE, REQUIRED IN PRACTICE. `Plan` is exported, so demanding an internal
+   * OPTIONAL ON THE TYPE, REQUIRED IN PRACTICE. `Plan` is exported, so demanding an internal
    * cache slot in every hand-written plan literal would be a breaking change for no benefit — a
    * literal without it is a plan with one missing-slot shape, which is exactly what the four
    * construction sites exist to prevent in the code that builds plans at speed.
@@ -576,18 +576,18 @@ export type Plan = {
    * symbol-keyed, like {@link Plan[EFF_PREFIX]}, and sound for the same reason: both checks are pure
    * functions of a plan, and a plan is immutable, so a verdict can never be stale.
    *
-   * ⚠️ IT IS THE LARGEST PER-CALL COST LEFT ON A CHEAP GREMLIN QUERY, measured by ablation rather
+   * IT IS THE LARGEST PER-CALL COST LEFT ON A CHEAP GREMLIN QUERY, measured by ablation rather
    * than inferred from a profile share (item 1648). Stubbing the two checks out took
    * `union(out(T), in(T)).count()` from **303.4 to 82.4 ns** and `both(T).count()` from 158.3 to
    * 77.8 — so the walk is **74% of the union call** and about half of the `both` call, on a plan
    * whose graph work is closed-form.
    *
-   * ⚠️ AND IT IS WHAT WAS LEFT OF THE EQUIVALENT-SPELLING GAP. Ablated, the two spellings cost the
+   * AND IT IS WHAT WAS LEFT OF THE EQUIVALENT-SPELLING GAP. Ablated, the two spellings cost the
    * SAME (77-82 against 78-80 ns). The union plan is dearer only because `assertFrontierTypes`
    * RECURSES into its two union arms, which the `both` plan does not have — so the gap item 1645
    * called conceptual was, in its remaining part, this walk.
    *
-   * ⚠️ ONLY A PASS IS RECORDED, NEVER A FAILURE. The flag is written AFTER both checks return, so a
+   * ONLY A PASS IS RECORDED, NEVER A FAILURE. The flag is written AFTER both checks return, so a
    * plan that raises is never marked and raises again on every call. Writing it before them would
    * make an invalid plan throw once and then silently succeed — which is why
    * `the same invalid plan throws EVERY time` exists in `static-check-cache.test.ts`.
@@ -642,7 +642,7 @@ export const KIND_BITS: Readonly<Record<string, number>> = {
   // that runs on every query shows up in a reused-plan call.
   as: 8192,
   /*
-   * ⚠️⚠️ ADDED AT ITEM 2047, AND ITS ABSENCE MADE A SHIPPED REWRITE DEAD CODE. `KIND_BITS` is typed
+   * ADDED AT ITEM 2047, AND ITS ABSENCE MADE A SHIPPED REWRITE DEAD CODE. `KIND_BITS` is typed
    * `Readonly<Record<string, number>>`, so `KIND_BITS.where` TYPE-CHECKED while being `undefined` at
    * runtime — and `x | undefined` is `x`, so adding `where` to {@link FILTER_WRAPPER_BITS} changed
    * the mask by nothing. A `where`-only plan therefore had `kinds === 0`, every kinds-gated pass
@@ -650,7 +650,7 @@ export const KIND_BITS: Readonly<Record<string, number>> = {
    * and the route census read an unchanged 2002 dispatches with no hint why.
    */
   /*
-   * ⚠️⚠️ **65_536, AND IT WAS 16_384 FOR ONE ITEM — A COLLISION WITH `hasId` THAT I SHIPPED.** Item
+   * **65_536, AND IT WAS 16_384 FOR ONE ITEM — A COLLISION WITH `hasId` THAT I SHIPPED.** Item
    * 2047 computed "next free bit" with a regex of `name: \d+,`, which SKIPS the separator-formatted
    * entries (`hasId: 16_384`, `match: 32_768`) — so it read the maximum as 8192 and picked a bit
    * already in use. Nothing broke: each pass scans and finds nothing, so answers were unaffected and
@@ -680,13 +680,13 @@ export const FILTER_WRAPPER_BITS =
   KIND_BITS.and |
   KIND_BITS.hasLabelAnd |
   /*
-   * ⚠️⚠️ `where` ADDED AT ITEM 2047, AND WITHOUT IT THE PASS'S NEW BRANCH WAS DEAD CODE. This mask
+   * `where` ADDED AT ITEM 2047, AND WITHOUT IT THE PASS'S NEW BRANCH WAS DEAD CODE. This mask
    * is read as `(plan.kinds & FILTER_WRAPPER_BITS) === 0 -> return plan`, over TOP-LEVEL kinds only,
    * so `where(and(…))` — whose top level is just `V` and `where` — never entered
    * `flattenFilterWrappers` at all. The unwrap compiled, shipped into the dist, and changed nothing;
    * the route census read an unchanged 2002 dispatches and gave no hint why.
    *
-   * ⚠️ IT WIDENS THE GATE: every plan containing a `where` now runs the pass's per-step loop, which
+   * IT WIDENS THE GATE: every plan containing a `where` now runs the pass's per-step loop, which
    * item 1506 built this mask to avoid. The loop is plan-time and its result is cached on
    * `plan[EFF_PREFIX]`, and `where` plans are precisely the ones this pass now has something to say
    * about — but the cost is real and is why the controls for item 2047 include `where` shapes the
@@ -698,7 +698,7 @@ export const FILTER_WRAPPER_BITS =
  * Step kinds for which `checkStep` can raise. A plan containing NONE of them cannot fault in
  * `checkSteps`, so the whole frontier walk is skippable — see {@link Plan.mayFault}.
  *
- * ⚠️ DERIVED FROM `checkStep`'s SEVEN THROW SITES, each of which needs BOTH a kind and a frontier
+ * DERIVED FROM `checkStep`'s SEVEN THROW SITES, each of which needs BOTH a kind and a frontier
  * state. The kind sets alone would be far wider: the first site tests `PATH_INCOMPATIBLE`, which
  * includes `out`, `has`, `values` and `hasLabel` — but it also requires `f === 'path'`, and the ONLY
  * way the frontier becomes `path` is a `path` step. So `path` covers that whole site, and
@@ -713,7 +713,7 @@ export const FILTER_WRAPPER_BITS =
  *   a vertex move with no edge                  inV, outV, bothV, otherV
  *   otherV off a bare edge frontier             otherV
  *
- * ⚠️ BEING WRONG HERE LOSES A FAULT, not an answer — a plan that should raise would run. That is
+ * BEING WRONG HERE LOSES A FAULT, not an answer — a plan that should raise would run. That is
  * why this is a list read off the throw sites rather than an inference from the kind sets, and why
  * the fault tests in this package are the real gate on it.
  */
@@ -748,7 +748,7 @@ const MAY_FAULT_KINDS: ReadonlySet<string> = new Set([
 /**
  * Can this ONE step make `checkStep` raise — counting its nested plans by their own flags?
  *
- * ⚠️ IT MUST PROPAGATE INWARD, unlike {@link Plan.kinds}. `assertFrontierTypes` RECURSES into
+ * IT MUST PROPAGATE INWARD, unlike {@link Plan.kinds}. `assertFrontierTypes` RECURSES into
  * sub-plans: `V().union(inV())` faults on the vertex-move inside the union arm, exactly as the
  * native engine's parser does. A top-level-only flag would have skipped that check and silently
  * LOST the fault — which is the hole this comment exists to stop being re-opened. Same shape as
@@ -817,7 +817,7 @@ export const emptyPlan: Plan = {
  * closure-bearing kinds hand it to user code via `closureView`, so they are conservatively assumed
  * to read it.
  *
- * ⚠️ MOVED HERE FROM THE EXECUTOR at item 1504, because the flag above is computed at construction
+ * MOVED HERE FROM THE EXECUTOR at item 1504, because the flag above is computed at construction
  * and this is AST-level knowledge (which step KINDS are path-dependent), not execution-level. It is
  * exhaustive against every `.path` read in the executor — keep it in sync if a new path-consuming
  * step is added, since a missed entry would silently drop paths.
@@ -826,7 +826,7 @@ export const emptyPlan: Plan = {
  * Step kinds that CHANGE the graph, so an element's canonical rendering is not stable while such a
  * plan runs (item 1922).
  *
- * ⚠️ AN ALLOWLIST WOULD BE THE WRONG SHAPE HERE and this is a denylist for the same reason
+ * AN ALLOWLIST WOULD BE THE WRONG SHAPE HERE and this is a denylist for the same reason
  * {@link PATH_DEPENDENT_KINDS} is: a MISSED entry must degrade to the slow-but-correct side. A
  * missing kind here means `keysStable` stays... TRUE, which would be a wrong answer — so the
  * CONSUMER defaults to `false` and only turns the memo on when this set says the plan is clean,
@@ -851,7 +851,7 @@ export const PATH_DEPENDENT_KINDS: ReadonlySet<string> = new Set([
  * Step kinds that provably CANNOT observe a traverser's tags: they read the value (or its structure)
  * and nothing else, carry no user closure, and hold no nested plan.
  *
- * ⚠️ THIS IS AN ALLOWLIST AND THE DEFAULT IS "OBSERVED", which is the opposite direction from
+ * THIS IS AN ALLOWLIST AND THE DEFAULT IS "OBSERVED", which is the opposite direction from
  * {@link PATH_DEPENDENT_KINDS}. The path flag can be a denylist because a missed entry degrades to
  * `NO_PATH` and the suite notices; a missed tag reader would instead read a tag map that
  * `match()`'s solver is still rewriting, which is a SILENT WRONG ANSWER. So a kind earns its place
@@ -960,7 +960,7 @@ const SUBPLAN_FIELDS = ['body', 'until', 'emit', 'plan', 'test', 'thenPlan', 'el
 /**
  * Does this plan contain a mutation step anywhere, including inside a sub-plan? (item 1922)
  *
- * ⚠️ IT RECURSES THROUGH SUB-PLANS, because a mutation inside `union(...)` or `choose(...)` changes
+ * IT RECURSES THROUGH SUB-PLANS, because a mutation inside `union(...)` or `choose(...)` changes
  * elements just as a top-level one does. `stepReadsPath` has the same shape and the same reason.
  */
 export const planMutates = (plan: Plan): boolean =>
@@ -986,7 +986,7 @@ export const planMutates = (plan: Plan): boolean =>
     }
 
     /*
-     * ⚠️ `bys` IS CHECKED HERE THOUGH IT IS NOT IN `SUBPLAN_FIELDS`, and that omission is
+     * `bys` IS CHECKED HERE THOUGH IT IS NOT IN `SUBPLAN_FIELDS`, and that omission is
      * deliberate THERE (its own note says so) — but a `by(traversal(...))` can hold a mutation, and
      * this consumer must err toward "not stable". One scan per query against a wrong answer.
      */
@@ -1046,7 +1046,7 @@ export type StepFn = ((plan: Plan) => Plan) & { readonly [STEP_FN]: true };
 /**
  * Both step flags in ONE walk of the sub-plan fields.
  *
- * ⚠️ IT EXISTS BECAUSE TWO WALKS MEASURED AS A REGRESSION (item 1507). `stepReadsPath` and
+ * IT EXISTS BECAUSE TWO WALKS MEASURED AS A REGRESSION (item 1507). `stepReadsPath` and
  * `stepMayFault` each scan the seven plan-bearing fields plus the two array fields, and calling
  * both per append cost the REBUILT arm 1.12x on a three-step hop (978 → 1094 ns) — handing back a
  * chunk of what the gates had just won on the reused arm. One pass, two booleans, and the rebuilt
@@ -1066,12 +1066,12 @@ const analyzeStep = (step: Step): { reads: boolean; faults: boolean } => {
 
   const fields = step as unknown as Record<string, unknown>;
 
-  // ⚠️ EARLY-OUT FOR THE STEPS THAT HAVE NO SUB-PLAN AT ALL, which is almost every step in a real
+  // EARLY-OUT FOR THE STEPS THAT HAVE NO SUB-PLAN AT ALL, which is almost every step in a real
   // traversal (`out`, `has`, `count`, `values`). Without it the walk below reads nine fields off a
   // step that has none of them, per append — and that cost showed up as a 1.07x regression on the
   // REBUILT arm of a three-step hop, where `out` can fault so the gate cannot pay it back.
   //
-  // ⚠️ THE PREMISE IS CHECKED, NOT ASSUMED: every `Step` variant in this file that declares ANY
+  // THE PREMISE IS CHECKED, NOT ASSUMED: every `Step` variant in this file that declares ANY
   // sub-plan field also declares one of these five. Verified by scanning the union — `until`/`emit`
   // only appear on `repeat` (which has `body`), and `thenPlan`/`elsePlan` only on `choose` (which
   // has `test`). A variant that broke that would lose a nested flag, so a new sub-plan-bearing step
@@ -1131,14 +1131,14 @@ export const appendStep = (step: Step): StepFn => {
     [EFF_PREFIX]: undefined,
     [EFF_CHECKED]: undefined,
   });
-  // ⚠️ A PLAIN ASSIGNMENT, NOT `Object.defineProperty` — which was **73% of plan construction**
+  // A PLAIN ASSIGNMENT, NOT `Object.defineProperty` — which was **73% of plan construction**
   // (item 1577). Building `traversal(V(id))` went 0.235 -> 0.064 us/op and a three-step plan
   // 0.627 -> 0.137, which is 1.69x on a whole small `V(id)` call since construction is ~30% of it.
   // Gremlin pays this on EVERY call whose value varies, because it has no parameter binding: the id
   // is baked into the step, so there is no plan to reuse the way GQL's `$n` plus its parse/plan
   // cache reuses one.
   //
-  // ⚠️ THE `enumerable: false` IT REPLACED BOUGHT NOTHING OBSERVABLE, which is why this is safe:
+  // THE `enumerable: false` IT REPLACED BOUGHT NOTHING OBSERVABLE, which is why this is safe:
   // `STEP_FN` is a SYMBOL, and symbols are already excluded from `Object.keys`, `for…in` and
   // `JSON.stringify`. The only way an enumerable symbol escapes is `Object.assign`/spread with the
   // step function as the SOURCE, and every `Object.assign` in this package passes `fn` as the

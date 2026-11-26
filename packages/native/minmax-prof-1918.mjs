@@ -4,23 +4,23 @@
 //   agg: hop values min   60.88 ms   (1 row)
 //   hop1: values          45.06      (600,000 rows)
 //
-// ⚠️ THAT IS BACKWARDS AND IT IS NOT A ROUTE GAP. `gremlin-route-screen.mjs` reports `hop1: min` as
+// THAT IS BACKWARDS AND IT IS NOT A ROUTE GAP. `gremlin-route-screen.mjs` reports `hop1: min` as
 // a SHORTCUT with 0 `applyStep` calls, so the fold IS fused — it walks the same adjacency and
 // builds no array, yet loses to the arm that allocates 600,000 slots. Item 1892 recorded the gap as
 // "~17 ms for an order-invariant fold … not a route gap" and left it; the route screen confirms the
 // second half, which makes the first half a per-ELEMENT question.
 //
-// 🔑 THE SUSPECT IS `compareTotal` PER ELEMENT. `foldProjectedMinMax` calls it once per value so
+// THE SUSPECT IS `compareTotal` PER ELEMENT. `foldProjectedMinMax` calls it once per value so
 // that a mixed stream has a total order (strings lexicographic, NaN greatest, type rank between
 // kinds) — a contract item 1712 established is not optional. `sort-key-specialize.ts` already
 // eliminates that chain's dead branches for `order()` over a one-type column.
 //
-// ⚠️⚠️ AND A NUMERIC ARM FOR `order()` WAS BUILT AND REFUTED — read that module's note before
+// AND A NUMERIC ARM FOR `order()` WAS BUILT AND REFUTED — read that module's note before
 // believing anything here. Measured six times at 0.93x-1.18x, straddling 1.0, and dropped: the
 // reduction IS worth ~25% on numbers but the O(n) CLASSIFICATION SCAN eats it. Its note names the
 // open question as "a cheaper classification, not a numeric arm".
 //
-// 🔑 WHICH IS WHY A FOLD IS A DIFFERENT QUESTION FROM A SORT: a fold can classify AS IT FOLDS, for
+// WHICH IS WHY A FOLD IS A DIFFERENT QUESTION FROM A SORT: a fold can classify AS IT FOLDS, for
 // free, because it already visits every element once in order. A sort must classify BEFORE it can
 // sort, which is the O(n) scan that killed the other arm. This probe measures whether that
 // difference is worth anything.
@@ -63,7 +63,7 @@ const SHAPES = {
   // THE TARGET and its twin.
   min: traversal(V(), out('E'), values('k'), min()),
   max: traversal(V(), out('E'), values('k'), max()),
-  // ⚠️ THE FLOOR THAT MAKES THE GAP A FINDING: the same walk MATERIALIZING every value it folds.
+  // THE FLOOR THAT MAKES THE GAP A FINDING: the same walk MATERIALIZING every value it folds.
   // A fold that builds no array should beat this, and does not.
   values: traversal(V(), out('E'), values('k')),
   // The numeric terminals that are NOT `compareTotal`-based — they add, they do not compare. If
@@ -73,7 +73,7 @@ const SHAPES = {
   // A STRING key, which no numeric arm can reach — the control for a numeric specialization.
   strmin: traversal(V(), out('E'), values('s'), min()),
   /**
-   * ⚠️ THE STRING FLOOR, missing from the first cut and the reason `strmin`'s 194-233 ms could not
+   * THE STRING FLOOR, missing from the first cut and the reason `strmin`'s 194-233 ms could not
    * be read as a finding: a string property is bigger to read than a number, so the comparison that
    * matters is against the same walk MATERIALIZING the strings, not against the numeric fold.
    */

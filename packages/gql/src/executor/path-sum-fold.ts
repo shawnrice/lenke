@@ -1,7 +1,7 @@
 /**
  * `sum`/`avg` as a PER-PATH LEFT FOLD over a path-walk rung's rows — item 2411.
  *
- * ⚠️⚠️ **THIS IS THE EASY HALF OF ITEM 2409's ARGUMENT, AND THE DIFFERENCE MATTERS.** The chain LEVEL
+ * **THIS IS THE EASY HALF OF ITEM 2409's ARGUMENT, AND THE DIFFERENCE MATTERS.** The chain LEVEL
  * recurrence folds `Σ u_v · x_v` over distinct reached vertices, which is a DIFFERENT COMPUTATION
  * from adding the per-path values one at a time, so it needed an error bound to stay inside item
  * 2401's contract. The rungs here walk the actual paths, so this is a plain left fold over the same
@@ -14,17 +14,17 @@
  * > BYTE-IDENTITY with the Rust engine, so admitting `sum` would make the two disagree in the last
  * > ulp wherever this walk's order differs from the general path's.
  *
- * 🔑 That invariant is gone. `sum`/`avg` are accurate to within `n·ε·Σ|xᵢ|` and explicitly NOT
+ * That invariant is gone. `sum`/`avg` are accurate to within `n·ε·Σ|xᵢ|` and explicitly NOT
  * bit-identical across engines (item 2401, owner ruling), so "the two disagree in the last ulp" is
- * the contract rather than a defect. ⚠️ Within-engine determinism is NOT relaxed, and this fold is
+ * the contract rather than a defect. Within-engine determinism is NOT relaxed, and this fold is
  * deterministic: the rung's walk is the same walk run to run.
  *
- * ⚠️⚠️ **ONE COPY, DELIBERATELY, AND BOTH RUNGS SAY WHY.** `chain-projection.ts` warns twice that two
+ * **ONE COPY, DELIBERATELY, AND BOTH RUNGS SAY WHY.** `chain-projection.ts` warns twice that two
  * copies of one shape rule is how the far endpoint ended up on a per-edge tally; the two modules
  * already carry duplicate `ORDER_INVARIANT_AGGREGATES` sets, and a second copy of the ACCUMULATOR
  * would be the one that drifts, because its empty case and its bail are both load-bearing.
  *
- * ⚠️⚠️ **AND `foldFor` IS NOT WIDENED — item 2159's rule, which still holds.** Its result is read by
+ * **AND `foldFor` IS NOT WIDENED — item 2159's rule, which still holds.** Its result is read by
  * call sites that infer ORDER-INSENSITIVITY from foldability (`node-scan.ts`'s unfiltered scan,
  * `core.ts`'s grouped path, `hop-projection.ts`, `shortcuts.ts`, `grouped-hop.ts`), and a `sum` is
  * not order-insensitive in its bits. `node-scan.ts:1776` warns of this in advance. So `sum`/`avg`
@@ -45,7 +45,7 @@ export type PathSumAgg = {
 /**
  * `sum(<expr>)` / `avg(<expr>)` as the projection's ONLY item, or `null`.
  *
- * ⚠️ `DISTINCT` IS REFUSED AND STAYS REFUSED: `sum(DISTINCT x)` folds over a deduped multiset, which
+ * `DISTINCT` IS REFUSED AND STAYS REFUSED: `sum(DISTINCT x)` folds over a deduped multiset, which
  * is a set operation this accumulator does not perform — admitting it here would silently sum the
  * duplicates. `foldFor` refuses it for the same reason and `count` is the only distinct fold anywhere
  * in the engine.
@@ -71,7 +71,7 @@ export const pathSumAggFor = (proj: CProjection, item: Expr | undefined): PathSu
 /**
  * The reducer the rung runs over its walk's rows, or `null` when neither fold applies.
  *
- * ⚠️ BUILT AT COMPILE TIME, not per call: the branch between the two folds is decided once, and the
+ * BUILT AT COMPILE TIME, not per call: the branch between the two folds is decided once, and the
  * returned closure is the only thing the hot path touches.
  */
 export const foldedRowsReducer = (
@@ -98,10 +98,10 @@ export const foldedRowsReducer = (
         }
 
         /*
-         * ⚠️⚠️ **THE BAIL HANDS THE WHOLE QUERY BACK, IT DOES NOT ANSWER PART OF IT.** One temporal
+         * **THE BAIL HANDS THE WHOLE QUERY BACK, IT DOES NOT ANSWER PART OF IT.** One temporal
          * anywhere in the column turns `sum` from "add numbers" into a loud data exception (item
          * 2336), and whether a property holds one is not knowable while compiling — so the decline
-         * happens at execution time, with a partial total already in hand. 🔑 Returning that partial
+         * happens at execution time, with a partial total already in hand. Returning that partial
          * total would be a silently wrong answer where the general path FAULTS; item 2159's sharpest
          * test is exactly that shape, a column numeric until its LAST row. `null` falls through and
          * the rung below re-walks and answers or faults as it always did.
@@ -116,10 +116,10 @@ export const foldedRowsReducer = (
 
       if (count === 0) {
         /*
-         * ⚠️⚠️ **AN EMPTY `sum` IS `0` AND AN EMPTY `avg` IS `null`, AND THE TWO DISAGREEING IS THE
+         * **AN EMPTY `sum` IS `0` AND AN EMPTY `avg` IS `null`, AND THE TWO DISAGREEING IS THE
          * CONTRACT — item 2410 measured it across every route.** Item 2409 answered `null` for both
          * on the level fold and that was a route-dependent answer, reachable by a chain over a
-         * column that is entirely null. ⚠️ Do not "tidy" these two into agreeing.
+         * column that is entirely null. Do not "tidy" these two into agreeing.
          */
         return [{ [outName]: name === 'sum' ? 0 : null }];
       }

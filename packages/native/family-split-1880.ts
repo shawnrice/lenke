@@ -1,18 +1,18 @@
 /**
  * WHICH INDIVIDUAL QUERY IN EACH WORKLOAD FAMILY OWNS THE FAMILY'S MILLISECONDS? (item 1880)
  *
- * ⚠️ THE GENERAL VERSION OF WHAT ITEM 1879 DID BY HAND. The workload screen reports ONE number per
+ * THE GENERAL VERSION OF WHAT ITEM 1879 DID BY HAND. The workload screen reports ONE number per
  * family, but a family is a generator: `var-length` draws seven bodies crossed with four bounds, and
  * splitting it showed **one bound was ~70% of the family** — `{2,3}` at 45.1 ms against its `{1,3}`
  * twin's 0.8, same eight rows. A per-family total cannot show that, so every family's number is a
  * blended average hiding whatever its worst shape is.
  *
- * ⚠️ IT DRIVES THE REAL GENERATOR rather than restating the bodies. `WORKLOAD_FAMILIES` is the
+ * IT DRIVES THE REAL GENERATOR rather than restating the bodies. `WORKLOAD_FAMILIES` is the
  * source of truth the screen and the differential fuzzer both use; a hand-copied shape list is one
  * more thing that silently goes stale, which this file would then measure instead of the corpus.
  * Many seeds are drawn, the realized TEXTS are deduped per family, and each distinct text is timed.
  *
- * ⚠️ AND THE OUTPUT IS SORTED BY ABSOLUTE MILLISECONDS, not by a ratio — item 1878's lesson, which
+ * AND THE OUTPUT IS SORTED BY ABSOLUTE MILLISECONDS, not by a ratio — item 1878's lesson, which
  * cost a whole item: a 4.7x that turned out to be 2 microseconds. A shape is worth looking at when it
  * owns real time, and the only way to see that is to print the time.
  *
@@ -114,7 +114,7 @@ const med = (xs: number[]): number => {
 console.log(
   `# ${NODES} vertices / ${NODES * FANOUT} edges, ${SEEDS} seeds a family, median of ${REPS}`,
 );
-console.log('# ⚠️ SORTED BY ABSOLUTE ms. A family total hides its worst shape — item 1879.\n');
+console.log('# SORTED BY ABSOLUTE ms. A family total hides its worst shape — item 1879.\n');
 
 const families = [...byFamily.keys()].sort();
 const summary: [string, number, number, number][] = [];

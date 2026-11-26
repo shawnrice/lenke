@@ -7,7 +7,7 @@ import { describe, expect, it } from 'bun:test';
  * `order()` arm 15.51 -> 12.28 (1.26x) over 200,000 vertices, with every numeric control and the
  * temporal no-comparison control flat.
  *
- * ⚠️ THE RISK IS BYTE-IDENTITY, NOT SPEED. The new branch has to reproduce `cmpNum(a.days, b.days)`
+ * THE RISK IS BYTE-IDENTITY, NOT SPEED. The new branch has to reproduce `cmpNum(a.days, b.days)`
  * exactly, and `cmpNum` is NOT the same function as the number/number branch directly above it:
  * `cmpNum` tests `<` then `>` and falls through to 0, so a `NaN` day count compares EQUAL to
  * everything, where a NaN *number* returns NaN (unordered, matching no ordering predicate). Both
@@ -55,7 +55,7 @@ describe('the date fast path orders exactly as the generic chain did', () => {
     expect(compareValues(d('2021-01-01'), d('2020-01-01'))).toBe(1);
   });
 
-  it('⚠️ a NaN day count compares EQUAL, not unordered — unlike a NaN number', () => {
+  it('a NaN day count compares EQUAL, not unordered — unlike a NaN number', () => {
     // `new LocalDate(NaN)` is constructible (the constructor checks the ARGUMENT COUNT, not the
     // value), so this is reachable. `cmpNum` falls through to 0 for it. The number/number branch
     // immediately above the fast path returns NaN for a NaN operand instead, deliberately. If the
@@ -73,7 +73,7 @@ describe('the date fast path orders exactly as the generic chain did', () => {
     // The fast path must not claim a pair it cannot order; these fall through to the generic
     // branch, where `temporalRelCmp` returns null and `compareValues` throws.
     //
-    // ⚠️ BOTH ORDERS, BECAUSE ONE DIRECTION IS BLIND. A mutant widening the guard to
+    // BOTH ORDERS, BECAUSE ONE DIRECTION IS BLIND. A mutant widening the guard to
     // `isTemporal(a) && b instanceof LocalDate` survived the date-first assertions alone: with a
     // date on the LEFT the mutated guard is false and the generic branch still runs. With the
     // date on the RIGHT it fires, reads `a.days` off a `LocalTime` (undefined), and both

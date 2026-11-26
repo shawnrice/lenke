@@ -1,7 +1,7 @@
 /**
  * THE THREE-HOP COUNT'S FLAT-ARRAY DEGREE PRODUCT (item 1685), and its eligibility predicate.
  *
- * ⚠️ ITS OWN MODULE FOR TWO REASONS, ONE OF THEM A GATE. `buildThreeHopCount` was already at the
+ * ITS OWN MODULE FOR TWO REASONS, ONE OF THEM A GATE. `buildThreeHopCount` was already at the
  * complexity ceiling (47 against 35 with this inlined, 42 with only the loop extracted), and
  * `shortcuts.ts` then crossed the 3,000-line cap this repo added for exactly this — so the limit
  * that fired is the one that says "this belongs somewhere else", not a formality to raise.
@@ -20,7 +20,7 @@ import type { InlineGate } from './inline-gate.js';
 /**
  * MAY THE THREE-HOP COUNT TAKE THE FLAT-ARRAY DEGREE PRODUCT? (item 1685.)
  *
- * ⚠️ A PURE FUNCTION WITH ITS OWN TEST, because a route choice is ANSWER-EQUIVALENT: every one of
+ * A PURE FUNCTION WITH ITS OWN TEST, because a route choice is ANSWER-EQUIVALENT: every one of
  * these clauses, if wrongly relaxed, returns a WRONG COUNT rather than a slow one — so unlike the
  * route thresholds this file also carries, the differential tests DO catch a relaxation. What they
  * cannot catch is a clause wrongly TIGHTENED, which silently abandons the arm. That is what
@@ -108,7 +108,7 @@ export const threeHopDegreeProductOverCsr = (
 /**
  * MAY THE THREE-HOP COUNT TAKE THE *GATED* FLAT-ARRAY ARM? (item 1689.)
  *
- * ⚠️ THREE OF {@link csrDegreeProductApplies}'s FIVE EXCLUSIONS ARE LIFTED HERE, AND THE SPLIT IS
+ * THREE OF {@link csrDegreeProductApplies}'s FIVE EXCLUSIONS ARE LIFTED HERE, AND THE SPLIT IS
  * NOT COSMETIC: a constraint on `b` or `c` says which VERTICES are accepted, while a label at `a` or
  * `d` says which edges a DEGREE may count. The first is a mask over the shared slot numbering, and
  * costs O(V) once per query. The second would need a label-filtered degree — a different array,
@@ -120,7 +120,7 @@ export const threeHopDegreeProductOverCsr = (
  * position"; it is the honest cost of meeting `c` as an edge endpoint, and the cure is to stop
  * meeting it that way.
  *
- * ⚠️ A PURE FUNCTION WITH ITS OWN TEST, for the asymmetry that governs every route choice in this
+ * A PURE FUNCTION WITH ITS OWN TEST, for the asymmetry that governs every route choice in this
  * file: a wrongly RELAXED clause returns a WRONG COUNT and the differential tests catch it, while a
  * wrongly TIGHTENED one silently abandons the arm and every answer stays right.
  */
@@ -135,7 +135,7 @@ export const csrGatedDegreeProductApplies = (w: {
 /**
  * The same degree product, with `b` and `c` constrained.
  *
- * ⚠️ A LITERAL SIBLING OF {@link threeHopDegreeProductOverCsr} RATHER THAN A FLAG ON IT. Item 1681
+ * A LITERAL SIBLING OF {@link threeHopDegreeProductOverCsr} RATHER THAN A FLAG ON IT. Item 1681
  * measured 1.26x for one walk serving several shapes: V8's inline caches live on the FUNCTION, so a
  * branch inside the unfiltered arm would hand `count 3-hop` — 5.7 ms after item 1685, and the row
  * this file exists for — a second shape to dispatch over. A factory would not help, because the
@@ -146,7 +146,7 @@ export const csrGatedDegreeProductApplies = (w: {
  * inner loop is then one `Float64Array` read per middle edge, exactly as in the unfiltered arm,
  * instead of a vertex resolve plus a label test plus a gate call.
  *
- * ⚠️ REJECTED, WITH ITS NUMBERS (item 1698): specializing this gate. An ablation puts the gate at
+ * REJECTED, WITH ITS NUMBERS (item 1698): specializing this gate. An ablation puts the gate at
  * **83% of this row** — 89.82 -> 14.77 ms on a scattered fixture, ~375 ns per call against item
  * 1600's ~31 for a specialized one — and a route counter confirms the CLAUSE spelling takes the
  * general `inlineHolds` path while both INLINE spellings specialize: `bindVar: 'c'` makes
@@ -159,10 +159,10 @@ export const csrGatedDegreeProductApplies = (w: {
  * single-digit milliseconds because it stores properties COLUMNAR; that is the real lever, and it
  * is an architecture change rather than an arm.
  *
- * ⚠️ AND THIS ROW'S VARIANCE IS WIDE ON THAT FIXTURE: the same build read 89.82 and 69.73 across
+ * AND THIS ROW'S VARIANCE IS WIDE ON THAT FIXTURE: the same build read 89.82 and 69.73 across
  * processes (1.29x), so neither figure above should be quoted without the other.
  *
- * ⚠️ THE WEIGHTS ARE PER-QUERY AND MUST NEVER BE CACHED ON `topologyVersion`. They read PROPERTIES
+ * THE WEIGHTS ARE PER-QUERY AND MUST NEVER BE CACHED ON `topologyVersion`. They read PROPERTIES
  * through the gate, and a property write deliberately does not bump that signal (items 1674/1675),
  * so a weight array cached on it would go stale with no signal to catch it. Only the CSRs are
  * cached — the same split items 1680, 1685 and 1688 each recorded.
@@ -197,7 +197,7 @@ export const threeHopGatedDegreeProductOverCsr = (
   /**
    * `accept(c) ? outdeg(c) : 0`, per SLOT — MARKED on arrival, RESOLVED in slot order, then EMITTED.
    *
-   * ⚠️ NOT A PASS OVER V — AND THE REASON IS A WORK BOUND, NOT CORRECTNESS. Items 1689 and the first
+   * NOT A PASS OVER V — AND THE REASON IS A WORK BOUND, NOT CORRECTNESS. Items 1689 and the first
    * draft of 1699 both justified this by "a gate can THROW", and that is WRONG in a predicate
    * context: eighteen cross-type ordering comparisons were tried here (`> >= < <= = <>` against
    * string-vs-number, string-vs-date and number-vs-date) and **every one returns a clean no-match**.
@@ -212,7 +212,7 @@ export const threeHopGatedDegreeProductOverCsr = (
    * bounded at ~1.08x, while an eager resolve gates all |V| vertices even for a query whose middle
    * is selective enough to touch a handful. A bounded loss is preferred to an unbounded one.
    *
-   * ⚠️ AND NOT RESOLVED ON FIRST ARRIVAL EITHER, WHICH IS WHAT THIS USED TO DO (item 1699). Arrival
+   * AND NOT RESOLVED ON FIRST ARRIVAL EITHER, WHICH IS WHAT THIS USED TO DO (item 1699). Arrival
    * order is the order `mid.nbr` happens to hold, so a lazy resolve touches 200,000 vertex objects
    * at RANDOM while a resolve pass in SLOT order walks them in `verticesById` order — which is the
    * order they were allocated in. Same reads, same set, sequential instead of scattered. Item 1691
@@ -238,7 +238,7 @@ export const threeHopGatedDegreeProductOverCsr = (
       continue;
     }
 
-    // ⚠️ `bGate` NEEDS NO MASK AND GETS NONE. This loop already visits each `b` exactly once, so the
+    // `bGate` NEEDS NO MASK AND GETS NONE. This loop already visits each `b` exactly once, so the
     // gate is already a per-vertex cost here; a mask would add a pass over V to save nothing.
     if (bGate !== undefined && !bGate(b, binding, params, graph)) {
       continue;
@@ -302,7 +302,7 @@ export const threeHopGatedDegreeProductOverCsr = (
 /**
  * PICK THE FLAT-ARRAY ARM FOR THIS THREE-HOP COUNT, or `undefined` to leave it to the walk.
  *
- * ⚠️ ONE ENTRY POINT BECAUSE THE CALLER IS AT ITS COMPLEXITY CEILING, and that ceiling is doing its
+ * ONE ENTRY POINT BECAUSE THE CALLER IS AT ITS COMPLEXITY CEILING, and that ceiling is doing its
  * job rather than being in the way: `buildThreeHopCount` was already at 35 of 35 when item 1685
  * moved the first arm out here, and a second route check in the closure read 36. Dispatching once
  * PER QUERY costs nothing — it is the per-element loops that must stay in separate functions, which
@@ -342,13 +342,13 @@ export const topologyMemo = (): TopologyMemo => {
 /**
  * May the three-segment count be memoized on `topologyVersion` alone (item 2135)?
  *
- * 🔑 `csrDegreeProductApplies` is the certificate: reaching it means the start, `c` and end labels are
+ * `csrDegreeProductApplies` is the certificate: reaching it means the start, `c` and end labels are
  * all absent-or-vacuous, neither interior gate is present, and no leg is undirected — so the number is a
  * function of the EDGES alone. Those effective labels are recomputed per call, so a label write that
  * makes one non-vacuous re-routes before the memo is consulted.
  *
- * ⚠️ `bLabel` is the one that gate does NOT check — the MIDDLE label is passed to `threeHopCsrCount`
- * separately — so it is required absent here. ⚠️⚠️ **AND THAT REQUIREMENT IS REDUNDANT TODAY: its mutant
+ * `bLabel` is the one that gate does NOT check — the MIDDLE label is passed to `threeHopCsrCount`
+ * separately — so it is required absent here. **AND THAT REQUIREMENT IS REDUNDANT TODAY: its mutant
  * SURVIVES, checked rather than assumed.** Admitting a present `bLabel` and then taking the label away
  * answers 64 → 56 CORRECTLY, so something downstream already re-derives the mid-label set per call. Two
  * fixtures were built to separate it (a vacuous `:P` mid label, then two distinct universal labels so
@@ -394,17 +394,17 @@ export const threeHopCsrCount = (
   memo: TopologyMemo,
 ): number | undefined => {
   /*
-   * 🔑 `csrDegreeProductApplies` is the certificate that the number is a function of the EDGES alone: the
+   * `csrDegreeProductApplies` is the certificate that the number is a function of the EDGES alone: the
    * start, `c` and end labels absent-or-vacuous, neither interior gate present, no undirected leg. Those
    * effective labels are recomputed per call, so a label write that makes one non-vacuous re-routes
    * before the memo is reached.
    */
   /*
-   * ⚠️ `bLabel === undefined` IS THE ONE LABEL `csrDegreeProductApplies` DOES NOT CHECK, since `bLabel`
+   * `bLabel === undefined` IS THE ONE LABEL `csrDegreeProductApplies` DOES NOT CHECK, since `bLabel`
    * arrives as its own parameter. Required for the memo and REDUNDANT today: its mutant SURVIVES, checked
    * rather than assumed — admitting a present `bLabel` and then removing the label answers 64 → 56
    * CORRECTLY, over two fixtures built to separate it (a vacuous `:P` middle, then two distinct universal
-   * labels so only the middle one stops being vacuous). 🔑 Kept as belt-and-braces on a cache whose
+   * labels so only the middle one stops being vacuous). Kept as belt-and-braces on a cache whose
    * staleness would be SILENT — item 2124's practice, and item 2134's lesson about claiming a test for a
    * case that cannot happen.
    */
@@ -440,7 +440,7 @@ export const threeHopCsrCount = (
   ) {
     const n = threeHopDegreeProductOverCsr(graph, bLabel, legs);
 
-    // 🔑 Stored only when `memoable`; the setter enforces that, so read and write cannot disagree.
+    // Stored only when `memoable`; the setter enforces that, so read and write cannot disagree.
     if (n !== undefined) {
       memo.put(graph, n, memoable);
     }

@@ -10,7 +10,7 @@
  * k=4 is the serving width, where the constants are 79% of a 113 ns write. This profiles that window
  * so the frames nominate which constant, instead of the list being worked through in order.
  *
- * ⚠️ NOMINATION ONLY. A getter or field-read frame is attribution until a deletion test with a
+ * NOMINATION ONLY. A getter or field-read frame is attribution until a deletion test with a
  * control says otherwise (four instances in this repo, and the control moved 7.5x at item 1667).
  *
  * MEASURED, 30,000,000 writes at k=4, DRAIN=1000, 3296 samples (121 ns/write, matching item 861's
@@ -24,7 +24,7 @@
  *      2.4%  (garbage collector)
  *      2.3%  the three asserts + validatePropertyValue
  *
- * ⚠️ THE `DRAIN` KNOB IS NOT A DETAIL -- IT MOVES THE RANKING. With DRAIN=0 (a synchronous write
+ * THE `DRAIN` KNOB IS NOT A DETAIL -- IT MOVES THE RANKING. With DRAIN=0 (a synchronous write
  * loop, which is how a write probe is naturally written) `pushTokens` reads 6.6% and
  * `drainMutations` does not appear at all, because `pendingTokens` grows to one entry PER WRITE and
  * the profile charges that growth to the push. Draining every 1000 writes puts `pushTokens` at 2.2%
@@ -59,7 +59,7 @@ for (let i = 0; i < VERTS; i += 1) {
 
 let sink = 0;
 
-// ⚠️ DRAIN PERIOD. `markMutated` pushes a token per write into a `pendingTokens` array that is only
+// DRAIN PERIOD. `markMutated` pushes a token per write into a `pendingTokens` array that is only
 // cleared by a `queueMicrotask(drainMutations)`. A SYNCHRONOUS write loop never yields, so that
 // array grows to one entry PER WRITE and the profile charges the growth to `pushTokens`. Real
 // serving code returns to the event loop. DRAIN=0 reproduces the synchronous artifact on purpose.

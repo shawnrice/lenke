@@ -1,14 +1,14 @@
 #!/bin/zsh
 # Item 2037 — the label-seeded `values` fusion, LIVE against a KILLED rung.
 #
-# ⚠️ THE KILL SWITCH IS `(false ? f(...) : undefined)`, NEVER `undefined ?? f(...)` — the latter
+# THE KILL SWITCH IS `(false ? f(...) : undefined)`, NEVER `undefined ?? f(...)` — the latter
 # EVALUATES the call and compares the route against itself ([[disabling-a-rung-for-an-oracle]]).
 #
-# ⚠️ ARMS NAMED FOR WHAT THEY ARE (LIVE/KILLED), not PRE/POST (item 2023), and ⚠️ ONE MODE PER
+# ARMS NAMED FOR WHAT THEY ARE (LIVE/KILLED), not PRE/POST (item 2023), and ONE MODE PER
 # PROCESS — building both graphs in one process gave this probe's own CONTROL a +/-30% band across
 # six runs (item 2037's instrument fix).
 #
-# ⚠️ RESTORE REBUILDS: `@lenke/*` resolve to dist, so a restored SOURCE with a stale BUILD measures
+# RESTORE REBUILDS: `@lenke/*` resolve to dist, so a restored SOURCE with a stale BUILD measures
 # the experiment under the control's name (item 2031 did exactly that).
 set -u
 
@@ -52,7 +52,7 @@ round() {
       grep -E "hasLabel values|hasLabel bare|values \(control\)|count \(control\)")
   done
 
-  # ⚠️ THE WIDE SCREEN, because an executor edit costs UNRELATED rows up to 16%
+  # THE WIDE SCREEN, because an executor edit costs UNRELATED rows up to 16%
   # ([[executor-edits-perturb]]) and `run` is the most central function in the engine.
   (cd "$ROOT/packages/native" && timeout 900 bun gremlin-workload-screen.mjs 2>&1 | grep -E "^ " )
 }

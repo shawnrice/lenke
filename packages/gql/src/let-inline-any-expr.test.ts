@@ -16,7 +16,7 @@ import { parse } from './parser.js';
 //   MATCH (n:T) RETURN n.n AS x                   7.16            the control, flat
 // ```
 //
-// ⚠️⚠️ THE FOLD IS ANSWER-EQUIVALENT, so NO test over rows can tell a folded plan from a standing
+// THE FOLD IS ANSWER-EQUIVALENT, so NO test over rows can tell a folded plan from a standing
 // one ([[perf-gate-needs-its-own-test]]). Every case here therefore asserts BOTH: the rows (the
 // fold must not change them) and the CLAUSE KINDS `compileLinear` ended up with (the fold must
 // actually happen, or not happen, as the case requires).
@@ -96,7 +96,7 @@ describe('the once-read guard is what makes admitting any expression sound', () 
   });
 
   test('read TWICE as two FUNCTION ARGUMENTS: the LET STANDS', () => {
-    // ⚠️ THE CASE THE OLD COUNTER GOT WRONG. `reads` counted guarded NAMES whose free-var set
+    // THE CASE THE OLD COUNTER GOT WRONG. `reads` counted guarded NAMES whose free-var set
     // intersects, not OCCURRENCES, so this scored 1, passed the guard, and `subst`'s
     // function-argument arm then substituted BOTH — doubling the work the guard holds constant.
     const text = 'MATCH (n:T) LET a = n.n + 1 RETURN power(a, a) AS x ORDER BY x';
@@ -159,7 +159,7 @@ describe('what the widening does NOT change', () => {
 
   test('a CHAIN of LETs folds ENTIRELY — superseded at item 1928', () => {
     /*
-     * ⚠️ THIS ASSERTION WAS INVERTED AT ITEM 1928, and the inversion is the point. At item 1926
+     * THIS ASSERTION WAS INVERTED AT ITEM 1928, and the inversion is the point. At item 1926
      * `inlineTrailingLet` ran ONCE, so this read `['match', 'let', 'return']` — the last binder
      * folded and one stood (74.15 -> 63.38 ms). Item 1927 then made the INTERMEDIATE foldable and
      * item 1928 iterated to a fixpoint, so the whole chain goes: ~11.0 ms, 5.3x.
@@ -179,7 +179,7 @@ describe('what the widening does NOT change', () => {
 // the stated reason was that a deeper walk "would drop the binder with the name still unbound" if
 // it missed an arm of the 40-arm `Expr` union.
 //
-// 🔑 THAT PREMISE WAS AVOIDABLE. `substituteVarsDeep` is a WHITELIST and the `freePredicateVars`
+// THAT PREMISE WAS AVOIDABLE. `substituteVarsDeep` is a WHITELIST and the `freePredicateVars`
 // post-check (which this rewrite ALREADY did, one level up) turns a missed arm into a DECLINE. So
 // the walk does not have to be exhaustive to be safe, only fail-safe. `letdeep-breadth-1927.ts`
 // found 11 of 13 natural spellings stranded; measured at 200,000 vertices, one shape per process:
@@ -199,7 +199,7 @@ describe('a bound name folds at any DEPTH inside a scalar expression', () => {
     ['arith wrap, computed bind', 'LET a = n.n + 1 RETURN a * 2 AS x', 'RETURN (n.n + 1) * 2 AS x'],
     ['comparison', 'LET a = n.n RETURN a > 2 AS x', 'RETURN n.n > 2 AS x'],
     ['nested function arg', 'LET a = n.n RETURN abs(a + 1) AS x', 'RETURN abs(n.n + 1) AS x'],
-    // ⚠️ THE OLD COMMENT'S OWN EXAMPLE of what it refused, and the family's biggest gap at 11.2x.
+    // THE OLD COMMENT'S OWN EXAMPLE of what it refused, and the family's biggest gap at 11.2x.
     ['aggregate over an expr', 'LET c = n.n RETURN sum(c + 1) AS x', 'RETURN sum(n.n + 1) AS x'],
     [
       'searched CASE',
@@ -250,7 +250,7 @@ describe('a bound name folds at any DEPTH inside a scalar expression', () => {
 
 describe('the four omitted arms BIND names, so the rewrite declines rather than capturing', () => {
   /*
-   * ⚠️⚠️ THIS IS THE SAFETY ARGUMENT FOR SUBSTITUTING AT DEPTH, and it is what makes the whitelist
+   * THIS IS THE SAFETY ARGUMENT FOR SUBSTITUTING AT DEPTH, and it is what makes the whitelist
    * sound. `exists` / `countSubquery` / `valueSubquery` carry `PathPattern`s whose variables share
    * a namespace with the bound name, and `letIn` introduces scoped locals that shadow it — so a
    * blind substitution inside any of them could CAPTURE. `substituteVarsDeep` leaves all four
@@ -338,7 +338,7 @@ describe('the once-read guard still holds at depth', () => {
 //   CONTROL plain                                                     ~4.3-7.4  flat
 // ```
 //
-// 🔑 TERMINATION IS STRUCTURAL: one application either returns its input unchanged or returns it
+// TERMINATION IS STRUCTURAL: one application either returns its input unchanged or returns it
 // exactly ONE clause shorter, so the loop runs at most `clauses.length` times.
 describe('a CHAIN of trailing LETs folds to the end', () => {
   test('two bindings fold completely', () => {
@@ -379,7 +379,7 @@ describe('a CHAIN of trailing LETs folds to the end', () => {
 
 describe('the once-read guard stops the EXPRESSION BLOWUP a fixpoint would otherwise cause', () => {
   /*
-   * ⚠️⚠️ THIS IS WHY ITERATING IS SAFE AT ALL. The hazard shape is `LET b = a + a`: folding `b`
+   * THIS IS WHY ITERATING IS SAFE AT ALL. The hazard shape is `LET b = a + a`: folding `b`
    * leaves a projection reading `a` TWICE, so a fixpoint without the guard would double the
    * expression every round — 2^k in the number of bindings. The guard refuses, so each round
    * duplicates nothing and the expression grows LINEARLY in the bindings.

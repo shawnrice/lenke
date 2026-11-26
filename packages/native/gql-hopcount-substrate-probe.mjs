@@ -3,7 +3,7 @@
  * (`count 3-hop`, `count 4-hop`, and their filtered variants), untouched by item 1676's cache, which
  * covers `{m,n}` quantified paths rather than a literal chain.
  *
- * ⚠️ THIS IS NOT THE LEVER ITEMS 1416 AND 1637 REFUTED, and the distinction is the whole reason this
+ * THIS IS NOT THE LEVER ITEMS 1416 AND 1637 REFUTED, and the distinction is the whole reason this
  * probe exists. A profile of `MATCH (a:Person)-[:KNOWS]->(b)-[:KNOWS]->(c)-[:KNOWS]->(d) RETURN
  * count(*)` puts **65.1% in `bucketSize`** and 11.7% in `side` — and `bucketSize`'s own doc comment
  * records that share as MISATTRIBUTION, proven by counting: exactly |V| + |E| calls, all on the O(1)
@@ -22,7 +22,7 @@
  *   csrLevels       flat `off`/`len` arrays, the level recurrence over indices
  *   csrPlusBuild    the same, with the CSR BUILD inside the timed region — the cold-cache bound
  *
- * ⚠️ THE THIRD ARM IS THE ONE THAT DECIDES IT. A cached CSR makes repeated identical queries cheap,
+ * THE THIRD ARM IS THE ONE THAT DECIDES IT. A cached CSR makes repeated identical queries cheap,
  * but a hop count is often asked once per graph; `csrPlusBuild` is what a first call would pay, and
  * if that is not also a win then the lever only helps a repeat workload and must be sold as such.
  *
@@ -48,7 +48,7 @@ for (let i = 0; i < N; i += 1) {
 let e = 0;
 
 /**
- * ⚠️ A THIRD VARIANT OF THE FIXTURE TRAP, AND IT PASSES BOTH EXISTING CHECKS.
+ * A THIRD VARIANT OF THE FIXTURE TRAP, AND IT PASSES BOTH EXISTING CHECKS.
  *
  * This generator's first form used `to = (i * 7919 + r * 104729 + 13) % N`, which is LINEAR in `i`
  * and therefore a BIJECTION per layer — so every vertex ended up with in-degree exactly 3 while
@@ -91,7 +91,7 @@ const BY_DEPTH = { 2: Q2, 3: Q, 4: Q4 };
 const QD = BY_DEPTH[DEPTH] ?? Q;
 
 /**
- * ⚠️ THE ONLY ARM THAT CANNOT BE A STRAWMAN, AND THE FIRST VERSION OF THIS PROBE DID NOT HAVE IT.
+ * THE ONLY ARM THAT CANNOT BE A STRAWMAN, AND THE FIRST VERSION OF THIS PROBE DID NOT HAVE IT.
  *
  * `bucketPerEdge` below was written as "the current shape" and is nothing of the kind: it enumerates
  * every PATH, calling `.size` once per path at the last level, where the engine does LEVEL-WISE work
@@ -104,7 +104,7 @@ const QD = BY_DEPTH[DEPTH] ?? Q;
  */
 const engineRoute = () => Number(query(g, QD)[0].c);
 
-/** ⚠️ NOT the current shape — see `engineRoute`. Kept as the naive path enumeration it is. */
+/** NOT the current shape — see `engineRoute`. Kept as the naive path enumeration it is. */
 const bucketPerEdge = () => {
   let total = 0;
 
@@ -219,7 +219,7 @@ const countOverCsr = ({ off, len, nbr }) => {
 const csrLevels = () => countOverCsr(CSR);
 
 /**
- * ⚠️ THE ARM THE FIRST SWEEP WAS MISSING, AND THE ONE THAT MATCHES THE ENGINE'S ASYMPTOTICS.
+ * THE ARM THE FIRST SWEEP WAS MISSING, AND THE ONE THAT MATCHES THE ENGINE'S ASYMPTOTICS.
  *
  * `csrLevels` COUNTS PATHS, so it is O(E * F) where the engine's route is a DEGREE PRODUCT at
  * O(V + E). That is why its ratio decays with fanout — 23.80x at F=3, 13.94x at F=8, 7.28x at
@@ -301,7 +301,7 @@ for (const [name, fn] of Object.entries(ARMS)) {
 }
 
 {
-  // ⚠️ THE IN-DEGREE SPREAD IS THE ONE A DEGREE PRODUCT COLLAPSES ON — see the generator note.
+  // THE IN-DEGREE SPREAD IS THE ONE A DEGREE PRODUCT COLLAPSES ON — see the generator note.
   const ind = new Int32Array(order.length);
 
   for (let s = 0; s < order.length; s += 1) {
@@ -334,7 +334,7 @@ for (const [name, fn] of Object.entries(ARMS)) {
   }
 
   if (expected === N * FANOUT ** DEPTH) {
-    console.log(`⚠️ count is EXACTLY N*F^${DEPTH} — fixture still determined`);
+    console.log(`count is EXACTLY N*F^${DEPTH} — fixture still determined`);
   }
 }
 

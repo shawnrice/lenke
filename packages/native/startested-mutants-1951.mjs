@@ -2,7 +2,7 @@
 // that checks nothing look identical, so each mutant below is applied to the pristine source, the
 // gql suite is run, and the verdict read from a RESULT LINE rather than from an exit code alone.
 //
-// ⚠️ EVIDENCE OF EXECUTION, NOT AN EXIT CODE. `bun test` writes `N pass` / `N fail` to STDERR, so
+// EVIDENCE OF EXECUTION, NOT AN EXIT CODE. `bun test` writes `N pass` / `N fail` to STDERR, so
 // stdout and stderr are concatenated and searched for a result line BEFORE the exit code is read —
 // items 767 and 772-773 got this wrong in both directions.
 //
@@ -25,7 +25,7 @@ const original = readFileSync(PRISTINE, 'utf8');
  */
 const MUTANTS = [
   {
-    name: '⚠⚠ THE START-LABEL TEST IS GONE, so edges from off-label vertices emit rows',
+    name: 'THE START-LABEL TEST IS GONE, so edges from off-label vertices emit rows',
     expect: 'kill',
     from: `        if (!matchesLabel(out ? edge.from : edge.to, startLabel)) {
           continue;
@@ -35,41 +35,41 @@ const MUTANTS = [
     to: `        if (template === undefined) {`,
   },
   {
-    name: '⚠⚠ THE START TEST READS THE WRONG ENDPOINT (far instead of start)',
+    name: 'THE START TEST READS THE WRONG ENDPOINT (far instead of start)',
     expect: 'kill',
     from: `        if (!matchesLabel(out ? edge.from : edge.to, startLabel)) {`,
     to: `        if (!matchesLabel(out ? edge.to : edge.from, startLabel)) {`,
   },
   {
-    name: '⚠⚠ THE HOISTED PREDICATE IS INVERTED',
+    name: 'THE HOISTED PREDICATE IS INVERTED',
     expect: 'kill',
     from: `      if (!satisfies(far, farPred, binding, params, graph)) {
         continue;
       }
 
       /*
-       * 🔑 THE ROW IS BUILT ONCE PER FAR VERTEX AND CLONED`,
+       * THE ROW IS BUILT ONCE PER FAR VERTEX AND CLONED`,
     to: `      if (satisfies(far, farPred, binding, params, graph)) {
         continue;
       }
 
       /*
-       * 🔑 THE ROW IS BUILT ONCE PER FAR VERTEX AND CLONED`,
+       * THE ROW IS BUILT ONCE PER FAR VERTEX AND CLONED`,
   },
   {
-    name: '⚠⚠ THE HOISTED PREDICATE IS DROPPED ENTIRELY',
+    name: 'THE HOISTED PREDICATE IS DROPPED ENTIRELY',
     expect: 'kill',
     from: `      if (!satisfies(far, farPred, binding, params, graph)) {
         continue;
       }
 
       /*
-       * 🔑 THE ROW IS BUILT`,
+       * THE ROW IS BUILT`,
     to: `      /*
-       * 🔑 THE ROW IS BUILT`,
+       * THE ROW IS BUILT`,
   },
   {
-    name: '⚠⚠ THE WALK READS THE FORWARD ADJACENCY, so it is no longer far-driven',
+    name: 'THE WALK READS THE FORWARD ADJACENCY, so it is no longer far-driven',
     expect: 'kill',
     from: `      const bucket = (out ? far.adjTo : far.adjFrom)?.get(typeName);
 
@@ -87,7 +87,7 @@ const MUTANTS = [
       if (farLabel !== undefined && !matchesLabel(far, farLabel)) {`,
   },
   {
-    name: '⚠⚠ THE FAR-LABEL TEST IS GONE',
+    name: 'THE FAR-LABEL TEST IS GONE',
     expect: 'kill',
     from: `      if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
         continue;
@@ -102,7 +102,7 @@ const MUTANTS = [
   },
   {
     name: 'the coverage gate is INVERTED (only selective start labels admitted)',
-    // ⚠️ I EXPECTED A KILL AND WAS WRONG, which is the mutation run earning itself in the
+    // I EXPECTED A KILL AND WAS WRONG, which is the mutation run earning itself in the
     // other direction. Inverting the gate still routes every shape to an answer-EQUIVALENT arm;
     // it is the same class as the boolean mutant below, not a correctness mutant. Recorded with
     // the corrected expectation rather than deleted, so the next reader does not re-expect a kill.
@@ -124,7 +124,7 @@ const MUTANTS = [
   },
   {
     name: 'an UNREADABLE coverage (a compound label) is admitted instead of declining',
-    // ⚠️ AN EXPECTED SURVIVOR, AND THE PROOF IS A MEASUREMENT, not a reading of the code. An
+    // AN EXPECTED SURVIVOR, AND THE PROOF IS A MEASUREMENT, not a reading of the code. An
     // instrumented build printed which arm each shape takes, and a COMPOUND START LABEL reports
     // `NOT THIS ROUTE` — it never reaches `predicatedHopRoute`'s returned closure at all, because
     // `declinesDisjunction` has already sent every multi-type/disjunctive shape down the
@@ -152,7 +152,7 @@ const MUTANTS = [
     startTestedWalk ??=`,
   },
   {
-    name: '⚠⚠ AN ORDER BY no longer forces the start-driven walk',
+    name: 'AN ORDER BY no longer forces the start-driven walk',
     expect: 'kill',
     from: `    if (startDrivenForOrder) {
       return filtered(graph, params);
@@ -178,7 +178,7 @@ const MUTANTS = [
     to: '',
   },
   {
-    name: '⚠⚠ THE CLONE IS GONE, so every row from one far vertex ALIASES one object',
+    name: 'THE CLONE IS GONE, so every row from one far vertex ALIASES one object',
     expect: 'kill',
     from: `      let template: Row | undefined;
 
@@ -212,7 +212,7 @@ const MUTANTS = [
       }`.replace('rows.push({ ...template });', 'rows.push(template);'),
   },
   {
-    name: '⚠⚠ THE TEMPLATE IS REBUILT PER EDGE (the hoist undone)',
+    name: 'THE TEMPLATE IS REBUILT PER EDGE (the hoist undone)',
     expect: 'survive',
     why:
       'Answer-equivalent by construction: `!needsStart` means every row a far vertex produces is ' +
@@ -302,7 +302,7 @@ const base = runSuite();
 console.log(`baseline: ran=${String(base.ran)} failing=${String(base.failing)}\n`);
 
 if (!base.ran || base.failing !== 0) {
-  console.log('⚠️ BASELINE IS NOT CLEAN — fix that before reading any verdict below.');
+  console.log('BASELINE IS NOT CLEAN — fix that before reading any verdict below.');
   process.exit(1);
 }
 
@@ -312,7 +312,7 @@ for (const m of MUTANTS) {
   const count = original.split(m.from).length - 1;
 
   if (count !== 1) {
-    console.log(`❌ ANCHOR DRIFT  (${String(count)} matches, expected 1)  ${m.name}`);
+    console.log(`ANCHOR DRIFT  (${String(count)} matches, expected 1)  ${m.name}`);
     survivors.push(`${m.name} [ANCHOR]`);
     continue;
   }
@@ -335,16 +335,16 @@ for (const m of MUTANTS) {
     // A run that produced NO result line on either stream is not a survivor — it is a harness
     // failure, and conflating the two is exactly what items 767 and 772-773 each got wrong.
     if (!r.ran) {
-      return '❌ DID-NOT-RUN';
+      return 'DID-NOT-RUN';
     }
 
-    return killed ? `✅ caught   ${String(r.failing)} failing` : '❌ SURVIVED';
+    return killed ? `caught   ${String(r.failing)} failing` : 'SURVIVED';
   };
   const verdict = verdictOf();
 
   const asExpected = m.expect === 'kill' ? killed || died : !killed && !died && r.ran;
 
-  console.log(`${asExpected ? '  ' : '⚠️'} ${verdict.padEnd(34)} ${m.name}`);
+  console.log(`${asExpected ? '  ' : ''} ${verdict.padEnd(34)} ${m.name}`);
 
   if (!asExpected) {
     survivors.push(m.name);
@@ -355,7 +355,7 @@ copyFileSync(PRISTINE, SRC);
 console.log('\n# restored');
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} UNEXPECTED:`);
+  console.log(`\n${String(survivors.length)} UNEXPECTED:`);
 
   for (const s of survivors) {
     console.log(`  - ${s}`);

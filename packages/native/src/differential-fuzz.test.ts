@@ -375,7 +375,7 @@ const tally = (
     }
 
     /**
-     * ⚠️ THREE SEGMENTS, COUNTED BECAUSE A GREEN RUN PROVES NOTHING ABOUT A SHAPE THAT WAS NEVER
+     * THREE SEGMENTS, COUNTED BECAUSE A GREEN RUN PROVES NOTHING ABOUT A SHAPE THAT WAS NEVER
      * SAMPLED. The shapes are added to a random `pick`, so without this the only evidence they ran
      * is that the file mentions them — and item 1710 added them precisely because the routes items
      * 1701, 1705 and 1708 changed had NO cross-engine coverage at all.
@@ -1393,7 +1393,7 @@ const genAbbrevQuantified = (r: () => number): string => {
     // so a `min > 1` with `max = null` had no coverage at all. WALK is excluded for these by
     // construction: this line carries no mode.
     `MATCH (a:T)${hop}${pick(r, ['+', '{1,}', '{2,}'])}${end} RETURN count(*) AS x`,
-    // ⚠️ THE SAME QUANTIFIERS UNDER A **DISTINCT-ENDPOINT** PROJECTION, which is what item 1253
+    // THE SAME QUANTIFIERS UNDER A **DISTINCT-ENDPOINT** PROJECTION, which is what item 1253
     // found missing after item 1252 fixed a WRONG ANSWER this fuzzer had not caught.
     //
     // `count(*)` above cannot reach `detectReachableShortcut` at all: `reachCount` refuses
@@ -1783,7 +1783,7 @@ const genQuery = (r: () => number): string => {
       `MATCH (a)-[:${t}]->(b)-[:${t}]->(a) RETURN count(*) AS x`,
       `MATCH (a)-[:${t}]->(b)-[:${t}]->(b) RETURN count(*) AS x`,
       /**
-       * ⚠️ THREE SEGMENTS, WHICH THIS FUZZER GENERATED NONE OF (item 1710). Counted before adding
+       * THREE SEGMENTS, WHICH THIS FUZZER GENERATED NONE OF (item 1710). Counted before adding
        * them: **zero** MATCH shapes here carried three segments, and **zero** carried a clause
        * `WHERE` on an interior position of a multi-segment chain. So every route items 1701, 1705
        * and 1708 changed — the interior clause reader, the three-segment sweep fall-through and the
@@ -2052,7 +2052,7 @@ const genQuery = (r: () => number): string => {
       'elements(pp)',
     ]);
 
-    // ⚠️ THE UNIT IS NOW SOMETIMES MULTI-ELEMENT, which closes the gap item 1236 named. This arm
+    // THE UNIT IS NOW SOMETIMES MULTI-ELEMENT, which closes the gap item 1236 named. This arm
     // generated a FLAT one-hop unit only, and the nested-UNIT arm (item 244) reads no path — so
     // paths-over-flat-groups was covered, nested units were covered, and their INTERSECTION was
     // not. That is precisely where items 1236/1237 found a silent wrong answer in BOTH engines:
@@ -2275,7 +2275,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
   }
 
   /**
-   * ⚠️ `params` IS THE SURFACE THE WORKLOAD ARM EXISTS FOR. Until item 1817 this took only the
+   * `params` IS THE SURFACE THE WORKLOAD ARM EXISTS FOR. Until item 1817 this took only the
    * query text, so a parameterized query was not merely unsampled but UNREACHABLE: the fuzzer
    * could not have generated one if a band had tried. Both engines have accepted a params
    * argument throughout, and the planner SEEKS on `$param`, so the whole parameterized surface
@@ -2409,7 +2409,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     resetUsage();
 
     /**
-     * ⚠️ THE CENSUS KNOB, AND WHY A FUZZER NEEDS ONE.
+     * THE CENSUS KNOB, AND WHY A FUZZER NEEDS ONE.
      *
      * `FUZZ_DUMP=<path>` writes every generated query, one per line, and skips execution.
      * Coverage COUNTERS answer "did this one shape appear"; they cannot answer "what is the
@@ -2458,7 +2458,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
      * Compare one query's two outcomes, appending to `divergences`.
      *
      * Lifted out of the loop at item 1817 so the WORKLOAD arm reuses it rather than growing a
-     * second copy. ⚠️ `inOrder` is now a PARAMETER rather than always `totallyOrdered(q)`: the
+     * second copy. `inOrder` is now a PARAMETER rather than always `totallyOrdered(q)`: the
      * workload generator STATES whether its `ORDER BY` is total, because item 1040's band
      * generated the right ordered query and had it compared as a multiset anyway — the sentinel
      * regex could not see an ordering the band expressed differently. Nothing about the
@@ -2535,7 +2535,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     }
 
     /**
-     * ⚠️ THE REALISTIC-WORKLOAD ARM (item 1817).
+     * THE REALISTIC-WORKLOAD ARM (item 1817).
      *
      * A census of the arm above said 60.8% of its queries traverse no edge at all, 2.2% are
      * multi-hop, 0.0% are multi-hop RETURNING ROWS, and 0.0% carry a parameter. That is a
@@ -2560,7 +2560,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
 
       famCov[w.family] = (famCov[w.family] ?? 0) + 1;
 
-      // ⚠️ NON-EMPTY IS THE LOAD-BEARING COUNTER, same as every floor above. A family that
+      // NON-EMPTY IS THE LOAD-BEARING COUNTER, same as every floor above. A family that
       // generates well-formed queries matching nothing compares an empty result against an
       // empty result and passes exactly like one that works.
       if (ts.ok && ts.json !== '[]') {
@@ -2571,7 +2571,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
         paramQueries += 1;
       }
 
-      // ⚠️ THE BARE (UNORDERED) CHAIN SPELLING, COUNTED SEPARATELY BECAUSE ITS ABSENCE IS
+      // THE BARE (UNORDERED) CHAIN SPELLING, COUNTED SEPARATELY BECAUSE ITS ABSENCE IS
       // INVISIBLE EVERYWHERE ELSE. The chain rung DECLINES an `ORDER BY`, so a `chain-rows`
       // family that only ever emits the ordered spelling generates perfectly good queries, keeps
       // every other counter here at its usual value, and reaches the rung ZERO times. That is
@@ -2735,7 +2735,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       // ~5.7), non-empty 25-36 (mean ~29, sigma ~3.1). ~4 sigma below the means (item 280).
       // Measured over NINE seeds of 20,000: generated 156-200 (mean ~180, sigma ~12.6),
       // non-empty 76-96 (mean ~90, sigma ~7.3). Floors ~4 sigma below the means (item 280).
-      // ⚠️ ELEVEN FLOORS WERE UNDER 4 SIGMA, AND `subOr` WAS NOT THE WORST (item 1099).
+      // ELEVEN FLOORS WERE UNDER 4 SIGMA, AND `subOr` WAS NOT THE WORST (item 1099).
       //
       // Item 1098 fixed `subOr` after CI went red on a 3-sigma floor, then asked the obvious next
       // question: how many OTHERS are mis-set? Most floors here record a RANGE ("measured 150-186
@@ -2776,7 +2776,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
       selfEndNonEmpty: cov.selfEndNonEmpty > 11,
       subNotGenerated: cov.subNotGenerated > 8,
       subNotNonEmpty: cov.subNotNonEmpty > 6,
-      // ⚠️ RE-SET AGAIN AT ITEM 1098, because item 280's RULE was right and its ARITHMETIC was
+      // RE-SET AGAIN AT ITEM 1098, because item 280's RULE was right and its ARITHMETIC was
       // not. These two were described above as "~4 sigma below their means", and against the
       // numbers recorded three lines up they are not: mean ~18 with sigma ~4.2 puts `> 4` at
       // **3.33 sigma**, and mean ~14 with sigma ~3.7 puts `> 3` at **2.97 sigma**. CI then went
@@ -2922,7 +2922,7 @@ suite('differential fuzz: TS gql engine vs Rust engine', () => {
     /**
      * FLOORS ON THE REALISTIC-WORKLOAD ARM (item 1817).
      *
-     * ⚠️ THE NON-EMPTY FLOORS ARE THE ONES WITH TEETH, AND NOT ONLY FOR THE USUAL REASON. The
+     * THE NON-EMPTY FLOORS ARE THE ONES WITH TEETH, AND NOT ONLY FOR THE USUAL REASON. The
      * usual reason is this file's oldest lesson: a family generating well-formed queries that
      * match nothing compares `[]` against `[]`. The second reason is specific to this arm —
      * `params` reaches the engines only because `run` forwards it, and if that argument were

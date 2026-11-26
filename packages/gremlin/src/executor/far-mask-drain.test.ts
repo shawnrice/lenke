@@ -1,11 +1,11 @@
 // The far-filtered hop's flat-array drain (item 1692), and the shapes that must decline it.
 //
-// ⚠️ THE ORACLE IS THE SAME TRAVERSAL WITH A TRAILING `limit`, WHICH IS AN INDEPENDENT ROUTE. Any
+// THE ORACLE IS THE SAME TRAVERSAL WITH A TRAILING `limit`, WHICH IS AN INDEPENDENT ROUTE. Any
 // step after the projection lands in `rest`, and `drain` is read only when `rest` is empty, so the
 // limited spelling takes the LAZY generator while the bare one takes the arm. Comparing the two is
 // therefore a comparison of two routes answering one question — not two copies of my arithmetic.
 //
-// ⚠️ AND THE COMPARISON IS **ORDERED**. Gremlin stream order is a TinkerPop contract that the
+// AND THE COMPARISON IS **ORDERED**. Gremlin stream order is a TinkerPop contract that the
 // differential fuzzer compares ordered, unlike GQL rows whose order is unspecified. A sorted
 // comparison here would pass for an arm that emits the right multiset in the wrong sequence, which
 // is precisely the cross-engine failure `start-filtered-hop-values.ts` warns a "cleverer structure"
@@ -30,7 +30,7 @@ import {
 } from '../index.js';
 
 /**
- * ⚠️ Split on the REPEAT INDEX, not on `k` alone — items 1516/1518: a linear `(a*k+b) % N` is a
+ * Split on the REPEAT INDEX, not on `k` alone — items 1516/1518: a linear `(a*k+b) % N` is a
  * bijection per layer, which makes the graph FUNCTIONAL (every vertex one distinct out-neighbour)
  * while out-degree, in-degree and isolated counts all look perfect. A functional graph turns this
  * row into a chain and the arm's fan-out would never be exercised.
@@ -44,7 +44,7 @@ const build = (n = 240, fanout = 4): Graph => {
       g.addVertex({
         id: `u${i}`,
         labels: ((i * 40_503) >>> 3) % 3 === 0 ? ['User', 'Admin'] : ['User'],
-        // ⚠️ Some vertices carry NO `k` at all, so `values('k')`'s drop path is exercised.
+        // Some vertices carry NO `k` at all, so `values('k')`'s drop path is exercised.
         properties: i % 11 === 0 ? { n: i } : { k: i % 7, n: i },
       }),
     );
@@ -66,7 +66,7 @@ const build = (n = 240, fanout = 4): Graph => {
 
 const g = build();
 
-describe('⚠️ the fixture, before any agreement is believed', () => {
+describe('the fixture, before any agreement is believed', () => {
   test('branching exists and some vertices lack the filtered key', () => {
     expect(new Set([...g.edges].map((x) => x.to)).size).toBeGreaterThan(g.vertexCount / 2);
     expect([...g.vertices].filter((v) => v.properties.k === undefined).length).toBeGreaterThan(5);
@@ -115,7 +115,7 @@ describe('the arm agrees with the lazy route, IN ORDER', () => {
       [V(), has('n', gt(20)), out('E'), has('k', eq(3)), values('n')],
       [V(), has('n', gt(20)), out('E'), has('k', eq(3)), values('n'), limit(1_000_000)],
     ],
-    // ⚠️ A key SOME far vertices lack: `values('k')` must drop those, and the filter must not
+    // A key SOME far vertices lack: `values('k')` must drop those, and the filter must not
     // accidentally admit them.
     [
       'values on the filtered key',
@@ -135,11 +135,11 @@ describe('the arm agrees with the lazy route, IN ORDER', () => {
   }
 
   /**
-   * ⚠️ THE ORDER TEST WITH TEETH: the arm walks slots in `graph.verticesById` order and each slot's
+   * THE ORDER TEST WITH TEETH: the arm walks slots in `graph.verticesById` order and each slot's
    * run in bucket order. If it instead walked, say, accepted slots first, the multiset would be
    * right and this is the only assertion that would move.
    */
-  test('⚠️ the emitted sequence is not merely a permutation', () => {
+  test('the emitted sequence is not merely a permutation', () => {
     const got = toArray(traversal(V(), out('E'), has('k', eq(1)), id()), g);
     const expected: unknown[] = [];
 
@@ -157,7 +157,7 @@ describe('the arm agrees with the lazy route, IN ORDER', () => {
   });
 });
 
-describe('⚠️ the shapes that must DECLINE, each still answering correctly', () => {
+describe('the shapes that must DECLINE, each still answering correctly', () => {
   /**
    * `both` interleaves a vertex's OUT bucket then its IN bucket, so its order spans two directions
    * per vertex where one CSR run holds one — and it carries the self-loop rule items 1092/1093
@@ -191,8 +191,8 @@ describe('⚠️ the shapes that must DECLINE, each still answering correctly', 
     });
   }
 
-  /** ⚠️ A SELF-LOOP under `both` is the case that exclusion exists for. */
-  test('⚠️ a self-loop under both() is unaffected', () => {
+  /** A SELF-LOOP under `both` is the case that exclusion exists for. */
+  test('a self-loop under both() is unaffected', () => {
     const h = new Graph();
     const a = h.addVertex({ id: 'a', labels: ['User'], properties: { k: 1 } });
     const b = h.addVertex({ id: 'b', labels: ['User'], properties: { k: 1 } });
@@ -206,7 +206,7 @@ describe('⚠️ the shapes that must DECLINE, each still answering correctly', 
   });
 });
 
-describe('⚠️ EARLY EXIT is why the arm serves drain only', () => {
+describe('EARLY EXIT is why the arm serves drain only', () => {
   /**
    * The arm runs a mark pass over V+E before the first row, so wiring it into the LAZY iterator
    * would destroy early exit — the 473x/3680x failure the eager-tail-cache entry records for both
@@ -254,11 +254,11 @@ describe('a write between two drains is seen', () => {
   });
 
   /**
-   * ⚠️ A PROPERTY WRITE MUST BE SEEN THOUGH `topologyVersion` DOES NOT MOVE. The accept mask reads
+   * A PROPERTY WRITE MUST BE SEEN THOUGH `topologyVersion` DOES NOT MOVE. The accept mask reads
    * properties and is rebuilt per drain; cached on that signal it would go stale with no signal to
    * catch it.
    */
-  test('⚠️ a property write changes the result with the topology unchanged', () => {
+  test('a property write changes the result with the topology unchanged', () => {
     const h = build(60, 3);
     const before = run(h);
     const tv = h.topologyVersion;
@@ -278,7 +278,7 @@ describe('a write between two drains is seen', () => {
   });
 });
 
-describe('⚠️ the drop sentinel, which a mutation pass found UNCOVERED', () => {
+describe('the drop sentinel, which a mutation pass found UNCOVERED', () => {
   /**
    * `M8` replaced `if (!drops || value !== undefined)` with `if (true)` and SURVIVED, because every
    * case above either projects a key the filter guarantees (`has('k', …)` then `values('k')`) or a

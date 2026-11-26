@@ -1,7 +1,7 @@
 /**
  * DOES `ACYCLIC`'s REACHED SET DIFFER FROM `SIMPLE`'s ANYWHERE BUT THE CLOSED CASE? (item 2003)
  *
- * ⚠️⚠️ **THIS DECIDES WHICH CURE TO BUILD, AND IT IS A MEASUREMENT RATHER THAN A DERIVATION —
+ * **THIS DECIDES WHICH CURE TO BUILD, AND IT IS A MEASUREMENT RATHER THAN A DERIVATION —
  * because deriving acyclic facts has gone wrong twice in two items.** Item 2001 wrote two wrong
  * closed-form corrections; item 2002 succeeded only by abandoning derivation for a DFS that is
  * correct by construction. So this asks the engine instead of reasoning about it.
@@ -12,7 +12,7 @@
  * set. `needsGeneralMatcher` refuses `acyclic` — measured, not cautious: on one node with one
  * self-loop `MATCH ACYCLIC (x)-[:R]->+(y)` is 0 where SIMPLE and a BFS answer 1.
  *
- * 🔑 TWO CURES ARE POSSIBLE AND THEY HAVE DIFFERENT COSTS:
+ * TWO CURES ARE POSSIBLE AND THEY HAVE DIFFERENT COSTS:
  *
  *   (a) A DFS that collects the reached set — correct by construction (item 2002's mechanism), but
  *       it ENUMERATES paths, so it is exponential in the bound.
@@ -27,7 +27,7 @@
  * counterexample on the fixtures `reachability.ts`'s own oracle used, which were chosen for the
  * hazard.
  *
- * ⚠️ IT COMPARES SETS, NOT COUNTS. `DISTINCT b.n` projects a PROPERTY, so two different vertices can
+ * IT COMPARES SETS, NOT COUNTS. `DISTINCT b.n` projects a PROPERTY, so two different vertices can
  * collapse to one row and a count would hide a divergence. These fixtures give every vertex a
  * distinct `n`.
  *
@@ -61,7 +61,7 @@ const build = (n, edges) => {
 };
 
 /*
- * ⚠️ THE FIXTURES ARE `reachability.ts`'s OWN HAZARD LIST, which item 1257 used to admit SIMPLE:
+ * THE FIXTURES ARE `reachability.ts`'s OWN HAZARD LIST, which item 1257 used to admit SIMPLE:
  * self-loop, 2-cycle, 3-cycle, chain, chain with a back-edge, lollipop, two joined cycles, in-tree,
  * diamond. Reusing them means a divergence found here is one that list was already meant to expose.
  */
@@ -164,7 +164,7 @@ const BOUNDS = ['{1,1}', '{1,2}', '{1,3}', '{1,4}', '+', '*'];
 const MODES = { SIMPLE: 'MATCH SIMPLE', ACYCLIC: 'MATCH ACYCLIC', TRAIL: 'MATCH TRAIL' };
 
 /*
- * ⚠️⚠️ **THE SEED AXIS, AND LEAVING IT OUT MADE THE FIRST RUN'S CONCLUSION WRONG.** Without a start
+ * **THE SEED AXIS, AND LEAVING IT OUT MADE THE FIRST RUN'S CONCLUSION WRONG.** Without a start
  * predicate every vertex is a source, and then every divergence found reduces to a self-loop — which
  * made "cure (b) is a small closed-case correction" look established. It is not: with the sources
  * RESTRICTED, a 2-cycle diverges too. Sources `{b}` over `b->x, x->b`: ACYCLIC from `b` reaches
@@ -211,7 +211,7 @@ for (const [name, [n, edges]] of Object.entries(FIXTURES)) {
     diffs += 1;
 
     /*
-     * ⚠️ IS THE DIVERGENCE ONLY THE CLOSED CASE? If every value SIMPLE has and ACYCLIC lacks is a
+     * IS THE DIVERGENCE ONLY THE CLOSED CASE? If every value SIMPLE has and ACYCLIC lacks is a
      * vertex that can only be reached from ITSELF, cure (b) is a correction over the BFS. Any other
      * difference refutes (b) outright and leaves the DFS.
      */
@@ -230,7 +230,7 @@ for (const [name, [n, edges]] of Object.entries(FIXTURES)) {
     const verdict =
       gained.length === 0 && closed
         ? 'closed-case only'
-        : `⚠️ OTHER (lost=${JSON.stringify(lost)} gained=${JSON.stringify(gained)})`;
+        : `OTHER (lost=${JSON.stringify(lost)} gained=${JSON.stringify(gained)})`;
 
     console.log(`${name.padEnd(24)} ${bound.padEnd(8)} ${s.padEnd(21)} ${a.padEnd(21)} ${verdict}`);
   }

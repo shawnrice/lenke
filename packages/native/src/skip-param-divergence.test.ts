@@ -1,7 +1,7 @@
 // A cross-engine divergence on `SKIP $param`, found at item 1817 while pricing which parameter
 // spellings both engines accept (`param-support-probe.mjs`, 20 spellings, 19 agreed).
 //
-// ⚠️ THE SHAPE OF THE DISAGREEMENT. ISO-GQL spells the offset `OFFSET`; `SKIP` is a Cypher
+// THE SHAPE OF THE DISAGREEMENT. ISO-GQL spells the offset `OFFSET`; `SKIP` is a Cypher
 // synonym this engine also accepts. Both engines take a parameter after `OFFSET`. After `SKIP`:
 //
 //     TS      raises E_SYNTAX  — `parser.ts` passes `allowParam` only for the OFFSET spelling,
@@ -14,7 +14,7 @@
 // divergence registry deliberately has no `value` axis, and this is a parse-surface disagreement
 // about a non-ISO spelling.
 //
-// ⚠️ WHY IT IS PINNED RATHER THAN FIXED HERE. Which engine is right is an OWNER decision, not a
+// WHY IT IS PINNED RATHER THAN FIXED HERE. Which engine is right is an OWNER decision, not a
 // bug with an obvious direction, and it is exactly the kind of question this repo's rules say to
 // ask rather than settle:
 //
@@ -74,7 +74,7 @@ describe.if(nativeReady)('SKIP $param — OPEN: TS rejects, native accepts', () 
     expect(() => tsQuery(ts, SKIP_PARAM, { k: 1 })).toThrow();
   });
 
-  // ⚠️ THE PIN. Delete this and the two above it once the owner decides which engine moves.
+  // THE PIN. Delete this and the two above it once the owner decides which engine moves.
   test.failing('OPEN: the engines disagree about whether SKIP $k is a valid query', () => {
     const tsOk = (() => {
       try {

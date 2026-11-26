@@ -11,7 +11,7 @@
  *   V().hasLabel(P, Q).out(E).count()     9.075 -> 0.010        908x
  * ```
  *
- * ⚠️ A DROP IS ANSWER-EQUIVALENT WHEN IT IS CORRECT, which is why these tests read the PLAN. Item
+ * A DROP IS ANSWER-EQUIVALENT WHEN IT IS CORRECT, which is why these tests read the PLAN. Item
  * 1304's and item 1382's vacuous-label work is the precedent, and `perf-gate-needs-its-own-test`
  * is the rule: without a route assertion every mutant that disables the drop passes every answer
  * test in the package.
@@ -99,7 +99,7 @@ describe('item 1547 — a vacuous MULTI-label hasLabel is dropped', () => {
     expect(toArray(traversal(E(), hasLabel('U'), count()), g)).toEqual([1]);
   });
 
-  test('⚠️ the test is SUFFICIENT, not COMPLETE, and the answer is still right', () => {
+  test('the test is SUFFICIENT, not COMPLETE, and the answer is still right', () => {
     // Two labels that UNION to every vertex while neither bucket covers it alone. Deciding this
     // needs a real union, which this pass will not pay for on every query — so the filter is KEPT
     // and the answer comes from applying it, which is correct if slower.

@@ -1,6 +1,6 @@
 // Item 2036 — DOES THE GREMLIN SIDE HAVE A LABEL-VACUITY CLIFF? The GQL side's was 7.47x-184x.
 //
-// 🔑 THE NOMINATION CAME FROM A ROUTE CENSUS, NOT A TIMING. `gremlin-route-screen.mjs` gained a
+// THE NOMINATION CAME FROM A ROUTE CENSUS, NOT A TIMING. `gremlin-route-screen.mjs` gained a
 // `MIXED=1` mode (one ISOLATED off-label vertex — no edges, so no answer changes) and exactly ONE of
 // its 98 rows changed route:
 //
@@ -11,11 +11,11 @@
 // the exact `V() + values` shape then declines. 97 of 98 rows are route-identical, so the cliff is
 // NARROW — but `V().hasLabel(X)` is one of the most common shapes in the language.
 //
-// ⚠️ NO GREMLIN FIXTURE IN THIS REPO HAD EVER BEEN LABEL-MIXED, which is the same blindness that hid
+// NO GREMLIN FIXTURE IN THIS REPO HAD EVER BEEN LABEL-MIXED, which is the same blindness that hid
 // the GQL cliff until item 2032. The workload screen's own `scan: hasLabel count` row uses `U`, which
 // is ALREADY selective (1 vertex in 6) — so it measures the step-survives arm and never the cliff.
 //
-// ⚠️ A CONTROL THE CHANGE CANNOT REACH: `V().values(k)` has no label step at all, so `MIXED` must not
+// A CONTROL THE CHANGE CANNOT REACH: `V().values(k)` has no label step at all, so `MIXED` must not
 // move it. If it does, the fixture is the variable rather than the route.
 //
 //     bun gremlin-label-cliff-2036.mjs
@@ -28,7 +28,7 @@ const REPS = Number(process.env.REPS ?? 7);
 const OPS = Number(process.env.OPS ?? 20);
 
 /*
- * ⚠️⚠️ **FANOUT AND MULTI EXIST TO SETTLE ONE DISCREPANCY** (item 2039). Item 2037 measured
+ * **FANOUT AND MULTI EXIST TO SETTLE ONE DISCREPANCY** (item 2039). Item 2037 measured
  * `V().hasLabel(T).values(k)` at a 1.09x cliff on THIS probe; item 2038's workload screen read the
  * SAME SHAPE at 2.57x. The fusion claims the shape on both fixtures (`drain` present), so the route
  * is identical and the difference must be the FIXTURE. The two differ in exactly three ways, and
@@ -52,7 +52,7 @@ const build = (mixed) => {
       // alone does not change vacuity — it changes what `labels` holds per element.
       labels: MULTI && i % 6 === 2 ? ['T', 'U'] : ['T'],
       /*
-       * ⚠️ POOL=1 COPIES THE WORKLOAD SCREEN'S EXACT PROPERTY SHAPE (item 2043) — three properties
+       * POOL=1 COPIES THE WORKLOAD SCREEN'S EXACT PROPERTY SHAPE (item 2043) — three properties
        * with `n` drawn from an eight-value pool — and the projection follows it. That screen reads
        * this shape at 2.17x where this probe reads 1.32x on nominally the same fixture (N, FANOUT and
        * MULTI all matched), and the property layout is the last untested difference: item 2039 ruled
@@ -68,7 +68,7 @@ const build = (mixed) => {
   if (mixed) {
     // ISOLATED and off-label: `vacuous` is an exact size test against the vertex count, so this one
     // vertex flips it permanently while leaving every answer over `T` untouched.
-    // ⚠️ IT MUST CARRY THE PROJECTED PROPERTY TOO, or the UNLABELLED control drops it and the probe's
+    // IT MUST CARRY THE PROJECTED PROPERTY TOO, or the UNLABELLED control drops it and the probe's
     // own row-count guard fires (`returned 100000 rows, expected 100001`) — which is exactly what
     // happened when POOL=1 first projected `n`. The guard caught my fixture, not the engine.
     g.addVertex({ id: 'vOFF', labels: ['Q'], properties: { n: -1, k: -1, s: 'off' } });
@@ -76,7 +76,7 @@ const build = (mixed) => {
 
   for (let e = 0; e < N * FANOUT; e += 1) {
     const i = e % N;
-    // ⚠️ SPLIT ON THE REPEAT INDEX, or all of one vertex's FANOUT edges land on the SAME target and
+    // SPLIT ON THE REPEAT INDEX, or all of one vertex's FANOUT edges land on the SAME target and
     // the graph is FUNCTIONAL while out-degree looks perfect (CLAUDE.md's generator trap).
     const hop = Math.floor(e / N);
 
@@ -95,7 +95,7 @@ const build = (mixed) => {
 const SHAPES = {
   'hasLabel values': () => traversal(V(), hasLabel('T'), values(PROJ)),
   /*
-   * ⚠️ THE SPLIT ARM (item 2037): `hasLabel` with NOTHING after it is the SEED alone — bucket
+   * THE SPLIT ARM (item 2037): `hasLabel` with NOTHING after it is the SEED alone — bucket
    * iteration plus the traverser wrapping `seedFromIndex` does — so `hasLabel values` minus this is
    * what the `values` STEP costs. That difference is the ceiling for a fusion that CONSUMES
    * `seedFromIndex`'s stream (sound, no new `verticesByLabel` reader); the bucket arm's 5.56x is
@@ -103,13 +103,13 @@ const SHAPES = {
    */
   'hasLabel bare': () => traversal(V(), hasLabel('T')),
   'hasLabel count': () => traversal(V(), hasLabel('T'), count()),
-  // ⚠️ CONTROLS: no label step, so no vacuity gate can reach them.
+  // CONTROLS: no label step, so no vacuity gate can reach them.
   'values (control)': () => traversal(V(), values(PROJ)),
   'count (control)': () => traversal(V(), count()),
 };
 
 /*
- * ⚠️⚠️ **ITEM 2037's HAND ARMS: WHERE DOES THE 1.61x ACTUALLY LIVE?** The engine's mixed route is
+ * **ITEM 2037's HAND ARMS: WHERE DOES THE 1.61x ACTUALLY LIVE?** The engine's mixed route is
  * `seedFromIndex` (which iterates `verticesByLabel.get('T')` and wraps each vertex in a TRAVERSER)
  * followed by `applyStep(values)`. Two candidate fusions, and they differ in SOUNDNESS, not just
  * speed:
@@ -162,7 +162,7 @@ const handArms = (g) => {
 };
 
 /*
- * ⚠️⚠️ **ONE MODE PER PROCESS, AND THE FIRST CUT OF THIS PROBE GOT IT WRONG.** Building BOTH graphs in
+ * **ONE MODE PER PROCESS, AND THE FIRST CUT OF THIS PROBE GOT IT WRONG.** Building BOTH graphs in
  * one process puts 2N vertices in the heap, and each arm then perturbs the other through GC: across
  * six runs the CONTROL — a row with no label step, which the change cannot reach — read 0.82x, 0.98x,
  * 1.00x, 1.02x, 1.06x and **1.31x**. A +/-30% control cannot price a 1.6x effect.
@@ -182,7 +182,7 @@ const results = {};
 for (const [name, mk] of Object.entries(SHAPES)) {
   for (const [mode, g] of Object.entries(graphs)) {
     /*
-     * ⚠️ ANSWER-EQUIVALENCE ACROSS MODES IS THE PRECONDITION: the off-label vertex is isolated and
+     * ANSWER-EQUIVALENCE ACROSS MODES IS THE PRECONDITION: the off-label vertex is isolated and
      * carries no `T`, so every `hasLabel('T')` answer must be identical, and the unlabelled controls
      * must differ by exactly the one extra vertex. Asserted, because a route comparison between two
      * different questions is meaningless.
@@ -210,7 +210,7 @@ for (const [name, mk] of Object.entries(SHAPES)) {
     const series = [];
 
     /*
-     * ⚠️⚠️ **REUSE=1 BUILDS THE PLAN ONCE, AND IT IS THE LAST STRUCTURAL DIFFERENCE FROM THE WORKLOAD
+     * **REUSE=1 BUILDS THE PLAN ONCE, AND IT IS THE LAST STRUCTURAL DIFFERENCE FROM THE WORKLOAD
      * SCREEN** (item 2039). The screen does `const plan = SHAPES[name]()` and then calls
      * `toArray(plan, g)` per rep, while this probe rebuilt the traversal every op — so the probe pays
      * plan construction per measurement and the screen does not. Everything else between the two

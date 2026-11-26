@@ -18,12 +18,12 @@
  * refusal's stated reason is gone — and item 2401 shipped only ONE site (`hop-projection.ts`), which
  * is why these rungs still read the way they do.
  *
- * ⚠️ THIS PROBE IS NOT A ROUTE CLAIM. Timing cannot tell "declined" from "more work"
+ * THIS PROBE IS NOT A ROUTE CLAIM. Timing cannot tell "declined" from "more work"
  * ([[rung-precedence-decides-speed]]). `count(d.n)` is here as the ADMITTED order-invariant arm that
  * reads the same property, so the comparison is fold-vs-no-fold and not read-vs-no-read, which is
  * the arm-parity error items 2326/2328/2335 made a standing rule.
  *
- * ⚠️ AND THE FLOOR MATTERS. `RETURN d.n` materializes every row the aggregate reduces. An aggregate
+ * AND THE FLOOR MATTERS. `RETURN d.n` materializes every row the aggregate reduces. An aggregate
  * costing MORE than that is the item 2157/1918 signal; one sitting at it has nothing to win.
  *
  *     SHAPE=sum|avg|min|max|countx|rows|bare bun chainagg-2409.ts

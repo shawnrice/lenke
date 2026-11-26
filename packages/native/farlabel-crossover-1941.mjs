@@ -7,12 +7,12 @@
 //     MATCH (a)-[:E]->(b:T)     8.70      <- no START label, so it takes the COUNTING arm
 //
 // The unlabelled spelling is now the SLOWER one, which is this repo's named bug class pointing the
-// other way. ⚠️ And the reason is in `hop-projection.ts`'s own note: the CSR arm "DECLINES" when a
+// other way. And the reason is in `hop-projection.ts`'s own note: the CSR arm "DECLINES" when a
 // far label is present, because `candidateVertexSource` iterates the label BUCKET — sub-linear for
 // a selective label, where the CSR arm is O(V) (item 1688). So a non-vacuous far label drops the
 // walk to vertex iteration with a `Map` lookup per vertex.
 //
-// 🔑 SO THE SAME TRADE APPLIES, AND IT NEEDS THE SAME SWEEP rather than an assumption: edge
+// SO THE SAME TRADE APPLIES, AND IT NEEDS THE SAME SWEEP rather than an assumption: edge
 // iteration is O(|E|) whatever the far label excludes, while bucket iteration is sub-linear when it
 // is selective. If the crossover lands near the start label's 0.18-0.35, one shared constant covers
 // both; if it lands elsewhere, the far side needs its own.
@@ -59,12 +59,12 @@ const build = (tFrac) => {
   return { g, tCount };
 };
 
-// ⚠️ NO START LABEL — that is the whole point: this is the spelling that routes to the counting arm
+// NO START LABEL — that is the whole point: this is the spelling that routes to the counting arm
 // today and so never reaches item 1940's edge-driven walk.
 const Q = 'MATCH (a)-[:E]->(b:T) RETURN b.n AS x';
 
 /*
- * 🔑 THE REAL CANDIDATE, AFTER THE EDGE-DRIVEN MIRROR WAS REFUTED ABOVE. `csrHopRoute` DECLINES
+ * THE REAL CANDIDATE, AFTER THE EDGE-DRIVEN MIRROR WAS REFUTED ABOVE. `csrHopRoute` DECLINES
  * whenever a far label is present, so a non-vacuous far label drops the walk off the CSR entirely:
  * item 1934's numbers show `MATCH (a)-[:E]->(b:T)` at 1.87 ms when T is vacuous (CSR runs) and 8.70
  * when ONE vertex lacks it (CSR declines).
@@ -99,7 +99,7 @@ const handCsrWithFarLabel = (g) => {
 
       const far = verts[slot];
 
-      // ⚠️ THE ONE TEST THE CSR ARM REFUSES TODAY. O(1), on a vertex it already holds.
+      // THE ONE TEST THE CSR ARM REFUSES TODAY. O(1), on a vertex it already holds.
       if (!far.labels.has('T')) {
         continue;
       }
@@ -155,7 +155,7 @@ const time = (fn) => {
 
 console.log(
   `${NODES} vertices / ${NODES * FANOUT} E-edges, median of ${REPS}. START is unconstrained.\n` +
-    '⚠️ `agree` must be true, or the arms are answering different questions.\n',
+    '`agree` must be true, or the arms are answering different questions.\n',
 );
 console.log('T frac   T count    rows    engine   hand edge   hand CSR   eng/CSR   agree');
 console.log('-'.repeat(76));
@@ -182,6 +182,6 @@ for (const frac of FRACS) {
 }
 
 console.log(
-  '\n⚠️ Above 1 means the edge-driven arm wins and the FAR side needs the gate too; below 1 means\n' +
+  '\nAbove 1 means the edge-driven arm wins and the FAR side needs the gate too; below 1 means\n' +
     "   the counting arm's bucket iteration is already the better choice at that coverage.",
 );

@@ -1,19 +1,19 @@
 /**
  * WHERE DOES THE ENGINE SPEND TIME ON A MIXED REALISTIC WORKLOAD? (item 1865)
  *
- * ⚠️ A DIFFERENT QUESTION FROM THE SCREEN, which this reuses the fixture and generators of.
+ * A DIFFERENT QUESTION FROM THE SCREEN, which this reuses the fixture and generators of.
  * `workload-perf-screen.mjs` runs ONE CHILD PROCESS PER FAMILY and reports wall time per family —
  * so it answers "which family is expensive" and can answer nothing about frames. Every profile in
  * this stretch has then profiled ONE shape (items 1843, 1859, 1862). Neither asks what a user
  * actually experiences: a MIX of shapes through one engine, where a frame shared by six families
  * matters more than the slowest family's own hot loop.
  *
- * ⚠️ `multi-pattern` IS EXCLUDED, and that is the point of running this now. It is 97% of the
+ * `multi-pattern` IS EXCLUDED, and that is the point of running this now. It is 97% of the
  * screen's wall time and item 1864 closed it as NOT ADDRESSABLE — its cost is a genuine cross
  * product whose row count is its answer. Profiling with it in would hand back its binding loop and
  * nothing else. Excluded, the remaining sixteen families are the addressable workload.
  *
- * ⚠️ AND IT IS ONE PROCESS DELIBERATELY, which item 762's rule normally forbids. That rule is about
+ * AND IT IS ONE PROCESS DELIBERATELY, which item 762's rule normally forbids. That rule is about
  * an A/B whose two arms redistribute call sites — here there is no A/B and no arm, only an
  * attribution of one workload's own time, so sharing a process is what makes the question
  * answerable at all. Nothing below is a ratio.
@@ -24,7 +24,7 @@ import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
 
 /**
- * ⚠️ THE QUERY LIST COMES FROM A FILE, AND THAT IS NOT A STYLE CHOICE. The generators live in
+ * THE QUERY LIST COMES FROM A FILE, AND THAT IS NOT A STYLE CHOICE. The generators live in
  * `src/workload-queries.ts`; bun resolves a `.js` specifier to that `.ts` source and node does
  * not, and the profiler is node (`--cpu-prof`). Rather than fork the generators — which is how two
  * instruments drift apart — `gen-mixed-workload-1865.ts` runs under bun and writes the list, and
@@ -115,7 +115,7 @@ console.log(
     `${((ms * 1e6) / (work.length * ROUNDS)).toFixed(0)} ns/query`,
 );
 
-// ⚠️ A WORKLOAD THAT ERRORS ON MOST QUERIES WOULD PROFILE THE ERROR PATH. Loud, not silent.
+// A WORKLOAD THAT ERRORS ON MOST QUERIES WOULD PROFILE THE ERROR PATH. Loud, not silent.
 if (errs > work.length * ROUNDS * 0.05) {
   throw new Error(`${String(errs)} of ${String(work.length * ROUNDS)} queries threw`);
 }

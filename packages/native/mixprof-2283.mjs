@@ -1,7 +1,7 @@
 /**
  * A realistic MIXED workload over ONE graph, for CPU profiling (item 2283).
  *
- * 🔑 One graph, because items 2281/2282 showed a fresh graph per rep changes what the profile measures.
+ * One graph, because items 2281/2282 showed a fresh graph per rep changes what the profile measures.
  * Several query shapes interleaved, because a single-shape profile nominates that shape's frames and a real
  * application sends a mix. Both surfaces, because the loop optimizes GQL and Gremlin.
  */

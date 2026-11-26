@@ -1,7 +1,7 @@
 /**
  * Self-time shares from a V8 `.cpuprofile`, by function.
  *
- * ⚠️ A SELF-TIME SHARE IS A NOMINATION, NOT A PRICE (item 1104). A frame at 30% does not promise
+ * A SELF-TIME SHARE IS A NOMINATION, NOT A PRICE (item 1104). A frame at 30% does not promise
  * 30% back: the work may be irreducible, or moving it may cost more elsewhere. Read this to choose
  * what to MEASURE next, never as the size of a win.
  *

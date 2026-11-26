@@ -150,7 +150,7 @@ describe('the adjacency box', () => {
   });
 
   /**
-   * ⚠️ AN EMPTIED BUCKET IS DELETED, NOT LEFT EMPTY — pinned here because a CONSUMER now leans on
+   * AN EMPTIED BUCKET IS DELETED, NOT LEFT EMPTY — pinned here because a CONSUMER now leans on
    * it. Gremlin's `sub-plan-existence.ts` answers `where(out(T))` by asking whether a bucket is
    * non-empty, and it reads `size > 0` precisely so that it does NOT depend on this. But the cheaper
    * presence test would, and the only thing standing between "an empty bucket cannot arise" and a

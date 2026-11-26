@@ -5,20 +5,20 @@ import { deserialize as tsDeserialize } from '@lenke/serialization';
 /**
  * DOES EVERY SORT SHAPE AGREE WITH NATIVE, AND WHICH RUNG SERVES IT? (item 1904)
  *
- * ⚠️⚠️ **THIS EXISTS BECAUSE ITEM 1903 FOUND A SHIPPED WRONG ANSWER BY ACCIDENT.** A hop sort key
+ * **THIS EXISTS BECAUSE ITEM 1903 FOUND A SHIPPED WRONG ANSWER BY ACCIDENT.** A hop sort key
  * reading an end the projection does not was ranked on NULL keys and came back in the walk's
  * arrival order — four of five end/key combinations diverged from native, `ORDER BY e.w LIMIT 3`
  * among them. It was found only because a perf gate routed a second spelling into the broken arm and
  * item 642's test happened to cover one case. Nothing systematic was asking.
  *
- * ⚠️ AND THE THREE STORES THAT SHOULD HAVE ASKED ARE EACH BLIND IN THE SAME WAY: the workload
+ * AND THE THREE STORES THAT SHOULD HAVE ASKED ARE EACH BLIND IN THE SAME WAY: the workload
  * corpus ordered only by the projection's ALIAS, the spelling probe's ordered groups all carried a
  * `LIMIT`, and the perf screen's fixture had so many ties that the wrong answer produced the SAME
  * first ten rows (and measured 7.6x FASTER). So this is a MATRIX over the axes those stores hold
  * fixed: which end the projection reads, which end the KEY reads, how the key is spelled, and which
  * window is on it.
  *
- * ⚠️ THE FIXTURE IS BUILT TO MAKE EVERY ORDER DIFFERENT FROM EVERY OTHER, which is the lesson item
+ * THE FIXTURE IS BUILT TO MAKE EVERY ORDER DIFFERENT FROM EVERY OTHER, which is the lesson item
  * 1903 paid for:
  *
  *   - `n` is DISTINCT, so the walk's arrival order is never a plausible answer;
@@ -30,9 +30,9 @@ import { deserialize as tsDeserialize } from '@lenke/serialization';
  *     bun sort-matrix-1904.ts            # the matrix
  *     ROUTES=1 bun sort-matrix-1904.ts   # also print the rung census
  *
- * ⚠️ THE FIXTURE AND THE SHAPE LIST LIVE IN `src/sort-matrix.ts`, shared with
+ * THE FIXTURE AND THE SHAPE LIST LIVE IN `src/sort-matrix.ts`, shared with
  * `src/sort-matrix.test.ts` — item 606's reason, which `ordered-rows.ts` records: "two copies of
- * this list is how one of them falls behind the other". ⚠️ AND THE TEST IS THE GUARD, not this
+ * this list is how one of them falls behind the other". AND THE TEST IS THE GUARD, not this
  * probe: item 1901 found a "start here" census had been DARK for ~15 items because nobody ran it.
  * What this file adds is the ROUTE census, which a test has no business asserting.
  */
@@ -113,9 +113,9 @@ if (!nativeReady) {
       continue;
     }
 
-    // ⚠️ IN ORDER, not as a multiset: `ORDER BY` makes row order part of the answer, and tie order
+    // IN ORDER, not as a multiset: `ORDER BY` makes row order part of the answer, and tie order
     // is observable between the engines (item 605).
-    // ⚠️ IT TAKES JSON STRINGS, not the arrays — the first cut passed objects and `JSON.parse`
+    // IT TAKES JSON STRINGS, not the arrays — the first cut passed objects and `JSON.parse`
     // choked on "[object Object]".
     if (!resultsEqualInOrder(JSON.stringify(a), JSON.stringify(b))) {
       diverged.push({ text, a, b, rung });
@@ -134,9 +134,9 @@ if (!nativeReady) {
   console.log('');
 
   if (diverged.length === 0) {
-    console.log('✅ every shape agrees with native, IN ORDER');
+    console.log('every shape agrees with native, IN ORDER');
   } else {
-    console.log(`🛑 ${String(diverged.length)} SHAPE(S) DIVERGE:`);
+    console.log(`${String(diverged.length)} SHAPE(S) DIVERGE:`);
 
     for (const d of diverged) {
       console.log(`\n  ${d.text}      [${d.rung}]`);

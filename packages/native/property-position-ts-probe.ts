@@ -10,7 +10,7 @@
  * So this prices the curve rather than working around it. ONE graph, N properties per vertex, all
  * holding the IDENTICAL value, read one at a time by position.
  *
- * ⚠️ EVERY COLUMN HOLDS THE SAME VALUES, which is what makes position the only variable. If the
+ * EVERY COLUMN HOLDS THE SAME VALUES, which is what makes position the only variable. If the
  * curve were measured with different data per key it would be measuring the data (item 1211's whole
  * lesson, learned three designs in).
  *
@@ -36,7 +36,7 @@ const g = new TsGraph();
 for (let i = 0; i < N; i++) {
   const properties: Record<string, number> = {};
 
-  // ⚠️ IDENTICAL VALUES IN EVERY COLUMN. Position is the only thing that varies across the rows
+  // IDENTICAL VALUES IN EVERY COLUMN. Position is the only thing that varies across the rows
   // below, so anything the table shows is about position.
   for (let p = 0; p < WIDTH; p++) {
     properties[key(p)] = i % 100;
@@ -64,7 +64,7 @@ console.log(
   `\n# ts engine, ${N} nodes x ${WIDTH} properties (all identical values), median of ${REPS - DROP}\n`,
 );
 
-// ⚠️ ROUND-ROBIN ACROSS POSITIONS, NOT A SWEEP PER POSITION — and the first design got this wrong
+// ROUND-ROBIN ACROSS POSITIONS, NOT A SWEEP PER POSITION — and the first design got this wrong
 // in a way its own control caught. Dropping warm-up REPS inside each query (this repo's documented
 // TS estimator) does NOT remove PROCESS-level warm-up: that lands entirely on whichever query runs
 // FIRST, and the first design normalized against exactly that query. The result was a table where
@@ -73,7 +73,7 @@ console.log(
 // So every position is measured once per ROUND, in the same order each round, and the first round
 // is discarded whole. Warm-up is then paid by round 1 and shared by nobody.
 const ROUNDS = Number(process.env.ROUNDS ?? 4);
-// ⚠️ THE CONTROL IS POSITION 0 AGAIN, AT THE END OF EVERY ROUND — not a single reading at each end
+// THE CONTROL IS POSITION 0 AGAIN, AT THE END OF EVERY ROUND — not a single reading at each end
 // of the process. A before/after pair captures the whole run's downward drift (3.4ms to 2.1ms, a
 // 0.61x "failure" that says nothing about position), while the round-robin table is internally
 // consistent because every position is measured once per round. The valid control therefore has to

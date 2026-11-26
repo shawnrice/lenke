@@ -15,7 +15,7 @@
  * O(n log n) while C's selection is interpreted at O(n), and which wins depends on the constant,
  * not the exponent. Guessing would be the item-234 mistake in a new language.
  *
- * ⚠️ BYTE-IDENTITY NOTE, which constrains B and C both. `(a, b) => a - b` returns 0 for `-0.0`
+ * BYTE-IDENTITY NOTE, which constrains B and C both. `(a, b) => a - b` returns 0 for `-0.0`
  * vs `0.0`, so V8's stable sort keeps them in input order — and the Rust engine's stable
  * `partial_cmp` sort does the same, so the two agree today. But
  * `%TypedArray%.prototype.sort` ORDERS -0 BEFORE +0 by specification, and an unstable selection

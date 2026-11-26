@@ -2,12 +2,12 @@
  * Item 2105 — `chainProjection` and its two composing rungs decline when the far node carries a genuine
  * index seek. The same gate item 2104 gave `hop2Projection`, worth far more here.
  *
- * ⚠️⚠️ **THE GATE ITSELF IS ALREADY UNIT-TESTED** in `hop2-orient-decline.test.ts` — one exported
+ * **THE GATE ITSELF IS ALREADY UNIT-TESTED** in `hop2-orient-decline.test.ts` — one exported
  * `farEndSeeksNarrower`, tested directly because a route choice is answer-equivalent. This file tests
  * what is NEW: that this rung and the two rungs that COMPOSE its walk are wired to it and still answer
  * correctly on both sides of the decline.
  *
- * 🔑 EVERY ASSERTION COMPARES THE TWO ROUTES AGAINST EACH OTHER, indexed and not. A vacuous `LIMIT`
+ * EVERY ASSERTION COMPARES THE TWO ROUTES AGAINST EACH OTHER, indexed and not. A vacuous `LIMIT`
  * forces the generic path (it defeats the rung's length gate — the diagnostic that found this), so each
  * shape is asked three ways and the answers must agree.
  */
@@ -68,12 +68,12 @@ describe('chainProjection orientation decline (item 2105)', () => {
 
     describe(tag, () => {
       /*
-       * ⚠️ BOTH SIDES ARE TESTED, and the unindexed side is the one that protects a WIN rather than
+       * BOTH SIDES ARE TESTED, and the unindexed side is the one that protects a WIN rather than
        * creating one: this rung's documented 5.8x (item 1820) is on a fixture with no seek, so a gate
        * that declined there would hand back 5.8x to buy 934x elsewhere. Measured LIVE against KILLED on
        * an unindexed fixture, all five shapes were flat (~1.00x) — the gate correctly keeps them.
        */
-      test('⚠️ rows — all three spellings agree', () => {
+      test('rows — all three spellings agree', () => {
         const [a, b, c] = threeWays(build(withIndex), 'WHERE b.tag = $t RETURN a.n AS n', REV3);
 
         expect(a).toStrictEqual(b);
@@ -81,7 +81,7 @@ describe('chainProjection orientation decline (item 2105)', () => {
         expect(a.length).toBeGreaterThan(0);
       });
 
-      test("⚠️ RETURN DISTINCT — item 1820's own shape", () => {
+      test("RETURN DISTINCT — item 1820's own shape", () => {
         const [a, b, c] = threeWays(
           build(withIndex),
           'WHERE b.tag = $t RETURN DISTINCT a.n AS n',
@@ -92,7 +92,7 @@ describe('chainProjection orientation decline (item 2105)', () => {
         expect(a).toStrictEqual(c);
       });
 
-      test('⚠️ the FOLDED aggregate composes the walk and inherits the decline', () => {
+      test('the FOLDED aggregate composes the walk and inherits the decline', () => {
         const [a, b, c] = threeWays(
           build(withIndex),
           'WHERE b.tag = $t RETURN min(a.n) AS m',
@@ -103,7 +103,7 @@ describe('chainProjection orientation decline (item 2105)', () => {
         expect(a).toStrictEqual(c);
       });
 
-      test('⚠️ the GROUPED count composes the walk and inherits the decline', () => {
+      test('the GROUPED count composes the walk and inherits the decline', () => {
         const [a, b, c] = threeWays(
           build(withIndex),
           'WHERE b.tag = $t RETURN a.n AS k, count(*) AS c',
@@ -116,7 +116,7 @@ describe('chainProjection orientation decline (item 2105)', () => {
     });
   }
 
-  test('🔑 a chain with NO far predicate is untouched — the gate cannot fire', () => {
+  test('a chain with NO far predicate is untouched — the gate cannot fire', () => {
     /*
      * THE NULL CONTROL, and it is in the measurement too: with no far predicate the gate cannot reach
      * this shape, and the indexed A/B read it at 1.01x LIVE against KILLED while the four shapes beside
@@ -128,7 +128,7 @@ describe('chainProjection orientation decline (item 2105)', () => {
     expect((rows[0] as { c: number }).c).toBe(NODES * 27);
   });
 
-  test('⚠️ the answer does not depend on whether an index exists', () => {
+  test('the answer does not depend on whether an index exists', () => {
     const bare = query(build(false), `MATCH ${C3} WHERE b.tag = $t RETURN DISTINCT a.n AS n`, {
       t: 't7',
     });

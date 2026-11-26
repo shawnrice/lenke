@@ -1,6 +1,6 @@
 // `applyProjection`'s ORDER BY overlay, gated on `orderNeedsOutput` (item 2017).
 //
-// ⚠️⚠️ **THIS IS NOT A ROUTE CHOICE — A WRONG GATE HERE IS A WRONG ANSWER.** `applyProjection`
+// **THIS IS NOT A ROUTE CHOICE — A WRONG GATE HERE IS A WRONG ANSWER.** `applyProjection`
 // evaluates every sort key against a binding, and before item 2017 that binding was always the
 // projected output overlaid on the input:
 //
@@ -12,14 +12,14 @@
 // `undefined` and the rows come back in the wrong order, which no row COUNT and no multiset
 // comparison can see.
 //
-// 🔑 THE TWO DIRECTIONS THE FIXTURE MUST SEPARATE:
+// THE TWO DIRECTIONS THE FIXTURE MUST SEPARATE:
 //
 //     orderNeedsOutput = FALSE   the key was rewritten through `aliasDefinition` and reads the
 //                                INPUT binding (`RETURN b.n AS x … ORDER BY x` compiles to `b.n`)
 //     orderNeedsOutput = TRUE    the key reads a column with no input twin — an AGGREGATE alias,
 //                                or `RETURN *`, where every in-scope variable is an output column
 //
-// ⚠️ AND THE ORDER IS ASSERTED, NOT THE MULTISET. Every expectation below is a full ordered array:
+// AND THE ORDER IS ASSERTED, NOT THE MULTISET. Every expectation below is a full ordered array:
 // an overlay bug reorders rows without changing which rows come back.
 import { describe, expect, test } from 'bun:test';
 
@@ -33,7 +33,7 @@ const build = (): Graph => {
   const g = new Graph();
 
   /*
-   * ⚠️ THE `n` VALUES ARE DELIBERATELY NOT IN ID ORDER, so a sort that silently did nothing (every
+   * THE `n` VALUES ARE DELIBERATELY NOT IN ID ORDER, so a sort that silently did nothing (every
    * key resolving to `undefined` compares equal, leaving arrival order) is distinguishable from a
    * sort that worked. With ids ascending and `n` ascending the two are the same array.
    */
@@ -98,7 +98,7 @@ describe('the overlay is NOT built: keys rewritten to the input binding', () => 
 
   test('an EXPRESSION over an alias — item 1929 made this resolve INSIDE the expression', () => {
     /*
-     * ⚠️ VERIFIED, NOT ASSUMED: `orderNeedsOutput` is FALSE for these. Item 1929's alias resolution
+     * VERIFIED, NOT ASSUMED: `orderNeedsOutput` is FALSE for these. Item 1929's alias resolution
      * reaches inside an expression, so `ORDER BY x + 1` compiles to `a.n + 1` and reads the input
      * binding. (I first filed this under "the overlay IS built" by guessing; the flag says
      * otherwise. The spelling that DOES need the overlay is the SHADOWING one below.)
@@ -124,7 +124,7 @@ describe('the overlay IS built: keys with no input twin', () => {
 
   test('an AGGREGATE alias — the aggregating branch', () => {
     /*
-     * ⚠️ `count(*)` HAS NO INPUT VARIABLE TO READ, so `aliasDefinition` cannot rewrite `ORDER BY c`
+     * `count(*)` HAS NO INPUT VARIABLE TO READ, so `aliasDefinition` cannot rewrite `ORDER BY c`
      * into anything the input binding holds. `orderNeedsOutput` is TRUE and the overlay is what
      * makes the key resolve at all. A gate inverted here returns groups in arrival order.
      */
@@ -140,7 +140,7 @@ describe('the overlay IS built: keys with no input twin', () => {
 
   test('an aggregate alias with groups of DIFFERENT sizes, so the order is observable', () => {
     /*
-     * ⚠️ THE TEST ABOVE CANNOT FAIL ON ORDER — every group has count 1, so any permutation of the
+     * THE TEST ABOVE CANNOT FAIL ON ORDER — every group has count 1, so any permutation of the
      * `c` column is `[1,1,1,1,1]`. This one groups on a key with unequal group sizes, so sorting by
      * the aggregate alias produces a sequence only a working overlay can produce.
      */
@@ -155,7 +155,7 @@ describe('the overlay IS built: keys with no input twin', () => {
 
   test('A SHADOWING ALIAS INSIDE AN EXPRESSION — the only case that pins the overlay DIRECTION', () => {
     /*
-     * ⚠️⚠️ **THIS IS THE DISCRIMINATING CASE AND A MUTATION ROUND IS HOW IT WAS FOUND.** The overlay
+     * **THIS IS THE DISCRIMINATING CASE AND A MUTATION ROUND IS HOW IT WAS FOUND.** The overlay
      * spreads `projected` AFTER `b`, so an output alias SHADOWS an input variable of the same name
      * — `CProjection.orderNeedsOutput`'s doc states the rule ("output slots come first in the ORDER
      * BY scope"). Reversing that spread must be a wrong answer, and almost nothing can see it:
@@ -185,7 +185,7 @@ describe('the overlay IS built: keys with no input twin', () => {
 
   test('A SHADOWING AGGREGATE ALIAS inside an expression — the aggregating branch’s twin', () => {
     /*
-     * ⚠️⚠️ **NOTHING IN THE ENGINE CAUGHT A REVERSED OVERLAY IN THE AGGREGATING BRANCH** — item
+     * **NOTHING IN THE ENGINE CAUGHT A REVERSED OVERLAY IN THE AGGREGATING BRANCH** — item
      * 2017's `agg-overlay-reversed` mutant survived both this file AND the whole @lenke/gql suite.
      * That is a hole independent of item 2017's change: the branch has had the same overlay since
      * it was written. Same mechanism as the non-aggregating twin above — the alias `a` shadows the
@@ -203,7 +203,7 @@ describe('the overlay IS built: keys with no input twin', () => {
 
   test('MIXED SOURCES in one sort: key 1 needs the output, key 2 needs the INPUT', () => {
     /*
-     * ⚠️⚠️ **THE OVERLAY MUST CARRY BOTH HALVES, AND ONLY A MIXED-SOURCE SORT CAN SEE IT.** A mutant
+     * **THE OVERLAY MUST CARRY BOTH HALVES, AND ONLY A MIXED-SOURCE SORT CAN SEE IT.** A mutant
      * dropping `b` from the overlay (`new Map([...projected])`) survived this whole file and was
      * caught only by a CALL test elsewhere in the suite, whose shape is exactly this: one key that
      * `aliasDefinition` rewrote into an INPUT read, in a projection whose `orderNeedsOutput` is TRUE
@@ -214,7 +214,7 @@ describe('the overlay IS built: keys with no input twin', () => {
      * null for every row — the second key stops discriminating and the tie order shows through.
      */
     /*
-     * ⚠️ AND THE SECOND KEY MUST READ A VARIABLE THAT IS NOT ITSELF AN OUTPUT COLUMN. My first
+     * AND THE SECOND KEY MUST READ A VARIABLE THAT IS NOT ITSELF AN OUTPUT COLUMN. My first
      * attempt was `RETURN a.n % 20 AS a, a.s AS t ORDER BY a + 2, t`, where `t` resolves through
      * `projected.t` — so BOTH keys live in the projected half and dropping `b` was still invisible.
      * `b.s` below reads the input variable `b`, which the projection never emits, so it exists ONLY
@@ -263,7 +263,7 @@ describe('the two arms agree with a spelling that cannot take the gate', () => {
 
   test('the aliased and unaliased spellings of one sort return the SAME order', () => {
     /*
-     * ⚠️ EQUIVALENT SPELLINGS MUST COST THE SAME AND ANSWER THE SAME — the repo's named defect
+     * EQUIVALENT SPELLINGS MUST COST THE SAME AND ANSWER THE SAME — the repo's named defect
      * class. `ORDER BY x` (alias, gate SKIPS the overlay) and `ORDER BY a.n` (direct, gate also
      * skips) must agree; so must `RETURN *` (gate BUILDS the overlay) ordered on the same value.
      */
@@ -280,7 +280,7 @@ describe('the two arms agree with a spelling that cannot take the gate', () => {
 
 describe('the gate’s INPUT, which is the only mechanical guard on the win', () => {
   /*
-   * ⚠️⚠️ **THE `always` MUTANT IS UNCATCHABLE BY ANY ANSWER TEST, AND THAT IS NOT A HOLE** — building
+   * **THE `always` MUTANT IS UNCATCHABLE BY ANY ANSWER TEST, AND THAT IS NOT A HOLE** — building
    * the overlay unconditionally IS the pre-item-2017 behaviour, so it is answer-equivalent by
    * construction and the A/B measurement is the only evidence against it. Item 2017's mutation round
    * confirms it: `plain-overlay-always` survives both this file and the whole @lenke/gql suite, where

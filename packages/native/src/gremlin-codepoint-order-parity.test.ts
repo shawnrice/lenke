@@ -7,19 +7,19 @@
 // verified (reverting the one-line fix fails 4 of its 6 tests) — but nothing in CI compared TS
 // against NATIVE on such a column, which is precisely the comparison that found the bug.
 //
-// ⚠️ IT IS ITS OWN SMALL CORPUS, DELIBERATELY. Two vertices carrying this pair were added to
+// IT IS ITS OWN SMALL CORPUS, DELIBERATELY. Two vertices carrying this pair were added to
 // `gremlin-fuzz`'s SHARED corpus at item 1712 and REVERTED: nine vertices instead of seven put
 // `orderLocalWithNull` at 0-3 of 400 against its floor of >5, so the fuzzer went red on a COVERAGE
 // COUNTER rather than on a divergence. Adding to a shared differential corpus reweights every random
 // draw (and item 1130 records the same hazard for a shared bench fixture), so this gap gets a
 // fixture of its own instead.
 //
-// ⚠️ THE CHARACTERS GO IN THE DATA, NOT IN A QUERY LITERAL. The native Gremlin TEXT parser rejects an
+// THE CHARACTERS GO IN THE DATA, NOT IN A QUERY LITERAL. The native Gremlin TEXT parser rejects an
 // astral char inside a quoted literal ("lenke: query: unexpected character"), which is why the
 // predicate half of item 1712 could not be checked across the bridge at all. The traversals here
 // carry no literals — the astral values arrive through NDJSON — so both engines see the same data.
 //
-// ⚠️ BUILT WITH `String.fromCodePoint`, NEVER PASTED, and the NDJSON uses JSON escapes: a literal
+// BUILT WITH `String.fromCodePoint`, NEVER PASTED, and the NDJSON uses JSON escapes: a literal
 // astral char in a source file is invisible to `grep` and can be mangled by a tool that rewrites the
 // file in the wrong encoding. This repo has already been bitten searching for the escape form while
 // a file held the literal.

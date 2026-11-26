@@ -3,7 +3,7 @@
  * a plan that contains no step `checkStep` can raise for. That walk was **27.5%** of a 123 ns
  * reused-plan call; gating it took `V().count()` from 124 to 77 ns (1.61x).
  *
- * ⚠️ BEING WRONG HERE LOSES A FAULT, NOT AN ANSWER. Every other gate in items 1504-1506 guarded an
+ * BEING WRONG HERE LOSES A FAULT, NOT AN ANSWER. Every other gate in items 1504-1506 guarded an
  * answer-equivalent rewrite, where a mistake costs speed. This one guards VALIDATION: if `mayFault`
  * is wrongly false, a plan that TinkerPop and the native engine both reject will happily run and
  * return rows. So this file is about the faults still firing, and it checks the two ways the flag
@@ -57,7 +57,7 @@ for (let e = 0; e < 5; e += 1) {
   });
 }
 
-describe('⚠️ every fault checkStep raises still raises', () => {
+describe('every fault checkStep raises still raises', () => {
   // One case per throw site in `checkStep`, because the gate is derived from exactly those seven.
   for (const [label, plan] of [
     ['an element step on a path frontier', traversal(V(), path(), out('E'))],
@@ -77,10 +77,10 @@ describe('⚠️ every fault checkStep raises still raises', () => {
   }
 });
 
-describe('⚠️ a fault NESTED in a sub-plan still raises — the hole I nearly shipped', () => {
+describe('a fault NESTED in a sub-plan still raises — the hole I nearly shipped', () => {
   // `assertFrontierTypes` recurses into branch arms, so the flag must propagate inward. A
   // top-level-only flag (the `kinds` mask's rule) would skip the check and LOSE every one of these.
-  // ⚠️ THE FLAG IS WHAT THIS GUARDS, and for two of these shapes it is ALL that can be asserted.
+  // THE FLAG IS WHAT THIS GUARDS, and for two of these shapes it is ALL that can be asserted.
   // `local(inV())` and `union(local(inV()))` do NOT raise — `local`'s arm starts from an `unknown`
   // frontier, and the engine's rule is that an unknown frontier never faults (a branch output MIGHT
   // be a vertex). That is pre-existing behaviour, not something the gate changed: when `mayFault`
@@ -134,7 +134,7 @@ describe('the flag is false only for plans that genuinely cannot fault', () => {
     });
   }
 
-  it('⚠️ a hop DOES set the flag — `out` is in the gate set', () => {
+  it('a hop DOES set the flag — `out` is in the gate set', () => {
     // `out` can raise off an edge or scalar frontier, so a hop cannot skip the walk. This is why
     // the `hop` row of the probe barely moved (162 → 161 ns) while `count` went 124 → 77.
     expect(traversal(V(), out('E'), count()).mayFault).toBe(true);

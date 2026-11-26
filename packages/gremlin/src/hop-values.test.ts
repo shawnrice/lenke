@@ -84,7 +84,7 @@ describe('the fused hop-values walk agrees with the pipeline, in order', () => {
   });
 
   test('a MULTI-TYPE hop, where the pipeline dedupes a two-type edge', () => {
-    // `iterLabeled` dedupes an edge carrying two of the named types. ⚠️ THE FUSED WALK NO LONGER
+    // `iterLabeled` dedupes an edge carrying two of the named types. THE FUSED WALK NO LONGER
     // ROUTES THROUGH IT (item 1389): multi-type used to delegate to that helper rather than
     // re-derive it, which is what this comment said, and now it has its own hand walk — so this
     // comparison went from a near-tautology to a real differential. It kept passing across that
@@ -305,7 +305,7 @@ describe('the IN direction, on a fixture where it cannot coincide with OUT (item
  * ordered, and `graph-queries.ts` documents label-arg order as deliberate. So the GQL twin's
  * largest-bucket-first sort (item 1384) is deliberately NOT copied here.
  *
- * ⚠️ THE OBVIOUS FIXTURE IS BLIND TO THIS. With one out-edge per vertex, vertex iteration order
+ * THE OBVIOUS FIXTURE IS BLIND TO THIS. With one out-edge per vertex, vertex iteration order
  * decides everything and `out('E','F')` prints the same sequence as `out('F','E')` whatever the walk
  * does — my first check reported exactly that and proved nothing. Each vertex here has THREE
  * out-edges: one `E`, one `F`, one carrying BOTH. The buckets differ in size, they overlap, and the

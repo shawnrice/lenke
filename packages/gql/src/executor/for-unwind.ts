@@ -3,12 +3,12 @@
  *
  * `detectForCount` and `detectForProjection` plus the five symbols only they reach.
  *
- * ⚠️ `FOR` MULTIPLIES THE ROW TABLE, which is what makes a closed form possible and also what makes
+ * `FOR` MULTIPLIES THE ROW TABLE, which is what makes a closed form possible and also what makes
  * it easy to get wrong. One row in, one row per list element out — so a COUNT is the sum of the
  * list lengths and never needs the elements, while a PROJECTION does. `perRowForCount` is the first
  * and `forProjectionRows` the second, and they are not variants of each other.
  *
- * ⚠️ `ELEM` AND `ANCHOR` ARE SENTINELS, not values. The unwound element has no name until the
+ * `ELEM` AND `ANCHOR` ARE SENTINELS, not values. The unwound element has no name until the
  * clause binds one, and a projection may read the element, the ordinality counter, or the row the
  * `FOR` came from — three different things that all look like "the current value". Naming the two
  * that are not the element is what keeps them apart.

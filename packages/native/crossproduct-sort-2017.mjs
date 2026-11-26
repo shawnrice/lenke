@@ -1,7 +1,7 @@
 /**
  * Item 2017 — WHAT DOES THE `ORDER BY` ON A LARGE CROSS PRODUCT COST, AND WHAT IS ITS FLOOR?
  *
- * ⚠️⚠️ **THE NOMINATION, AND WHY IT IS NEW DESPITE ~15 ITEMS OF SORT WORK.** `family-split-1880.ts`
+ * **THE NOMINATION, AND WHY IT IS NEW DESPITE ~15 ITEMS OF SORT WORK.** `family-split-1880.ts`
  * puts the GQL surface's largest shape at
  *
  * ```text
@@ -18,7 +18,7 @@
  * post-projection slices) on fixtures of thousands of rows; this is the same machinery at 6.75
  * MILLION, where the per-row terms the earlier items priced at tens of nanoseconds become seconds.
  *
- * 🔑 **SO THE QUESTION IS NOT "IS THE SORT SLOW" BUT "WHAT IS THE SORT'S FLOOR AT THIS SIZE".** An
+ * **SO THE QUESTION IS NOT "IS THE SORT SLOW" BUT "WHAT IS THE SORT'S FLOOR AT THIS SIZE".** An
  * `n log n` comparison sort of 6.75M rows is genuinely expensive and item 1976 already declined a
  * 744 ms row for exactly that reason. The arms below separate the terms that have a floor from the
  * ones that do not:
@@ -33,15 +33,15 @@
  *     handsortpairs      sort a flat Float64Array of PAIRS       — what a columnar sort could add
  * ```
  *
- * ⚠️ ONE ARM PER PROCESS (item 762): 6.75M rows is enough to perturb anything sharing the heap, and
+ * ONE ARM PER PROCESS (item 762): 6.75M rows is enough to perturb anything sharing the heap, and
  * a shape in a mixed process gets the mix's dispatch site.
  *
- * ⚠️ MEMORY. 6.75M rows is already ~GB-scale once boxed, so this probe MUST run under a cap:
+ * MEMORY. 6.75M rows is already ~GB-scale once boxed, so this probe MUST run under a cap:
  *     timeout 600 systemd-run --user --scope -q -p MemoryMax=16G -p MemorySwapMax=0 \
  *       bun crossproduct-sort-2017.mjs
  * [[dogfood-sim-resource-limits]] — generated-input probes have taken this box down four times.
  *
- * ⚠️ AND THE ANSWERS ARE COMPARED, not assumed: every arm prints a digest of the first and last
+ * AND THE ANSWERS ARE COMPARED, not assumed: every arm prints a digest of the first and last
  * rows, so an arm that sorted differently (or not at all) is visible rather than merely fast.
  *
  *     ARM=ordered bun crossproduct-sort-2017.mjs
@@ -66,7 +66,7 @@ let fCount = 0;
 
 for (let e = 0; e < NODES * FANOUT; e += 1) {
   const i = e % NODES;
-  // ⚠️ SPLIT ON THE REPEAT INDEX — CLAUDE.md's rule. Without `hop` in the expression one vertex's
+  // SPLIT ON THE REPEAT INDEX — CLAUDE.md's rule. Without `hop` in the expression one vertex's
   // FANOUT edges all land on ONE target and every degree statistic still reads correctly.
   const hop = Math.floor(e / NODES);
   const to = ((i * 7 + 3 + hop * 2_654_435_761) % NODES) + 1;
@@ -155,7 +155,7 @@ const handSort1 = (L) => {
 };
 
 /*
- * ⚠️ THE COLUMNAR ARM, and it is NOT a proposal — it is here to price the two getters and the row
+ * THE COLUMNAR ARM, and it is NOT a proposal — it is here to price the two getters and the row
  * BOXING so the arms above are not read as the ceiling. Item 1893's own probe carried the same kind
  * of arm for the same reason ("it hoists both property BAGS into Float64Arrays, which is a columnar
  * store, not a graph"). A graph engine that returns `{x, y}` rows cannot reach this.
@@ -197,7 +197,7 @@ const handSortPairs = (L) => {
 
 /* eslint-enable typescript/prefer-for-of */
 /*
- * ⚠️ ITEM 2023's ARMS. The no-copy binding VIEW is worth what its CONSUMER makes it worth, so these
+ * ITEM 2023's ARMS. The no-copy binding VIEW is worth what its CONSUMER makes it worth, so these
  * three read the product's bindings three different ways:
  *
  *     product     RETURN b.n AS x, d.n AS y   — two `get`s a row, where a view should shine
@@ -221,7 +221,7 @@ const ARMS = {
   handsort1: 'HAND',
   handsortpairs: 'HAND',
   /*
-   * ⚠️ ITEM 2018's QUESTION, isolated: the SORTED path builds a `Map` per row (`projectBinding`),
+   * ITEM 2018's QUESTION, isolated: the SORTED path builds a `Map` per row (`projectBinding`),
    * sorts, then has `mapToRow` copy each `Map` into a plain object — "two allocations and two
    * iterations per row where one of each will do", which `projectRow`'s own header says was fixed
    * for the NO-SORT path and is still present here. These two arms are the same sort with and
@@ -279,7 +279,7 @@ const HANDS = {
 };
 
 /*
- * ⚠️ GENERIC OVER THE ROW'S SHAPE. `x`/`y` is the projected arms' shape; `RETURN *` rows carry the
+ * GENERIC OVER THE ROW'S SHAPE. `x`/`y` is the projected arms' shape; `RETURN *` rows carry the
  * pattern's variables instead, and hard-coding `x`/`y` printed `undefined/undefined` for every row
  * of the `star` arm — which reads as a broken arm rather than a mismatched digest.
  */
@@ -314,7 +314,7 @@ for (let r = 0; r < REPS; r += 1) {
   rows = got.length;
 
   if (r === 0) {
-    // ⚠️ A PREFIX AND A SUFFIX, POSITIONALLY — an arm that did not actually sort is the failure mode
+    // A PREFIX AND A SUFFIX, POSITIONALLY — an arm that did not actually sort is the failure mode
     // here, and a row COUNT cannot see it.
     digest = `${got.slice(0, 3).map(show).join(' ')} … ${got.slice(-3).map(show).join(' ')}`;
   }

@@ -19,7 +19,7 @@ import { parsePredicate } from './parser.js';
 //
 // Both spellings now land ON the matched twin, which is the property that matters here.
 //
-// ⚠️ IT RUNS IN THE **LATE** GROUP, after `truthProps`, despite being total and non-raising. The
+// IT RUNS IN THE **LATE** GROUP, after `truthProps`, despite being total and non-raising. The
 // engine is the authority (item 1286) and it hoists NO form of this test — measured at item 1297
 // with `n.s` as the faulting sibling, including the cases whose tail is FALSE for every row:
 //
@@ -50,14 +50,14 @@ const ids = (where: string): string[] =>
     .sort();
 
 describe('IS TYPED lifts into typedTests (item 1298)', () => {
-  test('⚠️ ROUTE: every spelling lifts, and hasPredicate sees it', () => {
+  test('ROUTE: every spelling lifts, and hasPredicate sees it', () => {
     const lifted = (src: string) => compilePredicate(undefined, parsePredicate(src), 'n');
     const pos = lifted('n.v IS TYPED INTEGER');
 
     expect((pos.typedTests ?? []).length).toBe(1);
     expect(pos.typedTests?.[0].negated).toBe(false);
     expect(pos.where).toBeUndefined();
-    // ⚠️ Item 1289's `haspredicate-blind` mutant SURVIVED all 4,200 tests until an explicit
+    // Item 1289's `haspredicate-blind` mutant SURVIVED all 4,200 tests until an explicit
     // assertion existed, because no query in that file reached a gate consulting `hasPredicate`.
     expect(hasPredicate(pos)).toBe(true);
 
@@ -79,7 +79,7 @@ describe('IS TYPED lifts into typedTests (item 1298)', () => {
   test('the answers filter, and NOT NULL is carried', () => {
     // `7` is an INTEGER; `1.5` is not. A carrier that dropped `ty` would keep both.
     expect(ids('n.v IS TYPED INTEGER')).toEqual(['absent', 'int', 'nulled']);
-    // ⚠️ A NULLISH cell answers `!notNull`, so the bare form KEEPS it and `NOT NULL` drops it.
+    // A NULLISH cell answers `!notNull`, so the bare form KEEPS it and `NOT NULL` drops it.
     // A carrier that dropped `notNull` would answer the same for both spellings.
     expect(ids('n.v IS TYPED INTEGER NOT NULL')).toEqual(['int']);
     expect(ids('n.v IS TYPED STRING NOT NULL')).toEqual(['str']);
@@ -119,7 +119,7 @@ describe('IS TYPED lifts into typedTests (item 1298)', () => {
     expect(ids('n.v IS TYPED INTEGER AND n.v IS NOT NULL')).toEqual(['int']);
   });
 
-  test('⚠️ it survives a HOP, and the far-end MERGE must carry it', () => {
+  test('it survives a HOP, and the far-end MERGE must carry it', () => {
     // The INLINE far constraint is what reaches `mergeFarPreds` — item 1289's `merge-drops-family`
     // mutant SURVIVED until its test had one. Both far nodes satisfy `{nm: 'x'}`; only one
     // satisfies the clause, so a dropped list answers 2.

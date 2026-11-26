@@ -2,7 +2,7 @@
 # A two-arm sweep over the whole Gremlin shape corpus, for the REGRESSION pass after a change to a
 # hot shared path. Point PRE and NOW at two versions of one file.
 #
-# ⚠️ IT NOMINATES, IT DOES NOT PRICE, and item 1747 is why. At the default 40 reps and 2 readings per
+# IT NOMINATES, IT DOES NOT PRICE, and item 1747 is why. At the default 40 reps and 2 readings per
 # arm a "disjoint" verdict is far too easy to reach: `filterchain` came back SLOWER 1.42x and an
 # isolated 9-reading run at 300 reps showed the shape is BIMODAL (~38 ms and ~62 ms modes, both arms
 # hitting both in near-equal proportion), so the sweep had simply caught one arm low and the other

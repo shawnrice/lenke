@@ -17,7 +17,7 @@
  *      9.9%  expandSlot          the memo fill's per-slot half
  *      0.4%  memoReserve
  *
- * ⚠️ ~8% OF THE SAMPLES ARE STILL FIXTURE (`indexEdgeLabel` 2.5%, `getEdgeById` 1.8%,
+ * ~8% OF THE SAMPLES ARE STILL FIXTURE (`indexEdgeLabel` 2.5%, `getEdgeById` 1.8%,
  * `#commitNormalized` 1.3%, `commitElementLabels` 1.1%, plus `addVertex`/`insertEdge`). Raise CALLS
  * before reading anything below a couple of percent here.
  */

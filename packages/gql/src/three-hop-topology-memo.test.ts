@@ -1,16 +1,16 @@
 /*
  * Item 2135 — the three-segment unfiltered count is memoized per topology generation.
  *
- * 🔑 The Gremlin twin got this at item 2131, and the gap was the largest in item 2132's cross-language
+ * The Gremlin twin got this at item 2131, and the gap was the largest in item 2132's cross-language
  * table: identical question, identical answer (25,000,000), GQL **7.75 ms** against Gremlin's **0.00**.
  *
- * ⚠️⚠️ **MY FIRST VERSION WAS A WRONG ANSWER AND AN EXISTING TEST CAUGHT IT.** I read the memo at the TOP
+ * **MY FIRST VERSION WAS A WRONG ANSWER AND AN EXISTING TEST CAUGHT IT.** I read the memo at the TOP
  * of the compiled closure, on the assumption that "the closure IS the shape". It is NOT: the same closure
  * serves both the ungated question and `WHERE c.k > 1000`, so the memo returned the ungated 6 where 0 is
- * correct (`three-hop-interior-filter.test.ts`). 🔑 The read now sits exactly where the WRITE does, behind
+ * correct (`three-hop-interior-filter.test.ts`). The read now sits exactly where the WRITE does, behind
  * the same `csrDegreeProductApplies` test — and this file is the regression wall for that.
  *
- * ⚠️ The memo is keyed on `graph.topologyVersion`, which advances SYNCHRONOUSLY on an edge or vertex write
+ * The memo is keyed on `graph.topologyVersion`, which advances SYNCHRONOUSLY on an edge or vertex write
  * but **NOT on a label write** (verified at item 2132). That is why a MIDDLE label refuses the memo: the
  * CSR gate checks the other three labels but not `bLabel`, so a count depending on it would go stale.
  */
@@ -54,11 +54,11 @@ const THREE = 'MATCH (a:P)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN count(*) AS n';
 const asked = (g: Graph, q = THREE): unknown => query(g, q)[0]?.n;
 
 describe('the three-segment topology memo (item 2135)', () => {
-  describe('⚠️⚠️ a GATED question must never read the memo — the bug my first version shipped', () => {
+  describe('a GATED question must never read the memo — the bug my first version shipped', () => {
     test('a gate matching NOTHING answers zero, after the ungated question has run', () => {
       /*
-       * 🔑 THE EXACT SHAPE THAT CAUGHT ME. The ungated ask populates the memo; the gated ask must not
-       * read it. ⚠️ Order matters — the ungated query runs FIRST on purpose.
+       * THE EXACT SHAPE THAT CAUGHT ME. The ungated ask populates the memo; the gated ask must not
+       * read it. Order matters — the ungated query runs FIRST on purpose.
        */
       const g = ringOf(8);
 
@@ -78,7 +78,7 @@ describe('the three-segment topology memo (item 2135)', () => {
       expect(asked(g, vacuous)).toBe(64);
     });
 
-    test('⚠️ a SELECTIVE gate is not served the ungated number', () => {
+    test('a SELECTIVE gate is not served the ungated number', () => {
       const g = ringOf(8);
 
       expect(asked(g)).toBe(64);
@@ -93,11 +93,11 @@ describe('the three-segment topology memo (item 2135)', () => {
     });
   });
 
-  describe('⚠️⚠️ a MIDDLE label refuses the memo — `topologyVersion` ignores label writes', () => {
+  describe('a MIDDLE label refuses the memo — `topologyVersion` ignores label writes', () => {
     test('the mid-labelled count tracks a LABEL write, which the memo could not', () => {
       /*
-       * 🔑 THE SOUNDNESS BOUNDARY. `csrDegreeProductApplies` checks the start, `c` and end labels but NOT
-       * `bLabel`, so the memo requires `bLabel === undefined` separately. ⚠️ Here the middle IS labelled
+       * THE SOUNDNESS BOUNDARY. `csrDegreeProductApplies` checks the start, `c` and end labels but NOT
+       * `bLabel`, so the memo requires `bLabel === undefined` separately. Here the middle IS labelled
        * and a label write must still be seen — `topologyVersion` does not move for one, so a memo would
        * answer the old number forever.
        */
@@ -121,24 +121,24 @@ describe('the three-segment topology memo (item 2135)', () => {
     });
   });
 
-  test('⚠️⚠️ a VACUOUS mid label reaches the CSR and must still refuse the memo', () => {
+  test('a VACUOUS mid label reaches the CSR and must still refuse the memo', () => {
     /*
-     * 🔑 THE TEST THAT GIVES THE `bLabel === undefined` GUARD ITS TEETH, and my first attempt used the
+     * THE TEST THAT GIVES THE `bLabel === undefined` GUARD ITS TEETH, and my first attempt used the
      * wrong kind of label. A SELECTIVE mid label (`:Mid` on a quarter of the vertices) never reaches the
      * CSR at all — instrumented: `threeHopCsrCount` returns `undefined` and the memo is never offered
-     * the question. ⚠️ A VACUOUS one (`:P`, carried by every vertex) DOES reach it: `viaCsr` is defined
+     * the question. A VACUOUS one (`:P`, carried by every vertex) DOES reach it: `viaCsr` is defined
      * and `bLabel` is PRESENT, which is exactly the case the guard exists for.
      *
-     * 🔑 AND THE ANSWER DEPENDS ON THAT LABEL. Removing `P` from one vertex changes the count while
+     * AND THE ANSWER DEPENDS ON THAT LABEL. Removing `P` from one vertex changes the count while
      * `topologyVersion` stays put (it does not advance for a label write — item 2132), so memoizing here
-     * would answer the old number forever. ⚠️ Admitting a present `bLabel` into the memo makes this test
+     * would answer the old number forever. Admitting a present `bLabel` into the memo makes this test
      * fail; without it, that mutant survives.
      */
     /*
-     * ⚠️⚠️ TWO DISTINCT UNIVERSAL LABELS, AND THAT IS THE WHOLE POINT OF THE FIXTURE. My first attempt
+     * TWO DISTINCT UNIVERSAL LABELS, AND THAT IS THE WHOLE POINT OF THE FIXTURE. My first attempt
      * used `(a:P)` and `(b:P)` and the mutant still survived: dropping `P` from a vertex makes the START
      * label non-vacuous too, so `aEff` becomes defined and `csrDegreeProductApplies` disables the memo
-     * through a DIFFERENT condition. 🔑 To isolate `bLabel` the mid label must be able to stop being
+     * through a DIFFERENT condition. To isolate `bLabel` the mid label must be able to stop being
      * vacuous ON ITS OWN — so every vertex carries both `P` and `Q`, and only `Q` is taken away.
      */
     const g = new Graph();
@@ -179,7 +179,7 @@ describe('the three-segment topology memo (item 2135)', () => {
     expect(after).toBeLessThan(64);
   });
 
-  describe('🔑 the memo goes stale on a TOPOLOGY write', () => {
+  describe('the memo goes stale on a TOPOLOGY write', () => {
     test('an ADDED edge changes the answer', () => {
       const g = ringOf(8);
 
@@ -193,7 +193,7 @@ describe('the three-segment topology memo (item 2135)', () => {
       });
 
       /*
-       * ⚠️ Checked against a brute-force enumeration rather than by hand: the arithmetic of adding one
+       * Checked against a brute-force enumeration rather than by hand: the arithmetic of adding one
        * edge to a three-segment product is not obvious, and item 1611's note is that literals written by
        * eye in this repo have been wrong while the engine was right.
        */
@@ -221,7 +221,7 @@ describe('the three-segment topology memo (item 2135)', () => {
       expect(asked(g)).toBeLessThan(64);
     });
 
-    test('⚠️ TWO writes in a row each invalidate', () => {
+    test('TWO writes in a row each invalidate', () => {
       const g = ringOf(8);
       const seen = new Set<unknown>();
 
@@ -243,9 +243,9 @@ describe('the three-segment topology memo (item 2135)', () => {
     });
   });
 
-  test('🔑 a repeat ask returns the SAME number, not a mutated row', () => {
+  test('a repeat ask returns the SAME number, not a mutated row', () => {
     /*
-     * ⚠️ The memo stores the NUMBER and `rowOf` runs on every call, so no caller is handed an aliased
+     * The memo stores the NUMBER and `rowOf` runs on every call, so no caller is handed an aliased
      * row array. Mutating the first result must not change the second.
      */
     const g = ringOf(8);

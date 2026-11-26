@@ -10,7 +10,7 @@ import { type SlotMemo, memoReserve } from './executor/count-shortcut.js';
  * `hopcount3` at 72/81, with the collector's share falling from **148 ms to 14.2** across the same
  * reps.
  *
- * ⚠️ THIS FILE EXISTS BECAUSE THE GROWTH COPY IS UNREACHABLE FROM A QUERY. On the GQL side,
+ * THIS FILE EXISTS BECAUSE THE GROWTH COPY IS UNREACHABLE FROM A QUERY. On the GQL side,
  * `grown.set(m.flat.subarray(0, m.used))` shortened by one — which silently drops an entry on every
  * doubling — survived four separate black-box attempts: a 4,096-slot fixture (growth verified firing
  * 3 times by counter), a cycle, a path with sinks, and an out-degree-2 graph. The dropped entry
@@ -60,7 +60,7 @@ const readBack = (m: SlotMemo): number[] => {
 };
 
 describe('memoReserve preserves every written entry across growth (item 1418)', () => {
-  test('⚠️ 5,000 single-entry slots — the mutant-killer', () => {
+  test('5,000 single-entry slots — the mutant-killer', () => {
     // THE DIRECT GUARD. The initial buffer is empty and the first allocation is 1024 entries, so
     // 5,000 slots force several doublings. Each slot's value is its own index, so a lost entry shows
     // up as a 0 in a known position rather than as a count that might coincide.

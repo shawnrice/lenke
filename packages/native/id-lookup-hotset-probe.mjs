@@ -8,7 +8,7 @@
  * so — but not exactly. Over a 16x range it reads **105.7 -> 112.6 -> 129.5 ns** for
  * `getVertexById` and **99.9 -> 111.9 -> 130.5** for `getEdgeById`: **+22.5%** and **+30.6%**.
  *
- * ⚠️ THAT DRIFT IS NUMERICALLY INDISTINGUISHABLE FROM O(log N) and must not be waved away.
+ * THAT DRIFT IS NUMERICALLY INDISTINGUISHABLE FROM O(log N) and must not be waved away.
  * `log2(800000) / log2(50000)` is **1.26** — so a logarithmic structure would predict +26%, which is
  * between the two numbers measured. "It is just cache effects" is the right answer only if it is
  * demonstrated, and a size sweep alone cannot demonstrate it, because N moves the working set and
@@ -57,7 +57,7 @@ for (let k = 0; k < HOT; k += 1) {
 }
 
 /**
- * ⚠️ CONSTRUCT=1 BUILDS THE ID STRING PER LOOKUP, which is what `id-lookup-is-o1-probe.ts` does
+ * CONSTRUCT=1 BUILDS THE ID STRING PER LOOKUP, which is what `id-lookup-is-o1-probe.ts` does
  * (`g.getVertexById(\`v${i}\`)`). That matters for reading ITS numbers: a fresh string has to be
  * concatenated and hashed, and its LENGTH grows with N — ids are 6 characters at 50,000 and 7 at
  * 800,000. So a size sweep that constructs its keys is partly measuring key construction, and the

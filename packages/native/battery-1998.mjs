@@ -54,7 +54,7 @@ const render = (t) =>
   );
 
 /*
- * ⚠️ EACH SHAPE IS ASKED THREE TIMES, and that is the whole point of this battery now. The CSR arm
+ * EACH SHAPE IS ASKED THREE TIMES, and that is the whole point of this battery now. The CSR arm
  * is behind `seenBefore` (item 1889's second-ask policy), so a single ask can only ever exercise the
  * BUCKET path — item 1983 lost a verdict to exactly that. Ask 1 is the bucket walk, asks 2 and 3 the
  * CSR, and all three must agree with each other AND with the general path.
@@ -65,7 +65,5 @@ for (const [name, build] of Object.entries(SHAPES)) {
   const three = render(build());
   const stable = one === two && two === three;
 
-  console.log(
-    `${name.padEnd(24)} ${one}${stable ? '' : `   ⚠️ UNSTABLE ask2=${two} ask3=${three}`}`,
-  );
+  console.log(`${name.padEnd(24)} ${one}${stable ? '' : `   UNSTABLE ask2=${two} ask3=${three}`}`);
 }

@@ -17,7 +17,7 @@
 // names, and the undirected form is refused outright (two walks emit all out-rows then all
 // in-rows where the general path interleaves them).
 //
-// ⚠️⚠️ SUPERSEDED IN VERDICT BY ITEM 2401 — THE HAZARD BELOW IS STILL REAL, THE REFUSAL IS NOT.
+// SUPERSEDED IN VERDICT BY ITEM 2401 — THE HAZARD BELOW IS STILL REAL, THE REFUSAL IS NOT.
 // Item 2400 relaxed cross-engine identity to CONTENT rather than POSITION (a walk's order is
 // implementation-dependent), and item 2401 ruled that FLOAT folds carry a PRECISION contract —
 // accurate to within n·eps·sum|x| — rather than a bit-identity one. So `sum`, `avg`, `stddev_pop`

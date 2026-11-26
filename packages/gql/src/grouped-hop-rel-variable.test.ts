@@ -40,7 +40,7 @@ describe('an unread rel variable in a grouped hop (item 488)', () => {
     expect(query(g, 'MATCH (:P)-[r:T]->(b) RETURN b.k AS k, max(b.n) AS m')).toEqual(
       query(g, 'MATCH (:P)-[:T]->(b) RETURN b.k AS k, max(b.n) AS m'),
     );
-    // ⚠️ THE ROW ORDER IS NO LONGER ASSERTED, and that is deliberate as of item 1310. This shape
+    // THE ROW ORDER IS NO LONGER ASSERTED, and that is deliberate as of item 1310. This shape
     // now takes the per-ENDPOINT extremum fold, which iterates the FAR side where the per-edge walk
     // iterates the start side, so the groups come out in a different order. Grouped row order
     // without `ORDER BY` is unspecified here — the differential fuzzer compares a grouped result as

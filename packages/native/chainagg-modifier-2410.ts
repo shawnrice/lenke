@@ -9,18 +9,18 @@
  * `ORDER_INVARIANT_AGGREGATES`, which refuses `sum`/`avg` on the byte-identity argument item 2401
  * retired.
  *
- * ⚠️ SO THIS PROBE IS ABOUT THE *MODIFIER*, NOT THE AGGREGATE. `plain` is the control that item 2409
+ * SO THIS PROBE IS ABOUT THE *MODIFIER*, NOT THE AGGREGATE. `plain` is the control that item 2409
  * already took: it must now be fast for `sum`, and if it is not, nothing below can be read. Each
  * other modifier is one reason the level fold declines, and the question for each is whether the
  * path-walk rung underneath it has a gap.
  *
- * ⚠️ ARM PARITY, per items 2326/2328/2335. `countx` (`count(far.n)`) is the ADMITTED order-invariant
+ * ARM PARITY, per items 2326/2328/2335. `countx` (`count(far.n)`) is the ADMITTED order-invariant
  * fold that reads the SAME property through the SAME rung, so `sum` against `countx` is
  * fold-vs-no-fold rather than read-vs-no-read. `min` is the admitted comparison arm. Timing CANNOT
  * tell "declined" from "more work" ([[rung-precedence-decides-speed]]) — a throw at the admission
  * point is what settles the route, and this probe only says where to put one.
  *
- * ⚠️ AND THE FLOOR. `rows` materializes every row the aggregate reduces. An aggregate costing MORE
+ * AND THE FLOOR. `rows` materializes every row the aggregate reduces. An aggregate costing MORE
  * than its own floor is the item 2157/1918 signal; one sitting at it has nothing left to win.
  *
  *     MOD=plain|where|relvar|union|inline|labelexpr|neararg SHAPE=sum bun chainagg-modifier-2410.ts

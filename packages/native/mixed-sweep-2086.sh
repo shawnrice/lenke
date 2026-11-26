@@ -1,16 +1,16 @@
 #!/bin/zsh
 # Item 2086 — every corpus shape with HOMOGENEOUS vs MIXED labels, one shape per process.
 #
-# ⚠️⚠️ **MIXED IS THE REALISTIC MODE AND ALMOST NOTHING HAS BEEN MEASURED IN IT.** A vacuous label is
+# **MIXED IS THE REALISTIC MODE AND ALMOST NOTHING HAS BEEN MEASURED IN IT.** A vacuous label is
 # ELIDED by `effectiveLabel`, and vacuity is all-or-nothing: one unlabelled vertex defeats the elision
 # for every query anchored on that label (item 325's cliff). Item 2085 found `hopfilter` at **5.98x**
 # between the two modes and took 2.65x of it back. This asks which OTHER shapes fall off a rung.
 #
-# ⚠️ A SCREEN RANKS, IT DOES NOT PRICE (CLAUDE.md, and items 2038/2040/2042 each produced a false
+# A SCREEN RANKS, IT DOES NOT PRICE (CLAUDE.md, and items 2038/2040/2042 each produced a false
 # regression signal from a multi-row run). This runs at NODES=20000 to find WHICH shapes the index
 # moves at all; anything it flags is then priced at 200,000 in its own A/B.
 #
-# ⚠️ ONE SHAPE PER PROCESS, because `MIXED=1` changes which ROUTE answers a predicate and a shared
+# ONE SHAPE PER PROCESS, because `MIXED=1` changes which ROUTE answers a predicate and a shared
 # process would let one shape's route pollute another's dispatch sites (item 762).
 #
 # THE `answer` FIELD IS ONLY COMPARABLE WHERE `EXPECTED` GUARDS IT, AND THIS SWEEP LEARNED IT THE HARD
@@ -42,7 +42,7 @@ PY
 print -- "#  ${#${(z)shapes}} shapes, NODES=$N, REPS=$REPS, one shape per process\n"
 printf "  %-18s %10s %10s %8s  %s\n" shape plain MIXED ratio answers
 
-# ⚠️⚠️ THE JSON IS PARSED, NOT PATTERN-MATCHED. The first form of this loop extracted the answer with
+# THE JSON IS PARSED, NOT PATTERN-MATCHED. The first form of this loop extracted the answer with
 # "answer":[-0-9]+, which silently dropped FIVE of 53 shapes -- `point` answers "s345" (a string) and
 # `collected` answers an ARRAY. They reported "THREW or no match", which reads as a broken shape rather
 # than a broken reader. A screen that silently covers 48 of 53 rows is the failure this file exists to

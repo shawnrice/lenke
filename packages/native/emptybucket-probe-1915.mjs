@@ -11,7 +11,7 @@ const show = (tag, v, label) => {
 
   const boxed = box === undefined ? 'undefined' : 'present';
   const bucket = set === undefined ? 'ABSENT' : `present size=${set.size}`;
-  const flag = set !== undefined && set.size === 0 ? '   ⬅ PRESENT AND EMPTY' : '';
+  const flag = set !== undefined && set.size === 0 ? '   <- PRESENT AND EMPTY' : '';
 
   console.log(`${tag.padEnd(26)} box=${boxed} bucket=${bucket}${flag}`);
 };

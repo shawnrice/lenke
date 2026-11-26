@@ -1,21 +1,21 @@
 /**
- * ⚠️⚠️ **WHAT DOES THE CSR BUILD ACTUALLY COST? (item 2253)** This is the number that decides whether
+ * **WHAT DOES THE CSR BUILD ACTUALLY COST? (item 2253)** This is the number that decides whether
  * `second-ask.ts`'s policy could be relaxed. The policy forgets every shape when `topologyVersion` moves,
  * so an interleaved workload never reaches a second ask and never gets the CSR route (items 2251/2252). The
  * candidate change is to remember shapes ACROSS versions: a genuinely one-shot query still declines
  * (it has never asked that shape), while an interleaved one arms on its first ask of each new version.
  *
- * 🔑 **THE DECISION IS ARITHMETIC**, and it needs three measurements on the same fixture:
+ * **THE DECISION IS ARITHMETIC**, and it needs three measurements on the same fixture:
  *
  *     slowRead            a read with NO CSR                  (what interleaving pays today)
  *     build + fastRead    ask #2 of a shape, which builds     (what the change would pay per version)
  *     fastRead            ask #3+, cached                     (the steady state)
  *
- * The change wins at one-read-per-version iff `build + fastRead < slowRead`. ⚠️ If it loses, that IS the
+ * The change wins at one-read-per-version iff `build + fastRead < slowRead`. If it loses, that IS the
  * 1.64x cold regression the policy exists to prevent, and the lever is dead — which is worth knowing
  * before touching a policy whose own doc calls itself "the item".
  *
- * ⚠️ The JIT must be warmed on a DIFFERENT shape first, or ask #1 of the measured shape carries tiering
+ * The JIT must be warmed on a DIFFERENT shape first, or ask #1 of the measured shape carries tiering
  * and the build is unreadable. `warm` does that.
  */
 import { Graph } from '@lenke/core';
@@ -45,7 +45,7 @@ const doc = (() => {
 const g = deserialize(doc, 'ndjson', new Graph());
 
 /*
- * 🔑🔑 **WARM THE IN DIRECTION, MEASURE THE OUT DIRECTION.** `seenBefore(graph, forward, type)` keys on the
+ * **WARM THE IN DIRECTION, MEASURE THE OUT DIRECTION.** `seenBefore(graph, forward, type)` keys on the
  * DIRECTION, so `in_('E')` and `out('E')` are different records while running the SAME rung and the same
  * code. That warms the JIT fully and leaves the measured shape's CSR unarmed — which a first attempt got
  * wrong twice: warming on the measured shape itself armed it, and switching to a 2-hop shape left the CSR
@@ -58,7 +58,7 @@ for (let r = 0; r < 6; r += 1) {
 }
 
 /*
- * 🔑 The second-ask record is keyed per (graph, tv, shape), so this OUT shape has never been asked: ask #1
+ * The second-ask record is keyed per (graph, tv, shape), so this OUT shape has never been asked: ask #1
  * declines the CSR, ask #2 builds it, ask #3+ is cached. The per-ask series is therefore the whole
  * measurement — printed, not summarized, because the build is ONE rep.
  */

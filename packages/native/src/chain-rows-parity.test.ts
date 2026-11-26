@@ -1,9 +1,9 @@
 // Byte-identity for the ROW-PROJECTING THREE-HOP CHAIN, which NO fuzzer generates (item 1816).
 //
-// ⚠️ WHY THIS FILE EXISTS RATHER THAN A FUZZER SEED, AND HOW THE GAP WAS FOUND. Item 1814 shipped
+// WHY THIS FILE EXISTS RATHER THAN A FUZZER SEED, AND HOW THE GAP WAS FOUND. Item 1814 shipped
 // `detectChainProjection` — the rung that answers `MATCH (a)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN
 // d.k` — and recorded `bun run fuzz` green with `chain3=57/34/55` as evidence that the family had
-// cross-engine coverage. ⚠️ **THAT WAS WRONG, AND IT WAS WRONG IN THE WAY THIS REPO HAS BEEN WRONG
+// cross-engine coverage. **THAT WAS WRONG, AND IT WAS WRONG IN THE WAY THIS REPO HAS BEEN WRONG
 // BEFORE.** Every `chain3` shape in `differential-fuzz` ends in `RETURN count(*)`, and the rung
 // DECLINES an aggregating projection outright, so the counter was measuring the degree-product and
 // var-length-count routes while the row rung had no cross-engine coverage at all.
@@ -17,7 +17,7 @@
 // than by widening a fuzzer band, because a band's share is a probability and an explicit query is
 // not. (Widening the band was tried first and the shapes were never sampled.)
 //
-// ⚠️ THE CORPUS COVERS BOTH WALKS, because item 1816 gave the rung two and the split is invisible
+// THE CORPUS COVERS BOTH WALKS, because item 1816 gave the rung two and the split is invisible
 // to any correctness test:
 //
 //     FAR-END-ONLY   the blocked level-synchronous sweep — batches a level, so it CANNOT
@@ -42,7 +42,7 @@ import { graphFromNdjson } from './graph.js';
 // Four levels deep so a FOUR-segment chain has somewhere to go: item 1814's own test fixture was
 // three deep and its four-segment case silently compared two EMPTY results.
 //
-// ⚠️ Edge ids are `r*` and vertex ids `v*` with no overlap: an edge sharing a vertex's id SILENTLY
+// Edge ids are `r*` and vertex ids `v*` with no overlap: an edge sharing a vertex's id SILENTLY
 // DESTROYS that vertex's labels and properties (item 1588, WON'T FIX — one id-keyed map across two
 // id spaces), which cost item 1814 nine tests before the ids were separated.
 const NDJSON = [
@@ -94,7 +94,7 @@ suite('row-projecting chain: TS vs native', () => {
     'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN d AS d',
     // A carried WHERE over the far end, which both walks evaluate at the DEEPEST level.
     'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) WHERE d.k > 5 RETURN d.k AS k',
-    // ⚠️ The UNKNOWN arm: `v9` has no `k`, so this comparison is UNKNOWN and the row must drop.
+    // The UNKNOWN arm: `v9` has no `k`, so this comparison is UNKNOWN and the row must drop.
     'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) WHERE d.k > 0 RETURN d.s AS s',
     // FOUR segments, so the recursion and the block loop both run one level deeper.
     'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P)-[:E]->(e:P) RETURN e.k AS k',
@@ -114,7 +114,7 @@ suite('row-projecting chain: TS vs native', () => {
     'MATCH (a)-[:E]->(b)-[:E]->(c)-[:E]->(d) RETURN d.k AS k',
 
     // ---- INTERIOR READS: the depth-first descent ----
-    // ⚠️ THE CASE THE SWEEP CANNOT ANSWER. Batching a level discards the path, so these MUST route
+    // THE CASE THE SWEEP CANNOT ANSWER. Batching a level discards the path, so these MUST route
     // to the descent; if the gate ever admitted them the rows would be WRONG rather than slow, and
     // that is a byte-identity failure rather than a perf one.
     'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN b.k AS bk, d.k AS k',
@@ -153,7 +153,7 @@ suite('row-projecting chain: TS vs native', () => {
       const ts = tsQuery(tsGraph, q) as Array<Record<string, unknown>>;
       const nat = nativeGraph.query(q) as Array<Record<string, unknown>>;
 
-      // ⚠️ Rows as MULTISETS, because unordered row order is unspecified here and deliberately so
+      // Rows as MULTISETS, because unordered row order is unspecified here and deliberately so
       // (item 198) — but COLUMN order is bytes, so it is asserted exactly.
       expect(columnOrderOf(JSON.stringify(ts))).toEqual(columnOrderOf(JSON.stringify(nat)));
       expect([...ts].map((r) => JSON.stringify(r)).sort()).toEqual(
@@ -165,7 +165,7 @@ suite('row-projecting chain: TS vs native', () => {
     });
   }
 
-  // ⚠️ A NON-EMPTY FLOOR FOR THE CORPUS. Two empty results agree trivially and would pass every
+  // A NON-EMPTY FLOOR FOR THE CORPUS. Two empty results agree trivially and would pass every
   // assertion above, so at least the headline shape has to actually produce rows for any of this
   // to have asked a question. Item 1814's four-segment test passed for a whole session while
   // comparing nothing.

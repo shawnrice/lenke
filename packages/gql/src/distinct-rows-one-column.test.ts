@@ -8,7 +8,7 @@ import { query } from './index.js';
  * Item 1561: `distinctRows` keys a ONE-COLUMN row on the raw value instead of building a string
  * through `rowKeyOf`. 4.01x on `UNION`, 1.25x on `EXCEPT`.
  *
- * ⚠️ EVERY TEST HERE IS A SEMANTIC EQUIVALENCE, not a speed check, because the fast path replaces a
+ * EVERY TEST HERE IS A SEMANTIC EQUIVALENCE, not a speed check, because the fast path replaces a
  * string key space with a value key space and the two can disagree in exactly three ways: on
  * numeric edge cases (`-0`, `NaN`), on types that stringify alike (`5` vs `'5'`), and on a string
  * that happens to look like another kind's key (`'@v1'` vs a vertex with id `v1`).
@@ -36,7 +36,7 @@ describe('one-column UNION keeps the string key space equivalence classes', () =
   });
 
   test('POSITIONAL, not by name — differently-aliased sides are the same row', () => {
-    // ⚠️ The implementation must read the column PER ROW, not once from `rows[0]`: ISO set
+    // The implementation must read the column PER ROW, not once from `rows[0]`: ISO set
     // operations compare positionally and the right side aliases differently here. Taking the name
     // from the first row would look up `a` on a row that only has `b` and read `undefined`, which
     // would collapse the whole right side into one row.
@@ -55,7 +55,7 @@ describe('one-column UNION keeps the string key space equivalence classes', () =
     expect([...col(rows, 'x')].map(String).sort()).toEqual(['5', '5', '6', '6']);
   });
 
-  test('⚠️ a STRING column that looks like an element key does NOT collide with an element', () => {
+  test('a STRING column that looks like an element key does NOT collide with an element', () => {
     // THE CASE FOR TWO SETS. An element keys as `@<id>`, so the string `'@v1'` and the vertex `v1`
     // would be the same key in one shared set, and one of these two rows would vanish. They are
     // different rows.
@@ -85,8 +85,8 @@ describe('one-column UNION keeps the string key space equivalence classes', () =
     expect(rows.length).toBe(1);
   });
 
-  test('⚠️ two NaN rows are ONE row — and NaN DOES reach a row', () => {
-    // ⚠️ I first "established" that NaN normalizes to null here and it was an INSTRUMENT ARTIFACT:
+  test('two NaN rows are ONE row — and NaN DOES reach a row', () => {
+    // I first "established" that NaN normalizes to null here and it was an INSTRUMENT ARTIFACT:
     // I printed the row with `JSON.stringify`, and `JSON.stringify(NaN)` is the string `null`. The
     // value is a real NaN. So this equivalence class is live and the fast path has to match it.
     //
@@ -131,7 +131,7 @@ describe('one-column UNION keeps the string key space equivalence classes', () =
   });
 });
 
-describe('⚠️ item 1564: MIXED-ARITY UNION — the answer change item 1561 made silently', () => {
+describe('item 1564: MIXED-ARITY UNION — the answer change item 1561 made silently', () => {
   // `distinctRows` decides the one-column fast path from `rows[0]` alone, and `union` is the ONE
   // caller that hands it rows of mixed WIDTH (`[...left, ...right]`, legal here because this engine
   // accepts ISO-invalid unequal degree — item 1563). So item 1561 keyed two-column right rows on
@@ -237,7 +237,7 @@ describe('item 1562: EXCEPT and INTERSECT key BOTH sides the one-column way', ()
     expect(rows).toEqual([{ a: 2 }]);
   });
 
-  test('⚠️ a string that looks like an element key does not collide, on the SET-OP path too', () => {
+  test('a string that looks like an element key does not collide, on the SET-OP path too', () => {
     // The same two-key-space requirement as `distinctRows`, now also for the right-side set and the
     // left-row probe. `'@v1'` must not subtract the vertex `v1`.
     const rows = query(g(), 'MATCH (n:P) RETURN n AS x EXCEPT MATCH (n:P) RETURN n.tag AS x');
@@ -279,7 +279,7 @@ describe('item 1562: EXCEPT and INTERSECT key BOTH sides the one-column way', ()
     expect(rows).toEqual([{ a: 2, b: '6' }]);
   });
 
-  test('⚠️ MISMATCHED ARITY declines the fast path — found by a surviving mutant', () => {
+  test('MISMATCHED ARITY declines the fast path — found by a surviving mutant', () => {
     // This engine does NOT reject unequal degree in a set operation (ISO requires equal degree, so
     // that is a separate conformance question — recorded, not fixed here). Since it runs, a
     // one-column LEFT can meet a two-column RIGHT, and the fast path must decline: keying the right

@@ -5,11 +5,11 @@
 // carry identical values, so no differential test can see it. The rows go to the CALLER though, and
 // aliasing is observable the moment they write to one — so each of these is a load-bearing line.
 //
-// 🔑 THE SWEEP IS MECHANICAL ON PURPOSE. There are eleven fold sites in `hop-projection.ts` and
+// THE SWEEP IS MECHANICAL ON PURPOSE. There are eleven fold sites in `hop-projection.ts` and
 // working out by hand which query shape reaches each is exactly the kind of reasoning that produced
 // item 1952's gap. Replacing the i-th occurrence and running the suite ASKS the question instead.
 //
-// ⚠️ A SURVIVOR HERE IS NOT A SLOW PATH, IT IS AN UNTESTED CONTRACT. Report, then write the test.
+// A SURVIVOR HERE IS NOT A SLOW PATH, IT IS AN UNTESTED CONTRACT. Report, then write the test.
 //
 //     bun clone-sweep-1953.mjs
 import { spawnSync } from 'node:child_process';
@@ -24,7 +24,7 @@ const original = readFileSync(PRISTINE, 'utf8');
 const NEEDLE = '{ ...template }';
 
 /*
- * ⚠️ CODE SITES ONLY. The first run of this sweep reported 11 sites and 8 survivors — and two of
+ * CODE SITES ONLY. The first run of this sweep reported 11 sites and 8 survivors — and two of
  * the "survivors" were the string `{ ...template }` appearing in PROSE, inside the comments that
  * explain the fold. Mutating a comment of course survives, and reporting it as an untested contract
  * is a false alarm that would have sent me writing tests for nothing. A line whose first non-space
@@ -96,7 +96,7 @@ console.log(
 );
 
 if (!base.ran || base.failing !== 0) {
-  console.log('⚠️ BASELINE NOT CLEAN');
+  console.log('BASELINE NOT CLEAN');
   process.exit(1);
 }
 
@@ -115,7 +115,7 @@ for (let n = 0; n < total; n += 1) {
   const killed = r.ran && r.failing > 0;
 
   console.log(
-    `${killed ? '✅ caught' : '❌ SURVIVED'}  ${String(line).padStart(5)}  ${owner.padEnd(38)}  ${killed ? `${String(r.failing)} failing` : 'aliasing is invisible'}`,
+    `${killed ? 'caught' : 'SURVIVED'}  ${String(line).padStart(5)}  ${owner.padEnd(38)}  ${killed ? `${String(r.failing)} failing` : 'aliasing is invisible'}`,
   );
 
   if (!killed) {
@@ -127,7 +127,7 @@ copyFileSync(PRISTINE, SRC);
 console.log('\n# restored');
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} UNTESTED CLONE SITE(S):`);
+  console.log(`\n${String(survivors.length)} UNTESTED CLONE SITE(S):`);
 
   for (const s of survivors) {
     console.log(`  - ${SRC.split('/').pop()}:${String(s.line)}  ${s.owner}`);

@@ -106,7 +106,7 @@ export const edgeToVertex = function* (
  * THE ONE ADJACENCY BUCKET a directed single-type hop reads, with the direction, or `undefined` for
  * every other hop shape (item 1628).
  *
- * ⚠️ WHY A CALLER WANTS IT INSTEAD OF `adjacentEdges` + `otherEndpoint`. Those two are a generator
+ * WHY A CALLER WANTS IT INSTEAD OF `adjacentEdges` + `otherEndpoint`. Those two are a generator
  * chain — `adjacentEdges` delegates into `iterByLabel` which delegates into `iterLabeled` — and
  * `hop-values.ts`' header prices the chain at **375.6 ms against a hand walk's 251, 1.50x**. Item
  * 1480's profile of `optional(out(T)).values(k)` puts **~61%** of that shape in it:
@@ -119,7 +119,7 @@ export const edgeToVertex = function* (
  * For a directed single-type hop there is exactly one `Set` and nothing to dedupe, so a caller that
  * loops it pays neither the delegation nor the per-edge `{edge, node}` the step form allocates.
  *
- * ⚠️ IT REFUSES EVERYTHING ELSE, AND THAT IS THE LOAD-BEARING HALF. `both` walks out-bucket then
+ * IT REFUSES EVERYTHING ELSE, AND THAT IS THE LOAD-BEARING HALF. `both` walks out-bucket then
  * in-bucket per vertex and drops a self-loop's duplicate; a multi-type hop needs the cross-bucket
  * dedupe (`detectGroupedHopCount`'s own note records a `T|S` edge counted TWICE when that was
  * hand-rolled); an untyped hop walks every bucket. All three keep `adjacentEdges`.

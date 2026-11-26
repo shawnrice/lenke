@@ -2,7 +2,7 @@
 # Items 1756/1758/1759 shipped three wins across FOUR source files, one of them in core — and every
 # measurement was taken on an INDEXED fixture. This is the unindexed regression pass they owe.
 #
-# ⚠️ IT NOMINATES, IT DOES NOT PRICE (item 1747): few readings per arm make a "disjoint" verdict too
+# IT NOMINATES, IT DOES NOT PRICE (item 1747): few readings per arm make a "disjoint" verdict too
 # easy, and `filterchain` is BIMODAL. Re-measure any flagged row on its own at 300+ reps.
 set -u
 R=/home/shawn/projects/pl-graph

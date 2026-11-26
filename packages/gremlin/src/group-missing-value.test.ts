@@ -11,7 +11,7 @@ import { traversal } from './traversal.js';
  * group's `Traverser`s (it is applied as a barrier), while every other value-by is evaluated at
  * insertion and only the VALUE is kept (1.27x, and it stops retaining the whole stream).
  *
- * ⚠️ MUTATION FOUND THESE MISSING. A mutant that keeps a member whose value-by yields NO_VALUE —
+ * MUTATION FOUND THESE MISSING. A mutant that keeps a member whose value-by yields NO_VALUE —
  * instead of dropping it from the list — **survived all 1,241 Gremlin tests**. The nine existing
  * `group()` tests cover a missing KEY ("no null bucket") but never a missing VALUE, which is a
  * different rule with a different consequence:

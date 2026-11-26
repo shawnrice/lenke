@@ -8,16 +8,16 @@
  *       if (values.some(Array.isArray)) throw nonNumericAgg();
  *       return values.reduce((s, v) => s + numArg(v), 0);
  *
- * ⚠️ THREE FULL PASSES, AND THE DESIGN IS DELIBERATE — its own header says so: "the operation is
+ * THREE FULL PASSES, AND THE DESIGN IS DELIBERATE — its own header says so: "the operation is
  * chosen by looking at the WHOLE collection (a temporal anywhere means `temporalSum`, an array
  * anywhere throws), which item 467 is the entry about." Neither `some` short-circuits on an
  * all-numeric column, so both scan to the end.
  *
- * 🔑 THE QUESTION IS WHETHER THAT COSTS ANYTHING MEASURABLE. The passes are over an ALREADY
+ * THE QUESTION IS WHETHER THAT COSTS ANYTHING MEASURABLE. The passes are over an ALREADY
  * MATERIALIZED array and do only a type test each, so they may be nearly free against the reduce —
  * which is exactly the kind of thing items 2066/2067 showed cannot be assumed either way.
  *
- * ⚠️ THE ARMS MUST PRODUCE THE SAME SUM, or they price different work.
+ * THE ARMS MUST PRODUCE THE SAME SUM, or they price different work.
  */
 const N = Number(process.env.N ?? 200_000);
 const REPS = Number(process.env.REPS ?? 11);

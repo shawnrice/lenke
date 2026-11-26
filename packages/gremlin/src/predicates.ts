@@ -209,10 +209,10 @@ const cmpSameType = (a: unknown, b: unknown): number | null => {
   //     gremlin NAT   a  z  U+E000   U+1F600     the engine
   //     gremlin TS    a  z  U+1F600  U+E000      this function
   //
-  // ⚠️ IT IS SHARED WITH GQL FROM `core`, NOT COPIED. One definition of the ordering, for the
+  // IT IS SHARED WITH GQL FROM `core`, NOT COPIED. One definition of the ordering, for the
   // reason that module's header gives: the Rust engine has no per-language string order at all.
   //
-  // ⚠️ AND THIS ARM SERVES BOTH `compareTotal` (sort) AND `predCmp` (`gt`/`lt`/`between`), so the
+  // AND THIS ARM SERVES BOTH `compareTotal` (sort) AND `predCmp` (`gt`/`lt`/`between`), so the
   // predicates move with it — deliberately. Leaving them on code units would make `order()` and
   // `gt` disagree about which of two strings is larger INSIDE one engine. The sort leg is confirmed
   // against native above; the PREDICATE leg is inferred from the same Rust primitive, because the
@@ -230,7 +230,7 @@ const cmpSameType = (a: unknown, b: unknown): number | null => {
     return a ? 1 : -1;
   }
 
-  // ⚠️ A DATE/DATE PAIR SHORT-CIRCUITS THE WHOLE TEMPORAL CHAIN (item 1491), and it is placed
+  // A DATE/DATE PAIR SHORT-CIRCUITS THE WHOLE TEMPORAL CHAIN (item 1491), and it is placed
   // HERE — after the three `typeof` tests — rather than first, so the numeric and string paths
   // pay nothing for it. Measured flat on both (controls below).
   //
@@ -246,7 +246,7 @@ const cmpSameType = (a: unknown, b: unknown): number | null => {
   // handles and which would need their own branch each), and it is the kind a bitemporal
   // people-graph filters on.
   //
-  // ⚠️ BYTE-IDENTITY: this must reproduce `cmpNum(a.days, b.days)` EXACTLY, including its NaN
+  // BYTE-IDENTITY: this must reproduce `cmpNum(a.days, b.days)` EXACTLY, including its NaN
   // behaviour. `cmpNum` tests `<` then `>` and falls through to 0, so a `NaN` day count compares
   // EQUAL to everything rather than returning NaN — unlike the number/number branch above, which
   // returns NaN deliberately. `new LocalDate(NaN)` is constructible, so that is reachable, and the
@@ -377,7 +377,7 @@ export const regex = (value: string): Predicate => {
 /**
  * Does `value` equal ANY of `values`? The membership test behind `within` / `without`.
  *
- * ⚠️ A NAMED FUNCTION TAKING `value` AS A PARAMETER, NOT `values.some((x) => valueEq(value, x))`,
+ * A NAMED FUNCTION TAKING `value` AS A PARAMETER, NOT `values.some((x) => valueEq(value, x))`,
  * and the difference is measured rather than stylistic. That arrow CAPTURES `value`, so a closure
  * is allocated on every call to `matches` — once per ELEMENT, so 200,000 closures for a
  * 200,000-vertex scan, plus the callback dispatch. Item 1348 priced the consequence as an
@@ -429,7 +429,7 @@ const anyValueEq = (value: unknown, values: readonly unknown[]): boolean => {
  * the arms disagreed with their own ordering — `inline` read SLOWER than `dynkey` — which is the
  * arms-interfere signature, so every figure above is isolated.)
  *
- * ⚠️ EACH SPECIALIZATION BELOW MUST BE PROVABLY THE SAME FUNCTION AS ITS `matches` ARM, for every
+ * EACH SPECIALIZATION BELOW MUST BE PROVABLY THE SAME FUNCTION AS ITS `matches` ARM, for every
  * value a property read can produce — `undefined`, `null`, a number, a string, a boolean, a
  * temporal, an array, an object. The derivations, which is why only these shapes are here:
  *

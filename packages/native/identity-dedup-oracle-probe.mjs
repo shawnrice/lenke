@@ -10,7 +10,7 @@
  *      `count(DISTINCT n)` is 1; native says 2. Identity keying would make TS say 2. (Divergence 13.)
  *   2. A VERTEX and an EDGE sharing an id — both key `@x` today, so they collapse.
  *
- * ⚠️ NATIVE IS THE ORACLE, and its answer DECIDES whether this change is a fix or a new divergence.
+ * NATIVE IS THE ORACLE, and its answer DECIDES whether this change is a fix or a new divergence.
  * Case 1 is already known (native: 2, so identity keying fixes it). Case 2 is NOT, and if native
  * collapses there while identity keying splits, the change would trade one divergence for another.
  * That is the question this probe exists to answer, and it is cheaper than finding out after

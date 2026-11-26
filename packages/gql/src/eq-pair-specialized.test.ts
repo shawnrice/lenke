@@ -20,13 +20,13 @@ import { query } from './index.js';
  *    three-clause 76166 81336     76854 77805   flat (control: three entries, NOT admitted)
  * ```
  *
- * ⚠️ THE TWO SPELLINGS MOVE TOGETHER, and that is the point of the second half of the change. The
+ * THE TWO SPELLINGS MOVE TOGETHER, and that is the point of the second half of the change. The
  * clause form arrives as ONE pred holding `eqProps(2)`; the ISO form arrives as TWO preds
  * (`props(1)` and `eqProps(1)`), so widening the specializer alone moved the clause row 1.27x and
  * left the inline row FLAT — a 2.7x equivalent-spelling gap on the very row that nominated the
  * work. `fastTallyPred` is what closes it.
  *
- * ⚠️ EVERY LITERAL IS FROM A HAND COUNT over the fixture, derived by a script with no engine
+ * EVERY LITERAL IS FROM A HAND COUNT over the fixture, derived by a script with no engine
  * involved before this file was written — items 1602/1603's lesson, where six of fifteen literals
  * written by eye were wrong and the engine was right every time.
  *
@@ -139,7 +139,7 @@ describe('which predicates the pair admits', () => {
     // The EQUALITY pair still refuses it, which is this test's original point and still true.
     expect(specializeEqPair(pred)).toBeUndefined();
     /*
-     * ⚠️ BUT THE COMBINED ENTRY POINT NOW ANSWERS IT (item 2370). The comment above says mixing the
+     * BUT THE COMBINED ENTRY POINT NOW ANSWERS IT (item 2370). The comment above says mixing the
      * carriers "would need a third reading in the same closure" — `specializeCmpPair` is that third
      * reading, added as a SEPARATE narrow contract rather than by widening this one, which is the shape
      * item 1604 argued for when it declined to widen `specializeSingleProp`. Worth 1.19x of an unindexed
@@ -177,7 +177,7 @@ describe('the null matrix survives the PAIR, each carrier keeping its own readin
     );
   });
 
-  test('⚠️ the MIXED pair keeps BOTH readings at once', () => {
+  test('the MIXED pair keeps BOTH readings at once', () => {
     /**
      * THE CASE THE SEPARATE ARMS EXIST FOR. `{note: null}` is the inline reading (matches a stored
      * null AND an absent key) while `u.k = $v` with a null param is the expression one (matches
@@ -233,7 +233,7 @@ describe('the pair agrees with satisfies on every element', () => {
       },
       { props: [['k', 2]], eq: [['active', true]] },
       { props: [['note', null]], eq: [['k', 2]] },
-      // ⚠️ A NULL ON THE **LIFTED** SIDE OF THE MIXED ARM. Mutation says this case is load-bearing:
+      // A NULL ON THE **LIFTED** SIDE OF THE MIXED ARM. Mutation says this case is load-bearing:
       // dropping that arm's null rejection survived the whole suite without it, because every
       // other case here puts the null on the INLINE side or on a key (`k`) that is never null,
       // where `structuralEq(value, null)` is false either way and the mutant answers by accident.
@@ -339,7 +339,7 @@ describe('which pred LISTS the tally pre-resolves', () => {
     expect(fastTallyPred([])).toBeUndefined();
   });
 
-  test('⚠️ a pred carrying a bindVar refuses, on EITHER side of the pair', () => {
+  test('a pred carrying a bindVar refuses, on EITHER side of the pair', () => {
     /**
      * The correlation guard, and the pair gave it a second position to be wrong in. `inlineHolds`
      * WRITES the binding for a correlated conjunct before testing it and a specialized closure

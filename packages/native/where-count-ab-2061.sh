@@ -1,15 +1,15 @@
 #!/bin/zsh
 # Item 2061 — the fused COUNT of the existence-filtered scan, LIVE against a KILLED gate.
 #
-# ⚠️ EVERY MEASUREMENT HAPPENS INSIDE THIS SCRIPT. `trap restore_live EXIT` restores and rebuilds on
+# EVERY MEASUREMENT HAPPENS INSIDE THIS SCRIPT. `trap restore_live EXIT` restores and rebuilds on
 # exit, so anything run AFTER invoking it measures LIVE whatever ROUND was asked for — that turned
 # three of item 2059's follow-up runs into LIVE-vs-LIVE.
 #
-# ⚠️ REFRESH `PRISTINE` IF YOU EDIT `SRC` MID-ITEM. The start-of-run `cmp` cannot catch a stale
+# REFRESH `PRISTINE` IF YOU EDIT `SRC` MID-ITEM. The start-of-run `cmp` cannot catch a stale
 # snapshot, because the EXIT trap guarantees SRC == PRISTINE before every run — item 2059's complexity
 # fix was silently reverted by this exact mechanism.
 #
-# ⚠️ WIDE CONTROLS: the rung hands its prefix to `nodeValuesWhereShortcut`, which serves a 16 ms row,
+# WIDE CONTROLS: the rung hands its prefix to `nodeValuesWhereShortcut`, which serves a 16 ms row,
 # and [[executor-edits-perturb]] prices that kind of neighbourhood at up to 16% on unrelated rows.
 set -u
 

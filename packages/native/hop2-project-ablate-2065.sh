@@ -1,13 +1,13 @@
 #!/bin/zsh
 # Item 2065 — the ABLATION CEILING for the two-hop walk's projection.
 #
-# ⚠️⚠️ THIS IS A DELETION TEST, NOT A CANDIDATE CHANGE. Item 2064 nominated `propOf` + `get properties`
+# THIS IS A DELETION TEST, NOT A CANDIDATE CHANGE. Item 2064 nominated `propOf` + `get properties`
 # at 27% of the two-hop walk's profile, and this file's own history says that is not a win: item 2030
 # nominated 20.9% in this same rung's label tests and item 2031 ablated it to a 13.6% CEILING and 0%
 # REACHABLE. [[frame-attribution-trap]] also applies — `get properties` is a GETTER frame, which is
 # attribution until a deletion test with a CONTROL says otherwise.
 #
-# ⚠️⚠️ **THE ABLATED BUILD RETURNS WRONG ROWS AND MUST NEVER BE COMMITTED.** `ROW_CEILING` pushes a
+# **THE ABLATED BUILD RETURNS WRONG ROWS AND MUST NEVER BE COMMITTED.** `ROW_CEILING` pushes a
 # hoisted constant, so the row COUNT is unchanged (which is what makes the timing comparable) while
 # every row's CONTENT is wrong. The trap restores; the start-of-run check refuses a dirty tree.
 #
@@ -49,7 +49,7 @@ round() {
       grep -cF "// ABLATED 2065" "$SRC" | grep -q '^1$' || { print -- "PROJECT ABLATION NOT SET"; exit 1; }
       ;;
     READTHENCONST)
-      # ⚠️⚠️ THE ARM THAT TELLS ARTIFACT FROM COST (item 2067). It performs the read and then DISCARDS
+      # THE ARM THAT TELLS ARTIFACT FROM COST (item 2067). It performs the read and then DISCARDS
       # it, pushing the same constant `FRESHOBJ` pushes. So:
       #   near FRESHOBJ (482) -> the read is free and the 215 ms is the VALUE reaching the object
       #   near NAMEDLOAD (697) -> the read itself is the cost, and the bare-read floor of 7 ns a row
@@ -59,7 +59,7 @@ round() {
       grep -cF "// ABLATED 2065" "$SRC" | grep -q '^1$' || { print -- "READTHENCONST ABLATION NOT SET"; exit 1; }
       ;;
     NAMEDLOAD)
-      # ⚠️⚠️ THE REACHABILITY ARM (item 2067). `STATICKEY` still does a KEYED load —
+      # THE REACHABILITY ARM (item 2067). `STATICKEY` still does a KEYED load —
       # `c.properties[key]` — where this does a NAMED one, `c.properties.k`. Different bytecode, and
       # the difference decides whether anything is buildable: a named load needs the key at COMPILE
       # time, which is runtime codegen, and [[no-runtime-codegen]] is FIRM. So if the win lives here,
@@ -69,7 +69,7 @@ round() {
       grep -cF "// ABLATED 2065" "$SRC" | grep -q '^1$' || { print -- "NAMEDLOAD ABLATION NOT SET"; exit 1; }
       ;;
     STATICKEY)
-      # ⚠️⚠️ THE DECISIVE ARM (item 2067): a STATIC key with the REAL property read. It isolates the
+      # THE DECISIVE ARM (item 2067): a STATIC key with the REAL property read. It isolates the
       # one term `FRESHOBJ` and item 2066's specialization differ in — a computed `{ [rowKey]: v }`
       # against a fixed `{ k: v }`. Near FRESHOBJ means the COMPUTED KEY is the cost; near LIVE means
       # the READ is. The probe's oracle still sees the right answer here, since the fixture's
@@ -79,7 +79,7 @@ round() {
       grep -cF "// ABLATED 2065" "$SRC" | grep -q '^1$' || { print -- "STATICKEY ABLATION NOT SET"; exit 1; }
       ;;
     FRESHOBJ)
-      # ⚠️ THE ARM THAT SEPARATES THE TWO COSTS ITEM 2065 BUNDLED (item 2067). A FRESH object per row,
+      # THE ARM THAT SEPARATES THE TWO COSTS ITEM 2065 BUNDLED (item 2067). A FRESH object per row,
       # but no `propOf` and no `projectRow`. So:
       #     LIVE - FRESHOBJ  = what the property READ and `projectRow` cost
       #     FRESHOBJ - PROJECT = what the 200,000 row OBJECTS cost
@@ -107,7 +107,7 @@ round() {
   (cd "$ROOT" && npx nx build @lenke/gql >/dev/null 2>&1) || { print -- "BUILD FAILED: $1"; exit 1; }
   print -- "=== $1 ==="
 
-  # ⚠️ THE TARGET PLUS A CONTROL THE ABLATION CANNOT REACH. `hoprows` is the ONE-hop rung in a
+  # THE TARGET PLUS A CONTROL THE ABLATION CANNOT REACH. `hoprows` is the ONE-hop rung in a
   # different file, so it must not move; if it does, the reading is the machine, not the ablation.
   for shape in hop2rows hop2distinct hoprows; do
     (cd "$ROOT/packages/native" && NODES=200000 timeout 900 bun runtime-profile-probe.mjs "$shape" "${REPS:-7}" 2>&1 | grep -oE '"shape".*')

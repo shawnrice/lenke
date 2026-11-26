@@ -13,7 +13,7 @@ import { query } from './index.js';
  * exactly what no `WHERE` means, so this is CLAUDE.md's equivalent-spelling rule rather than a
  * missing optimization: the two spellings now cost the same, 4.18x apart before.
  *
- * ⚠️ THE ROUTE IS INVISIBLE HERE AND THAT IS THE POINT OF THE OTHER FILE. Every assertion below
+ * THE ROUTE IS INVISIBLE HERE AND THAT IS THE POINT OF THE OTHER FILE. Every assertion below
  * passes with the change reverted, because admitting a predicate to a different walk changes no
  * answer — `loop-invariant-where.test.ts` holds the route assertion and the exported pure fn. This
  * file is the other half: the walk the predicate now rides must produce the same ROWS and the same
@@ -52,7 +52,7 @@ const HOP = (w: string): string =>
   `MATCH (a:P)-[:E]->(b:P)${w === '' ? '' : ` WHERE ${w}`} RETURN b.n AS n`;
 
 describe('an invariant TRUE predicate equals no predicate at all (item 1437)', () => {
-  test('⚠️ `WHERE true` and the bare spelling agree — the 7.46x pair', () => {
+  test('`WHERE true` and the bare spelling agree — the 7.46x pair', () => {
     const g = build(50, 49);
 
     expect(ns(g, HOP('true'))).toEqual(ns(g, HOP('')));
@@ -153,7 +153,7 @@ describe('the invariant carry across the other hop shapes (item 1437)', () => {
 });
 
 /**
- * ⚠️ RAISE PARITY, which is the one thing this route can get wrong invisibly.
+ * RAISE PARITY, which is the one thing this route can get wrong invisibly.
  *
  * The general matcher evaluates a clause `WHERE` once per COMPLETE match, so a graph that produces
  * no match must never evaluate it — items 139-145 record this and the start-gated walk carries a
@@ -171,7 +171,7 @@ describe('an invariant predicate that FAULTS raises iff a match exists (item 143
   const FAULT = HOP('$s + 1 = 2');
   const P = { s: 'not a number' };
 
-  test('⚠️ a complete match exists: it raises', () => {
+  test('a complete match exists: it raises', () => {
     expect(() => query(build(3, 2), FAULT, P)).toThrow(/arithmetic requires a number/);
     // One edge is still a complete one-hop match, so one is enough.
     expect(() => query(build(3, 1), FAULT, P)).toThrow(/arithmetic requires a number/);

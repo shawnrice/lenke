@@ -13,7 +13,7 @@ import { query } from './index.js';
  * **44.4%** on label testing) and `relBoundFilteredHopWalk` (**32.0%**), both on a fixture where
  * every vertex carries the label so it rejects nothing.
  *
- * ⚠️ THE FAILURE MODE IS A WRONG ROW SET, NOT A SLOW ONE. `vacuousLabel` is consulted per CALL
+ * THE FAILURE MODE IS A WRONG ROW SET, NOT A SLOW ONE. `vacuousLabel` is consulted per CALL
  * because vacuity is a property of the graph, so the same query is correct on one graph and wrong on
  * another if the drop is mis-decided. Every test here runs the SAME query text against a vacuous and
  * a filtering fixture, so a mis-drop cannot hide behind a fixture that agrees either way.

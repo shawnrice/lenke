@@ -10,15 +10,15 @@
  *     one-hop     [ctl] 8.05 /  7.73    7.93 /  7.71     flat
  * ```
  *
- * ⚠️⚠️ **THIS ARM WAS INVISIBLE UNTIL THE SCREEN GOT A REALISTIC SCHEMA.** On a homogeneous fixture the
+ * **THIS ARM WAS INVISIBLE UNTIL THE SCREEN GOT A REALISTIC SCHEMA.** On a homogeneous fixture the
  * label is vacuous, the index arm answers, and `EXISTS` read **1.54 ms (1.8x)** — comfortably ignorable.
  * Item 2190 made `MIXED` the default and it became the top nomination at **15.4x**. The fallback it
  * replaced was a plain `return walk(graph, params)`.
  *
- * 🔑 A differential profile named the old path exactly: `get adjFrom` **+239 ms**, `existsReachable`
+ * A differential profile named the old path exactly: `get adjFrom` **+239 ms**, `existsReachable`
  * **+84**, `oneHopExists` **+36**, every one of them **0.0** in the vacuous arm.
  *
- * 🔑 **WHY AN INTERSECTION IS ENOUGH:** `EXISTS { (a)-[:T]->(b) }` asks only whether `a` has a T-bucket —
+ * **WHY AN INTERSECTION IS ENOUGH:** `EXISTS { (a)-[:T]->(b) }` asks only whether `a` has a T-bucket —
  * no predicate, no traverser, no far vertex. So counting the labelled vertices that have one answers it.
  */
 import { describe, expect, test } from 'bun:test';
@@ -68,7 +68,7 @@ const NEX = (label: string): string =>
   `MATCH (a:${label}) WHERE NOT EXISTS { MATCH (a)-[:KNOWS]->(b) } RETURN count(*) AS c`;
 
 describe('EXISTS under a non-vacuous label (item 2191)', () => {
-  describe('🔑 the counts, derived from the fixture rather than chosen', () => {
+  describe('the counts, derived from the fixture rather than chosen', () => {
     test('EXISTS over the MAJORITY label', () => {
       // v0 and v1 have an outgoing KNOWS; v2..v5 do not.
       expect(count(g(), EX('Person'))).toBe(2);
@@ -80,7 +80,7 @@ describe('EXISTS under a non-vacuous label (item 2191)', () => {
 
     test('EXISTS over the MINORITY label — the other drive direction', () => {
       /*
-       * 🔑 The arm iterates the SMALLER of the labelled set and the adjacency index. With two `Other`
+       * The arm iterates the SMALLER of the labelled set and the adjacency index. With two `Other`
        * vertices against a 3-entry index this takes the labelled branch; `Person` above takes it too.
        * The index-driven branch is covered by the large-label test below.
        */
@@ -91,17 +91,17 @@ describe('EXISTS under a non-vacuous label (item 2191)', () => {
       expect(count(g(), NEX('Other'))).toBe(1);
     });
 
-    test('⚠️ a label NOTHING carries answers zero, not the whole graph', () => {
+    test('a label NOTHING carries answers zero, not the whole graph', () => {
       expect(count(g(), EX('Nope'))).toBe(0);
       expect(count(g(), NEX('Nope'))).toBe(0);
     });
   });
 
-  test('⚠️⚠️ removing a vertex’s LAST edge of that type stops counting it', () => {
+  test('removing a vertex’s LAST edge of that type stops counting it', () => {
     /*
-     * 🔑🔑 ITEM 2162 SHIPPED A WRONG ANSWER ON EXACTLY THIS CONFUSION: an outer `edgesFromByLabel` entry
+     * ITEM 2162 SHIPPED A WRONG ANSWER ON EXACTLY THIS CONFUSION: an outer `edgesFromByLabel` entry
      * SURVIVES the removal of its last edge, so the entry's existence does not mean the vertex still has
-     * an edge of that type. ⚠️ The arm must test `byType.has(type)`, which this pins.
+     * an edge of that type. The arm must test `byType.has(type)`, which this pins.
      */
     const graph = g();
 
@@ -111,14 +111,14 @@ describe('EXISTS under a non-vacuous label (item 2191)', () => {
     expect(count(graph, NEX('Person'))).toBe(5);
   });
 
-  test('⚠️⚠️ the LAST-EDGE trap on the LABELLED-driven branch specifically', () => {
+  test('the LAST-EDGE trap on the LABELLED-driven branch specifically', () => {
     /*
-     * 🔑🔑 THE GAP THE MUTATION ROUND FOUND. The trap test above has 6 labelled vertices against a
+     * THE GAP THE MUTATION ROUND FOUND. The trap test above has 6 labelled vertices against a
      * 3-entry index, so it takes the INDEX-driven branch and never executes the labelled branch's
-     * `index.get(v.id)?.has(type)`. ⚠️ A mutant replacing that with `index.has(v.id)` survived every
+     * `index.get(v.id)?.has(type)`. A mutant replacing that with `index.has(v.id)` survived every
      * test — the exact item 2162 confusion, unguarded on one of the two branches.
      *
-     * 🔑 This fixture inverts the sizes: TWO labelled vertices against a large index, so
+     * This fixture inverts the sizes: TWO labelled vertices against a large index, so
      * `labelled.size <= index.size` holds and the labelled branch runs.
      */
     const graph = new Graph();
@@ -150,16 +150,16 @@ describe('EXISTS under a non-vacuous label (item 2191)', () => {
 
     expect(count(graph, EX('Lsml'))).toBe(2);
 
-    // ⚠️ Remove s0's ONLY KNOWS edge: the outer entry survives, the per-type bucket does not.
+    // Remove s0's ONLY KNOWS edge: the outer entry survives, the per-type bucket does not.
     graph.removeEdge(graph.getEdgeById('se0')!);
 
     expect(count(graph, EX('Lsml'))).toBe(1);
     expect(count(graph, NEX('Lsml'))).toBe(1);
   });
 
-  test('🔑 the index-driven branch: a label carried by nearly everything', () => {
+  test('the index-driven branch: a label carried by nearly everything', () => {
     /*
-     * ⚠️ When the labelled set is LARGER than the adjacency index the arm flips to iterating the index
+     * When the labelled set is LARGER than the adjacency index the arm flips to iterating the index
      * and testing the label. This fixture makes that branch the one taken — 200 labelled vertices
      * against a 2-entry index — and the answer must be identical either way.
      */
@@ -188,7 +188,7 @@ describe('EXISTS under a non-vacuous label (item 2191)', () => {
     expect(count(graph, NEX('Person'))).toBe(198);
   });
 
-  test('🔑 a VACUOUS label still answers (the index arm, unchanged)', () => {
+  test('a VACUOUS label still answers (the index arm, unchanged)', () => {
     const graph = new Graph();
 
     for (let i = 0; i < 4; i += 1) {
@@ -207,14 +207,14 @@ describe('EXISTS under a non-vacuous label (item 2191)', () => {
     expect(count(graph, NEX('Person'))).toBe(3);
   });
 
-  test('⚠️ the INCOMING direction is a different index', () => {
+  test('the INCOMING direction is a different index', () => {
     // v1, v2 and v3 are KNOWS targets; v0, v4, v5 are not.
     expect(
       count(g(), 'MATCH (a:Person) WHERE EXISTS { MATCH (a)<-[:KNOWS]-(b) } RETURN count(*) AS c'),
     ).toBe(3);
   });
 
-  test('⚠️ an edge of a DIFFERENT type does not satisfy the test', () => {
+  test('an edge of a DIFFERENT type does not satisfy the test', () => {
     const graph = g();
 
     graph.addEdge({

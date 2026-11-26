@@ -7,19 +7,19 @@ import { V, both, groupCount, out, toArray, traversal } from '../index.js';
 /**
  * `V().out(T).groupCount().by(k)` AFTER item 1892 ROUTED IT THROUGH THE SHARED RUNG CHAIN.
  *
- * ⚠️ IT HAD ITS OWN COPY OF THE ROUTE LIST, which is why it was the Gremlin screen's slowest shape
+ * IT HAD ITS OWN COPY OF THE ROUTE LIST, which is why it was the Gremlin screen's slowest shape
  * at 200,000 vertices (**142.58 ms** against its own `values` twin's 71.24). Items 1883/1884/1889
  * added three rungs to `fusedProjectedValues` — one of them the CSR walk, at the TOP — and none
  * reached this call site. Kill-switch A/B at 200,000 vertices / 1,000,000 edges: **109.0 → 53.4 ms,
  * 2.04x**, with `group2` (two hops, a different rung) and `optional` flat as controls.
  *
- * ⚠️⚠️ **THE RISK THIS FILE EXISTS FOR IS GROUP ORDER, NOT THE COUNTS.** `groupCount` returns a
+ * **THE RISK THIS FILE EXISTS FOR IS GROUP ORDER, NOT THE COUNTS.** `groupCount` returns a
  * `Map`, whose iteration order is FIRST-OCCURRENCE order of the keys — observable, and byte-identity
  * with the Rust engine is a hard invariant. The tally now rides a different walk, so the keys are
  * first seen in that walk's order. Item 1889's oracle established that the CSR walk emits the
  * identical SEQUENCE to the bucket walk; these tests pin the consequence for the tally directly.
  *
- * ⚠️ AND EVERY CASE RUNS TWICE, because the CSR arm declines its own first ask (the amortization
+ * AND EVERY CASE RUNS TWICE, because the CSR arm declines its own first ask (the amortization
  * policy): a single call measures the bucket walk and says nothing about the new route. Item 1891
  * lost five mutants to exactly that.
  */
@@ -85,7 +85,7 @@ describe('the grouped count over a hop agrees across both routes', () => {
   });
 
   /**
-   * ⚠️ THE ORDER ASSERTION, SEPARATELY. The entries above are in FIRST-OCCURRENCE order of the
+   * THE ORDER ASSERTION, SEPARATELY. The entries above are in FIRST-OCCURRENCE order of the
    * walk — `3` before `1` before `7` — which is not the sorted order and not the insertion order of
    * the vertices. A tally riding a differently-ordered walk would still have the right counts.
    */
@@ -100,7 +100,7 @@ describe('the grouped count over a hop agrees across both routes', () => {
     const g = fixture();
     const got = twice(() => traversal(V(), both('E'), groupCount().by('n')), g);
 
-    // ⚠️ RE-DERIVED: `n = 7` is `a` and `c`, and the undirected far ends reaching one of them are
+    // RE-DERIVED: `n = 7` is `a` and `c`, and the undirected far ends reaching one of them are
     // b->c, b->a, d->a, e->a and f->c — five, not the three the first draft guessed.
     expect((got as Map<unknown, unknown>).get(7)).toBe(5);
   });

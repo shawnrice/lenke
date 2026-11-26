@@ -2,7 +2,7 @@
  * THE TOPOLOGY-KEYED ADJACENCY CSR, SHARED BY EVERY ROUTE THAT WALKS A FLATTENED ADJACENCY.
  *
  * Built for the bounded var-length count at item 1676 (3.8x-27.2x) and lifted here at item 1685 so
- * the fixed-depth hop count can use it too. ⚠️ A LEAF MODULE RATHER THAN AN EXPORT FROM ITS ORIGINAL
+ * the fixed-depth hop count can use it too. A LEAF MODULE RATHER THAN AN EXPORT FROM ITS ORIGINAL
  * HOME: `var-length-count.ts` imports from `shortcuts.ts`, so having `shortcuts.ts` import the cache
  * back would be a cycle, and `import/no-cycle` is an error here.
  */
@@ -72,7 +72,7 @@ const buildCsr = (graph: Graph, inward: boolean, types: string[] | undefined): C
  * so the second identical query rebuilds it from scratch. The ablation in the module header is why:
  * the build is one level's worth of Map lookups and each level after it is ~0.1 ms.
  *
- * ⚠️ THE KEY IS `graph.topologyVersion`, AND NOTHING ELSE WOULD DO. `graph.version` and
+ * THE KEY IS `graph.topologyVersion`, AND NOTHING ELSE WOULD DO. `graph.version` and
  * `graph.epoch(name)` advance on a DEFERRED, veto-checked step — both read 0 through a sequence of
  * mutations and move only after a task drain — so a cache keyed on either serves a stale structure
  * to the ordinary `g.addEdge(...); query(g, …)` shape. `vertexCount`/`edgeCount` advance eagerly
@@ -81,11 +81,11 @@ const buildCsr = (graph: Graph, inward: boolean, types: string[] | undefined): C
  * edge-LABEL writes — the last because the adjacency boxes are keyed by edge type, so
  * `addLabelToEdge` re-buckets what `types` selects without touching `insertEdge`.
  *
- * ⚠️ AND THE SHAPE IS PART OF THE KEY, because `nbr` is DIRECTION- AND TYPE-FILTERED. Two
+ * AND THE SHAPE IS PART OF THE KEY, because `nbr` is DIRECTION- AND TYPE-FILTERED. Two
  * queries differing only in `-[:E]->` vs `<-[:E]-`, or in the edge types they name, need different
  * neighbour arrays from the same topology.
  *
- * ⚠️ `types` IS NOT SORTED INTO THE KEY, deliberately. Two spellings naming the same types in a
+ * `types` IS NOT SORTED INTO THE KEY, deliberately. Two spellings naming the same types in a
  * different order are semantically equivalent, so sharing an entry is tempting — but `edgesOfTypes`
  * iterates `types` IN ORDER, so the two orders produce `nbr` arrays that differ in position. The
  * count itself is a sum and would survive, but the depth-3/4 trail corrections read `nbr` positionally
@@ -102,7 +102,7 @@ const csrCache = new WeakMap<Graph, { tv: number; byShape: Map<string, CsrTables
 /**
  * The cache key for one (direction, type set) shape.
  *
- * ⚠️ ONE SPELLING, used by `csrFor` AND `csrIsBuilt`. Two copies of a cache key is how a peek starts
+ * ONE SPELLING, used by `csrFor` AND `csrIsBuilt`. Two copies of a cache key is how a peek starts
  * answering about a different entry than the builder populates — a silent "always cold", which would
  * make the gate above a no-op that still looked like a gate.
  */
@@ -113,14 +113,14 @@ const shapeKey = (inward: boolean, types: string[] | undefined): string =>
  * Is this shape's CSR ALREADY built for the graph's current topology? A pure peek — it populates
  * nothing (item 2005).
  *
- * ⚠️⚠️ **IT EXISTS SO A CALLER CAN DECLINE THE BUILD RATHER THAN THE STRUCTURE, which is a different
+ * **IT EXISTS SO A CALLER CAN DECLINE THE BUILD RATHER THAN THE STRUCTURE, which is a different
  * question from `csrFor` and could not be asked before.** `runReach`'s walk over these tables is
  * 1.45-1.64x faster than the `Set<string>` BFS it replaced even COLD, because an O(|V| + |E|) build
  * beats hashing a string per reached vertex. But a NARROW SEED does little work, so the build is
  * pure overhead there: a seeded `{1,2}` measured **7.35 ms cold before and 11.89 after, a 1.62x
  * REGRESSION**, while its warm figure improved 1.72x.
  *
- * 🔑 So the choice is not "CSR or not" but "pay a build or not", and those come apart exactly when
+ * So the choice is not "CSR or not" but "pay a build or not", and those come apart exactly when
  * the cache already holds the answer. With this peek a cold narrow-seed query keeps the per-vertex
  * walk and a warm one gets the tables for free — rather than trading one case for the other.
  * [[closed-perf-targets]]'s item 1889 made the same distinction with its second-ask policy, and item
@@ -155,7 +155,7 @@ export const csrFor = (graph: Graph, inward: boolean, types: string[] | undefine
     return hit;
   }
 
-  // ⚠️ CAPPED, BECAUSE THE RETENTION IS NOT SMALL AND NOTHING ELSE BOUNDS IT. Each entry holds
+  // CAPPED, BECAUSE THE RETENTION IS NOT SMALL AND NOTHING ELSE BOUNDS IT. Each entry holds
   // `order` (V references), `idx` (a V-entry Map) and two typed arrays sized V+1 and E — on the order
   // of 2 MB for a 50,000-vertex, 150,000-edge graph — and it lives as long as the graph does. A
   // generation is dropped whole on any topology write, so growth needs MANY distinct shapes with no
@@ -176,15 +176,15 @@ export const csrFor = (graph: Graph, inward: boolean, types: string[] | undefine
 /**
  * Does the UNFILTERED two-hop count — the degree product — belong on the CSR? (item 1890)
  *
- * ⚠️⚠️ **THE SCALE SWEEP FOUND THIS, and the shape of the finding is the same as item 1889's one
+ * **THE SCALE SWEEP FOUND THIS, and the shape of the finding is the same as item 1889's one
  * surface over.** `rung-gap-screen.mjs` at `NODES=200000` flags `count: depth2 (42.0 ms) costs 7.3x
  * depth3 (5.7)` — a SHORTER chain costing more, which is the signature that grid exists for. Floored
  * isolated, one shape per process, 200,000 vertices / 200,000 edges, median of 9:
  *
  * ```text
  *   MATCH (a)-[:E]->(b) RETURN count(*)                      0.00 ms   a stored counter
- *   MATCH (a)-[:E]->(b)-[:E]->(c) RETURN count(*)           23.97      ⬅ the degree product
- *   … -[:E]->(d) (three segments)                            6.72      ⬅ the SAME product, on a CSR
+ *   MATCH (a)-[:E]->(b)-[:E]->(c) RETURN count(*)           23.97      <- the degree product
+ *   … -[:E]->(d) (three segments)                            6.72      <- the SAME product, on a CSR
  *   … four segments                                         19.63
  * ```
  *
@@ -195,7 +195,7 @@ export const csrFor = (graph: Graph, inward: boolean, types: string[] | undefine
  * two-segment loop still reads `sideOfVertex(b, …)` TWICE per middle — item 1334 already took those
  * from an id-keyed `Map.get` to the vertex's own memoized box, which is the step before this one.
  *
- * ⚠️ THE GATE IS THE DEGREE PRODUCT'S OWN CONDITIONS, minus what a CSR degree cannot express:
+ * THE GATE IS THE DEGREE PRODUCT'S OWN CONDITIONS, minus what a CSR degree cannot express:
  *
  *   - `firstBoth`/`secondBoth` — an UNDIRECTED side is two boxes plus a self-loop correction
  *     (`undirectedSide`, `loopsOfTypes`), not one run length. Refused, as `twoHopFilteredCsrApplies`
@@ -224,11 +224,11 @@ export const twoHopUnfilteredCsrApplies = (s: {
 /**
  * `count = sum over b of indeg(b) * outdeg(b)`, both degrees read as CSR run lengths.
  *
- * ⚠️ NO MAP LOOKUP AND NO SET ITERATION IN THE LOOP, which is the whole change: two `Int32Array`
+ * NO MAP LOOKUP AND NO SET ITERATION IN THE LOOP, which is the whole change: two `Int32Array`
  * subtractions per slot where the existing loop takes two memoized-box `Map.get`s plus a `.size`.
  * The arithmetic is the caller's, unchanged.
  *
- * ⚠️ `csrFor`'s `inward` IS THE NEGATION of a side's `out`-ness, the same conversion
+ * `csrFor`'s `inward` IS THE NEGATION of a side's `out`-ness, the same conversion
  * `twoHopFilteredCsrCount` documents: `out` reads `edgesFromByLabel`.
  */
 export const twoHopUnfilteredCsrCount = (
@@ -261,7 +261,7 @@ export const twoHopUnfilteredCsrCount = (
 /**
  * The gate and the count as ONE entry — `null` declines, a number is the answer.
  *
- * ⚠️ IT EXISTS FOR THE `max-lines` CAP, not for taste: `shortcuts.ts` is at 3,000 non-comment lines
+ * IT EXISTS FOR THE `max-lines` CAP, not for taste: `shortcuts.ts` is at 3,000 non-comment lines
  * and the gate's argument object written at the call site took it to 3,001. The gate itself stays a
  * separately exported pure function with its own tests (`twoHopUnfilteredCsrApplies`), which is
  * what `perf-gate-needs-its-own-test` asks for — this only moves the plumbing.
@@ -269,7 +269,7 @@ export const twoHopUnfilteredCsrCount = (
 /**
  * The far-driven hop projection's CSR, or `undefined` to keep the existing walk (item 1895).
  *
- * ⚠️⚠️ **A PURE FUNCTION BECAUSE BOTH ITS CONDITIONS ARE ANSWER-EQUIVALENT, and one of them was a
+ * **A PURE FUNCTION BECAUSE BOTH ITS CONDITIONS ARE ANSWER-EQUIVALENT, and one of them was a
  * real bug.** Written inline in `hop-projection.ts`, two mutants survived every behavioural test:
  * reading the label's vacuity from the AST instead of the graph (which DECLINES every labelled
  * pattern — the exact bug the first cut of that arm shipped, measured as a flat null), and letting
@@ -293,15 +293,15 @@ export const csrHopRoute = (
   farLabel: LabelExpr | undefined,
 ): { readonly tables: CsrTables; readonly testFarLabel: boolean } | undefined => {
   /*
-   * ⚠️ A NON-VACUOUS FAR LABEL NO LONGER DECLINES OUTRIGHT (item 1941). It used to, for the reason
+   * A NON-VACUOUS FAR LABEL NO LONGER DECLINES OUTRIGHT (item 1941). It used to, for the reason
    * above — `candidateVertexSource` iterates the label BUCKET, so a SELECTIVE label makes the
    * existing walk sub-linear where this arm is O(V). That reason holds only while the label IS
    * selective: the CSR's `order` array is the far vertices, so a broad label can be applied PER
    * SLOT in O(1) instead, which is the move item 1940 made on the start end.
    *
-   * 🔑 MEASURED, NOT ASSUMED. `farlabel-crossover-1941.mjs` at 50,000 vertices, 15 reps with the
+   * MEASURED, NOT ASSUMED. `farlabel-crossover-1941.mjs` at 50,000 vertices, 15 reps with the
    * cells alternated: the engine is 1.71-5.51 ms where a hand CSR with a per-slot label test is
-   * 0.70-1.07 (2.4x-5.1x) at 0.45-0.6 coverage, while at 0.04 the bucket walk wins 2.4x. ⚠️ At 7
+   * 0.70-1.07 (2.4x-5.1x) at 0.45-0.6 coverage, while at 0.04 the bucket walk wins 2.4x. At 7
    * reps the same cells read 1.07x and 6.44x — noise either side of the truth, which is why the
    * band and not a cell is what this constant is set from.
    *
@@ -329,7 +329,7 @@ export const csrHopRoute = (
  * Has this (graph, topology version, leg shape) been asked for BEFORE? The first ask returns
  * `false` and records it; every later ask returns `true`.
  *
- * ⚠️⚠️ **THE CSR'S BUILD IS PAID BY THE FIRST QUERY AFTER ANY TOPOLOGY WRITE, and for this shape the
+ * **THE CSR'S BUILD IS PAID BY THE FIRST QUERY AFTER ANY TOPOLOGY WRITE, and for this shape the
  * build DWARFS the walk.** Measured isolated at 200,000 vertices / 200,000 edges, one shape per
  * process: the two-hop count's warm cost went **23.97 ms → 0.20** (two `Int32Array` subtractions a
  * slot instead of two memoized-box `Map.get`s plus a `.size`), while its COLD first rep went
@@ -343,11 +343,11 @@ export const csrHopRoute = (
  *     topology version, so it never builds either;
  *   - a repeated count pays the build once and is ~120x from then on.
  *
- * ⚠️ IT IS A ROUTE CHOICE, so it is answer-equivalent and every mutant of it survives the
+ * IT IS A ROUTE CHOICE, so it is answer-equivalent and every mutant of it survives the
  * behavioural tests — [[perf-gate-needs-its-own-test]]. Hence a pure exported function with its own
  * unit tests, including that it RESETS on a topology write.
  *
- * ⚠️ AND IT IS KEYED PER LEG SHAPE, not per graph: two different two-hop counts over different edge
+ * AND IT IS KEYED PER LEG SHAPE, not per graph: two different two-hop counts over different edge
  * types are different CSRs and each amortizes on its own.
  */
 const asked = new WeakMap<
@@ -364,7 +364,7 @@ const asked = new WeakMap<
 /*
  * How many asks a topology version must receive before a CSR build pays for itself.
  *
- * 🔑 MEASURED, NOT CHOSEN (item 2093): a build is ~30 ms at 60,000 vertices / 180,000 edges, and a
+ * MEASURED, NOT CHOSEN (item 2093): a build is ~30 ms at 60,000 vertices / 180,000 edges, and a
  * cached read saves ~6.1 ms against the non-CSR path — so the break-even is ~5 reads AFTER the build.
  * The old policy armed after ONE, which is why it could pay 30 ms for a single reuse.
  */
@@ -378,7 +378,7 @@ export const csrAskedBefore = (graph: Graph, key: string): boolean => {
   let entry = asked.get(graph);
 
   if (entry === undefined || entry.tv !== tv) {
-    // ⚠️ THE OUTGOING VERSION'S COUNTS BECOME THE EVIDENCE for the incoming one. This is the whole
+    // THE OUTGOING VERSION'S COUNTS BECOME THE EVIDENCE for the incoming one. This is the whole
     // difference from a fixed threshold: a steady workload reading k times per write is RECOGNISED
     // after one version instead of being re-discovered, and badly, every version.
     entry = { tv, shapes: new Map(), prior: entry?.shapes ?? new Map() };
@@ -390,12 +390,12 @@ export const csrAskedBefore = (graph: Graph, key: string): boolean => {
   entry.shapes.set(key, seen);
 
   /*
-   * 🔑 THE ADAPTIVE POLICY. A fixed threshold ALWAYS has a cliff at `reads == threshold`, because the
+   * THE ADAPTIVE POLICY. A fixed threshold ALWAYS has a cliff at `reads == threshold`, because the
    * build then lands on the version's LAST ask and is discarded unused — item 2094 measured that
    * cliff moving to 2, 3, 6 and 12 as the threshold did. History is the only thing that can tell a
    * version which will be read again from one which will not.
    *
-   * ⚠️ AN UNSEEN SHAPE FALLS BACK TO THE SECOND-ASK POLICY, so a first encounter behaves exactly as
+   * AN UNSEEN SHAPE FALLS BACK TO THE SECOND-ASK POLICY, so a first encounter behaves exactly as
    * before and nothing regresses on a cold graph.
    */
   const priorAsks = entry.prior.get(key);
@@ -410,10 +410,10 @@ export const csrAskedBefore = (graph: Graph, key: string): boolean => {
   }
 
   /*
-   * 🔑 **SELF-CORRECTING WITHIN THE VERSION, AND WITHOUT THIS THE READ-HEAVIEST WORKLOAD PAYS.** The
+   * **SELF-CORRECTING WITHIN THE VERSION, AND WITHOUT THIS THE READ-HEAVIEST WORKLOAD PAYS.** The
    * prior says this shape was not read enough last time — but if THIS version has already asked
    * `AMORTIZE_ASKS` times, the prediction is being contradicted in front of us and the build will
-   * amortize. ⚠️ Measured: without this clause a steady 24-reads-per-write workload read 2.25 ms a
+   * amortize. Measured: without this clause a steady 24-reads-per-write workload read 2.25 ms a
    * read against the fixed policy's 1.63 (0.72x), because the FIRST version after a cold prior never
    * builds and its whole run is on the slow path. With it, the penalty is one SHAPE's first version
    * rather than one version per shape per workload change.
@@ -445,7 +445,7 @@ export const twoHopCsrProduct = (
     return null;
   }
 
-  // ⚠️ THE SECOND-ASK POLICY — see `csrAskedBefore`. The key is both legs' direction and types, so
+  // THE SECOND-ASK POLICY — see `csrAskedBefore`. The key is both legs' direction and types, so
   // each distinct two-hop count amortizes on its own.
   const key = `${spec.toAOut ? '<' : '>'}${(spec.t1 ?? []).join('\u0000')}|${spec.fromCOut ? '>' : '<'}${(spec.t2 ?? []).join('\u0000')}`;
 

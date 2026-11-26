@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2019 — WHICH HALF OF ITEM 2018 COST `range-scan` 1.45x?
 #
-# ⚠️⚠️ **THE OWED SWEEP FOUND A REGRESSION THE REDUCED ONE MISSED.** Item 2018 shipped on five cheap
+# **THE OWED SWEEP FOUND A REGRESSION THE REDUCED ONE MISSED.** Item 2018 shipped on five cheap
 # families because its four-round whole-screen A/B had been killed; the owed sweep then read
 # `range-scan` at **0.69x — PRE 32.4/33.5 against POST 49.1/47.0, non-overlapping across both
 # rounds**, while `union`'s 0.95x is noise (its ranges overlap). `range-scan` was not in the five.
@@ -14,10 +14,10 @@
 #                  copies were monomorphic ([[ts-closure-size-is-load-bearing]]).
 #   C  FULL        as shipped
 #
-# ⚠️ ONE FAMILY PER PROCESS, which the screen already does with `FAMILY=`; three rounds per arm,
+# ONE FAMILY PER PROCESS, which the screen already does with `FAMILY=`; three rounds per arm,
 # order-alternated A B C C B A, because a one-way sweep attributes machine drift to the arm.
 #
-# ⚠️ RESTORE ON ANY EXIT — item 2018's kill left an arm in the tree; see that script's note.
+# RESTORE ON ANY EXIT — item 2018's kill left an arm in the tree; see that script's note.
 set -u
 
 ROOT=/home/shawn/projects/pl-graph
@@ -46,7 +46,7 @@ trap restore_full EXIT INT TERM
 
 run_arm() {
   cp "$2" "$SRC" || exit 1
-  # ⚠️ ASSERT THE ARM IS THE CODE IT CLAIMS: a `cp` that silently did nothing leaves the previous
+  # ASSERT THE ARM IS THE CODE IT CLAIMS: a `cp` that silently did nothing leaves the previous
   # arm and the reading belongs to it (CLAUDE.md).
   cmp -s "$SRC" "$2" || { print -- "ARM NOT SET: $1"; exit 1; }
   (cd "$ROOT" && npx nx build @lenke/gql >/dev/null 2>&1) || exit 1

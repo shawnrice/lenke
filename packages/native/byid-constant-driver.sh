@@ -2,9 +2,9 @@
 # Item 1737: where does getVertexById's 1.26x over a bare Map.get go?
 #
 #   base    public getVertexById = (id) => this.verticesById.get(id) ?? null;
-#   proto   the same body as a PROTOTYPE METHOD (⚠️ semantic change: loses this-binding when
+#   proto   the same body as a PROTOTYPE METHOD (semantic change: loses this-binding when
 #           detached, so measurement only unless it proves worth a decision)
-#   nonull  `?? null` dropped (⚠️ semantic change: returns undefined for a miss; the probe only
+#   nonull  `?? null` dropped (semantic change: returns undefined for a miss; the probe only
 #           looks up ids that exist, so it is a clean ceiling for that branch)
 set -u
 
@@ -42,12 +42,12 @@ PY
 
 assert_dist() {
   local arm="$1" got
-  # ⚠️ CLASSIFY FROM THE EMITTED SNIPPET, not from substrings that occur elsewhere in a 500 KB
+  # CLASSIFY FROM THE EMITTED SNIPPET, not from substrings that occur elsewhere in a 500 KB
   # bundle. The first detector tested for `verticesById.get(id);`, which matches some OTHER site, so
   # it reported every arm as `nonull` -- and the assertion then correctly refused to run `base` and
   # `proto` rather than printing numbers for code it could not identify. This takes the 90 characters
   # that FOLLOW the declaration and decides from those.
-  # ⚠️ `getVertexById` occurs 26 times in the bundle -- call sites and COMMENT TEXT. A plain `find`
+  # `getVertexById` occurs 26 times in the bundle -- call sites and COMMENT TEXT. A plain `find`
   # lands on a call site, which is why the previous two detectors misclassified every arm. The
   # DECLARATION is the only occurrence matching this regex (verified: exactly 1 match).
   got=$(python3 -c "

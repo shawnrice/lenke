@@ -296,7 +296,7 @@ if (process.env.SURFACE_ONE !== undefined) {
       verdict = `GQL ${(1 / ratio).toFixed(2)}x faster`;
     }
 
-    const agree = a.answer === b.answer ? '' : `  ⚠️ ANSWERS ${a.answer} vs ${b.answer}`;
+    const agree = a.answer === b.answer ? '' : `  ANSWERS ${a.answer} vs ${b.answer}`;
 
     console.log(`  ${pair[0]}${agree}`);
     console.log(

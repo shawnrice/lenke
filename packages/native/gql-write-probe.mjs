@@ -5,13 +5,13 @@
  * the core write path (`Vertex.setProperty`) directly, but a write issued as a QUERY goes through
  * parse, plan, the clause runner and the write executor first — and none of that has been profiled.
  *
- * ⚠️ A WRITE PROBE CANNOT REUSE ITS FIXTURE. Every rep mutates, so the graph grows (INSERT) or the
+ * A WRITE PROBE CANNOT REUSE ITS FIXTURE. Every rep mutates, so the graph grows (INSERT) or the
  * rows change (SET on a widening set). Two consequences the read probes never face:
  *
  *   1. the fixture is rebuilt per BATCH, and the rebuild is outside the measured window;
  *   2. the per-rep cost is only comparable within a batch, so the batch size is part of the result.
  *
- * ⚠️ AND THE ANSWER IS ASSERTED, by counting elements after the batch — item 1749's lesson. A write
+ * AND THE ANSWER IS ASSERTED, by counting elements after the batch — item 1749's lesson. A write
  * that silently did nothing would otherwise be the fastest arm in any A/B.
  *
  *     SHAPE=insert node gql-write-probe.mjs
@@ -27,7 +27,7 @@ const ROUNDS = Number(process.env.ROUNDS ?? 5);
 const SHAPE = process.env.SHAPE ?? 'insert';
 
 /**
- * ⚠️ `INDEXED=1` IS NOT OPTIONAL FOR READING THE WRITE PATH, and the first run of this probe proved
+ * `INDEXED=1` IS NOT OPTIONAL FOR READING THE WRITE PATH, and the first run of this probe proved
  * it. Unindexed, `set` measured 80.78 µs and `insertedge` 155.52 against `insert`'s 5.96 — and
  * almost all of that gap is the MATCH scanning 2,000 vertices, not the write, which items 1732-1734
  * measured at ~121 ns. A probe named "write" that is 99% scan is the same defect item 1754 found in
@@ -48,7 +48,7 @@ const seeded = () => {
 };
 
 /**
- * ⚠️ A LITERAL TEMPLATE IS A PARSE-CACHE MISS PER REP, and the first profile of this probe is how
+ * A LITERAL TEMPLATE IS A PARSE-CACHE MISS PER REP, and the first profile of this probe is how
  * that was found: `tokenize` 10.7%, `normalizeLiterals` 5.1%, `digits` 4.0%, `parseCached` 3.0% —
  * about 23% of an "INSERT" was PARSING, because `INSERT (:P {n: 2001, …})` is a different string
  * every rep and `parseCached` keys on text. A real application parameterises, so the `p`-suffixed
@@ -111,7 +111,7 @@ const SHAPES = {
     expect: (g) => g.vertexCount === SEED,
   },
   /**
-   * THE EDGE FLOOR (item 1767). ⚠️ Like `setdirect`, this is NOT the same lookup as its GQL twin:
+   * THE EDGE FLOOR (item 1767). Like `setdirect`, this is NOT the same lookup as its GQL twin:
    * `insertedgep` seeks BOTH endpoints by a property, this resolves both by id. So the gap prices
    * "two pattern-matched endpoints" against "two id lookups" plus whatever the edge write itself
    * costs — which is the number the `addEdge` call here isolates.
@@ -128,7 +128,7 @@ const SHAPES = {
     expect: (g) => g.edgeCount === BATCH,
   },
   /**
-   * ⚠️ WHAT DOES OMITTING AN EDGE ID COST? (item 1768). `insertedgedirect` does not pass one, so
+   * WHAT DOES OMITTING AN EDGE ID COST? (item 1768). `insertedgedirect` does not pass one, so
    * `addEdge` mints a UUID — and that showed up in its profile as `rando` 2.5% + `randomFillSync`
    * 1.0% + `serializeUUID` 1.0%. CLAUDE.md's bench rule ("give edges ids") is about fixture
    * fidelity; this arm asks the engine-facing question instead, and the two arms differ in exactly
@@ -146,7 +146,7 @@ const SHAPES = {
     expect: (g) => g.edgeCount === BATCH,
   },
   /**
-   * ⚠️ THE CONFOUND IN `insertedgedirectid`, and why this third arm exists (item 1768). That arm
+   * THE CONFOUND IN `insertedgedirectid`, and why this third arm exists (item 1768). That arm
    * passes `e${i}` — SIX characters — against a minted UUID's THIRTY-SIX, and the id becomes a key
    * in `edgesById` and the endpoint maps. So its gap conflates two different things: the minting,
    * and hashing/storing a long string instead of a short one. This arm holds the key LENGTH at 36

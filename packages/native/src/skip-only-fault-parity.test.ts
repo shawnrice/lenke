@@ -1,6 +1,6 @@
 // FAULT PARITY UNDER A SKIP-ONLY PAGE (item 1905), on the hop rung.
 //
-// ⚠️⚠️ **THIS FILE IS THE EVIDENCE THAT LET A REFUSAL BE REMOVED, so it is not optional cover.**
+// **THIS FILE IS THE EVIDENCE THAT LET A REFUSAL BE REMOVED, so it is not optional cover.**
 // `deferredHopOrder` refused a `SKIP` with no `LIMIT` for a precise reason: with no cap the general
 // path sorts, projects EVERY row, and drops the skipped ones afterwards — so an item that faults on
 // a discarded row RAISES there, while an arm that ranks and projects only the survivors would emit
@@ -8,13 +8,13 @@
 // item 1062's first cut doing exactly that, which is why the refusal existed rather than being
 // caution.
 //
-// ✅ Item 1905 admits the case by doing what the general path does: `plan.skip` is forced to 0,
+// Item 1905 admits the case by doing what the general path does: `plan.skip` is forced to 0,
 // every ranked row is re-projected, and the slice happens AFTER. The claim is therefore that fault
 // behaviour is identical BY CONSTRUCTION — and a claim of that shape has to be measured against the
 // other engine rather than reasoned about, because the whole refusal was a reasoned argument that
 // turned out to need a test.
 //
-// ⚠️ A STORED NaN is the only way to make a projection fault: ingest coerces NaN and the infinities
+// A STORED NaN is the only way to make a projection fault: ingest coerces NaN and the infinities
 // to null, so it has to be COMPUTED with `SET` (`page-fold-fault.test.ts` records this).
 import { describe, expect, test } from 'bun:test';
 
@@ -58,7 +58,7 @@ describe.if(nativeReady)('a faulting projected item under each window', () => {
 
   /** `[window, must it raise?]` — the verdict spelled out, not just compared. */
   const CASES = [
-    // ⚠️ THE REFUSAL'S OWN CASE: no cap, so every row is projected and the faulting one raises.
+    // THE REFUSAL'S OWN CASE: no cap, so every row is projected and the faulting one raises.
     [' OFFSET 1', true],
     [' SKIP 1', true],
     // No window at all — the degenerate `skip = 0` of the same rule (item 1903).
@@ -82,7 +82,7 @@ describe.if(nativeReady)('a faulting projected item under each window', () => {
   }
 
   /**
-   * ⚠️⚠️ THE NODE ARM IS A DIFFERENT WALK AND GETS ITS OWN CASES. `deferredRoute` /
+   * THE NODE ARM IS A DIFFERENT WALK AND GETS ITS OWN CASES. `deferredRoute` /
    * `deferredSortedNodeWalk` took the same change in step with `deferredHopOrder` (a route policy
    * differing between the node and hop spellings of one question is this repo's named defect
    * class), but "the hop is fault-equal" is not evidence about the node.
@@ -107,7 +107,7 @@ describe.if(nativeReady)('a faulting projected item under each window', () => {
   }
 
   /**
-   * ⚠️ `LIMIT 0` IS STILL REFUSED AND THAT IS CORRECTNESS, not speed: `applyProjection` returns
+   * `LIMIT 0` IS STILL REFUSED AND THAT IS CORRECTNESS, not speed: `applyProjection` returns
    * `[]` BEFORE projecting anything, so a rung evaluating keys to emit nothing would raise where
    * the query does not. This is the control that keeps that refusal honest.
    */

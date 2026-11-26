@@ -8,18 +8,18 @@
  *     values(k).order()         14.9    -> 16.0    ~8% worse (executor-edits-perturb's known cost)
  * ```
  *
- * 🔑 Adding `dedupe()` used to drop the shape off a fused rung onto the generator pipeline —
- * `generatorResume` at 73.3% of the profile. ⚠️ Both existing dedupe rungs are ELEMENT-based
+ * Adding `dedupe()` used to drop the shape off a fused rung onto the generator pipeline —
+ * `generatorResume` at 73.3% of the profile. Both existing dedupe rungs are ELEMENT-based
  * (`distinctHopCount` for one hop, `dedupedHopChainCount` for two or more), which is why the VALUES form
  * was unserved: item 2079 fused the `where`-gated variant and item 1970 the `limit` variant.
  *
- * ⚠️⚠️ **THE IMPORT IS `./index.js`, NOT `@lenke/gremlin`, AND THAT IS NOT COSMETIC.** My first version
+ * **THE IMPORT IS `./index.js`, NOT `@lenke/gremlin`, AND THAT IS NOT COSMETIC.** My first version
  * imported the package, which resolves to the BUILT DIST — so a mutation of `src/` was invisible and
- * EIGHT of nine mutants "survived" a round that tested unmutated code. 🔑 Every sibling test in this
+ * EIGHT of nine mutants "survived" a round that tested unmutated code. Every sibling test in this
  * package imports `./index.js` for exactly this reason. **A test that imports the dist cannot witness a
  * source mutation.**
  *
- * ⚠️⚠️ **THE THREE SEMANTICS BELOW WERE ESTABLISHED EMPIRICALLY BEFORE THE FUSION WAS WRITTEN**, because
+ * **THE THREE SEMANTICS BELOW WERE ESTABLISHED EMPIRICALLY BEFORE THE FUSION WAS WRITTEN**, because
  * reading the dispatch was not converging:
  *
  * ```text
@@ -54,14 +54,14 @@ const distinct = (g: Graph): unknown =>
   toArray(traversal(V(), values('k'), dedupe(), count()), g)[0];
 
 describe('the values-dedupe count fusion (item 2169)', () => {
-  describe('🔑 the arithmetic', () => {
+  describe('the arithmetic', () => {
     test('counts DISTINCT values, not vertices', () => {
       expect(distinct(graphOf([1, 1, 2, 2, 3]))).toBe(3);
     });
 
-    test('⚠️⚠️ an ABSENT key contributes nothing; an explicit NULL is a value', () => {
+    test('an ABSENT key contributes nothing; an explicit NULL is a value', () => {
       /*
-       * 🔑 THE SEMANTIC THE FUSION MOST EASILY GETS WRONG. Testing `properties[key] === undefined` would
+       * THE SEMANTIC THE FUSION MOST EASILY GETS WRONG. Testing `properties[key] === undefined` would
        * conflate the two and answer 2 here. The fusion tests `key in properties`, so the null counts and
        * the absent does not.
        */
@@ -72,14 +72,14 @@ describe('the values-dedupe count fusion (item 2169)', () => {
       expect(distinct(graphOf([undefined, undefined]))).toBe(0);
     });
 
-    test('⚠️⚠️ a property HOLDING `undefined` is distinct from one holding `null`', () => {
+    test('a property HOLDING `undefined` is distinct from one holding `null`', () => {
       /*
-       * 🔑 THE CASE THAT CAUGHT A WRONG ANSWER, found by chasing a surviving mutant rather than by
+       * THE CASE THAT CAUGHT A WRONG ANSWER, found by chasing a surviving mutant rather than by
        * design. A property can hold `undefined` (`{k: undefined}` → `in-map: true, value: undefined`),
        * and `values()` RENDERS it as `null` — so the raw stream prints `[1, null, null]` and looks like
        * it has a duplicate.
        *
-       * ⚠️ It does not: the UNFUSED `values(k).dedupe()` returns all THREE rows, because the dedupe keys
+       * It does not: the UNFUSED `values(k).dedupe()` returns all THREE rows, because the dedupe keys
        * on the raw value where `undefined` and `null` differ. **The fused count must agree with that**,
        * and a version that coalesced `undefined` to `null` first answered 2.
        */
@@ -90,7 +90,7 @@ describe('the values-dedupe count fusion (item 2169)', () => {
       g2.addVertex({ id: 'n', labels: ['P'], properties: { k: null } });
       g2.addVertex({ id: 'x', labels: ['P'], properties: {} });
 
-      // 🔑 The oracle is the unfused spelling, not a number I chose.
+      // The oracle is the unfused spelling, not a number I chose.
       const unfused = toArray(traversal(V(), values('k'), dedupe()), g2).length;
 
       expect(distinct(g2)).toBe(unfused);
@@ -107,16 +107,16 @@ describe('the values-dedupe count fusion (item 2169)', () => {
       expect(distinct(graphOf([7, 7, 7, 7]))).toBe(1);
     });
 
-    test('⚠️ mixed TYPES are distinct values', () => {
+    test('mixed TYPES are distinct values', () => {
       // `1` and `'1'` are different values, as are `0` and `false`.
       expect(distinct(graphOf([1, '1', 0, false]))).toBe(4);
     });
 
-    test('⚠️⚠️ `valueDedupeFilter` is used, so LISTS dedupe structurally', () => {
+    test('`valueDedupeFilter` is used, so LISTS dedupe structurally', () => {
       /*
-       * 🔑 A plain `Set` of raw values would count two equal arrays as distinct, because they are
+       * A plain `Set` of raw values would count two equal arrays as distinct, because they are
        * different objects. The fusion reuses the generator path's own `valueDedupeFilter`, which this
-       * package has dedicated tests for (temporal and namespaced keys). ⚠️ The assertion is against the
+       * package has dedicated tests for (temporal and namespaced keys). The assertion is against the
        * UNFUSED spelling, so the two paths must agree whatever that function decides.
        */
       const g = graphOf([[1, 2], [1, 2], [3]]);
@@ -125,14 +125,14 @@ describe('the values-dedupe count fusion (item 2169)', () => {
       expect(distinct(g)).toBe(viaRows);
     });
 
-    test('⚠️ DATE values agree with the unfused spelling too', () => {
+    test('DATE values agree with the unfused spelling too', () => {
       const g = graphOf([new Date(0), new Date(0), new Date(1)]);
       const viaRows = toArray(traversal(V(), values('k'), dedupe()), g).length;
 
       /*
-       * ⚠️ THE ENGINE ANSWERS 3, NOT 2, AND IT IS THE FUSION THAT IS RIGHT. I expected two equal `Date`s
+       * THE ENGINE ANSWERS 3, NOT 2, AND IT IS THE FUSION THAT IS RIGHT. I expected two equal `Date`s
        * to dedupe — `valueDedupeFilter` does carry a `seenDates` set — and the engine keeps them apart on
-       * this path. 🔑 The assertion that matters is the FIRST one: both spellings agree, so whatever that
+       * this path. The assertion that matters is the FIRST one: both spellings agree, so whatever that
        * function decides, the fused and unfused paths decide it identically. The literal is pinned to the
        * engine's answer rather than to my expectation of it.
        */
@@ -141,7 +141,7 @@ describe('the values-dedupe count fusion (item 2169)', () => {
     });
   });
 
-  describe('⚠️ the declines, each still answering correctly', () => {
+  describe('the declines, each still answering correctly', () => {
     const g = (): Graph => graphOf([1, 1, 2, null, undefined]);
 
     test('TWO keys in the projection', () => {
@@ -154,9 +154,9 @@ describe('the values-dedupe count fusion (item 2169)', () => {
       expect(toArray(traversal(V(), values('k', 'j'), dedupe(), count()), h)[0]).toBe(3);
     });
 
-    test('⚠️ a `by` on the dedupe is refused by the gate, and is not constructible here', () => {
+    test('a `by` on the dedupe is refused by the gate, and is not constructible here', () => {
       /*
-       * 🔑 The gate refuses `bys`, mirroring `distinctHopCount` and `dedupedHopChainCount`. ⚠️ The
+       * The gate refuses `bys`, mirroring `distinctHopCount` and `dedupedHopChainCount`. The
        * builder's `dedupe()` takes no `by`, so a hand-built step does not type-check — the refusal is
        * stated in the gate and exercised by the mutation round rather than from here.
        */
@@ -168,7 +168,7 @@ describe('the values-dedupe count fusion (item 2169)', () => {
       expect(toArray(traversal(V(), values('k'), dedupe(), count()), g())[0]).toBe(3);
     });
 
-    test('🔑 the ELEMENT dedupe past a hop is untouched', () => {
+    test('the ELEMENT dedupe past a hop is untouched', () => {
       const h = new Graph();
 
       for (let i = 0; i < 4; i += 1) {
@@ -194,10 +194,10 @@ describe('the values-dedupe count fusion (item 2169)', () => {
       expect(toArray(traversal(V(), out('T'), dedupe(), count()), h)[0]).toBe(1);
     });
 
-    test('⚠️⚠️ a THIRD step after the dedupe must not be ignored', () => {
+    test('a THIRD step after the dedupe must not be ignored', () => {
       /*
-       * 🔑 THE GAP THE MUTATION ROUND FOUND. Dropping the `mid.length !== 2` check lets `[values,
-       * dedupe, X]` match — `proj` and `filter` still line up — and `X` is then silently DISCARDED. ⚠️ A
+       * THE GAP THE MUTATION ROUND FOUND. Dropping the `mid.length !== 2` check lets `[values,
+       * dedupe, X]` match — `proj` and `filter` still line up — and `X` is then silently DISCARDED. A
        * `limit` is the sharpest X because it changes the answer: five vertices with three distinct values
        * deduped then limited to 2 is 2, where ignoring the limit answers 3.
        */
@@ -214,7 +214,7 @@ describe('the values-dedupe count fusion (item 2169)', () => {
     });
   });
 
-  test('⚠️ a WRITE between two asks is reflected', () => {
+  test('a WRITE between two asks is reflected', () => {
     const g = graphOf([1, 2]);
 
     expect(distinct(g)).toBe(2);

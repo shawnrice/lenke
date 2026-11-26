@@ -10,7 +10,7 @@ import { V, count, isSerializable, out, pipe, toArray, traversal } from './index
  * `Object.defineProperty`, which was **73% of plan construction** — 0.235 → 0.064 us/op to build
  * `traversal(V(id))`, 0.627 → 0.137 for a three-step plan, and 1.69x on a whole small `V(id)` call.
  *
- * ⚠️ THE PROPERTY IS NOW ENUMERABLE, and these tests exist to pin why that is safe rather than to
+ * THE PROPERTY IS NOW ENUMERABLE, and these tests exist to pin why that is safe rather than to
  * assert it is. Two independent facts carry it:
  *
  *   1. `STEP_FN` is a SYMBOL, and symbols are excluded from `Object.keys`, `for…in` and
@@ -47,7 +47,7 @@ describe('the marker still identifies a step function', () => {
   });
 });
 
-describe('⚠️ why dropping `enumerable: false` is safe', () => {
+describe('why dropping `enumerable: false` is safe', () => {
   test('a SYMBOL key never appears in Object.keys or JSON.stringify', () => {
     // This is the half that makes enumerability irrelevant for the ordinary leaks, and it holds for
     // ANY symbol — it is a language fact, not something this code arranges.
@@ -70,7 +70,7 @@ describe('⚠️ why dropping `enumerable: false` is safe', () => {
     expect(Object.getOwnPropertySymbols(V() as unknown as object)).toContain(STEP_FN);
   });
 
-  test('⚠️ and it DOES travel through a spread — the documented consequence', () => {
+  test('and it DOES travel through a spread — the documented consequence', () => {
     // Nothing in the package spreads a step function, which is what makes the change safe today.
     // Pinned so that if someone adds such a spread, this test tells them what it now implies.
     const copied = { ...(V() as unknown as object) };
@@ -80,7 +80,7 @@ describe('⚠️ why dropping `enumerable: false` is safe', () => {
   });
 
   test('a PLAN is still reported serializable — the marker is invisible to that walk', () => {
-    // ⚠️ `isSerializable` takes a PLAN, not a step function: my first version passed `V()` and
+    // `isSerializable` takes a PLAN, not a step function: my first version passed `V()` and
     // crashed on `plan.steps.length`. Kept as a plan check, which is the question worth asking —
     // the serializer walks `plan.steps`, i.e. the Step OBJECTS, and never the marked functions.
     expect(isSerializable(traversal(V(), out('E'), count()))).toBe(true);

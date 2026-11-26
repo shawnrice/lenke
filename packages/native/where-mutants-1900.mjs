@@ -1,12 +1,12 @@
 /**
  * DOES `where-current-specialized.test.ts` HAVE TEETH? (item 1900)
  *
- * ⚠️ THE SUBJECT IS A SPECIALIZATION, so the mutants come in two kinds and only one kind can be
+ * THE SUBJECT IS A SPECIALIZATION, so the mutants come in two kinds and only one kind can be
  * caught by a test: those that change the ANSWER (the comparator's sense, the branch taken for an
  * ordering op) and those that only change the ROUTE (never taking the fast branch). The second kind
  * is declared an expected survivor with its reason, and `neq-prof-1900.mjs` is its gate.
  *
- * ⚠️ `cf.test.ts` IS IN THE TEST SET, not just the new file: it is where `where(neq(label))` was
+ * `cf.test.ts` IS IN THE TEST SET, not just the new file: it is where `where(neq(label))` was
  * already covered, and a mutation run against the new file alone would credit this change with
  * coverage that predates it.
  *
@@ -90,11 +90,11 @@ const EXPECTED_SURVIVORS = new Set([
   // `recallTag`'s pop is 'last' in BOTH where-steps and no shape here binds one label twice, so
   // this mutant is a question about a fixture nobody has needed. Stated rather than silently green.
   'the tag is recalled FIRST rather than last',
-  // ⚠️ THE TEMPORAL GUARD IS UNPROVEN-REACHABLE SOUNDNESS INSURANCE, and this entry is the honest
+  // THE TEMPORAL GUARD IS UNPROVEN-REACHABLE SOUNDNESS INSURANCE, and this entry is the honest
   // version of that. The argument it is dead: the tag and the current value share one traverser
   // lineage, `as_` copies the value as-is, `values(k)` returns the STORED Temporal object, and no
   // step between them constructs a new temporal of equal value — so an equal-but-not-identical pair
-  // cannot meet here. ⚠️ That is an argument over every value-rebinding step, NOT a proof from the
+  // cannot meet here. That is an argument over every value-rebinding step, NOT a proof from the
   // branch's own conditions, which is what let item 1899 delete its dead adjacency arm. Dropping the
   // guard on the strength of it would risk a silent WRONG ANSWER to save one typeof per row, so it
   // stays and the survivor is declared.
@@ -104,14 +104,14 @@ const EXPECTED_SURVIVORS = new Set([
 /** The three outcomes as a label; a nested ternary is what the linter objects to. */
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
 /**
- * ⚠️ BOTH STREAMS, ALWAYS: `bun test` writes `N pass` to **stderr**, and item 767 read an empty
+ * BOTH STREAMS, ALWAYS: `bun test` writes `N pass` to **stderr**, and item 767 read an empty
  * stdout and concluded the runner never ran a test.
  */
 const run = () => {
@@ -169,7 +169,7 @@ try {
     const ran = /\d+ pass/.test(r.text);
 
     if (!ran && r.code !== 124) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -196,6 +196,6 @@ try {
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

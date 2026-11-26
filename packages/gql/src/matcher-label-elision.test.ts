@@ -18,7 +18,7 @@ import { parse } from './parser.ts';
  * SLOWER than the getter); this removes the test where the label cannot reject anything, which is
  * the mechanism items 1551/1552/1609 built and measured at 5.58x on the seeded count.
  *
- * ⚠️ A WRONG ELISION IS A WRONG ANSWER, not a slow one — a selective label dropped means rows that
+ * A WRONG ELISION IS A WRONG ANSWER, not a slow one — a selective label dropped means rows that
  * should have been filtered. So this file is about the REFUSALS as much as the win:
  *
  *   - a SELECTIVE label must not be elided;
@@ -84,9 +84,9 @@ describe('the vacuous label is elided and the selective one is not', () => {
     ]);
   });
 
-  test('⚠️ a SELECTIVE label still filters, at EVERY position', () => {
+  test('a SELECTIVE label still filters, at EVERY position', () => {
     /**
-     * ⚠️ DERIVED PROPERLY, after TWO of these four literals were wrong by eye — the nineteenth and
+     * DERIVED PROPERLY, after TWO of these four literals were wrong by eye — the nineteenth and
      * twentieth this session, and both from the same slip: I read the label position off the QUERY
      * text instead of walking the ring.
      *
@@ -113,7 +113,7 @@ describe('the vacuous label is elided and the selective one is not', () => {
     expect(ids('MATCH (a)-[:R]->(b)-[:R]->(c)-[:R]->(x:Q) RETURN x.id AS id')).toEqual(['a', 'c']);
   });
 
-  test('⚠️ the per-node array is indexed by DEPTH — the off-by-one is observable', () => {
+  test('the per-node array is indexed by DEPTH — the off-by-one is observable', () => {
     /**
      * A selective label on exactly ONE position, with every other position unlabelled, so applying
      * the WRONG node's label gives a different answer for each. The four expectations above already
@@ -134,7 +134,7 @@ describe('the vacuous label is elided and the selective one is not', () => {
     expect(new Set(answers).size).toBe(4);
   });
 
-  test('⚠️ `:%` is NOT vacuous, even though it reads as "any node"', () => {
+  test('`:%` is NOT vacuous, even though it reads as "any node"', () => {
     /**
      * `vacuousLabel`'s own note records this as measured rather than assumed: `:%` matches a node
      * that HAS a label, so on a graph with an unlabelled vertex it is selective. Eliding it would be
@@ -169,7 +169,7 @@ describe('the vacuous label is elided and the selective one is not', () => {
     ]);
   });
 
-  test('⚠️ ONE COMPILED PLAN, TWO GRAPHS with different label distributions', () => {
+  test('ONE COMPILED PLAN, TWO GRAPHS with different label distributions', () => {
     /**
      * THE REASON `matchNodeLabelled` TAKES A PARAMETER instead of writing the elided label back onto
      * the `CNode`. The compiled plan is reused across executions and across graphs, and vacuity is a
@@ -187,7 +187,7 @@ describe('the vacuous label is elided and the selective one is not', () => {
       ['e', ['P', 'Q']],
     ]);
     /**
-     * ⚠️ VIA `query`, NOT `compile` — and that is the stronger test, not a convenience. The engine
+     * VIA `query`, NOT `compile` — and that is the stronger test, not a convenience. The engine
      * keeps a PARSE+PLAN cache (items 228/229), so the same source string reuses the same compiled
      * plan across calls; running it against two graphs through `query` therefore exercises exactly
      * the reuse this is about, on the path a caller actually takes. (`compile` also wants a narrowed
@@ -204,7 +204,7 @@ describe('the vacuous label is elided and the selective one is not', () => {
     expect(run(allQ)).toEqual(['a', 'b', 'c', 'd', 'e']);
   });
 
-  test('⚠️ the RESOLUTION itself, because an un-applied elision is answer-equivalent', () => {
+  test('the RESOLUTION itself, because an un-applied elision is answer-equivalent', () => {
     /**
      * Six of thirteen mutants in item 1623's pass survived, and every one was a variant of "the
      * elision does not happen" — which is the OLD behaviour and therefore answer-equivalent. That is
@@ -242,7 +242,7 @@ describe('the vacuous label is elided and the selective one is not', () => {
       'Q',
       undefined,
     ]);
-    // ⚠️ AND IT IS PER GRAPH: the same pattern over a graph where `Q` is universal elides it.
+    // AND IT IS PER GRAPH: the same pattern over a graph where `Q` is universal elides it.
     const allQ = build([
       ['a', ['P', 'Q']],
       ['b', ['P', 'Q']],

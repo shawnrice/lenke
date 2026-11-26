@@ -2,20 +2,20 @@
  * DOES GREMLIN'S FUSED HOP-CHAIN WALK VISIT FAR-END ELEMENTS IN THE SAME ORDER AS THE GENERIC
  * TRAVERSER PIPELINE? (item 1834)
  *
- * ⚠️ THIS IS ITEM 1833's NAMED BLOCKER. `groupCount` costs 14.8x its own pair floor because the
+ * THIS IS ITEM 1833's NAMED BLOCKER. `groupCount` costs 14.8x its own pair floor because the
  * tally rides the generic walk while `values(k)` rides `hopChainValuesShortcut` at 15 ns/row — and
  * the obvious fix (tally the fused values) is only sound if the two walks agree on ORDER.
  * `groupCount` returns a **Map**, whose iteration order is first-occurrence order of the keys, and
  * byte-identity with the Rust engine is a hard invariant. Item 1831 asked exactly this question of
  * the GQL rungs; this is its Gremlin twin.
  *
- * ⚠️ THE ORACLE IS THE SAME QUERY WITH THE SHORTCUT FORCED TO DECLINE, which is the only honest way
+ * THE ORACLE IS THE SAME QUERY WITH THE SHORTCUT FORCED TO DECLINE, which is the only honest way
  * to get the generic route for an IDENTICAL question. Every surface spelling that avoids the
  * shortcut also changes what is returned (`path()` tracks paths, `valueMap` yields maps), so a
  * comparison against one of those would compare two different questions. This runs the query, then
  * re-runs it with `hopChainValuesShortcut` returning `undefined`, and compares the SEQUENCES.
  *
- * ⚠️ IT IS A MUTATION RUN, SO IT RESTORES THE FILE AND REBUILDS BEFORE AND AFTER, and it asserts
+ * IT IS A MUTATION RUN, SO IT RESTORES THE FILE AND REBUILDS BEFORE AND AFTER, and it asserts
  * the arm it claims: the fused arm must have the shortcut live and the generic arm must not. An A/B
  * whose arms are not asserted cannot tell a null from a mistake (item 1824 learned that).
  *
@@ -131,7 +131,7 @@ try {
       const b = JSON.parse(generic);
 
       if (a.length === 0 || b.length === 0) {
-        console.log(`   ${name.padEnd(16)} ⚠️ VACUOUS — ${a.length}/${b.length}, proves nothing`);
+        console.log(`   ${name.padEnd(16)} VACUOUS — ${a.length}/${b.length}, proves nothing`);
         continue;
       }
 
@@ -155,7 +155,7 @@ try {
       }
 
       console.log(
-        `   ${name.padEnd(16)} ⚠️ DIFFERS at ${at} (${String(a[at])} vs ${String(b[at])}), ` +
+        `   ${name.padEnd(16)} DIFFERS at ${at} (${String(a[at])} vs ${String(b[at])}), ` +
           `lengths ${a.length}/${b.length}, same multiset: ${sameSet}`,
       );
     }

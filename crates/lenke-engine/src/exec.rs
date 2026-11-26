@@ -6521,7 +6521,7 @@ fn try_num_conjunction(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<
     //   - `keep_num_cmp` (item 1210) writes the row index unconditionally and advances the cursor
     //     by the predicate, so the push is not a branch and the buffer does not reallocate.
     //
-    // ⚠️ ONE EXCLUSION IS A THREE-TERM CLOSURE, which item 1213 measured as NOT auto-vectorizing.
+    // ONE EXCLUSION IS A THREE-TERM CLOSURE, which item 1213 measured as NOT auto-vectorizing.
     // That is accepted here and not worked around: the subtraction trick it used needs only a
     // COUNT, while a keep list needs the surviving rows themselves. Branchlessness is the dominant
     // term for this path anyway (item 1210 measured 2.58x from it alone).
@@ -6542,7 +6542,7 @@ fn try_num_conjunction(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec<
                 let (lo, hi) = (c.lo, c.hi);
 
                 if c.ne.is_empty() {
-                    // ⚠️ REJECTED HERE TOO: item 1227's `&&` -> `&` (item 1228).
+                    // REJECTED HERE TOO: item 1227's `&&` -> `&` (item 1228).
                     // `keep_num_cmp` GATHERS through `ids`, so this looked like the hop sweep
                     // rather than the sequential one and the mechanism PREDICTED a win. It
                     // measures nothing: `projection, TWO bounds` 459.1/417.5 us against
@@ -7107,7 +7107,7 @@ fn try_filter_keep_case(pred: &Expr, store: &Store, batch: &Batch) -> Option<Vec
 /// the id materialization was ~12x the comparison it fed. This arm does one pass, borrows
 /// each id as `&str` and compares, and allocates only the keep-list.
 ///
-/// ✅ **Re-measured (item 650), and this pass is 4.4x.** Far side of a hop, 100,000 rows, min
+/// **Re-measured (item 650), and this pass is 4.4x.** Far side of a hop, 100,000 rows, min
 /// of 9: `element_id(b) = '<miss>'` **5.71 ns/row** here, against **25.20** for
 /// `element_id(b) > '<lit>'`, which the `Eq`/`Ne` restriction below sends to the general
 /// materializing path. 5.71 is parity with a typed-column compare over the same walk (5.72),
@@ -7262,7 +7262,7 @@ fn try_filter_keep_bool_prop(pred: &Expr, store: &Store, batch: &Batch) -> Optio
 /// unpredictable values — becomes a store and an add. The buffer is pre-sized to the frontier, so
 /// nothing reallocates while it fills, and `truncate` returns the survivors.
 ///
-/// ⚠️ THE TWO `continue`s STAY BRANCHES ON PURPOSE. They test the OPTIONAL-miss sentinel and the
+/// THE TWO `continue`s STAY BRANCHES ON PURPOSE. They test the OPTIONAL-miss sentinel and the
 /// column's presence mask, neither of which depends on the predicate's value: for a plain scan over
 /// a dense column both are perfectly predicted, and folding them into the cursor arithmetic would
 /// mean writing a row index for a cell that must not be read at all.

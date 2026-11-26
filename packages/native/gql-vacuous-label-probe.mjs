@@ -63,7 +63,7 @@ const ARMS = {
   // CONTROL: a genuinely selective label, which must NOT be elided.
   ':Q (selective)': 'MATCH (a:Q)-[:E]->(x) RETURN count(*) AS c',
 
-  // ⚠️ THE EDGE-TYPE TWIN (item 1550). `vacuousLabel` reads `verticesByLabel`/`vertexCount`, so it
+  // THE EDGE-TYPE TWIN (item 1550). `vacuousLabel` reads `verticesByLabel`/`vertexCount`, so it
   // is vertex-only. Every edge here is `:E`, so `-[:E]->` and `-[]->` are equivalent spellings of
   // one question — the same argument the function's own comment makes for a universal vertex label.
   'rel: none': 'MATCH (a)-[]->(x) RETURN count(*) AS c',
@@ -76,7 +76,7 @@ const ARMS = {
   'rel: :!E (selective)': 'MATCH (a)-[:!E]->(x) RETURN count(*) AS c',
   'rel: :F (twin of !E)': 'MATCH (a)-[:F]->(x) RETURN count(*) AS c',
 
-  // ⚠️ THE COMPANION OF VACUITY (item 1552): a label carried by NO element matches NOTHING, which
+  // THE COMPANION OF VACUITY (item 1552): a label carried by NO element matches NOTHING, which
   // is decidable in O(1) from the same bucket read `vacuousLabel` already does. `effectiveLabel`'s
   // comment names the pattern — "decided per EXECUTION, because vacuity is a property of the
   // GRAPH" — and the empty case is the other end of it.

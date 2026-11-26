@@ -7,7 +7,7 @@ tests import `@lenke/gql` / `@lenke/gremlin`, which resolve to DIST, so bun's lc
 `../gql/dist/esm/index.mjs` and nothing in `src/`. This projects those bundle hits back through the
 dist sourcemap and unions them with each package's own src lcov.
 
-⚠️ WHAT THIS IS AND IS NOT.
+WHAT THIS IS AND IS NOT.
   - A generated line can map to SEVERAL original lines (bundling, inlining). A src line is marked
     covered if ANY generated line mapping to it was hit. That is the UNION direction, so this can
     only ever SHRINK the gap list — it cannot invent a gap.

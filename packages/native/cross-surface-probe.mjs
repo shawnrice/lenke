@@ -7,13 +7,13 @@
  * one question two ways, and items 1574/1576 closed it to ~3x. That was found by hand. This makes it
  * systematic.
  *
- * ⚠️ A GAP HERE IS NOT AUTOMATICALLY A DEFECT. The two languages are intentionally different — ISO
+ * A GAP HERE IS NOT AUTOMATICALLY A DEFECT. The two languages are intentionally different — ISO
  * `-[:T]-` emits a self-loop ONCE where Gremlin `both()` yields it TWICE (item 1086), row ORDER is
  * unspecified in GQL but a TinkerPop contract in Gremlin, and some questions have no faithful twin
  * at all. Every pair here answers the SAME value, which is asserted, and a pair that cannot is left
  * out rather than fudged.
  *
- * ⚠️ TWO PASSES IN OPPOSITE ORDER, keeping the better reading per surface. Items 1578 and 1579 each
+ * TWO PASSES IN OPPOSITE ORDER, keeping the better reading per surface. Items 1578 and 1579 each
  * produced an IMPOSSIBLE in-process reading because whichever arm ran first paid — item 182's
  * finding. The two engines are different call sites so they do not pollute each other's dispatch,
  * but position still matters, and this is the harness the GQL spelling probe already uses for it.
@@ -82,7 +82,7 @@ g.createIndex({ on: 'vertex', kind: 'hash', keys: ['n'] });
 /**
  * The first scalar of a result, from EITHER surface.
  *
- * ⚠️ THE TWO SURFACES RETURN DIFFERENT SHAPES, and my first version only handled one: `query`
+ * THE TWO SURFACES RETURN DIFFERENT SHAPES, and my first version only handled one: `query`
  * yields ROW OBJECTS (`[{c: 50000}]`) while `toArray` yields bare VALUES (`[50000]`). Taking
  * `Object.values(row)[0]` on a number gives `undefined`, so EVERY pair reported "ANSWERS DISAGREE"
  * and the timings beside them were comparing a real answer against nothing.
@@ -224,7 +224,7 @@ for (const { name, gql: text, gremlin: plan, norm } of QUESTIONS) {
   const slower = q > r ? 'GQL' : 'gremlin';
   const agree = gqlAnswer === gremAnswer;
 
-  // ⚠️ A FLOOR, for the reason the GQL spelling probe has one (its `SPELL_FLOOR`, item 127): a pair
+  // A FLOOR, for the reason the GQL spelling probe has one (its `SPELL_FLOOR`, item 127): a pair
   // whose members both read 0.001-0.006 ms is comparing CLOCK RESOLUTION, and the first run of this
   // probe duly flagged `count label` at 2.06x and `hop count` at 2.87x on readings of 0.00 ms. Both
   // are closed-form answers on both surfaces. A pair under the floor is reported as too fast to
@@ -250,7 +250,7 @@ for (const { name, gql: text, gremlin: plan, norm } of QUESTIONS) {
 
   console.log(
     `${name.padEnd(16)} gql ${q.toFixed(3).padStart(9)}ms   gremlin ${r.toFixed(3).padStart(9)}ms   ` +
-      `${ratio.toFixed(2)}x ${note.padEnd(14)} ${agree ? '' : '⚠ ANSWERS DIFFER'}`,
+      `${ratio.toFixed(2)}x ${note.padEnd(14)} ${agree ? '' : 'ANSWERS DIFFER'}`,
   );
 }
 

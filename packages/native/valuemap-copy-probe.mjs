@@ -7,14 +7,14 @@
  * `copyProps`' no-keys arm is `for (const k of Object.keys(props)) out[k] = props[k]`: an array
  * allocation per element, plus one-at-a-time property addition into a fresh `{}`.
  *
- * ⚠️ A SPREAD IS NOT A CANDIDATE and the source says why: `out[k] = v` and `{ ...props }` differ for
+ * A SPREAD IS NOT A CANDIDATE and the source says why: `out[k] = v` and `{ ...props }` differ for
  * the key `__proto__` (assignment sets the prototype, spread defines an own property), and that
  * behaviour is SETTLED in this repo (`prototype-key-class-not-a-bug`). `Object.assign` is a
  * candidate precisely because it does NOT have that problem -- it reads with [[Get]] and writes with
  * [[Set]], i.e. assignment semantics, the same as the loop -- while being one builtin call with no
  * `Object.keys` array.
  *
- * ⚠️ WIDTH IS A SWEEP, NOT A CONSTANT. A per-property cost scales with the bag width and a
+ * WIDTH IS A SWEEP, NOT A CONSTANT. A per-property cost scales with the bag width and a
  * per-element cost does not, so the arms are compared at three widths. The repo has drawn a wrong
  * conclusion from a single width before (CLAUDE.md's "match the fixture to the claim").
  *
@@ -49,7 +49,7 @@ for (let i = 0; i < VERTS; i += 1) {
 // would mix construction into the reading (item 1578).
 const plans = {
   valuemap: traversal(V(), valueMap()),
-  // ⚠️ `control` IS DEGENERATE -- KEPT ONLY SO THE RECORDED RUN IS REPRODUCIBLE. `V().count()` hits
+  // `control` IS DEGENERATE -- KEPT ONLY SO THE RECORDED RUN IS REPRODUCIBLE. `V().count()` hits
   // the count shortcut and returns in 0.0 ms, so it cannot detect a build or machine drift between
   // arms, which is the entire job of a control. Item 1736 ran it before noticing. Use `values`.
   control: traversal(V(), count()),
@@ -74,7 +74,7 @@ for (let r = 0; r < REPS; r += 1) {
   series.push(performance.now() - t);
   // Touch the result so neither arm can be optimized away, and print it: the valueMap arm must
   // return one map per vertex, each with WIDTH keys.
-  // ⚠️ PER-SHAPE, because a scalar-terminal shape has no keys to count. The first version applied
+  // PER-SHAPE, because a scalar-terminal shape has no keys to count. The first version applied
   // the map arithmetic to every shape, so the `values` control printed `answer: 0` -- a vacuous
   // assertion on the one row whose job is to be trustworthy. A shape that counts yields its count;
   // a shape that yields maps reports total keys copied.

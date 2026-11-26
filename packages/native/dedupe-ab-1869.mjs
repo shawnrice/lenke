@@ -1,7 +1,7 @@
 /**
  * THE FUSED SCAN DEDUPE, PER SHAPE (item 1869).
  *
- * ⚠️ THE CONTROLS ARE THE SHAPES THIS CANNOT REACH, and two of them matter for different reasons.
+ * THE CONTROLS ARE THE SHAPES THIS CANNOT REACH, and two of them matter for different reasons.
  * `V().values(k)` is the fused floor the deduped walk should land at or below. And the PIPELINE'S
  * OWN `dedupe` is exercised by `V().out(E).values(k).dedupe()`, which the rung refuses — item 1869
  * EXTRACTED the dedupe predicate out of `dispatch.ts`, so that central path must not have moved.
@@ -44,7 +44,7 @@ const SHAPES = [
     traversal(V(), out('E'), values('k'), dedupe()),
   ],
   ['V().values(k).order()             CONTROL (untouched)', traversal(V(), values('k'), order())],
-  // ⚠️ THE LATENT-REGRESSION PROBE: `nodeValuesShortcut` ACCEPTS a `hasLabel` and walks the whole
+  // THE LATENT-REGRESSION PROBE: `nodeValuesShortcut` ACCEPTS a `hasLabel` and walks the whole
   // graph, where the pipeline seeds from the label index. Item 1869 found that costing its DEDUPED
   // sibling 2.3x; this asks whether the undeduped rung pays the same, by comparing the labelled
   // form against a seeded spelling the rung refuses.

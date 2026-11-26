@@ -18,7 +18,7 @@
  * `floor - floorPre` is what finding them costs. A target in the query layer and a target in
  * `Graph.removeEdge` are different items with different owners.
  *
- * ⚠️ A WRITE IS NOT IDEMPOTENT, so every rep rebuilds the graph and the BUILD IS OUTSIDE the timed
+ * A WRITE IS NOT IDEMPOTENT, so every rep rebuilds the graph and the BUILD IS OUTSIDE the timed
  * window — the same discipline `write-gap-probe` uses, and the reason that probe exists separately
  * from the read screen. The verification is a count AFTER the mutation, asserted per rep: a delete
  * that deleted nothing would otherwise be the fastest arm.
@@ -31,7 +31,7 @@ import { query } from '@lenke/gql';
 import { profileWindow } from './windowed-profile.mjs';
 
 /**
- * ⚠️ DELETE ONLY, deliberately. The `SET` floor needs `@lenke/core`'s actual edge-property write path
+ * DELETE ONLY, deliberately. The `SET` floor needs `@lenke/core`'s actual edge-property write path
  * and there is no `setEdgeProperty` on `Graph` — its edge surface is `addEdge`, `removeEdge`,
  * `addLabelToEdge`, `reindexEdgeProperty`, … so a hand floor for `SET e.w = 42` would be a guess at
  * which of those the executor composes. Guessing it would produce a floor that is not the engine's
@@ -119,7 +119,7 @@ let touched = 0;
 let after = 0;
 
 /**
- * ⚠️ A WRITE PROBE CANNOT WINDOW ONE REP, and the first attempt here proved it twice over. Profiled
+ * A WRITE PROBE CANNOT WINDOW ONE REP, and the first attempt here proved it twice over. Profiled
  * without a window the top frames were all fixture construction (`indexEdgeLabel` 11.71%, `build`
  * 6.00%, `insertEdge` 3.74%, `addVertex` 3.35%) because a write is not idempotent so the graph is
  * rebuilt every rep. Profiled with the window around a SINGLE mutation, the profile had ~11 samples

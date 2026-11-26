@@ -7,13 +7,13 @@ import { describe, expect, test } from 'bun:test';
  * costing **8.3x for IDENTICAL rows** (47.4 ms against 5.7, measured with `WHERE true` so both
  * spellings ask the same question). The walk now tests each anchor against the compiled node.
  *
- * ⚠️ THE SEMANTIC THAT MATTERS IS WHAT A REJECTED ANCHOR PRODUCES: nothing at all, not a
+ * THE SEMANTIC THAT MATTERS IS WHAT A REJECTED ANCHOR PRODUCES: nothing at all, not a
  * NULL-filled row. The `OPTIONAL` applies to the HOP — a start the predicate rejects was never a
  * match — and a walk that emitted a null row for it would return MORE rows than the general path.
  * That is the first test below, stated as a count rather than only as an agreement, because two
  * routes that made the same mistake would agree with each other.
  *
- * ⚠️ THE ORACLE IS A `WHERE true` ON THE *OPTIONAL* CLAUSE, which is refused for a reason that is
+ * THE ORACLE IS A `WHERE true` ON THE *OPTIONAL* CLAUSE, which is refused for a reason that is
  * not going to be relaxed: a `WHERE` there filters the hop, so it changes which anchors get a NULL
  * row. The outer `WHERE true` that item 1849 used as its oracle is no longer one — this item is
  * exactly what taught the rung to take it.
@@ -85,10 +85,10 @@ describe('an anchor predicate on an OPTIONAL hop', () => {
     'MATCH (a:T) WHERE a.k > 99 OPTIONAL MATCH (a)-[:E]->(b:T) RETURN a.k AS x, b.k AS y',
     // Selects EVERYTHING.
     'MATCH (a:T) WHERE true OPTIONAL MATCH (a)-[:E]->(b:T) RETURN a.k AS x, b.k AS y',
-    // The inline spelling. ⚠️ It reaches the rung as a clause `WHERE`, because `liftStartProps`
+    // The inline spelling. It reaches the rung as a clause `WHERE`, because `liftStartProps`
     // runs before the detectors — so this case does NOT exercise a node-level predicate.
     'MATCH (a:T {k: 1}) OPTIONAL MATCH (a)-[:E]->(b:T) RETURN a.k AS x, b.k AS y',
-    // ⚠️ THE NODE-LEVEL `WHERE`, which is NOT lifted and so is the only spelling that arrives on
+    // THE NODE-LEVEL `WHERE`, which is NOT lifted and so is the only spelling that arrives on
     // the node itself. Without it the `start.where` half of the gate is untested, and a mutant
     // deleting it would survive.
     'MATCH (a:T WHERE a.k = 1) OPTIONAL MATCH (a)-[:E]->(b:T) RETURN a.k AS x, b.k AS y',
@@ -125,7 +125,7 @@ describe('an anchor predicate on an OPTIONAL hop', () => {
   });
 
   /**
-   * ⚠️ THE COUNT IS ASSERTED DIRECTLY, not only against the oracle. A rejected anchor must produce
+   * THE COUNT IS ASSERTED DIRECTLY, not only against the oracle. A rejected anchor must produce
    * NO row — a walk that emitted a NULL-filled row for it would return ten rows where four are
    * right, and the oracle could not catch that if both routes made the same mistake.
    */
@@ -167,7 +167,7 @@ describe('an anchor predicate on an OPTIONAL hop', () => {
 
 describe('the OPTIONAL clause’s own WHERE stays refused', () => {
   /**
-   * ⚠️ IT IS A DIFFERENT QUESTION, not a harder version of the same one: a `WHERE` on the OPTIONAL
+   * IT IS A DIFFERENT QUESTION, not a harder version of the same one: a `WHERE` on the OPTIONAL
    * MATCH filters the HOP, so an anchor whose every edge it rejects must still appear with a NULL
    * row. The anchor predicate narrows which starts exist at all.
    */

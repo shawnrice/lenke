@@ -1,18 +1,18 @@
 /**
  * IS A PER-LEVEL BFS EXACT FOR `{min>=2}` IN EVERY MODE? (item 2007)
  *
- * ⚠️⚠️ `{2,3}` DISTINCT costs **674x** its `{1,3}` twin (640.28 ms against 0.95 at 5,000 vertices)
+ * `{2,3}` DISTINCT costs **674x** its `{1,3}` twin (640.28 ms against 0.95 at 5,000 vertices)
  * because `reachQuantifierIsExact` refuses `min > 1` and the shape falls to path enumeration. The
  * refusal is CORRECT for the shortest-distance BFS it guards: a vertex found at `d = 1` may ALSO be
  * reachable at length 2, which that search cannot see.
  *
- * 🔑 A PER-LEVEL BFS could answer it — the union over `d` in `[min, max]` of "reachable in EXACTLY
+ * A PER-LEVEL BFS could answer it — the union over `d` in `[min, max]` of "reachable in EXACTLY
  * `d` steps", one O(|V| + |E|) pass per level. But "exactly d steps" is a WALK notion, and the rung
  * also serves TRAIL, SIMPLE and the default (= trail). **On one vertex with one self-loop there is a
  * WALK of length 2 (`a->a->a`, reusing the edge) and no TRAIL of length 2** — so the modes can
  * diverge at `min >= 2` where they agree at `min <= 1`.
  *
- * ⚠️ MEASURED, NOT REASONED — items 2001/2003 each derived an acyclic fact wrong, and item 2003's
+ * MEASURED, NOT REASONED — items 2001/2003 each derived an acyclic fact wrong, and item 2003's
  * cheap cure died on a fixture it had not been shown. This asks the engine.
  */
 import { Graph } from '@lenke/core';
@@ -118,7 +118,7 @@ const MODES = {
 };
 
 /*
- * ⚠️ `no-raw-interpolation` IS SUPPRESSED ON THE CALL BELOW, with the reason here because the rule's
+ * `no-raw-interpolation` IS SUPPRESSED ON THE CALL BELOW, with the reason here because the rule's
  * `disable-next-line` has to sit on the line it guards. `kw` and `bound` are literals from `MODES`
  * and the bound list in this file — nothing is caller- or data-derived — and the whole point of the
  * probe is to vary the MODE KEYWORD, which no `$param` can express: a parameter binds a VALUE, and
@@ -158,7 +158,7 @@ for (const [name, [n, edges]] of Object.entries(FIXTURES)) {
     }
 
     console.log(
-      `${name.padEnd(19)} ${bound.padEnd(8)} ${w.padEnd(13)} ${t.padEnd(13)} ${s.padEnd(13)} ${d.padEnd(9)} ${same ? 'agree' : '⚠️ DIVERGE'}`,
+      `${name.padEnd(19)} ${bound.padEnd(8)} ${w.padEnd(13)} ${t.padEnd(13)} ${s.padEnd(13)} ${d.padEnd(9)} ${same ? 'agree' : 'DIVERGE'}`,
     );
   }
 }

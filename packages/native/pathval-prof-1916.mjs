@@ -2,21 +2,21 @@
 // item 1901's coverage sweep measured **738.46 and 741.10 ms for 500,000 rows** at 200,000 vertices
 // / 1,000,000 edges, against the one-hop projection control's 26.22 for 800,000.
 //
-// ⚠️ THE ONE-HOP CONTROL IS THE WRONG FLOOR AND THAT IS THE POINT OF THIS PROBE. A `{1,2}`
+// THE ONE-HOP CONTROL IS THE WRONG FLOOR AND THAT IS THE POINT OF THIS PROBE. A `{1,2}`
 // var-length match over a seeded start does far more work than a one-hop projection whatever it
 // returns, and `edges(p)` returns a LIST of edge objects per row where the control returns a
 // scalar. Comparing them prices "var-length matching + building path values" against "a one-hop
 // scalar" and calls the difference the path value. Item 1878's lesson, which cost an item to a 4.7x
 // that turned out to be 2 microseconds.
 //
-// 🔑 SO THE FLOOR CARRIED HERE IS THE SAME MATCH RETURNING A SCALAR — identical pattern, identical
+// SO THE FLOOR CARRIED HERE IS THE SAME MATCH RETURNING A SCALAR — identical pattern, identical
 // seed, identical row count, with no path value anywhere. The difference between `scalar` and
 // `edges` is then the path machinery and nothing else. `bound` adds the path VARIABLE without
 // reading it, which splits "binding a path" from "materializing its edges".
 //
 //     SHAPE=edges|idx0|scalar|bound|nodes|len|hop bun --cpu-prof pathval-prof-1916.mjs
 //
-// ⚠️ ONE SHAPE PER PROCESS, and profile at a high REPS or the profile is the fixture build
+// ONE SHAPE PER PROCESS, and profile at a high REPS or the profile is the fixture build
 // (item 1900's lesson, hit again at item 1915).
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
@@ -70,7 +70,7 @@ const SHAPES = {
 };
 
 /**
- * ⚠️ THE ARMS ADDED AFTER THE FIRST RUN, because the floor turned out to be the story: `scalar` is
+ * THE ARMS ADDED AFTER THE FIRST RUN, because the floor turned out to be the story: `scalar` is
  * 548.74 ms of the `edges` arm's 772.59, so 71% of what item 1901 recorded as a path-value cost is
  * the VAR-LENGTH MATCH. These split that floor further.
  */
@@ -91,7 +91,7 @@ const EXTRA = {
   onehop: 'MATCH (a:T)-[:E]->(b:T) WHERE a.n = $p0 RETURN b.n AS x',
 
   /**
-   * ⚠️ ITEM 735'S OPEN ABLATION, RUN WITH LEGAL QUERIES INSTEAD OF A PATCH (item 1917). That item
+   * ITEM 735'S OPEN ABLATION, RUN WITH LEGAL QUERIES INSTEAD OF A PATCH (item 1917). That item
    * found ~80% of depth-5 enumeration is DOWNSTREAM of the walk's yield — the `yield*` chain, the
    * per-end `matchNode`, and the sink — and left "which of the three dominates" open, because its
    * ablation removed all three at once by counting in place of yielding.
@@ -106,7 +106,7 @@ const EXTRA = {
    *   twonolab   RETURN b.n, end UNlabelled  — drops the per-end label match
    *   bare       RETURN 1,  end UNlabelled   — drops both
    *
-   * ⚠️ `(b)` WITHOUT `:T` IS THE SAME QUESTION ON THIS FIXTURE AND ONLY ON IT: every vertex carries
+   * `(b)` WITHOUT `:T` IS THE SAME QUESTION ON THIS FIXTURE AND ONLY ON IT: every vertex carries
    * `T`, so the label is vacuous and the row sets are identical. The probe prints the row count for
    * exactly that reason — if the counts ever differ, the ladder is comparing two questions.
    */

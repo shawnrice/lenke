@@ -1,7 +1,7 @@
 /**
  * DOES `hop-projection-csr.test.ts` HAVE TEETH? (item 1895)
  *
- * ⚠️ TWO OF THESE MUTANTS ARE ROUTE-ONLY AND ANSWER-EQUIVALENT, which is why they are here at all:
+ * TWO OF THESE MUTANTS ARE ROUTE-ONLY AND ANSWER-EQUIVALENT, which is why they are here at all:
  * admitting a SELECTIVE far label, and reading vacuity from the AST rather than the graph, both
  * return the right rows by the wrong route. The second one is not hypothetical — it is the bug the
  * first cut of this arm shipped, and it measured a flat null.
@@ -25,7 +25,7 @@ const TESTS = ['src/hop-projection-csr.test.ts'];
 /** `[name, from, to, expectedOccurrences]` — each a change that must break at least one test. */
 const MUTANTS = [
   [
-    // ⚠️ IN `csr-cache.ts` SINCE THE ROUTE WAS EXTRACTED — the arm no longer calls `csrFor` itself.
+    // IN `csr-cache.ts` SINCE THE ROUTE WAS EXTRACTED — the arm no longer calls `csrFor` itself.
     'the route reads the WRONG direction',
     'csr',
     '    ? csrFor(graph, out, [typeName])',
@@ -98,7 +98,7 @@ const MUTANTS = [
 const EXPECTED_SURVIVORS = new Set();
 
 /**
- * ⚠️ BOTH STREAMS, ALWAYS, AND THAT IS WHY THIS IS `spawnSync`. `execFileSync` returns STDOUT on
+ * BOTH STREAMS, ALWAYS, AND THAT IS WHY THIS IS `spawnSync`. `execFileSync` returns STDOUT on
  * success and only exposes stderr on a throw — and `bun test` writes `N pass` to **stderr**, so the
  * first cut of this file read an empty result on the passing baseline and declared it broken. Item
  * 767 made the same mistake in the other direction.
@@ -106,10 +106,10 @@ const EXPECTED_SURVIVORS = new Set();
 /** The three outcomes as a label; a nested ternary is what the linter objects to. */
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
 const run = () => {
@@ -171,7 +171,7 @@ try {
     const ran = /\d+ pass/.test(r.text);
 
     if (!ran && r.code !== 124) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -199,6 +199,6 @@ try {
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

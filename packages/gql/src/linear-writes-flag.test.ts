@@ -4,7 +4,7 @@
  * which allocates a closure and does a `Set` lookup per clause to re-derive a property of the
  * compiled query: 14.7% of an 82 ns `RETURN 1 AS v`, and 1.19x on the two-clause count shapes.
  *
- * ⚠️ BEING WRONG HERE LOSES A TRANSACTION, NOT AN ANSWER — and that is why this file exists rather
+ * BEING WRONG HERE LOSES A TRANSACTION, NOT AN ANSWER — and that is why this file exists rather
  * than leaning on the 3,787 answer-comparing tests. `writes` is the single input to the one
  * decision `runLinear` makes:
  *
@@ -42,7 +42,7 @@ const writesOf = (text: string): boolean => {
   return compileLinear(q.parts[0]).writes;
 };
 
-describe('⚠️ CLinear.writes is true for every write clause kind', () => {
+describe('CLinear.writes is true for every write clause kind', () => {
   // One case per member of `WRITE_CLAUSES`. A kind dropped from that set makes exactly one of
   // these fail, which is what names the mistake instead of just reporting a count.
   for (const [kind, text] of [
@@ -78,7 +78,7 @@ describe('CLinear.writes is false for reads', () => {
   }
 });
 
-describe('⚠️ the CONSEQUENCE: a write that fails partway still rolls back', () => {
+describe('the CONSEQUENCE: a write that fails partway still rolls back', () => {
   // THE HALF WITH TEETH. The flag being right is not the same as it being WIRED right, and no row
   // assertion anywhere can see the difference — a successful write writes the same rows with or
   // without a transaction around it. These cases fail only if `runLinear` stopped wrapping.

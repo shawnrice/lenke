@@ -37,7 +37,7 @@ const QUERIES = {
   // THE LADDER (item 1755): the same `<` with THRESH matching rows, to locate the crossover where
   // taking the index stops paying. `n` is `i`, so the threshold IS the row count.
   rangeladder: `MATCH (n:P) WHERE n.n < ${process.env.THRESH ?? 10} RETURN n.s AS s`,
-  // ⚠️ THE CARDINALITY TWIN (item 1755). Same ~50% selectivity as `n < 10000`, but on `k`, which has
+  // THE CARDINALITY TWIN (item 1755). Same ~50% selectivity as `n < 10000`, but on `k`, which has
   // only 97 DISTINCT values against `n`'s 20,000. `countRange` is O(distinct values in range), so if
   // the regression is the GATE'S INPUT rather than the seek, this must NOT regress.
   rangelowcard: 'MATCH (n:P) WHERE n.k < 48 RETURN n.s AS s',

@@ -17,7 +17,7 @@
 // That accounts for `V().has(age,gt).count()` exactly: 2.6ms at 200,000 vertices is 13 ns/v, which
 // is 1.5 iteration + ~10 property read + ~1 predicate.
 //
-// ⚠️ THE PROPERTY READ IS A POINTER CHASE, NOT A SLOW OBJECT. The bag itself is fast; what costs is
+// THE PROPERTY READ IS A POINTER CHASE, NOT A SLOW OBJECT. The bag itself is fast; what costs is
 // reaching it through `vertex -> box -> bag`, three heap objects per vertex:
 //
 //     plain object literal, array-held             1.60 ns/v
@@ -29,7 +29,7 @@
 // the map and what keeps a detached element's throw — so removing it is a storage-layout decision
 // and not a micro-fix.
 //
-// ⚠️ TWO OBVIOUS LEVERS, BOTH REFUTED HERE WITH NUMBERS, so they are not re-derived:
+// TWO OBVIOUS LEVERS, BOTH REFUTED HERE WITH NUMBERS, so they are not re-derived:
 //
 // 1. COMPILE `matches()` INTO A CLOSURE, hoisting its 20-way switch on `pred.op` out of the
 //    per-value loop. This is the substitution items 1224/1225/1227/1231 made in Rust for 5.28x,

@@ -25,7 +25,7 @@ import { countShortcut } from './count-shortcut.js';
  * Same walk, same 319,972 traversers, one `has` at the end — and the no-filter twin being
  * closed-form is what makes it a cliff rather than honest work.
  *
- * ⚠️ EVERY LITERAL BELOW IS DERIVED FROM THE TABLE BY A SCRIPT, with no engine involved, before this
+ * EVERY LITERAL BELOW IS DERIVED FROM THE TABLE BY A SCRIPT, with no engine involved, before this
  * file was written. Items 1602 and 1611 both wrote literals by eye and both were wrong while the
  * engine was right — 1611's `max` could not even discriminate the property it was testing.
  *
@@ -120,9 +120,9 @@ describe('a trailing filter after the last hop', () => {
     expect(answered(traversal(V(), out('E'), out('E'), has('team', eq('t1')), count()))).toBe(1);
   });
 
-  test('⚠️ a leading filter that DISCRIMINATES — found by mutation', () => {
+  test('a leading filter that DISCRIMINATES — found by mutation', () => {
     /**
-     * ⚠️ `team = 't2'`, NOT `t1`. Dropping the lead filter entirely, and reading the WRONG endpoint
+     * `team = 't2'`, NOT `t1`. Dropping the lead filter entirely, and reading the WRONG endpoint
      * of the arriving edge, both SURVIVED the first pass — because with a trailing `t1` the answer
      * is 1 whether the starts are all vertices, `User`s or `Admin`s. Derived over the table:
      *
@@ -164,7 +164,7 @@ describe('a trailing filter after the last hop', () => {
     expect(answered(traversal(V(), out('E'), out('E'), hasLabel('Admin'), count()))).toBe(9);
   });
 
-  test('⚠️ an INTERIOR filter as well — item 1602’s other open shape, same rung', () => {
+  test('an INTERIOR filter as well — item 1602’s other open shape, same rung', () => {
     /**
      * `out(E).has(team,t1).out(E).has(team,t2)` measured 16.2 ms before this rung and 440 us after
      * — 36.8x. It takes the same walk: a middle failing the interior test contributes zero
@@ -195,7 +195,7 @@ describe('a trailing filter after the last hop', () => {
     /**
      * The direction mirror: arrivals reach the far end along its OUT-edges for an `in` hop.
      *
-     * ⚠️ 8, and my first guess of 5 was the ONE literal in this file I did not derive from the
+     * 8, and my first guess of 5 was the ONE literal in this file I did not derive from the
      * script — the engine was right. Reversing both hops is not symmetric with the `out` form on
      * this fixture, because the in-degree distribution is not the out-degree distribution.
      */
@@ -217,18 +217,18 @@ describe('the rung declines what it must', () => {
     ).toBeUndefined();
   });
 
-  test('⚠️ a THIRD hop is now ANSWERED, by item 2130\u2019s reversal — and the answer is right', () => {
+  test('a THIRD hop is now ANSWERED, by item 2130\u2019s reversal — and the answer is right', () => {
     /*
-     * ⚠️⚠️ **THIS TEST ASSERTED `toBeUndefined()` AND ITEM 2130 WIDENED THE ROUTE DELIBERATELY.** It was a
+     * **THIS TEST ASSERTED `toBeUndefined()` AND ITEM 2130 WIDENED THE ROUTE DELIBERATELY.** It was a
      * ROUTE assertion ("a deeper chain keeps the pipeline"), not an answer one, and the pipeline is no
      * longer where this shape should go: `reversedTrailChain` rewrites `[out, out, out, has]` as
      * `[has, in, in, in]`, which `hopChainCount` answers through the CSR propagation at any depth.
      *
-     * 🔑 THE REWRITE IS A BIJECTION ON PATHS — the k-hop OUT-paths ending at a passing vertex correspond
+     * THE REWRITE IS A BIJECTION ON PATHS — the k-hop OUT-paths ending at a passing vertex correspond
      * one-to-one with the k-hop IN-paths starting at one — so the count is identical, and `0` here is
      * the right answer for this fixture (verified against a brute-force enumeration).
      *
-     * ⚠️ `0` IS A WEAK CONFIRMATION ON ITS OWN, so item 2130 pinned the rewrite against brute force on a
+     * `0` IS A WEAK CONFIRMATION ON ITS OWN, so item 2130 pinned the rewrite against brute force on a
      * fixture with plenty of deep paths: 2/3/4 hops at 216/648/1944, `hasLabel` at 405, two trailing
      * filters at 135, and the `in` direction at 648 — all exact. Those live in
      * `reversed-trail-chain.test.ts`; this one keeps the shape in THIS fixture's table.
@@ -246,7 +246,7 @@ describe('the rung declines what it must', () => {
 
   test('a step after the hops that is not a vertex filter', () => {
     /**
-     * ⚠️ THIS ROW FLIPPED AT ITEM 1855, and only its OWNER changed — THIS rung still declines
+     * THIS ROW FLIPPED AT ITEM 1855, and only its OWNER changed — THIS rung still declines
      * `dedupe`, exactly as the comment said. What changed is that a different rung now claims the
      * shape: `dedupedHopChainCount` answers a K-hop `dedupe().count()` by expanding a SET per
      * level, which closed a **398x** cliff (0.64 ms at one hop against 254.62 at two).
@@ -257,7 +257,7 @@ describe('the rung declines what it must', () => {
     expect(answered(traversal(V(), out('E'), out('E'), dedupe(), count()))).toBe(3);
   });
 
-  test('⚠️ a MULTI-TYPE graph with an untyped hop', () => {
+  test('a MULTI-TYPE graph with an untyped hop', () => {
     /**
      * `degreeOfTypes` sums the per-type buckets, which is a degree only when the wanted set is ONE
      * bucket. `hopChainShape`'s note records **13 divergences** from getting this wrong, every one

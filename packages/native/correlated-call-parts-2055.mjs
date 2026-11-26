@@ -2,13 +2,13 @@
  * Item 2055 — SPLITTING THE CORRELATED `CALL`'s PER-ROW COST BY SCALING THE SIDES INDEPENDENTLY.
  *
  * Item 2054 put ~30% of `callscoped` in per-row plan dispatch and 2.7% in `buildGroups`, and asked
- * whether a single-group `count(*)` could skip the grouping machinery. ⚠️ **A PROFILE SHARE CANNOT
+ * whether a single-group `count(*)` could skip the grouping machinery. **A PROFILE SHARE CANNOT
  * ANSWER THAT**, and the sibling item says so in its own words: for the UNCORRELATED form the same
  * frames appeared at small shares, and *"a body run ONCE shows exactly those frames too… a share is
  * not a count"* — the mechanism was only settled by `uncorrelated-call-reuse-probe.mjs`, which scales
  * the outer row count and the body cost independently. This is that probe's correlated twin.
  *
- * 🔑 **THE ARMS ARE CHOSEN SO EACH DIFFERENCE ISOLATES ONE TERM:**
+ * **THE ARMS ARE CHOSEN SO EACH DIFFERENCE ISOLATES ONE TERM:**
  *
  *   outer x1000 with the SAME body      -> is the per-row term linear in outer rows?
  *   same outer with a TRIVIAL body      -> how much is plumbing rather than the body's work?
@@ -16,7 +16,7 @@
  *                                          nothing else and both yield exactly one nested row
  *   no CALL at all                      -> the outer pattern's own cost
  *
- * ⚠️ THE ANSWERS DIFFER BETWEEN ARMS BY DESIGN — these are not equivalent spellings, so each arm's
+ * THE ANSWERS DIFFER BETWEEN ARMS BY DESIGN — these are not equivalent spellings, so each arm's
  * answer is PRINTED rather than asserted equal. Item 2054 withdrew a ratio built from two shapes whose
  * `count(*)` happened to agree; the lesson is to show the answers, not to hide them behind a check
  * that cannot fail.
@@ -91,7 +91,7 @@ for (const [name, q] of Object.entries(CASES)) {
 }
 
 /*
- * ⚠️⚠️ **THE DECOMPOSITION THIS PROBE WAS BUILT FOR DOES NOT WORK, and the numbers say so loudly: a
+ * **THE DECOMPOSITION THIS PROBE WAS BUILT FOR DOES NOT WORK, and the numbers say so loudly: a
  * "trivial" body is DEARER than the hop body**, which makes any subtraction meaningless (negative
  * body work, a 146% plumbing share). Two confounds, both fatal:
  *
@@ -115,6 +115,6 @@ console.log(
     `\n    body = RETURN 1                             ${perRow(ms['outer=ALL   body=RETURN 1']).toFixed(3)} us a row` +
     `\n    body = RETURN count(*)                      ${perRow(ms['outer=ALL   body=count(*)']).toFixed(3)} us a row   <- no rung: the GENERAL per-row path` +
     `\n\n  the pattern-free aggregate body is ${(ms['outer=ALL   body=count(*)'] / ms['outer=ALL   body=hop']).toFixed(2)}x the HOP body — the simpler query is dearer` +
-    `\n\n  ⚠️ NOT REPORTED: any plumbing-minus-body subtraction. See the comment above — the arms do not` +
+    `\n\n  NOT REPORTED: any plumbing-minus-body subtraction. See the comment above — the arms do not` +
     `\n     share a route, so the difference is not a decomposition.\n`,
 );

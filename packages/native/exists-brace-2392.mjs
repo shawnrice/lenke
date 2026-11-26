@@ -39,7 +39,7 @@ const build = (opts) => {
   }
 
   /*
-   * ⚠️ SPLIT ON THE REPEAT INDEX, which the spelling probe's own fixture does NOT — and the first
+   * SPLIT ON THE REPEAT INDEX, which the spelling probe's own fixture does NOT — and the first
    * draft of this probe copied it verbatim, which `fixture-branching.test.ts` rejected by name.
    * `(e * 104729) % NODES` is invariant under `e -> e + NODES`, so with `EDGES = 3 * NODES` every
    * vertex got THREE PARALLEL EDGES to one target instead of three distinct ones. The existence

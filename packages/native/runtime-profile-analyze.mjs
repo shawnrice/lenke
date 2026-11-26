@@ -19,7 +19,7 @@
  * The frame cross-checking lives in `profile-frames.mjs`, shared with `runtime-heap-analyze.mjs`;
  * its header records the four defects it has had and why it is one module rather than two copies.
  *
- * ⚠️ SELF TIME IS NOT RELIABLE ATTRIBUTION AT THIS GRANULARITY (item 1104). A small hot callee gets
+ * SELF TIME IS NOT RELIABLE ATTRIBUTION AT THIS GRANULARITY (item 1104). A small hot callee gets
  * credited with its caller's inlined loop: `edgesOfTypes` read 37.9% / 2765.8 ms self where
  * 3,600,000 calls all took a single-`Map.get` fast path, which would be 768 ns per `Map.get`. Use
  * this screen to NOMINATE, then ablate to price.

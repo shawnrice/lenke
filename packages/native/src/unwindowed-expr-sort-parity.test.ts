@@ -1,6 +1,6 @@
 // BYTE-IDENTITY for `ORDER BY <an expression>` with NO window (item 1902).
 //
-// ⚠️⚠️ THIS FILE EXISTS BECAUSE `bun run fuzz` IS BLIND TO THE SHAPE. The workload corpus's
+// THIS FILE EXISTS BECAUSE `bun run fuzz` IS BLIND TO THE SHAPE. The workload corpus's
 // `withOrder` always orders by the projection's ALIAS, so every ordered query it generates spells
 // the key as a bound name — and `workload-queries.ts`'s own header names that hazard: "a generator
 // that only ever spells a query one way guards only the route that spelling takes, and the fuzzer
@@ -8,7 +8,7 @@
 // which no generated query reaches, so a green fuzzer would have said nothing about it. Same shape
 // as `fuzzer-blind-to-one-column-group`.
 //
-// ⚠️ ROW ORDER IS THE WHOLE RISK HERE, and it is compared as ORDER rather than as a multiset:
+// ROW ORDER IS THE WHOLE RISK HERE, and it is compared as ORDER rather than as a multiset:
 // `ORDER BY` makes the order part of the answer, and TIE order is observable between the engines
 // (item 605). The fixture therefore carries DUPLICATE keys, because a fixture of distinct keys
 // cannot see a tiebreak change at all.
@@ -48,7 +48,7 @@ const QUERIES = [
   // The alias spellings, which must not have moved.
   'MATCH (n:T) RETURN n.k + 1 AS c, n.s AS s ORDER BY c',
   'MATCH (n:T) RETURN n.k + 1 AS c, n.s AS s ORDER BY n.k + 1',
-  // ⚠️ THE ROUTES THE ITEM DELIBERATELY LEFT ALONE, carried so a later change that admits one of
+  // THE ROUTES THE ITEM DELIBERATELY LEFT ALONE, carried so a later change that admits one of
   // them has to come past this file: a SKIP with no LIMIT, and a LIMIT of zero.
   'MATCH (n:T) RETURN n.s AS s ORDER BY n.k + 1 OFFSET 1',
   'MATCH (n:T) RETURN n.s AS s ORDER BY n.k + 1 LIMIT 0',
@@ -67,7 +67,7 @@ describe.if(nativeReady)('ORDER BY <expression>, no window — TS and native byt
       const a = JSON.stringify(tsQuery(ts, text));
 
       expect(a).toBe(JSON.stringify(nat.query(text)));
-      // ⚠️ AND NON-EMPTY, because two engines agree trivially on nothing — `LIMIT 0` is the one
+      // AND NON-EMPTY, because two engines agree trivially on nothing — `LIMIT 0` is the one
       // query here that is meant to be empty.
       expect(a === '[]').toBe(text.includes('LIMIT 0'));
     });

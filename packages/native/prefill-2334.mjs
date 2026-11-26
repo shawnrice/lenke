@@ -1,5 +1,5 @@
 /**
- * ✅✅ **THE LOSING SHAPE THE PREFILL's OWN AUTHOR FLAGGED AND NO PROBE COVERS (item 2334).**
+ * **THE LOSING SHAPE THE PREFILL's OWN AUTHOR FLAGGED AND NO PROBE COVERS (item 2334).**
  *
  * `hop-chain-values.ts` prefills every slot's projected value before the walk:
  *
@@ -8,8 +8,8 @@
  *     for (let s = 0; s < n; s += 1) { vals[s] = pick(vtx[s]); }
  * ```
  *
- * ✅ That is what makes Gremlin 5.12x faster than GQL on a two-hop projection (items 2332/2333) — the
- * property is read once per VERTEX rather than once per PATH. ⚠️ But its doc comment states the risk in as
+ * That is what makes Gremlin 5.12x faster than GQL on a two-hop projection (items 2332/2333) — the
+ * property is read once per VERTEX rather than once per PATH. But its doc comment states the risk in as
  * many words:
  *
  *   *"AND ITS COST IS O(slots) ON A HIGHLY SELECTIVE FILTER — picks for slots nothing reaches. The
@@ -17,12 +17,12 @@
  *   slots; **a filter admitting a handful out of 200,000 is the shape that would lose, and no probe covers
  *   it.**"*
  *
- * 🔑 So this probe is that shape. The prefill is O(|V|) whatever the filter admits, so the question is what
+ * So this probe is that shape. The prefill is O(|V|) whatever the filter admits, so the question is what
  * a query emitting a HANDFUL of rows pays for picks over the whole vertex set.
  *
- * ⚠️ **ns-per-EMITTED-ROW IS THE WRONG YARDSTICK ALONE** — a selective filter emits few rows, so any fixed
+ * **ns-per-EMITTED-ROW IS THE WRONG YARDSTICK ALONE** — a selective filter emits few rows, so any fixed
  * cost divides into a huge per-row number and would "prove" a regression that is really just arithmetic.
- * ✅ The honest comparison is the absolute µs of a selective query against the SAME query shape whose
+ * The honest comparison is the absolute µs of a selective query against the SAME query shape whose
  * filter admits everything: if the prefill dominates, the selective arm costs nearly as much as the
  * unselective one despite emitting 1/1000th the rows.
  */
@@ -38,7 +38,7 @@ const ARM = process.env.ARM ?? 'selective';
 const graph = new Graph();
 
 /*
- * ⚠️ `sel` is 1-in-NODES — exactly ONE vertex carries `sel: 1` — which is the "handful out of 200,000"
+ * `sel` is 1-in-NODES — exactly ONE vertex carries `sel: 1` — which is the "handful out of 200,000"
  * the comment names. `k` is the projected key and is present on every vertex.
  */
 for (let i = 0; i < NODES; i += 1) {
@@ -69,11 +69,11 @@ if (seen.size < NODES * 0.5) {
 }
 
 const plans = {
-  /* ⚠️ THE FLAGGED SHAPE: a far filter admitting ONE vertex, so almost no slot is emitted. */
+  /* THE FLAGGED SHAPE: a far filter admitting ONE vertex, so almost no slot is emitted. */
   selective: traversal(V(), hasLabel('N'), out('E'), out('E'), has('sel', eq(1)), values('k')),
-  /* ✅ THE SAME SHAPE whose filter admits EVERYTHING — same steps, same walk, every slot emitted. */
+  /* THE SAME SHAPE whose filter admits EVERYTHING — same steps, same walk, every slot emitted. */
   unselective: traversal(V(), hasLabel('N'), out('E'), out('E'), has('all', eq(1)), values('k')),
-  /* ✅ And the unfiltered twin, for what the walk costs with no `has` at all. */
+  /* And the unfiltered twin, for what the walk costs with no `has` at all. */
   nofilter: traversal(V(), hasLabel('N'), out('E'), out('E'), values('k')),
 };
 

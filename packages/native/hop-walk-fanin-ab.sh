@@ -15,7 +15,7 @@
 # measured **1.28x FASTER than `hoplist`** (far-driven), the PAGED query beating the unpaged one over
 # ten more rows, on a fixture whose fan-in is exactly 1.
 #
-# ⚠️ ONE FIXTURE AND ONE CELL IS NOT A VERDICT, which is why this exists. Item 1390 measured the
+# ONE FIXTURE AND ONE CELL IS NOT A VERDICT, which is why this exists. Item 1390 measured the
 # far-driven walk at 86.1 against 69.3 at `FANIN=1` and **16.1** at `FANIN=0.01` — a refutation and
 # a 4.3x win from the same code, decided entirely by the knob. A single-cell reading of this route
 # would be the same mistake with the sign flipped.

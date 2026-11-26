@@ -22,7 +22,7 @@ import { effectivePlan } from './index.js';
  * the dedupe dropped the whole query to the pipeline — which then also builds a `Set` of every
  * distinct far vertex.
  *
- * ⚠️ EVERY LITERAL IS DERIVED BY A SCRIPT over the table below, before this file was written, and
+ * EVERY LITERAL IS DERIVED BY A SCRIPT over the table below, before this file was written, and
  * the LEAD cases were chosen from a derived (no lead / User lead / Admin lead) table because the
  * obvious ones do not discriminate — exactly the trap item 1612's mutation pass found.
  *
@@ -119,7 +119,7 @@ describe('a distinct far count with a filter', () => {
     expect(answered(traversal(V(), out('E'), has('team', eq('t1')), dedupe(), count()))).toBe(2);
   });
 
-  test('⚠️ the `dedupe` BEFORE the filter answers the same — one rung, two spellings', () => {
+  test('the `dedupe` BEFORE the filter answers the same — one rung, two spellings', () => {
     /**
      * `dedupe` does not change which vertices pass a filter, and this is a COUNT, so emission order
      * is not observable either. Both spellings describe the same set and must therefore cost the
@@ -142,7 +142,7 @@ describe('a distinct far count with a filter', () => {
     ).toBe(1);
   });
 
-  test('⚠️ a leading filter that DISCRIMINATES', () => {
+  test('a leading filter that DISCRIMINATES', () => {
     /**
      * Derived, because the obvious choice does not separate:
      *
@@ -212,14 +212,14 @@ describe('the rung declines what it must', () => {
      * (`d->a`, `a->b`, `d->b`) against **2** distinct such targets (`a`, `b`). That difference is
      * the whole point of the rung.
      *
-     * ⚠️ I wrote 3 as 4 by eye, which is the FOURTH eyeballed literal this session the engine was
+     * I wrote 3 as 4 by eye, which is the FOURTH eyeballed literal this session the engine was
      * right about. Derived: targets with `team = t1` are `a` and `b`; the E-edges into them are
      * `d->a`, `a->b` and `d->b`.
      */
     expect(answered(traversal(V(), out('E'), has('team', eq('t1')), count()))).toBe(3);
   });
 
-  test('⚠️ the verdict must be asked of the EFFECTIVE plan', () => {
+  test('the verdict must be asked of the EFFECTIVE plan', () => {
     /**
      * `effectivePlan` runs `dropVacuousLabels`, so a leading `hasLabel` every vertex carries is
      * DELETED before any rung sees the plan. Asking the raw plan reports a different verdict for the
@@ -241,7 +241,7 @@ describe('the rung declines what it must', () => {
     });
 
     /**
-     * ⚠️ AND IT HAS TO BE A SHAPE WHERE THE VERDICT ACTUALLY DIFFERS. The first version of this test
+     * AND IT HAS TO BE A SHAPE WHERE THE VERDICT ACTUALLY DIFFERS. The first version of this test
      * used `hasLabel(Only).out(E).has(k,1).dedupe()`, which THIS rung answers on the raw plan too —
      * it treats the leading `hasLabel` as a lead filter. The shape that separates is the
      * UNFILTERED one, because `distinctHopCount` is gated on `mid.length !== 2` and the vacuous

@@ -1,15 +1,15 @@
 /**
  * DOES THE SKIP-ONLY PAGE RUNG PAIR HAVE TEETH? (item 1885)
  *
- * ⚠️ IT PASSED ON ITS FIRST RUN, AND SO DOES A TEST THAT CHECKS NOTHING. CLAUDE.md's rule:
+ * IT PASSED ON ITS FIRST RUN, AND SO DOES A TEST THAT CHECKS NOTHING. CLAUDE.md's rule:
  * "Mutate it and check the fuzzer catches it. A generative test whose teeth were never verified is
  * worse than no test, because it is believed."
  *
- * ⚠️ EACH MUTANT IS ANCHOR-ASSERTED. Items 1870 and 1873 both recorded a mutant whose anchor
+ * EACH MUTANT IS ANCHOR-ASSERTED. Items 1870 and 1873 both recorded a mutant whose anchor
  * matched 0 or 2 times, so the "pass" meant nothing — the patch had never applied. Every entry
  * below declares the occurrence count it expects and the run fails loudly otherwise.
  *
- * ⚠️ AND A VERDICT NEEDS EVIDENCE OF EXECUTION, NOT AN EXIT CODE. `bun test` writes `N pass` /
+ * AND A VERDICT NEEDS EVIDENCE OF EXECUTION, NOT AN EXIT CODE. `bun test` writes `N pass` /
  * `N fail` to **stderr**, so both streams are concatenated and a result line is required before
  * the exit code is read (items 767/772-773 got this wrong in both directions).
  *
@@ -31,7 +31,7 @@ const PRISTINE = `${ROOT}/crates/lenke-engine/target/pristine-1885`;
 const TESTS = [
   'src/chain-paged-page.test.ts',
   'src/routes-fired.test.ts',
-  // ⚠️ THE THIRD FILE EXISTS BECAUSE OF THIS RUNNER. The `clauses` mutant below — replacing the
+  // THE THIRD FILE EXISTS BECAUSE OF THIS RUNNER. The `clauses` mutant below — replacing the
   // consumer call with `undefined` — SURVIVED the first two (92 passing tests), since dropping a
   // consumer is answer-equivalent and the route file pins only that the DETECTOR fires.
   'src/paged-width-consumer.test.ts',
@@ -80,13 +80,13 @@ const MUTANTS = [
     1,
   ],
   /**
-   * ⚠️ AN EXPECTED SURVIVOR, WITH ITS REASON — not a hole newly discovered here. Dropping the branch
+   * AN EXPECTED SURVIVOR, WITH ITS REASON — not a hole newly discovered here. Dropping the branch
    * that CONSUMES a rung is answer-equivalent: the query falls to the general matcher and returns
    * the same rows, more slowly. `clauses.ts`'s own note says this of all the rungs ("removing the
    * branch that CONSUMES it is answer-equivalent and the whole suite passes"), and item 1619 checked
    * whether row ORDER could distinguish the two paths and it cannot.
    *
-   * ⚠️ AND EXPORTING THE COMPOSITION DID NOT CLOSE IT, which is worth recording because
+   * AND EXPORTING THE COMPOSITION DID NOT CLOSE IT, which is worth recording because
    * [[rewrite-composition-is-not-free]]'s rule says to try exactly that. `paged-width-consumer.test.ts`
    * pins the HELPER — its precedence, its `null` fall-through, an empty result as a real answer —
    * and the mutant below removes the CALL SITE, which no direct test of the helper can see. Closing
@@ -107,7 +107,7 @@ const MUTANTS = [
 const EXPECTED_SURVIVORS = new Set(['EXPECTED SURVIVOR — clauses: the call site is removed']);
 
 /**
- * ⚠️ BOTH STREAMS, ALWAYS, AND THAT IS WHY THIS IS `spawnSync`. `execFileSync` returns STDOUT on
+ * BOTH STREAMS, ALWAYS, AND THAT IS WHY THIS IS `spawnSync`. `execFileSync` returns STDOUT on
  * success and only exposes stderr on a throw — and `bun test` writes `N pass` to **stderr**, so the
  * first cut of this file read an empty result on the passing baseline and declared it broken. Item
  * 767 made the same mistake in the other direction.
@@ -115,10 +115,10 @@ const EXPECTED_SURVIVORS = new Set(['EXPECTED SURVIVOR — clauses: the call sit
 /** The three outcomes as a label; a nested ternary is what the linter objects to. */
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
 const run = () => {
@@ -175,7 +175,7 @@ try {
     const ran = /\d+ pass/.test(r.text);
 
     if (!ran && r.code !== 124) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -203,6 +203,6 @@ try {
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

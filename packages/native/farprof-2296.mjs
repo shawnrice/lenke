@@ -1,5 +1,5 @@
 /**
- * ⚠️⚠️ **WHY IS THE INLINE FAR PREDICATE 2.8x SLOWER THAN THE CLAUSE ONE? (item 2296)**
+ * **WHY IS THE INLINE FAR PREDICATE 2.8x SLOWER THAN THE CLAUSE ONE? (item 2296)**
  *
  * Item 2295 isolated it to within 1% and established what it is NOT: not a route difference (all
  * spellings compile to `hopProjection`), not item 2293's orientation gate (the far node is unlabelled, so
@@ -11,10 +11,10 @@
  *     (b) WHERE b.k = 5    46.34 /  46.38 /  46.09   <- 2.8x FASTER
  * ```
  *
- * 🔑 ONE SHAPE PER PROCESS, so a profile of this driver attributes to one spelling only — items
+ * ONE SHAPE PER PROCESS, so a profile of this driver attributes to one spelling only — items
  * 2285/2286 showed extra arms in one process both erase and manufacture gaps.
  *
- * ⚠️ `SHAPE=rows` is the CONTROL: the same hop with no predicate at all. Without it a profile cannot
+ * `SHAPE=rows` is the CONTROL: the same hop with no predicate at all. Without it a profile cannot
  * separate what the predicate costs from what the walk costs.
  */
 import { Graph } from '@lenke/core';

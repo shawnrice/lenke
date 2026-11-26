@@ -84,7 +84,7 @@ type Engine = {
    * Run a Gremlin traversal BUILT per operation, for an engine whose Gremlin surface is a fluent
    * builder rather than text (item 1593).
    *
-   * ⚠️ WHY THIS EXISTS AS A SECOND HOOK. The `gremlin` hook above takes TEXT, and the note on it
+   * WHY THIS EXISTS AS A SECOND HOOK. The `gremlin` hook above takes TEXT, and the note on it
    * explains that the pure-TS Gremlin engine has none — so its rows printed `-` and the TS Gremlin
    * SERVING path had no coverage in this harness at all. That is a real hole and not just a
    * different surface: items 1577/1578 measured plan CONSTRUCTION at ~48-51% of a cheap Gremlin
@@ -127,7 +127,7 @@ const nativeEngine = (name: string, backend: Backend): Engine => ({
 /**
  * The TS Gremlin serving shape: a traversal BUILT per operation (item 1593).
  *
- * ⚠️ The value is inlined into the plan, which is the builder's equivalent of "a fresh text every
+ * The value is inlined into the plan, which is the builder's equivalent of "a fresh text every
  * call" — Gremlin accepts no parameters, so a serving workload that varies a value must vary the
  * PLAN. That is the realistic shape, and it pays construction every time.
  */
@@ -279,7 +279,7 @@ const WORKLOADS: Workload[] = [
     op: (e, g, i) => void e.gremlinBuilderWarm?.(g, i),
   },
   {
-    // ⚠️ THE ROW THAT MAKES THE OTHER TWO READABLE, and its absence made my first reading of them
+    // THE ROW THAT MAKES THE OTHER TWO READABLE, and its absence made my first reading of them
     // WRONG. `reused plan` has its value baked in, so it looks up ONE user every call, while
     // `point lookup` builds fresh and therefore looks up a DIFFERENT user each call. The pair
     // differs in TWO ways at once, so their gap is NOT construction — it is construction plus
@@ -417,7 +417,7 @@ const WORKLOADS: Workload[] = [
     // graph does not shrink toward empty over a time-boxed run and the row stays
     // comparable across engines. It therefore prices an append AND a delete together.
     //
-    // ⚠️ READ IT AGAINST `write: append node [params]`, NOT `write: append node` (item 662).
+    // READ IT AGAINST `write: append node [params]`, NOT `write: append node` (item 662).
     // The unparameterized row builds a CHANGING query text, so it pays a parse+plan cache miss
     // every operation — the note above records TS 3.4-3.9x faster once parameterized. The insert
     // HERE is parameterized, so subtracting the unparameterized row makes the pair look cheaper
@@ -435,7 +435,7 @@ const WORKLOADS: Workload[] = [
     //
     // The insert halves still differ by one property (3 vs 2), which inflates the baseline and
     // therefore UNDERSTATES the delete — a conservative direction.
-    // ⚠️ THIS ROW PRICES A DEGREE-ZERO DELETE, and items 715/717 are the reason to say so. The
+    // THIS ROW PRICES A DEGREE-ZERO DELETE, and items 715/717 are the reason to say so. The
     // victim is the `Tmp` node this iteration just inserted, so it has NO edges: the mirror
     // detach loop runs zero times and `delete_edge` is never called. Those items made a hub-leaf
     // node delete 1.58x and a single edge delete 1.99x, and NEITHER can appear here.
@@ -751,7 +751,7 @@ console.log('-'.repeat(header.length));
 
 for (const w of SELECTED) {
   const cells = engines.flatMap((e) =>
-    // 🛑 THESE TWO COLUMNS ARE NOT INDEPENDENT MEASUREMENTS (item 752). They run in THIS order in
+    // THESE TWO COLUMNS ARE NOT INDEPENDENT MEASUREMENTS (item 752). They run in THIS order in
     // ONE process, and `rate` warms with a single operation — the pilot that sizes the batch, which
     // is a different job despite the word "Warm" on it. So `(+)` is measured on code the `(-)` cell
     // has already executed thousands of times, and on a PARSE-DOMINATED row that tier-up beats the

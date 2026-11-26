@@ -9,13 +9,13 @@ import { describe, expect, test } from 'bun:test';
  * **2.9x at one hop and 19.2x at two, for the same seven groups.** CLAUDE.md's opening defect
  * class — the planner recognising one spelling and scanning for another that means the same thing.
  *
- * ⚠️ THE MAP'S ORDER IS PART OF ITS ANSWER, so every assertion here compares `[...map]` as an
+ * THE MAP'S ORDER IS PART OF ITS ANSWER, so every assertion here compares `[...map]` as an
  * ARRAY. `groupCount` returns a Map whose iteration order is first-occurrence order of the keys,
  * and byte-identity with the Rust engine is a hard invariant — two spellings agreeing on the
  * groups but not on their order would still be a divergence. Item 1834 made the same point when it
  * fused this walk in the first place.
  *
- * ⚠️ AND A GROUP COUNT OVER AN EMPTY FRONTIER PROVES NOTHING. The first version of the companion
+ * AND A GROUP COUNT OVER AN EMPTY FRONTIER PROVES NOTHING. The first version of the companion
  * spelling-probe group used an edge label the fixture does not carry, so both spellings answered
  * an EMPTY Map and converged trivially. The fixture below is asserted non-vacuous.
  */
@@ -101,14 +101,14 @@ describe('the two groupCount by-spellings', () => {
       const a = entries(g, config);
       const b = entries(g, modulator);
 
-      // ⚠️ NON-VACUOUS, asserted: an empty Map would make the comparison meaningless.
+      // NON-VACUOUS, asserted: an empty Map would make the comparison meaningless.
       expect(`${name}: ${String(a.length)}`).not.toBe(`${name}: 0`);
       expect(`${name}: ${JSON.stringify(b)}`).toBe(`${name}: ${JSON.stringify(a)}`);
     }
   });
 
   /**
-   * ⚠️ THE COUNTS MUST SUM TO THE WALK'S LENGTH, which is the check that does not depend on the
+   * THE COUNTS MUST SUM TO THE WALK'S LENGTH, which is the check that does not depend on the
    * other spelling. Two routes that made the same mistake would agree with each other; this
    * compares against the number of elements the hop actually produced.
    */
@@ -125,7 +125,7 @@ describe('the two groupCount by-spellings', () => {
   });
 
   /**
-   * ⚠️ AN AMBIGUOUS PLAN CARRYING BOTH SPELLINGS, and a MULTI-`by` modulation, are refused rather
+   * AN AMBIGUOUS PLAN CARRYING BOTH SPELLINGS, and a MULTI-`by` modulation, are refused rather
    * than resolved — a plan that said two things about its key should not have one of them silently
    * chosen. Both still answer, down the general pipeline.
    */
@@ -143,7 +143,7 @@ describe('the two groupCount by-spellings', () => {
 /**
  * THE GATE ITSELF — item 1856.
  *
- * ⚠️ THESE ARE THE ONLY TESTS THAT CAN FAIL ON THIS CHANGE, and the mutation run is what proved
+ * THESE ARE THE ONLY TESTS THAT CAN FAIL ON THIS CHANGE, and the mutation run is what proved
  * it: all four gate mutants (reject the modulator spelling, admit a non-`key` by, admit an
  * ambiguous plan, admit a multi-`by`) SURVIVED every answer test above, because a route choice is
  * answer-equivalent by construction — the general pipeline computes the same Map, just slowly.

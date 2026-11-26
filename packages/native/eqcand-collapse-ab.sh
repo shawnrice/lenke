@@ -3,11 +3,11 @@
 # `eqCandidate` pay? Nominated by `countEquals` at 7.1% of a parameterised edge INSERT, where
 # two endpoints each pay the gate's count AND the seed's fetch for the same (key, value).
 #
-# ⚠️ THE DIST IS ASSERTED PER ARM, by COUNT, keyed on a symbol the mutation UNIQUELY produces
+# THE DIST IS ASSERTED PER ARM, by COUNT, keyed on a symbol the mutation UNIQUELY produces
 # (`seedBucket1767`). An arm that silently failed to build is otherwise the previous arm's code
 # measured twice, which reads as a clean null.
 #
-# ⚠️ ORDER IS ALTERNATED across rounds: these shapes drift with what the machine did before them.
+# ORDER IS ALTERNATED across rounds: these shapes drift with what the machine did before them.
 set -uo pipefail
 cd "$(dirname "$0")/../.." || exit 1
 
@@ -56,7 +56,7 @@ for round in 1 2 3; do
   done
 done
 
-# ⚠️ RESTORE BEFORE EXIT, not only on success: an interrupted run otherwise leaves the mutation in
+# RESTORE BEFORE EXIT, not only on success: an interrupted run otherwise leaves the mutation in
 # the tree with `git diff` the only thing between it and a commit.
 python3 -I "$S/eqcand-1767.py" pre
 echo "restored; log at $LOG"

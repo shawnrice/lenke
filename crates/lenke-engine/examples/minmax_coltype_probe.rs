@@ -58,7 +58,7 @@ fn store_of(nodes: u32) -> Store {
                 // EIGHT distinct values over 200,000 nodes, so this dictionary-encodes.
                 ("dict", Value::Str(format!("g{}", n % 8).into())),
                 ("bool", Value::Bool(n.is_multiple_of(2))),
-                // ⚠️ THIS WAS `Value::Num` from item 1172 until item 1187 — a NUMERIC column
+                // THIS WAS `Value::Num` from item 1172 until item 1187 — a NUMERIC column
                 // in a row the header calls `Column::Temporal`. So this probe never once
                 // measured a temporal column, the `date` row duplicated `num` for fourteen
                 // items, and the giveaway was printed in its own output every run: the

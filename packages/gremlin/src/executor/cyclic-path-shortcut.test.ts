@@ -22,13 +22,13 @@ import { cyclicPathShortcut } from './cyclic-path-shortcut.js';
  * The `V().out(T).cyclicPath()` rung — which item 1986 shipped with NO direct test, and item 2407
  * found that out while replacing its walk.
  *
- * 🔑 **EVERY ASSERTION HERE DRIVES `cyclicPathShortcut` DIRECTLY**, not a traversal, because the
+ * **EVERY ASSERTION HERE DRIVES `cyclicPathShortcut` DIRECTLY**, not a traversal, because the
  * general path answers this shape identically and a test that went through `toArray` would pass just
  * as well with the rung deleted. Item 1986's own entry records route-counting for that reason ("this
  * session has twice had a test pass against the wrong arm"); one end-to-end case at the bottom
  * confirms the wiring, and that one is the ONLY place a green result is ambiguous.
  *
- * ⚠️ **ROW ORDER IS DELIBERATELY NOT ASSERTED.** Item 2400's owner ruling makes walk order
+ * **ROW ORDER IS DELIBERATELY NOT ASSERTED.** Item 2400's owner ruling makes walk order
  * implementation-dependent, and item 2407 took the edge-set drive BECAUSE of it — the rows now come
  * in edge-insertion order rather than vertex order. So every answer here is compared as a MULTISET.
  * A test that pinned the sequence would be pinning the implementation, which is item 2404's
@@ -46,7 +46,7 @@ const fixture = (): Graph => {
   // A plain hop: present so a route that ignored the self-loop test would over-return.
   g.addEdge({ id: 'e1', from: vx('a'), to: vx('b'), labels: ['E'], properties: {} });
   /*
-   * ⚠️ TWO PARALLEL SELF-LOOPS AT ONE VERTEX, which is the ONE discrimination this fixture exists
+   * TWO PARALLEL SELF-LOOPS AT ONE VERTEX, which is the ONE discrimination this fixture exists
    * for: the answer is one row per self-loop EDGE, not per vertex, and item 1986 verified that
    * against the engine before writing the rung. A fixture with at most one self-loop per vertex
    * cannot tell the two readings apart, so without this pair a per-vertex regression passes.
@@ -55,7 +55,7 @@ const fixture = (): Graph => {
   g.addEdge({ id: 'e3', from: vx('a'), to: vx('a'), labels: ['E'], properties: {} });
   // A lone self-loop elsewhere, so the answer is not a single vertex's story.
   g.addEdge({ id: 'e4', from: vx('c'), to: vx('c'), labels: ['E'], properties: {} });
-  // ⚠️ A self-loop of ANOTHER type: `out('E')` must not return it, or the type filter is vacuous.
+  // A self-loop of ANOTHER type: `out('E')` must not return it, or the type filter is vacuous.
   g.addEdge({ id: 'e5', from: vx('d'), to: vx('d'), labels: ['F'], properties: {} });
 
   return g;
@@ -111,7 +111,7 @@ describe('the one-hop cyclicPath rung', () => {
   });
 
   /**
-   * ⚠️ THE WALK'S NEW LOAD-BEARING DEPENDENCY. Item 2407 drives `graph.edgesByLabel` instead of each
+   * THE WALK'S NEW LOAD-BEARING DEPENDENCY. Item 2407 drives `graph.edgesByLabel` instead of each
    * vertex's bucket, so a label bucket that kept a removed edge would make this rung return a row the
    * per-vertex walk could not — a WRONG ANSWER, not a reorder. `edge-endpoint-ids.test.ts` pins the
    * de-indexing in core; this pins that the rung actually benefits from it.
@@ -135,7 +135,7 @@ describe('the one-hop cyclicPath rung', () => {
     };
 
     /*
-     * ⚠️ `both` IS THE ONE THAT MATTERS: a `both` hop reaches a self-loop from each of its two
+     * `both` IS THE ONE THAT MATTERS: a `both` hop reaches a self-loop from each of its two
      * boxes, so the multiplicity is not one row per edge and this route's answer would be WRONG
      * rather than merely ordered differently.
      */

@@ -23,7 +23,7 @@ import {
  * it per solution, because `extend` propagates `tags` by reference. `tagsObservedFrom` lets it SKIP
  * that snapshot when nothing downstream can read tags.
  *
- * ⚠️ THE SKIP IS A SILENT-WRONG-ANSWER RISK, which is why this file pins two different things. If
+ * THE SKIP IS A SILENT-WRONG-ANSWER RISK, which is why this file pins two different things. If
  * the analysis wrongly says "nobody reads tags", the emitted traverser shares the live map and a
  * later `select` reads whatever state the search had reached — the right row COUNT with the wrong
  * contents, which no count-based test can see. So:
@@ -83,7 +83,7 @@ describe('the skip does not change answers', () => {
 
   test('a match nested in a sub-plan, with an OUTER select, still answers correctly', () => {
     const g = build();
-    // ⚠️ THE CASE THE `tailObserved` DEFAULT EXISTS FOR. The inner plan's suffix is empty, so a
+    // THE CASE THE `tailObserved` DEFAULT EXISTS FOR. The inner plan's suffix is empty, so a
     // suffix-only analysis would skip the snapshot — and the outer `select('b')` would then read a
     // map the solver had kept rewriting. Steps reached through a sub-plan keep `matchStep`'s
     // default of "observed", so this stays correct.
@@ -98,7 +98,7 @@ describe('the skip does not change answers', () => {
   });
 });
 
-describe('⚠️ the snapshot is only load-bearing when a step BUFFERS traversers', () => {
+describe('the snapshot is only load-bearing when a step BUFFERS traversers', () => {
   // THIS IS WHY THE FIRST VERSION OF THIS FILE HAD NO TEETH, found by mutation (item 1560). Three
   // mutants that skip the snapshot when it IS needed — flipping the `tagsObserved` default, inverting
   // the condition, and hard-coding the call site to `false` — all SURVIVED the whole 1500-test suite

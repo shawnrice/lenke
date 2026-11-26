@@ -1,11 +1,11 @@
 /**
  * DOES `hop-values-dedupe.test.ts` HAVE TEETH? (item 1899)
  *
- * ⚠️ TWO WALKS, so the anchors that appear twice declare it and `which`-occurrence selects one: the
+ * TWO WALKS, so the anchors that appear twice declare it and `which`-occurrence selects one: the
  * lazy `[Symbol.iterator]` and the eager `drain` are the same loop written twice (item 169's rule),
  * and item 1889 caught a run-bound off-by-one in the drain that SURVIVED in the iterator.
  *
- * ⚠️ AND THE GATE GETS MORE MUTANTS THAN THE WALK, because that is where item 1899's real bug was:
+ * AND THE GATE GETS MORE MUTANTS THAN THE WALK, because that is where item 1899's real bug was:
  * `byKey` testing `typeof by === 'string'` made the whole `dedupe().by(k)` spelling silently decline
  * for a measured 257 ms against the other spelling's 65. A gate that quietly admits nothing is the
  * failure mode here, and only a test asserting the ANSWER on that spelling can see it.
@@ -23,13 +23,13 @@ const TESTS = ['src/executor/hop-values-dedupe.test.ts'];
 /** `[name, which, from, to, expectedOccurrences, occurrence?]` */
 const MUTANTS = [
   /*
-   * ⚠️ THE MUTANT THAT BECAME THE BEHAVIOUR. This used to assert the gate REQUIRED the `by` key to
+   * THE MUTANT THAT BECAME THE BEHAVIOUR. This used to assert the gate REQUIRED the `by` key to
    * equal the projected key (`fourth.keys[0] === by`), and item 1971 removed that condition
    * deliberately: the shape is a different QUESTION but a fusable one, worth 524 -> 258 ns a visit.
    * The mutants below test the two-key logic that replaced it, which is where the risk now lives —
    * this file's header records items 1561/1562 each finding a silent ANSWER change in this area.
    *
-   * ⚠️⚠️ ONE MUTANT PER ARM, AND THAT IS NOT PEDANTRY: this harness replaces the FIRST occurrence
+   * ONE MUTANT PER ARM, AND THAT IS NOT PEDANTRY: this harness replaces the FIRST occurrence
    * unless an index is given, and the walk has THREE copies of each read — the lazy iterator, the
    * drain's CSR arm and the drain's bucket arm. A single mutant on occurrence 0 hit the iterator
    * while `toArray` uses the drain, and **SURVIVED with 0 failing**. That is item 169's named hazard
@@ -81,7 +81,7 @@ const MUTANTS = [
     1,
   ],
   [
-    '⚠⚠ the PROJECTED key is tested BEFORE the dedupe, so a missing one frees its slot',
+    'the PROJECTED key is tested BEFORE the dedupe, so a missing one frees its slot',
     'ded',
     `      const value = far.properties[key];
 
@@ -142,7 +142,7 @@ const MUTANTS = [
   [
     'a multi-key `values` is admitted — `by` spelling',
     'ded',
-    // ⚠️ RE-ANCHORED at item 1971: that condition no longer ends in `&&`, because the key-equality
+    // RE-ANCHORED at item 1971: that condition no longer ends in `&&`, because the key-equality
     // test that used to follow it is gone.
     '(third.labels?.length ?? 0) === 0 && fourth.keys.length === 1',
     '(third.labels?.length ?? 0) === 0',
@@ -209,7 +209,7 @@ const MUTANTS = [
   [
     'the far vertex is the SLOT, not the flat target — EAGER drain (occurrence 0)',
     'ded',
-    // ⚠️ RE-ANCHORED at item 1971: the element is now bound to `far` before its keys are read, so
+    // RE-ANCHORED at item 1971: the element is now bound to `far` before its keys are read, so
     // the CSR indexing moved off the `.properties[key]` line onto its own.
     'const far = vtx[memo.flat[i]];',
     'const far = vtx[slot];',
@@ -218,18 +218,18 @@ const MUTANTS = [
   [
     'the far vertex is the SLOT, not the flat target — LAZY iterator',
     'ded',
-    // ⚠️ A DIFFERENT ANCHOR from its drain twin since item 1971: the lazy arm yields the ELEMENT,
+    // A DIFFERENT ANCHOR from its drain twin since item 1971: the lazy arm yields the ELEMENT,
     // so its CSR indexing sits on a `yield` rather than on an assignment. Two copies of one loop
     // with two different shapes is exactly why each needs its own mutant (item 169).
     'yield vtx[memo.flat[i]];',
     'yield vtx[slot];',
     1,
   ],
-  // ⚠️ EACH MISSING-KEY ANCHOR CARRIES ITS OWN PRECEDING LINE, because the three arms' guard blocks
+  // EACH MISSING-KEY ANCHOR CARRIES ITS OWN PRECEDING LINE, because the three arms' guard blocks
   // are byte-identical and a bare guard matched 3 times.
   [
     /*
-     * ⚠️ ONE MUTANT WHERE THERE WERE TWO (item 1971). The lazy arm used to test
+     * ONE MUTANT WHERE THERE WERE TWO (item 1971). The lazy arm used to test
      * `value !== undefined` inside `farValues`' CSR loop AND inside its bucket loop; both now yield
      * the ELEMENT and the single `undefined` test lives in the consumer, so the two old anchors are
      * one. The drain's two copies keep their own mutants below.
@@ -251,7 +251,7 @@ const MUTANTS = [
   [
     'a MISSING key is deduped as a value — CSR arm, EAGER drain (item 1913)',
     'ded',
-    // ⚠️ RE-ANCHORED at item 1971: the push became a two-key read, so the condition is anchored on
+    // RE-ANCHORED at item 1971: the push became a two-key read, so the condition is anchored on
     // its own line and distinguished from the bucket arm's twin by INDENTATION (10 spaces here).
     '          if (value !== undefined && keep(value)) {',
     '          if (keep(value)) {',
@@ -260,7 +260,7 @@ const MUTANTS = [
   [
     'the DRAIN drops the dedupe filter (item 1913)',
     'ded',
-    // ⚠️ RE-ANCHORED at item 1971 onto the CSR arm's condition line (10 spaces), since the push it
+    // RE-ANCHORED at item 1971 onto the CSR arm's condition line (10 spaces), since the push it
     // used to include is now a nested two-key read. Shares its anchor with the mutant above and
     // differs in the replacement, which is what distinguishes "drops the undefined check" from
     // "drops the dedupe".
@@ -271,7 +271,7 @@ const MUTANTS = [
   [
     'the bucket arm reads the NEAR end — EAGER drain',
     'ded',
-    // ⚠️ RE-ANCHORED at item 1971: the endpoint is bound to `far` before its keys are read, and the
+    // RE-ANCHORED at item 1971: the endpoint is bound to `far` before its keys are read, and the
     // lazy twin now YIELDS it, so the two arms need two anchors instead of one indexed pair.
     'const far = fwd ? e.to : e.from;',
     'const far = fwd ? e.from : e.to;',
@@ -287,7 +287,7 @@ const MUTANTS = [
   [
     'the dedupe is dropped — LAZY iterator',
     'ded',
-    // ⚠️ RE-ANCHORED at item 1971: the lazy arm no longer dedupes the yielded value directly — it
+    // RE-ANCHORED at item 1971: the lazy arm no longer dedupes the yielded value directly — it
     // dedupes the DEDUPE key and yields the PROJECTED one, so dropping the filter means dropping
     // `keep` from the combined guard.
     `      if (value === undefined || !keep(value)) {`,
@@ -297,7 +297,7 @@ const MUTANTS = [
   [
     'the dedupe set is rebuilt per vertex rather than per walk — DRAIN (item 1913)',
     'ded',
-    // ⚠️ RE-ANCHORED at item 1971 onto the CSR arm's condition line (10 spaces); the push it used to
+    // RE-ANCHORED at item 1971 onto the CSR arm's condition line (10 spaces); the push it used to
     // include is now a nested two-key read.
     '          if (value !== undefined && keep(value)) {',
     '          if (value !== undefined && valueDedupeFilter()(value)) {',
@@ -306,7 +306,7 @@ const MUTANTS = [
   [
     'the dedupe set is rebuilt per element — LAZY iterator',
     'ded',
-    // ⚠️ RE-ANCHORED at item 1971: the lazy arm now dedupes the DEDUPE key inside a combined guard.
+    // RE-ANCHORED at item 1971: the lazy arm now dedupes the DEDUPE key inside a combined guard.
     `      if (value === undefined || !keep(value)) {`,
     `      if (value === undefined || !valueDedupeFilter()(value)) {`,
     1,
@@ -316,14 +316,14 @@ const MUTANTS = [
 /**
  * Names that MUST survive, each with its reason.
  *
- * ⚠️ THE CSR ARM'S OWN MUTANTS ARE NOT HERE and that is deliberate: `seenBefore` is item 1889's
+ * THE CSR ARM'S OWN MUTANTS ARE NOT HERE and that is deliberate: `seenBefore` is item 1889's
  * policy, mutated by `hop-csr-mutants-1889.mjs` against `hop-values-csr.test.ts`. Duplicating them
  * would test that file's subject through this file's suite.
  */
 const EXPECTED_SURVIVORS = new Set();
 
 /**
- * ⚠️ TWO MUTANTS WERE REMOVED RATHER THAN COVERED, which is the other thing a survivor can mean.
+ * TWO MUTANTS WERE REMOVED RATHER THAN COVERED, which is the other thing a survivor can mean.
  * They disabled the `adjacentEdges` fallback arm in `farValues`, and no test could reach it:
  * `soleTypeBucket` returns `undefined` only for `both` or a multi-label hop, both refused by the
  * gate, so the arm was DEAD. It is deleted in the same commit; a survivor is a question about the
@@ -333,14 +333,14 @@ const EXPECTED_SURVIVORS = new Set();
 /** The three outcomes as a label; a nested ternary is what the linter objects to. */
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
 /**
- * ⚠️ BOTH STREAMS, ALWAYS: `bun test` writes `N pass` to **stderr**, and item 767 read an empty
+ * BOTH STREAMS, ALWAYS: `bun test` writes `N pass` to **stderr**, and item 767 read an empty
  * stdout and concluded the runner never ran a test.
  */
 const run = () => {
@@ -398,7 +398,7 @@ try {
     const ran = /\d+ pass/.test(r.text);
 
     if (!ran && r.code !== 124) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -425,6 +425,6 @@ try {
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

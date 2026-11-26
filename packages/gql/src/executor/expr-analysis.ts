@@ -6,12 +6,12 @@
  * and nothing here produces a `CompiledExpr`. That line is what makes it a module: it is the one
  * part of the executor that depends on nothing else in it.
  *
- * ⚠️ IT IS THE FIRST TRUE LEAF, AND THAT WAS MEASURED BEFORE IT WAS MOVED (item 1666). 39 symbols
+ * IT IS THE FIRST TRUE LEAF, AND THAT WAS MEASURED BEFORE IT WAS MOVED (item 1666). 39 symbols
  * importing **zero values** from `core.ts` — only four types, and a type import is erased, so it
  * adds no runtime edge and `import/no-cycle` correctly ignores it. Everything else in `executor/`
  * can import this file; it imports none of them.
  *
- * ⚠️ WHY A LEAF HAD TO COME FIRST. The obvious next extraction was the expression COMPILER — 25
+ * WHY A LEAF HAD TO COME FIRST. The obvious next extraction was the expression COMPILER — 25
  * mutually-recursive symbols, 2,105 lines, a genuine strongly-connected component. It is closed in
  * the symbol graph, but `core.ts` reads four of its members (`compileExpr`, `compileProps`,
  * `filterPredicate`, `gatePredicate`), so pulling it out first would have made it import 52 values
@@ -20,7 +20,7 @@
  *
  * The compiler can follow once enough of its 52 dependencies live here and in its sibling leaves.
  *
- * ⚠️ `cannotFault` / `truthCannotRaise` / `valueCannotRaise` ARE A TRIO AND BELONG TOGETHER. They
+ * `cannotFault` / `truthCannotRaise` / `valueCannotRaise` ARE A TRIO AND BELONG TOGETHER. They
  * decide whether a conjunct is safe to evaluate ahead of a faulting one, which is what licenses
  * reordering a `WHERE` at all (items 259, 1662's `cheapPureExpr` gate). Splitting them across
  * modules would let one be strengthened without the others.
@@ -192,16 +192,16 @@ export const patternBoundVars = (p: PathPattern, into: Set<string>): void => {
  * expression tree, returning the rewritten expression and HOW MANY replacements were made
  * (item 1927).
  *
- * ⚠️⚠️ THIS IS DELIBERATELY A WHITELIST AND NOT AN EXHAUSTIVE WALK, and the safety argument is
+ * THIS IS DELIBERATELY A WHITELIST AND NOT AN EXHAUSTIVE WALK, and the safety argument is
  * that the omission is FAIL-SAFE. `inlineTrailingLet` used to substitute one level only, with its
  * reason stated outright: a deeper walk over this union means "a missed arm would drop the binder
- * with the name still unbound" — a wrong answer. ⚠️ That premise is avoidable. An arm this function
+ * with the name still unbound" — a wrong answer. That premise is avoidable. An arm this function
  * does NOT descend into leaves the name in place, so the caller's existing
  * {@link freePredicateVars} re-check sees it surviving and DECLINES the rewrite. A missed arm costs
  * an optimization, never an answer. Adding an arm here therefore widens what folds; forgetting one
  * cannot break anything.
  *
- * 🔑 FOUR ARMS ARE OMITTED ON PURPOSE, because they bind names of their own and a blind
+ * FOUR ARMS ARE OMITTED ON PURPOSE, because they bind names of their own and a blind
  * substitution inside them would CAPTURE: `exists`, `countSubquery` and `valueSubquery` carry
  * `PathPattern`s whose variables share a namespace with the bound name, and `letIn` introduces
  * scoped locals that shadow it. Leaving them untouched is correct in both directions — a name used
@@ -587,12 +587,12 @@ export const asMembershipNode = (e: Expr): Expr | null => {
    * this recogniser did not, so the `NOT (…)` spelling was neither an `in` nor an `or` and
    * declined the whole chain to the generic evaluator while `NOT IN` lifted.
    *
-   * ⚠️ FOUND BY `bun run spelling`, NOT BY A TEST, and it had the defect class's signature: both
+   * FOUND BY `bun run spelling`, NOT BY A TEST, and it had the defect class's signature: both
    * spellings answered identically, so nothing in 4,662 tests could see it. Three isolated
    * confirmation runs read `n.k NOT IN [1,2]` at 3.01/3.08/2.91 ms against
    * `NOT (n.k IN [1,2])` at 8.62/8.58/6.51.
    *
-   * ⚠️ AND ITEM 1350 WIDENED IT. The gap pre-dates that item (item 1288 created it by lifting
+   * AND ITEM 1350 WIDENED IT. The gap pre-dates that item (item 1288 created it by lifting
    * `NOT IN`), which measured ~1.9x; specializing `memberProps` took the lifted spelling to ~3.0 ms
    * and the gap to ~2.8x. Making one spelling faster widened the spread — which is why the fix is
    * to lift the OTHER spelling rather than to unwind anything.
@@ -699,7 +699,7 @@ export const asTruthTest = (
 /**
  * File one lifted `IS [NOT] TRUE|FALSE|UNKNOWN` conjunct into the list its ORDERING requires.
  *
- * ⚠️ `IS UNKNOWN` GOES INTO `nulls`, NOT INTO `truthTests`, and the split is measured rather than
+ * `IS UNKNOWN` GOES INTO `nulls`, NOT INTO `truthTests`, and the split is measured rather than
  * reasoned. `case 'isTruth'` routes `truth === null` through `isNullish` — the very function
  * `case 'isNull'` uses — so the two are one question; and the NATIVE engine agrees, by hoisting
  * `IS UNKNOWN` past a faulting sibling exactly as it hoists `IS NULL`, while refusing to hoist
@@ -1214,7 +1214,7 @@ export const hasSubquery = (node: unknown): boolean => {
     return true;
   }
 
-  // ⚠️ `for...in`, not `Object.values(...).some(...)` (item 1500). The walk visits 10-34 nodes per
+  // `for...in`, not `Object.values(...).some(...)` (item 1500). The walk visits 10-34 nodes per
   // compile (measured by instrumenting it), and the array form allocated one array PER VISITED
   // NODE to then throw away. `for...in` enumerates the same own+inherited string keys an AST node
   // has — these are plain object literals from the parser, so there is no prototype chain to widen

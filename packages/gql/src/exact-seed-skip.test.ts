@@ -13,12 +13,12 @@ import { query } from './index.js';
  * count (12363-13279 ns -> 6655-7017) and **1.49x** at 1000 candidates, landing on the ablation
  * that priced it (6324-6354).
  *
- * ⚠️ THIS IS A CORRECTNESS GATE, NOT A ROUTE CHOICE, which makes it the opposite of items
+ * THIS IS A CORRECTNESS GATE, NOT A ROUTE CHOICE, which makes it the opposite of items
  * 1600/1601/1604: if `soleEqualityKey` is wrong the tally counts rows that do not match, so the
  * differential tests DO see it. The risk item 149 names is the one to pin hardest — the index
  * returns vertices by VALUE across all labels, so the label test must still run.
  *
- * ⚠️ THE FIXTURE SHARES `team` VALUES ACROSS LABELS ON PURPOSE. A value bucket for `t1` therefore
+ * THE FIXTURE SHARES `team` VALUES ACROSS LABELS ON PURPOSE. A value bucket for `t1` therefore
  * holds `User`s, `Admin`s and both-labelled vertices, and a seed that skipped the label test would
  * over-count. A fixture where every vertex has the same label — which is what most of this repo's
  * probes use — cannot see that at all.
@@ -57,7 +57,7 @@ const build = (indexed: boolean): Graph => {
   if (indexed) {
     g.createIndex({ on: 'vertex', kind: 'hash', keys: ['team'] });
     g.createIndex({ on: 'vertex', kind: 'hash', keys: ['n'] });
-    // ⚠️ `half` has only TWO distinct values, so its buckets are ~half the graph and
+    // `half` has only TWO distinct values, so its buckets are ~half the graph and
     // `seekIsWorthIt` DECLINES the seek (the break-even is ~1/8 of the bucket). That is the one
     // state where an index exists and `seeded` is nevertheless undefined — see the test below.
     g.createIndex({ on: 'vertex', kind: 'hash', keys: ['half'] });
@@ -95,7 +95,7 @@ describe('an exact seed still answers what the scan answers', () => {
     ['an inline literal', "MATCH (u:User {team: 't1'}) RETURN count(*) AS c", {}],
     ['a UNIQUE numeric key', 'MATCH (u:User) WHERE u.n = $v RETURN count(*) AS c', { v: 4 }],
     ['a value nothing has', 'MATCH (u:User) WHERE u.team = $v RETURN count(*) AS c', { v: 'nope' }],
-    // ⚠️ ITEM 1610 gave the PROJECTION the same skip, so these rows now take it too. The fixture
+    // ITEM 1610 gave the PROJECTION the same skip, so these rows now take it too. The fixture
     // above shares `team` values across labels precisely so a skip that dropped the label test
     // over-counts — and the rows spelling is where that would show as extra ROWS, not a bigger
     // number.
@@ -110,7 +110,7 @@ describe('an exact seed still answers what the scan answers', () => {
       { v: 't1' },
     ],
     ['ROWS, ordered', 'MATCH (u:User) WHERE u.team = $v RETURN u.n AS n ORDER BY n', { v: 't1' }],
-    // ⚠️ ITEM 1611 gave the remaining five walks the skip, so these reach it too: the topK arm
+    // ITEM 1611 gave the remaining five walks the skip, so these reach it too: the topK arm
     // (an ordered LIMIT), the deferred sort-key walk, both aggregate arms and the multi-aggregate.
     // The fixture shares `team` across labels, so a skip that dropped the label test over-counts.
     [
@@ -157,7 +157,7 @@ describe('an exact seed still answers what the scan answers', () => {
     });
   }
 
-  test('⚠️ and on the hand-counted NUMBERS — the label test is what these pin', () => {
+  test('and on the hand-counted NUMBERS — the label test is what these pin', () => {
     /**
      * Agreement alone cannot show this: if the skip dropped the label test, BOTH columns would be
      * wrong only in the indexed one — but a reader cannot tell a shared bug from a shared truth, and
@@ -182,19 +182,19 @@ describe('an exact seed still answers what the scan answers', () => {
     }
   });
 
-  test('⚠️ a DECLINED seek must not claim exactness — found by mutation', () => {
+  test('a DECLINED seek must not claim exactness — found by mutation', () => {
     /**
      * The one state where an index EXISTS and `seeded` is still undefined: `seekIsWorthIt` declines
      * a seek wider than ~1/8 of the bucket, and `half` has two values over sixty vertices.
      *
-     * ⚠️ MUTATION FOUND THIS GAP. Making `hopSeekWithKey` report the chosen candidate's key even
+     * MUTATION FOUND THIS GAP. Making `hopSeekWithKey` report the chosen candidate's key even
      * when it DECLINED the seek survived the whole suite, because no fixture here had an indexed
      * key whose seek is refused — so the mutant's `exactSeed` was never true on a bucket walk. It
      * would be a wrong answer there: the walk covers the whole label bucket, and skipping the gate
      * emits every member. Thirty of the sixty have `half = 0`; all sixty would be the failure.
      */
     /**
-     * ⚠️ IT NEEDS ITS OWN, BIGGER GRAPH. `seekIsWorthIt` carries a small-graph FLOOR, so on the
+     * IT NEEDS ITS OWN, BIGGER GRAPH. `seekIsWorthIt` carries a small-graph FLOOR, so on the
      * 60-vertex fixture above the seek is TAKEN even for a two-value key and the mutant is
      * indistinguishable. Measured on 20,000 vertices: an indexed two-value key reads 0.99x its
      * unindexed twin and a five-value key 1.11x — both declined — while a fifty-value key is
@@ -226,7 +226,7 @@ describe('an exact seed still answers what the scan answers', () => {
     }
   });
 
-  test('⚠️ the ROWS spelling counts the same, which is where item 1610 could go wrong', () => {
+  test('the ROWS spelling counts the same, which is where item 1610 could go wrong', () => {
     /**
      * Item 1610 extended the skip to `detectNodeProjection`'s streaming walk. The count and the
      * rows spelling of one question must agree, and the label test is what makes them: twelve
@@ -251,7 +251,7 @@ describe('an exact seed still answers what the scan answers', () => {
     }
   });
 
-  test('⚠️ the five walks item 1611 skipped answer the same NUMBERS', () => {
+  test('the five walks item 1611 skipped answer the same NUMBERS', () => {
     /**
      * Agreement with the unindexed twin is above; these are the literals, because two routes
      * agreeing says nothing if both are wrong. Twelve vertices carry `team = 't1'`: eight are
@@ -267,7 +267,7 @@ describe('an exact seed still answers what the scan answers', () => {
 
       expect(Number(one('MATCH (u:User) WHERE u.team = $v RETURN max(u.n) AS m').m)).toBe(56);
       /**
-       * ⚠️ 56, NOT 51 — and the engine was right while my hand count was wrong, for the THIRD time
+       * 56, NOT 51 — and the engine was right while my hand count was wrong, for the THIRD time
        * in this family. `Admin` is not the complement of `User`: `i % 3 === 0` is Admin-only and
        * `i % 3 === 2` is BOTH, so the Admin t1 set is {6, 11, 21, 26, 36, 41, 51, 56} and its max
        * is 56. I had counted only the Admin-only third. A fixture whose labels OVERLAP is exactly
@@ -279,7 +279,7 @@ describe('an exact seed still answers what the scan answers', () => {
       ).toBe(8);
 
       /**
-       * ⚠️ `min`, BECAUSE `max` CANNOT DISCRIMINATE HERE — mutation said so. Every label's t1 set
+       * `min`, BECAUSE `max` CANNOT DISCRIMINATE HERE — mutation said so. Every label's t1 set
        * contains 56, so dropping the label test leaves `max` at 56 and the mutant answers correctly
        * by accident; the folding-arm mutant SURVIVED on `max` alone. The minima differ:
        * User {1, 11, 16, 26, 31, 41, 46, 56} -> 1, Admin {6, 11, 21, 26, 36, 41, 51, 56} -> 6,
@@ -398,7 +398,7 @@ describe('which pred lists are EXACT', () => {
     expect(soleEqualityKey([{ pred: predOf() }])).toBeUndefined();
   });
 
-  test('⚠️ a carrier the function has never heard of REFUSES, not ignores', () => {
+  test('a carrier the function has never heard of REFUSES, not ignores', () => {
     /**
      * The regression guard for a wrong answer, and `specializeSingleProp`'s first version is why
      * it is shaped this way: a hand-written list missed four of twelve carriers and the predicate
@@ -426,7 +426,7 @@ describe('which pred lists are EXACT', () => {
 
 describe('whether a chosen seed is EXACT', () => {
   /**
-   * ⚠️ THIS BLOCK EXISTS BECAUSE EVERY MUTANT OF THE VERDICT SURVIVED INLINE. `soleEqualityKey` is
+   * THIS BLOCK EXISTS BECAUSE EVERY MUTANT OF THE VERDICT SURVIVED INLINE. `soleEqualityKey` is
    * already narrow enough that when it answers, the only candidate `indexCandidates` can produce is
    * the equality on that key — so dropping the key comparison, accepting any candidate kind, and
    * reporting `eqKey` on a `within` or a `range` candidate were all answer-neutral. Item 475's rule

@@ -1,7 +1,7 @@
 /**
  * WHICH OF THE REMAINING GENERIC GREMLIN SHAPES IS WORTH TAKING? (item 1887)
  *
- * ⚠️ FLOOR BEFORE PRICING — item 1878's lesson, which cost a whole item to a 4.7x that turned out to
+ * FLOOR BEFORE PRICING — item 1878's lesson, which cost a whole item to a 4.7x that turned out to
  * be 2 microseconds. Items 1883 and 1884 left four shapes that `gremlin-route-screen.mjs` still
  * reads as `generic`, and a route difference is not automatically a cost one (item 1854):
  *

@@ -1,11 +1,11 @@
 // Item 1933 — the GQL `SET` profile with THE FIXTURE BUILD EXCLUDED.
 //
-// ⚠️ A CPU PROFILE CANNOT EXCLUDE THE BUILD THE WAY A TIMER CAN. `setgap-prof-1933.mjs` rebuilds a
+// A CPU PROFILE CANNOT EXCLUDE THE BUILD THE WAY A TIMER CAN. `setgap-prof-1933.mjs` rebuilds a
 // fresh graph per rep (correct, because a write is not idempotent) and its profile therefore came
 // back 25% fixture construction — `addVertex` 7.68%, `commitElementLabels` 6.04%,
 // `indexVertexLabel` 5.69%, `build` 5.15% — which is attribution noise, not the subject.
 //
-// 🔑 ONE MEASUREMENT MAKES A CLEAN PROFILE POSSIBLE: `SET n.n = n.n`, which changes nothing, costs
+// ONE MEASUREMENT MAKES A CLEAN PROFILE POSSIBLE: `SET n.n = n.n`, which changes nothing, costs
 // 529 ns a row against a real change's 549. The per-row cost is VALUE-INDEPENDENT, so repeating the
 // same SET on ONE graph exercises the same machinery with no rebuild in the profile.
 //

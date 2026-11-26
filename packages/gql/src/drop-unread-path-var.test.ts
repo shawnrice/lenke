@@ -12,11 +12,11 @@ import { parse } from './parser.js';
  * `MATCH p = (a:P)-[:E]->{1,2}(b:P) RETURN count(*)` — 878.0 ms to 12.1, converging with the
  * spelling that never bound `p`.
  *
- * ⚠️ THE COST IS NOT THE `Path` OBJECTS. Five gates refuse outright on `pathVar !== undefined`,
+ * THE COST IS NOT THE `Path` OBJECTS. Five gates refuse outright on `pathVar !== undefined`,
  * `orient` among them, so binding a path variable nobody reads falls off the entire fast-path
  * ladder onto the general matcher.
  *
- * ⚠️ AND THE REWRITE IS ANSWER-EQUIVALENT, so the 3,923-test suite cannot see a mutant in it —
+ * AND THE REWRITE IS ANSWER-EQUIVALENT, so the 3,923-test suite cannot see a mutant in it —
  * `perf-gate-needs-its-own-test`. Hence two kinds of test here: the TRANSFORMATION directly (does
  * the `pathVar` survive?), and ANSWERS for each refusal, where `p` being read makes the difference
  * observable.
@@ -75,7 +75,7 @@ describe('the path variable is dropped when nothing reads it', () => {
   });
 });
 
-describe('⚠️ the refusals, each of which a mutant removes', () => {
+describe('the refusals, each of which a mutant removes', () => {
   test('the projection READS it', () => {
     expect(pathVarOf('MATCH p = (a:P)-[:E]->(b:P) RETURN p AS pp')).toBe('p');
   });
@@ -96,7 +96,7 @@ describe('⚠️ the refusals, each of which a mutant removes', () => {
     );
   });
 
-  test('⚠️ RETURN * binds EVERY variable in scope, `p` included', () => {
+  test('RETURN * binds EVERY variable in scope, `p` included', () => {
     // `Projection.star` is the guard no other test covers: a star projection must keep the path
     // variable, because dropping it would remove a column from the result.
     expect(pathVarOf('MATCH p = (a:P)-[:E]->(b:P) RETURN *')).toBe('p');
@@ -111,7 +111,7 @@ describe('⚠️ the refusals, each of which a mutant removes', () => {
     ).toBe('p');
   });
 
-  test('⚠️ a clause whose reads are BARE STRINGS refuses — a second MATCH joins on `p`', () => {
+  test('a clause whose reads are BARE STRINGS refuses — a second MATCH joins on `p`', () => {
     // Item 1569 widened the pass past `[match, return]`, and this is the hazard that decided its
     // shape: a MATCH pattern's `pathVar` / `node.variable` / `rel.variable` are bare strings, so a
     // second MATCH naming `p` READS it with no `var` node anywhere for an expression walk to find.
@@ -177,7 +177,7 @@ describe('item 1569: the tail may be any allowlisted clauses, not just RETURN', 
     ).toBeUndefined();
   });
 
-  // ⚠️ ONE TEST PER READER POSITION `tailReads` COLLECTS. Each of these kills a mutant that forgets
+  // ONE TEST PER READER POSITION `tailReads` COLLECTS. Each of these kills a mutant that forgets
   // that one slot, and nothing else in the suite reaches them — a forgotten slot is a WRONG ANSWER
   // (the binding is dropped while something still reads it), not a lost optimization.
   test('`p` read in a FILTER refuses', () => {
@@ -187,7 +187,7 @@ describe('item 1569: the tail may be any allowlisted clauses, not just RETURN', 
   });
 
   test('`p` PROJECTED through a WITH and then filtered refuses', () => {
-    // ⚠️ THIS TEST WAS FIRST WRITTEN TO COVER `with.where` AND DOES NOT. It reads `pp`, the
+    // THIS TEST WAS FIRST WRITTEN TO COVER `with.where` AND DOES NOT. It reads `pp`, the
     // projected alias, so what refuses is the projection ITEM (`p AS pp`) — the `WHERE` never sees
     // the pre-WITH `p` at all. Kept under an honest name because the shape is still worth pinning.
     expect(
@@ -197,7 +197,7 @@ describe('item 1569: the tail may be any allowlisted clauses, not just RETURN', 
     ).toBe('p');
   });
 
-  test('⚠️ WITH NARROWS SCOPE, which is why a `with.where` mutant survives', () => {
+  test('WITH NARROWS SCOPE, which is why a `with.where` mutant survives', () => {
     // `tailReads` collects `with.where`, and removing that collection survives the whole suite.
     // The reason is not a coverage gap: a `WITH`'s `WHERE` is evaluated AFTER the projection, so it
     // can only name projected aliases — referencing a pre-WITH variable RAISES. Any `WHERE` that

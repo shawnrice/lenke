@@ -1,12 +1,12 @@
 /*
  * Item 2090 — is `startFilteredHopValues` near its floor, or is the 1.3x recoverable?
  *
- * ⚠️ TWO DIFFERENT RUNGS, NOT ONE ROUTE GETTING SLOWER. With a vacuous label `dropVacuousLabels`
+ * TWO DIFFERENT RUNGS, NOT ONE ROUTE GETTING SLOWER. With a vacuous label `dropVacuousLabels`
  * deletes the `hasLabel` and the plan reaches `hopValuesShortcut` (unfiltered); with a real one it
  * survives and `startFilteredHopValues` takes it. Filtering the starts is genuine extra work, so the
  * question is not the ratio between the rungs but whether the filtered one is near ITS OWN floor.
  *
- * ⚠️ REAL ENGINE VERTICES, from the engine's own containers (item 2084: a floor over plain objects
+ * REAL ENGINE VERTICES, from the engine's own containers (item 2084: a floor over plain objects
  * priced a different machine and hid 25% of a query).
  */
 import { Graph } from '@lenke/core';
@@ -71,7 +71,7 @@ const arms = {
     return out.length;
   },
   /*
-   * ⚠️ THE SAME WALK WITHOUT THE LABEL TEST — what the UNFILTERED rung's floor looks like. The
+   * THE SAME WALK WITHOUT THE LABEL TEST — what the UNFILTERED rung's floor looks like. The
    * difference between this and `floor` is the label test's true cost on this shape, which is what
    * separates "the filtered rung is slow" from "filtering costs that much".
    */
@@ -97,7 +97,7 @@ const arms = {
     return out.length;
   },
   /*
-   * ⚠️ THE ENGINE'S OWN SHAPE: a `pick` CLOSURE with a VARIABLE key, and `forward ? edge.to :
+   * THE ENGINE'S OWN SHAPE: a `pick` CLOSURE with a VARIABLE key, and `forward ? edge.to :
    * edge.from` evaluated PER EDGE on a loop-invariant. `pick` was the top profile frame at 27-29%.
    */
   enginelike: () => {
@@ -128,7 +128,7 @@ const arms = {
 
     return out.length;
   },
-  // ⚠️ THE TERNARY HOISTED, closure kept — isolates the per-edge branch on a loop-invariant.
+  // THE TERNARY HOISTED, closure kept — isolates the per-edge branch on a loop-invariant.
   hoisted: () => {
     const key = 'n';
     const pick = (v) => v.properties[key];
@@ -156,7 +156,7 @@ const arms = {
 
     return out.length;
   },
-  // ⚠️ CLOSURE GONE, variable key kept — isolates the call from the keyed load.
+  // CLOSURE GONE, variable key kept — isolates the call from the keyed load.
   nocall: () => {
     const key = 'n';
     const out = [];
@@ -183,7 +183,7 @@ const arms = {
 
     return out.length;
   },
-  // ⚠️ `soleLabel` instead of `labels.has` — item 2085's field read, to see if the test is the term.
+  // `soleLabel` instead of `labels.has` — item 2085's field read, to see if the test is the term.
   solelabel: () => {
     const out = [];
 

@@ -13,7 +13,7 @@ import { parsePredicate } from './parser.js';
  * `expand`, `evalLabelExpr` were the top frames). A REAL far predicate on the same row costs only
  * 2.41x, so the CONSTANT was 3.1x worse than doing actual per-edge work. Admitting it is 4.18x.
  *
- * ⚠️ WHY THIS FILE EXISTS AT ALL. Admitting a predicate to a different walk changes no answer, so
+ * WHY THIS FILE EXISTS AT ALL. Admitting a predicate to a different walk changes no answer, so
  * all 3,638 tests in this package pass with the change reverted — they passed before it and after
  * it, identically. That is the repo's recorded trap: *a route choice is answer-equivalent, so every
  * mutant survives the differential tests; extract the arithmetic as a pure fn and unit-test it.*
@@ -33,7 +33,7 @@ import { parsePredicate } from './parser.js';
 const inv = (src: string): boolean => loopInvariantWhere(parsePredicate(src));
 
 describe('a predicate with no free variables is invariant (item 1437)', () => {
-  test('⚠️ the literals — the shape that cost 7.46x', () => {
+  test('the literals — the shape that cost 7.46x', () => {
     expect(inv('true')).toBe(true);
     expect(inv('false')).toBe(true);
   });
@@ -60,7 +60,7 @@ describe('a predicate with no free variables is invariant (item 1437)', () => {
 });
 
 describe('a predicate that reads ANY pattern variable is not invariant (item 1437)', () => {
-  test('⚠️ the far endpoint — treating this as invariant would be a wrong answer', () => {
+  test('the far endpoint — treating this as invariant would be a wrong answer', () => {
     // THE MUTANT-KILLER for the free-variable half. `b.n > 5` differs per row; an invariant carry
     // would evaluate it once and apply that verdict to every row.
     expect(inv('b.n > 5')).toBe(false);
@@ -84,7 +84,7 @@ describe('a predicate that reads ANY pattern variable is not invariant (item 143
 });
 
 describe('`rowLocal` is required even with no free variables (item 1437)', () => {
-  test('⚠️ a zero-variable SUBQUERY is not carried, however constant it looks', () => {
+  test('a zero-variable SUBQUERY is not carried, however constant it looks', () => {
     // THE MUTANT-KILLER for the `rowLocal` half, and the reason the two tests are separate: this
     // predicate has NO free variables — the pattern binds its own `z` — so the free-variable half
     // admits it and only `rowLocal` refuses. Item 175 gave the seed gate a cheap-conjunct-first
@@ -99,7 +99,7 @@ describe('`rowLocal` is required even with no free variables (item 1437)', () =>
 });
 
 /**
- * ⚠️ THE WIRING, which the block above cannot see.
+ * THE WIRING, which the block above cannot see.
  *
  * `loopInvariantWhere` being right is necessary and not sufficient: a mutant that deletes the branch
  * calling it from `carriedWhere` leaves the pure fn intact and every test above green, and the
@@ -115,7 +115,7 @@ describe('the invariant carry is WIRED into carriedWhere (item 1437)', () => {
   const carry = (src: string, relVar?: string) =>
     carriedWhere(parsePredicate(src), 'b', 'a', relVar);
 
-  test('⚠️ `WHERE true` is carried as START-ONLY, reading nothing', () => {
+  test('`WHERE true` is carried as START-ONLY, reading nothing', () => {
     expect(carry('true')).toEqual({ needsStart: false, startOnly: true, needsRel: false });
   });
 

@@ -26,7 +26,7 @@ import {
  *   V().as('a').out('E').select('a').count()    ~460 ms  ->  7.4   (20 reps)
  * ```
  *
- * ⚠️ **`select` IS A PROJECTION FOR A TRAVERSER THAT HAS THE TAG AND A FILTER FOR ONE THAT DOES
+ * **`select` IS A PROJECTION FOR A TRAVERSER THAT HAS THE TAG AND A FILTER FOR ONE THAT DOES
  * NOT** — `selectStep` does `continue` when `recallTag` misses. So the entire question is whether
  * every traverser reaching the select is guaranteed to carry the tag, and the whole gate exists for
  * the cases where it is not:
@@ -38,7 +38,7 @@ import {
  * After any of those the select legitimately DROPS rows, and dropping the select would count them.
  * Those are the tests that matter here; the ones that fire are the easy half.
  *
- * ⚠️ A MODULATED SELECT IS REFUSED OUTRIGHT, because `select('a').by('age')` filters even when the
+ * A MODULATED SELECT IS REFUSED OUTRIGHT, because `select('a').by('age')` filters even when the
  * tag resolves — a selected element with no `age` is dropped.
  */
 
@@ -83,7 +83,7 @@ describe('it fires where the tag is guaranteed', () => {
   });
 });
 
-describe('⚠️ the refusals, each one a shape where select FILTERS', () => {
+describe('the refusals, each one a shape where select FILTERS', () => {
   test('an inject between them — the injected traverser has no tags', () => {
     const plan = traversal(V(), as_('a'), inject(1), select('a'), count());
 

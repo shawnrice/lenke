@@ -1,6 +1,6 @@
 // Item 1954 — IS `tree()`'s cost the KEY or the TREE? A hand ceiling for the construction itself.
 //
-// ⚠️ THIS PROBE EXISTS BECAUSE MY FIRST ABLATION LIED, and the failure is worth stating. Replacing
+// THIS PROBE EXISTS BECAUSE MY FIRST ABLATION LIED, and the failure is worth stating. Replacing
 // `treeKey` with a constant took `V().out('E').tree()` from 722.4 ms to 166.8, which reads as "the
 // key is 77% of the shape". It is not: a constant key collapses 200,000 distinct top-level entries
 // into ONE, so the ablation deleted the TREE as well as the key. Two more arms proved it — a
@@ -9,7 +9,7 @@
 // LESS work was 260 ms SLOWER because its tree was bigger. Holding key cardinality fixed, the real
 // serialization cost is 722.4 - 638.6 = ~84 ms, **11.6% of the shape, not 77%**.
 //
-// 🔑 SO THE QUESTION IS THE CONSTRUCTION, and this prices it outside the engine. `treeStep` builds
+// SO THE QUESTION IS THE CONSTRUCTION, and this prices it outside the engine. `treeStep` builds
 // levels with `Object.create(null)` and `cursor[key] = next`. At 200,000 distinct long string keys
 // the top level goes to dictionary mode, and the comment in `treeStep` records why a nested `Map`
 // was rejected — it would `JSON.stringify` to `{}`. That rules out SHIPPING Maps as the tree, not
@@ -50,7 +50,7 @@ const viaObject = () => {
       const ck = childKey(i, c);
 
       /*
-       * ⚠️ `if (!next[ck])` AND NOT `??=`, DELIBERATELY. This arm has to be what `treeStep` does
+       * `if (!next[ck])` AND NOT `??=`, DELIBERATELY. This arm has to be what `treeStep` does
        * or it is not a ceiling for it, and `treeStep` writes exactly this truthiness test. The two
        * are equivalent here (values are objects or absent); the point is fidelity, not style.
        */

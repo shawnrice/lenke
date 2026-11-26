@@ -7,7 +7,7 @@
  * ~26% in `satisfies`/`inlineHolds`/`propOf`, i.e. the per-candidate machinery item 1598's
  * specializer does not reach.
  *
- * ⚠️ A FLOOR IS THE RIGHT INSTRUMENT BEFORE BUILDING A SHORTCUT, and memory's
+ * A FLOOR IS THE RIGHT INSTRUMENT BEFORE BUILDING A SHORTCUT, and memory's
  * `gremlin-ts-unmeasured` is why: a floor per shape RETRACTED two of three targets there, because
  * the big ratio turned out to be data layout rather than overhead. So this measures the minimum any
  * implementation must do for the same answer — walk the seeded candidates, test the label, read one
@@ -101,7 +101,7 @@ const expect = byTeam.get('t1').length;
 
 console.log(`${NODES} vertices, ${expect} rows a query, ${REPS} reps. ns per operation.\n`);
 
-// ⚠️ ONE ARM PER PROCESS when it matters (items 737, 762). Running all five in one process moved
+// ONE ARM PER PROCESS when it matters (items 737, 762). Running all five in one process moved
 // the clause row from 26111 to 31249 depending on its POSITION, so `ARM=<substring>` selects.
 const chosen =
   process.env.ARM === undefined ? ARMS : ARMS.filter((a) => a.name.includes(process.env.ARM));

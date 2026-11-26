@@ -1,11 +1,11 @@
 // `stackedWalk` — the depth-3-and-up values walk — now runs over flat slot runs from a cached CSR
 // rather than a stack of bucket iterators (item 1680).
 //
-// ⚠️ ROW ORDER IS THE PROPERTY AT RISK AND IT IS A CONTRACT: Gremlin streams are compared ORDERED by
+// ROW ORDER IS THE PROPERTY AT RISK AND IT IS A CONTRACT: Gremlin streams are compared ORDERED by
 // the differential fuzzer. Every agreement test here is ordered, against the PIPELINE rather than
 // against a hand-rolled expectation, using the `V(...ids)` trick that makes the shortcut decline.
 //
-// ⚠️ AND A ROUTE CHOICE IS ANSWER-EQUIVALENT, so each of those tests passes whether the walk fires
+// AND A ROUTE CHOICE IS ANSWER-EQUIVALENT, so each of those tests passes whether the walk fires
 // or the pipeline does. `tookTheWalk` is the observable that keeps them from being vacuous — the
 // `rung/never-fires` mutant survived this file's first mutation pass for exactly that reason.
 import { describe, expect, test } from 'bun:test';
@@ -104,7 +104,7 @@ describe('the slot walk agrees with the pipeline, ORDERED', () => {
 
   for (const [name, tail] of CASES) {
     test(`${name} — element for element`, () => {
-      // ⚠️ FIRST: the route must actually be taken, or the comparison below is vacuous.
+      // FIRST: the route must actually be taken, or the comparison below is vacuous.
       expect(tookTheWalk(tail)).toBe(true);
 
       const want = viaPipeline(tail);
@@ -163,7 +163,7 @@ describe('a write between two traversals is seen', () => {
     expect(after.length).toBeGreaterThan(before.length);
   });
 
-  test('⚠️ an edge GAINING the walked label changes the stream', () => {
+  test('an edge GAINING the walked label changes the stream', () => {
     const h = new Graph();
     const a = h.addVertex({ id: 'a', labels: ['P'], properties: { age: 1 } });
     const b = h.addVertex({ id: 'b', labels: ['P'], properties: { age: 2 } });
@@ -187,7 +187,7 @@ describe('a write between two traversals is seen', () => {
    * adjacency cache — so the projection must be recomputed per call rather than cached alongside the
    * CSR. If it were cached on that signal this would return the stale value.
    */
-  test('⚠️ a property write changes the stream even though the topology did not', () => {
+  test('a property write changes the stream even though the topology did not', () => {
     const h = new Graph();
     const a = h.addVertex({ id: 'a', labels: ['P'], properties: { age: 1 } });
     const b = h.addVertex({ id: 'b', labels: ['P'], properties: { age: 2 } });
@@ -208,7 +208,7 @@ describe('a write between two traversals is seen', () => {
   /**
    * Likewise a gate reads labels and properties, so the gate masks must be per-call too.
    */
-  test('⚠️ a property write changes which rows a gate admits', () => {
+  test('a property write changes which rows a gate admits', () => {
     const h = new Graph();
     const a = h.addVertex({ id: 'a', labels: ['P'], properties: { n: 1, age: 1 } });
     const b = h.addVertex({ id: 'b', labels: ['P'], properties: { n: 2, age: 2 } });

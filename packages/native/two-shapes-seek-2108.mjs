@@ -1,20 +1,20 @@
 /*
  * Item 2108 — `SEEK_MAX_FRACTION` is ONE constant serving TWO shapes with DIFFERENT break-evens.
  *
- * 🔑 WHY THIS PROBE EXISTS. Raising the fraction gave a 1-hop aggregate **3.05x at 13.3% selectivity**
- * and no regression up to 50%. ⚠️ That CONTRADICTS the constant's own rationale, which cites item 409
+ * WHY THIS PROBE EXISTS. Raising the fraction gave a 1-hop aggregate **3.05x at 13.3% selectivity**
+ * and no regression up to 50%. That CONTRADICTS the constant's own rationale, which cites item 409
  * measuring the seek **1.96x SLOWER at 30% and 5.02x at 60%** — so one of the two is shape-specific, and
  * raising the constant on my shape's evidence alone would ship the 3.1x regression the rationale warns
  * about.
  *
- * ⚠️ SO BOTH SHAPES ARE MEASURED IN ONE PROCESS, ON ONE FIXTURE, AT THE SAME SELECTIVITIES:
+ * SO BOTH SHAPES ARE MEASURED IN ONE PROCESS, ON ONE FIXTURE, AT THE SAME SELECTIVITIES:
  *
  *   - `plain` — item 409's shape: a NODE scan with a range predicate, no hop. The seek's cost is the
  *     whole query, so an unselective seek is pure waste.
  *   - `hop`   — a one-hop aggregate. Each seeded vertex then costs an adjacency walk, which DWARFS the
  *     seed materialization — so a wider seek is cheap relative to the work it saves.
  *
- * 🔑 THE HYPOTHESIS THIS TESTS: the break-even is not a property of the index, it is a property of HOW
+ * THE HYPOTHESIS THIS TESTS: the break-even is not a property of the index, it is a property of HOW
  * MUCH WORK EACH SEEDED VERTEX CAUSES. If `plain` degrades where `hop` improves, one global constant
  * cannot serve both and the rationale's asymmetry argument is right for `plain` and wrong for `hop`.
  */

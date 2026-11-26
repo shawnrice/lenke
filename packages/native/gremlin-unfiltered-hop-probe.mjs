@@ -16,14 +16,14 @@
  *    V().out() [bare]             118.7      (native 324.9 — TS faster)
  * ```
  *
- * ⚠️ AND THE `order()` ROW'S SORT IS NOT THE TARGET. Items 879/890 settled that: the sort of 1M
+ * AND THE `order()` ROW'S SORT IS NOT THE TARGET. Items 879/890 settled that: the sort of 1M
  * numbers costs 88 ms and the engine's NaN-total order costs the same, so the ordering CONTRACT is
  * free; item 879 built the single-`by` specialization (1.19x) and item 890 REFUTED the residual at
  * 1.04x, "matched exactly by an unreachable control; reverted". What is left in that row above the
  * sum of sort + walk is what those two items already fought over. **The WALK is the shared part**,
  * and it is what this prices.
  *
- * ⚠️ WHAT THE FILTERED CASE'S DECOMPOSITION PREDICTS. Item 1691 separated the two effects on the
+ * WHAT THE FILTERED CASE'S DECOMPOSITION PREDICTS. Item 1691 separated the two effects on the
  * filtered row: a flat CSR alone moved it 109.4 -> 67.7 (1.62x) while the per-vertex mask moved it
  * 109.4 -> 76.4. The mask has nothing to offer here — every row needs the far vertex's property —
  * so 1.62x is the honest expectation, NOT the 38x the filtered row got. A probe that reported more
@@ -55,7 +55,7 @@ for (let i = 0; i < N; i += 1) {
 let e = 0;
 const targets = new Set();
 
-// ⚠️ NONLINEAR in `i`, so in-degree varies: a linear `(a*i+b) % N` is a bijection per layer and
+// NONLINEAR in `i`, so in-degree varies: a linear `(a*i+b) % N` is a bijection per layer and
 // makes the graph functional, which turns a multi-hop row into a chain (items 1516/1518/1684).
 for (let i = 0; i < N; i += 1) {
   const deg = 1 + ((i * 2654435761) % (2 * FANOUT - 1));
@@ -130,7 +130,7 @@ const handCsr = ({ off, nbr }) => {
   return acc;
 };
 
-/** ⚠️ WITH THE CSR BUILD INSIDE THE TIMED REGION — the cold case, which a cached CSR only pays once
+/** WITH THE CSR BUILD INSIDE THE TIMED REGION — the cold case, which a cached CSR only pays once
  *  but which must be reported, since item 1691's 91x was an artefact of hoisting one out. */
 const handCsrPlusBuild = () => handCsr(buildCsr());
 
@@ -149,7 +149,7 @@ if (PICK === undefined || ARMS[PICK] === undefined) {
   throw new Error(`set ARM to one of: ${Object.keys(ARMS).join(', ')}`);
 }
 
-// ⚠️ The VALUES arms are one question and `id`/bare are others, so each is checked against the arm
+// The VALUES arms are one question and `id`/bare are others, so each is checked against the arm
 // that answers the SAME question — not against whichever ran first.
 const rows = ARMS[PICK]().length;
 
@@ -179,7 +179,7 @@ for (let r = 0; r < REPS; r += 1) {
   series.push(performance.now() - t0);
 }
 
-/** ⚠️ MEDIAN of the warm reps: `min` has reversed a verdict's sign in this repo. */
+/** MEDIAN of the warm reps: `min` has reversed a verdict's sign in this repo. */
 const warm = series.slice(3).sort((a, b) => a - b);
 
 console.log(

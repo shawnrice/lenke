@@ -1,24 +1,24 @@
 /*
  * Item 2115 — is the bag's ~110 ms really the PUSHES? Item 2114 said so and the arithmetic says no.
  *
- * ⚠️⚠️ **CHECKING MY OWN CONCLUSION.** Item 2114 measured `hop + values` at 28 ms and
+ * **CHECKING MY OWN CONCLUSION.** Item 2114 measured `hop + values` at 28 ms and
  * `hop + store + values` at 139, and concluded "the BAG is the cost ... ~110 ms to push 600,000 vertex
- * objects into an array, which no fusion removes". 🔑 **110 ms / 600,000 = 185 ns per push.** An array
+ * objects into an array, which no fusion removes". **110 ms / 600,000 = 185 ns per push.** An array
  * push is single-digit nanoseconds. So either the push is not the cost, or something about THIS push is
  * extraordinary — and that entry asserted the first reading without checking the division.
  *
- * 🔑 FOUR CANDIDATES, each its own arm, all on 600,000 of the ENGINE'S OWN vertex objects:
+ * FOUR CANDIDATES, each its own arm, all on 600,000 of the ENGINE'S OWN vertex objects:
  *   - `pushPlain`      — push into a plain array. The floor.
  *   - `pushPresized`   — the same with the array pre-sized, to price the growth/doubling.
  *   - `pushViaClosure` — through a closure that also reads a property, as `pick` does: this is the shape
  *     the engine actually has, and the one that can go megamorphic.
  *   - `readOnly`       — the property read with NO push, so the push's own share is a subtraction.
  *
- * ⚠️ THE OBJECTS ARE REAL VERTICES, not plain records. Retention is one of the candidates, so a fixture
+ * THE OBJECTS ARE REAL VERTICES, not plain records. Retention is one of the candidates, so a fixture
  * of `{a: 1}` literals would answer a different question — and item 2084 already recorded that a floor
  * over plain objects hid 25% of a query.
  *
- * ⚠️ AND THE LIST IS BUILT ONCE, OUTSIDE THE TIMED REGION. Item 1933's rule: the fixture stays out.
+ * AND THE LIST IS BUILT ONCE, OUTSIDE THE TIMED REGION. Item 1933's rule: the fixture stays out.
  */
 import { Graph } from '@lenke/core';
 
@@ -67,7 +67,7 @@ const arms = {
 
     return bag.length;
   },
-  /* ⚠️ PRE-SIZED, to price the doubling-growth hypothesis on its own. */
+  /* PRE-SIZED, to price the doubling-growth hypothesis on its own. */
   pushPresized: () => {
     const bag = new Array(COUNT);
 
@@ -77,7 +77,7 @@ const arms = {
 
     return bag.length;
   },
-  /* 🔑 THROUGH THE CLOSURE, which is what the engine does — push AND read, per element. */
+  /* THROUGH THE CLOSURE, which is what the engine does — push AND read, per element. */
   pushViaClosure: () => {
     const bag = [];
     const pick = makePick(bag);
@@ -120,7 +120,7 @@ for (const [name, fn] of Object.entries(arms)) {
     series.push(performance.now() - t0);
   }
 
-  // ⚠️ Every arm must have touched all 600,000, or it is measuring less work.
+  // Every arm must have touched all 600,000, or it is measuring less work.
   if (got !== COUNT && got !== 480_000) {
     throw new Error(`${name}: returned ${got}, expected ${COUNT} or 480000`);
   }

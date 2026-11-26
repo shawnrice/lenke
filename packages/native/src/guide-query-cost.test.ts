@@ -1,16 +1,16 @@
 /**
- * ⚠️⚠️ **EVERY SNIPPET IN `docs/guides/query-cost.md` RUNS HERE (item 2278).** The guide was written at item
+ * **EVERY SNIPPET IN `docs/guides/query-cost.md` RUNS HERE (item 2278).** The guide was written at item
  * 2277 from measurements, but its code was TYPED, not executed — and a guide whose snippets do not run is
  * worse than no guide, because a reader trusts it.
  *
- * 🔑 These are the guide's four snippets, verbatim in shape, with their ANSWERS asserted — not just that
+ * These are the guide's four snippets, verbatim in shape, with their ANSWERS asserted — not just that
  * they parse. Two of them were genuinely uncertain when written:
  *
  * - the keyset snippet compares STRINGS with `>`, and cross-type comparison in this engine has rules
  *   (a string against a temporal raises);
  * - the Gremlin snippet filters a DATE with `gte(...)`, and stored temporals have their own handling.
  *
- * ⚠️ This is a TEST, not a probe, so the guide cannot rot: if a snippet stops working, this fails.
+ * This is a TEST, not a probe, so the guide cannot rot: if a snippet stops working, this fails.
  */
 import { describe, expect, test } from 'bun:test';
 
@@ -50,7 +50,7 @@ describe('docs/guides/query-cost.md snippets', () => {
     const g = build();
 
     /*
-     * ⚠️⚠️ **THIS TEST FOUND A PARSER INCONSISTENCY (item 2278).** `OFFSET` IS THE ISO SPELLING and takes a param;
+     * **THIS TEST FOUND A PARSER INCONSISTENCY (item 2278).** `OFFSET` IS THE ISO SPELLING and takes a param;
      * `SKIP` is a CYPHER-ONLY ALIAS that deliberately passes `allowParam=false` (the parser says so in a
      * comment), so `SKIP $x` is rejected by design — NOT an inconsistency, which is what I first called it
      * at item 2278 before item 2279 read the parser. It matters because a paging caller who cannot bind the
@@ -83,7 +83,7 @@ describe('docs/guides/query-cost.md snippets', () => {
     expect(after('')).toStrictEqual(['Adler', 'Boyd']);
 
     /*
-     * ⚠️ AND HERE IS THE TIE LOSS THE GUIDE WARNS ABOUT, PINNED: resuming after the FIRST 'Boyd' skips the
+     * AND HERE IS THE TIE LOSS THE GUIDE WARNS ABOUT, PINNED: resuming after the FIRST 'Boyd' skips the
      * SECOND one, because `>` excludes everything equal to the cursor. The guide's advice to order by the
      * key plus a unique column is what this test exists to justify.
      */
@@ -102,7 +102,7 @@ describe('docs/guides/query-cost.md snippets', () => {
     expect(Object.keys(element[0] ?? {})).toStrictEqual(['p']);
 
     /*
-     * ⚠️ The element form returns the LIVE element, whose properties live under `.properties` — not as
+     * The element form returns the LIVE element, whose properties live under `.properties` — not as
      * direct fields. My first expectation read `.surname` off it and got `undefined`; the
      * `{id, labels, properties}` map the guide prices at 4.1x is what a serializer builds FROM it.
      */
@@ -118,7 +118,7 @@ describe('docs/guides/query-cost.md snippets', () => {
     const before = ask();
 
     /*
-     * ⚠️ The guide's largest claim (33-42x) rests on this being a pure speed change — so the test that
+     * The guide's largest claim (33-42x) rests on this being a pure speed change — so the test that
      * matters is that the ANSWER is identical with and without the index, and that creating one AFTER the
      * data is legal, which is what an application does to a graph it already has.
      */
@@ -128,7 +128,7 @@ describe('docs/guides/query-cost.md snippets', () => {
     expect(before).toStrictEqual([{ name: 'n3' }]);
 
     /*
-     * ⚠️ AND THE WRITE PATH USES IT TOO (item 2315), which the guide now claims at 5.4x. The test that
+     * AND THE WRITE PATH USES IT TOO (item 2315), which the guide now claims at 5.4x. The test that
      * matters is that a filtered write still finds and changes exactly the right rows with an index in
      * place — an index consulted wrongly would change the WRONG rows, which no timing would reveal.
      */
@@ -186,7 +186,7 @@ describe('docs/guides/query-cost.md snippets', () => {
     expect(filtered).toBe(1);
 
     /*
-     * ⚠️⚠️ **`WHERE true` IS THE GUIDE'S EVIDENCE, SO IT IS PINNED HERE**: it cannot change the answer,
+     * **`WHERE true` IS THE GUIDE'S EVIDENCE, SO IT IS PINNED HERE**: it cannot change the answer,
      * and the guide's point is that it still costs 175x because ANY predicate leaves the closed-form
      * count. If this ever stops returning the unfiltered answer, the rule's premise is gone.
      */
@@ -199,7 +199,7 @@ describe('docs/guides/query-cost.md snippets', () => {
     expect(vacuous).toBe(all);
 
     /*
-     * ⚠️ AND THE SAME FOR A PROJECTION (item 2309), which the guide now also claims: `WHERE true` returns
+     * AND THE SAME FOR A PROJECTION (item 2309), which the guide now also claims: `WHERE true` returns
      * the identical ROWS, not merely the identical count, so the 4.2-5.3x it costs there is pure overhead.
      */
     const projected = query(
@@ -222,7 +222,7 @@ describe('docs/guides/query-cost.md snippets', () => {
     const findBySurname = prepare('MATCH (p:Person) WHERE p.surname = $s RETURN p.name AS name');
 
     /*
-     * ⚠️ The guide's claim is that `prepare` is a pure speed change, so the test that matters is that the
+     * The guide's claim is that `prepare` is a pure speed change, so the test that matters is that the
      * prepared plan agrees with `query()` and stays reusable across calls with DIFFERENT params — a plan
      * that captured its first arguments would pass a single-call check.
      */
@@ -244,9 +244,9 @@ describe('docs/guides/query-cost.md snippets', () => {
   });
 
   /*
-   * ⚠️ **"Ask a Gremlin traversal for the values you want, not the elements"** (item 2318) claims that
+   * **"Ask a Gremlin traversal for the values you want, not the elements"** (item 2318) claims that
    * ending in `values('score')` is 1.64-1.84x FASTER than returning the element, because the element is
-   * never materialized. 🔑 The TIME is not testable in a gate, but the claim a reader ACTS on is that the
+   * never materialized. The TIME is not testable in a gate, but the claim a reader ACTS on is that the
    * two forms agree on which rows matched and on the property's value — otherwise the advice would be to
    * trade an answer for speed, which is not what the section says.
    */
@@ -267,11 +267,11 @@ describe('docs/guides/query-cost.md snippets', () => {
     const elements = toArray(asElements, g);
     const scores = toArray(asValues, g);
 
-    /* ✅ Same rows matched... */
+    /* Same rows matched... */
     expect(elements.length).toBe(2);
     expect(scores.length).toBe(2);
 
-    /* ✅ ...and the scalar form carries exactly what reading the element would have given. */
+    /* ...and the scalar form carries exactly what reading the element would have given. */
     expect([...scores].sort()).toStrictEqual([10, 20]);
     expect(
       elements
@@ -281,8 +281,8 @@ describe('docs/guides/query-cost.md snippets', () => {
   });
 
   /*
-   * ⚠️ **"For a bulk load, insert rows near the ones they share an index key with"** (item 2327) claims a
-   * 4.2x layout effect at 200,000 vertices. 🔑 The TIME is not gate-testable, but the claim a reader acts
+   * **"For a bulk load, insert rows near the ones they share an index key with"** (item 2327) claims a
+   * 4.2x layout effect at 200,000 vertices. The TIME is not gate-testable, but the claim a reader acts
    * on is that **grouping the writes changes nothing about the ANSWER** — if it did, the advice would be
    * trading correctness for speed, which is not what the section says.
    */
@@ -300,7 +300,7 @@ describe('docs/guides/query-cost.md snippets', () => {
 
       for (const [id, team] of order) {
         /*
-         * ⚠️ `tag` DUPLICATES the id as a PROPERTY deliberately. The first version projected `p.id`,
+         * `tag` DUPLICATES the id as a PROPERTY deliberately. The first version projected `p.id`,
          * which is not a property and yields `null` SILENTLY rather than raising — so the assertion
          * compared three nulls and failed for a reason unrelated to layout.
          */
@@ -314,20 +314,20 @@ describe('docs/guides/query-cost.md snippets', () => {
       );
     };
 
-    /* ✅ Interleaved (as an application would write them) against grouped by team. */
+    /* Interleaved (as an application would write them) against grouped by team. */
     const interleaved = load(rows);
     const grouped = load([...rows].sort((x, y) => x[1].localeCompare(y[1])));
 
-    /* ✅ Same rows either way — compared as SETS, because row order is unspecified. */
+    /* Same rows either way — compared as SETS, because row order is unspecified. */
     expect([...interleaved].sort()).toStrictEqual(['a', 'c', 'e']);
     expect([...grouped].sort()).toStrictEqual([...interleaved].sort());
   });
 
   /*
-   * ⚠️ **"Name the properties you need — and what it costs depends on where the rows go"** (item 2344)
+   * **"Name the properties you need — and what it costs depends on where the rows go"** (item 2344)
    * replaced a rule whose numbers were wrong in BOTH directions: it claimed `RETURN n` costs 4.1x a named
    * projection (in process it is CHEAPER — 15.6 against 20.5 ns a row) and that a second property is FREE
-   * (it costs ~75% more). 🔑 The claim a reader acts on is that the two forms carry the SAME DATA, so
+   * (it costs ~75% more). The claim a reader acts on is that the two forms carry the SAME DATA, so
    * naming the fields is a cost choice and never an information loss.
    */
   test('an element and its named properties carry the same data', () => {
@@ -340,27 +340,27 @@ describe('docs/guides/query-cost.md snippets', () => {
 
     expect(named).toStrictEqual([{ name: 'Ada', team: 'core' }]);
 
-    /* ✅ The element carries the same fields, under `.properties` — which is why serializing it is dearer. */
+    /* The element carries the same fields, under `.properties` — which is why serializing it is dearer. */
     const el = whole[0]?.p as { properties: Record<string, unknown> };
 
     expect(el.properties.name).toBe('Ada');
     expect(el.properties.team).toBe('core');
 
     /*
-     * ✅ And the serialized forms differ in SIZE, which is the mechanism the rule now names: the element
+     * And the serialized forms differ in SIZE, which is the mechanism the rule now names: the element
      * writes out its whole map. A ratio, not a timing, so it is stable enough for a gate.
      */
     expect(JSON.stringify(whole).length).toBeGreaterThan(JSON.stringify(named).length);
   });
 
   /*
-   * ⚠️ **A SNIPPET-COVERAGE GAP FOUND BY COMPARING QUERY TEXTS (item 2347).** "Index the key you look it
+   * **A SNIPPET-COVERAGE GAP FOUND BY COMPARING QUERY TEXTS (item 2347).** "Index the key you look it
    * up by" shows `MATCH (u:User) WHERE u.name = $n RETURN u.score AS s`, and no test executed that exact
-   * shape — the earlier tests all use `:Person`. 🔑 A first, cruder audit reported every block "covered"
+   * shape — the earlier tests all use `:Person`. A first, cruder audit reported every block "covered"
    * because it matched any token anywhere in this file; comparing the STATEMENT SHAPES found two gaps, one
    * of them real.
    *
-   * ✅ What the rule promises a reader is that the index changes the TIME and not the ANSWER, and that it
+   * What the rule promises a reader is that the index changes the TIME and not the ANSWER, and that it
    * can be created after the rows exist — both asserted here on the guide's own `:User` shape.
    */
   test("the index rule's own snippet runs, and the index does not change its answer", () => {
@@ -371,7 +371,7 @@ describe('docs/guides/query-cost.md snippets', () => {
         g.addVertex({ id: `u${i}`, labels: ['User'], properties: { name: `user${i}`, score: i } });
       }
 
-      /* ✅ Created AFTER the rows, which is the other half of what the rule claims. */
+      /* Created AFTER the rows, which is the other half of what the rule claims. */
       if (withIndex) {
         g.createIndex({ on: 'vertex', kind: 'hash', keys: ['name'] });
       }

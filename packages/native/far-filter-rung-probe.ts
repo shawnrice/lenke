@@ -1,7 +1,7 @@
 /**
  * WHICH RUNG admits a far-filtered yielding hop, and what residual it leaves (item 1631).
  *
- * ⚠️ READ THE RUNG FROM THE ENGINE, NOT FROM THE TIMING — the cliff finder's rule, and item 1602's
+ * READ THE RUNG FROM THE ENGINE, NOT FROM THE TIMING — the cliff finder's rule, and item 1602's
  * reason: timing cannot tell "declined" from "more work". `far-filter-values-floor.ts` measured
  * `out(E).has(k,eq(1)).id()` at **144.15 ms for 10,310 rows** against the unfiltered `out(E).id()`'s
  * **68.94 for 999,996** — while the `values(n)` twin of the same filtered walk costs 86.48. The two

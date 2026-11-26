@@ -1,14 +1,14 @@
 // Item 1936 — WHAT IS ACTUALLY RECOVERABLE on the non-vacuous hop `count(*)`?
 //
 // Item 1935 measured `MATCH (a:T)-[:E]->(b:T) RETURN count(*)` going 0.00 -> 1.94 ms from one
-// isolated off-label vertex — 1157x. ⚠️ MOST OF THAT IS NOT RECOVERABLE, and saying so is the point
+// isolated off-label vertex — 1157x. MOST OF THAT IS NOT RECOVERABLE, and saying so is the point
 // of this probe: the vacuous case is O(1) because EVERY edge qualifies, so the count is the
 // E-bucket's size. With the label non-universal, each edge's endpoints must be tested, which is
 // O(E) by construction. You cannot count label-filtered edges in O(1) without a per-(label,
 // edgeType) index, and an incremental counter is write-side bookkeeping the owner has already
 // pushed back on.
 //
-// 🔑 SO THE QUESTION IS THE CONSTANT FACTOR: a tight counting loop over the edge bucket, testing
+// SO THE QUESTION IS THE CONSTANT FACTOR: a tight counting loop over the edge bucket, testing
 // both endpoint labels, against what the engine does today (which the 1935 numbers suggest is a
 // full enumeration). That is a narrow, walk-free target if the gap is real.
 //
@@ -90,7 +90,7 @@ const handCount = (g) => () => {
 };
 
 /*
- * 🔑 THE DECISIVE ARM FOR THE 43-GATE DECISION. The COUNT turns out to be near-optimal off its fast
+ * THE DECISIVE ARM FOR THE 43-GATE DECISION. The COUNT turns out to be near-optimal off its fast
  * arm (below), so the question is whether the hop PROJECTION is too. If the engine's non-vacuous
  * projection is also within ~1.3x of a hand loop, then item 1935's whole 43-gate change buys little
  * and the cliff is simply the cost of label filtering. If it is 10x off, the change is worth its
@@ -153,7 +153,7 @@ console.log(
 
 console.log(
   `\nall four agree on ${String(nonGot)}.\n` +
-    `⚠️ The 1157x is O(1) -> O(E) and NOT recoverable. What IS available is the constant factor:\n` +
+    `The 1157x is O(1) -> O(E) and NOT recoverable. What IS available is the constant factor:\n` +
     `   engine ${nonEngine.toFixed(3)} against the hand loop's ${nonHand.toFixed(3)} = ` +
     `${(nonEngine / nonHand).toFixed(2)}x, i.e. ` +
     `${(((nonEngine - nonHand) * 1e6) / (NODES * FANOUT)).toFixed(1)} ns an edge.`,

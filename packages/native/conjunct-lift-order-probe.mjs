@@ -13,7 +13,7 @@
  *   a=50 AND b=0 AND <unliftable>    10.686      53.4            2.62x
  *   [CTL] <unliftable> alone         12.496      62.5            nothing lifts either way
  *
- *   ⚠️ THE REVERSE ORDER IS DELIBERATELY NOT DONE. `<unliftable> AND a=50` measured 13.750 and a
+ *   THE REVERSE ORDER IS DELIBERATELY NOT DONE. `<unliftable> AND a=50` measured 13.750 and a
  *   lift would take it to ~4.3 (3.2x), but only by running `a = 50` FIRST — which is observable
  *   when the unliftable conjunct can RAISE.
  * ```
@@ -65,7 +65,7 @@ const ARMS = {
   // CONTROL: no AND at all.
   'no-and': `MATCH (n:P) WHERE n.a = 50 RETURN count(*) AS c`,
 
-  // ⚠️ THE SECOND GUARD (item 1545). `residualOf` declines the WHOLE lift when a RAISE-CAPABLE
+  // THE SECOND GUARD (item 1545). `residualOf` declines the WHOLE lift when a RAISE-CAPABLE
   // family — `cmp`, `truth`, `notTruth`, `path` — would lift ahead of a residual, because an
   // ordering comparison throws on a cross-type pair where the generic chain would have settled the
   // row FALSE first. `eq`/`nulls`/`member` are exempt (equality is total).

@@ -2,13 +2,13 @@
 //
 // Item 1945 priced the deduped hop at 234.4 ms against a 73.2 ceiling (3.2x) and named the
 // mechanism: a `DISTINCT` needs EXISTENCE, not a count, so a far-vertex pass can `break` on the
-// first qualifying in-edge. ⚠️ It also flagged the prerequisite this probe answers rather than
+// first qualifying in-edge. It also flagged the prerequisite this probe answers rather than
 // assuming item 1940's band transfers:
 //
 //   "a SELECTIVE start label makes the short-circuit useless — most far vertices have NO qualifying
 //    in-edge, so every in-edge is scanned and nothing is saved"
 //
-// 🔑 So the short-circuit's value is a function of coverage in a way the per-element arms' is not.
+// So the short-circuit's value is a function of coverage in a way the per-element arms' is not.
 // At coverage 1.0 the first in-edge always qualifies (one check a vertex); at 0.05 almost none do
 // (every in-edge checked, i.e. a full edge pass PLUS the per-vertex overhead — worse than just
 // walking the edges). The crossover is what the gate needs, and it may differ from 0.4.
@@ -33,7 +33,7 @@ const build = (tFrac) => {
   const tCount = Math.max(1, Math.round(NODES * tFrac));
 
   for (let i = 0; i < NODES; i += 1) {
-    // ⚠️ `T` on everything would be VACUOUS. `S` marks the start-eligible prefix and `T` is on all,
+    // `T` on everything would be VACUOUS. `S` marks the start-eligible prefix and `T` is on all,
     // so the FAR label never moves and only the START label's coverage does — which is the variable
     // the short-circuit depends on.
     g.addVertex({
@@ -124,7 +124,7 @@ const time = (fn) => {
 
 console.log(
   `${NODES} vertices / ${NODES * FANOUT} edges, median of ${REPS}. START label coverage varies;\n` +
-    'the FAR label is on every vertex. ⚠️ `agree` must be true.\n',
+    'the FAR label is on every vertex. `agree` must be true.\n',
 );
 console.log('S frac   engine   HAND-edge   HAND-far-first   eng/far   far/edge   agree');
 console.log('-'.repeat(76));
@@ -151,7 +151,7 @@ for (const frac of FRACS) {
 }
 
 console.log(
-  `\n⚠️ far/edge ABOVE 1 means the short-circuit has stopped paying and a plain edge pass is better\n` +
+  `\nfar/edge ABOVE 1 means the short-circuit has stopped paying and a plain edge pass is better\n` +
     '   at that coverage — which is where the gate has to decline it.',
 );
 console.log(`(reference, T vacuous and no S filter: ${Q})`);

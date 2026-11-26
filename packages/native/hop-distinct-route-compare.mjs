@@ -8,7 +8,7 @@
  * arrangements, the per-element binding is flat, the polymorphic adjacency read is at the noise
  * floor). The walk is already the optimal SHAPE.
  *
- * ⚠️ SO STOP GUESSING AT MECHANISMS. This runs each surface alone, under a profile, so the frames
+ * SO STOP GUESSING AT MECHANISMS. This runs each surface alone, under a profile, so the frames
  * say where each one's time goes — and prints the ANSWER plus the per-vertex cost so a route that
  * is fast because it is doing less work cannot be mistaken for one that is fast.
  *

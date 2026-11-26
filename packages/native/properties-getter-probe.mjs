@@ -16,10 +16,10 @@
  *     labels         the sibling accessor, same box pattern    a control for "is it accessors?"
  *     id            a plain field                             the floor
  *
- * ⚠️ RANDOM ORDER over the canonical instances, because item 1770 measured locality at 2.4x here and
+ * RANDOM ORDER over the canonical instances, because item 1770 measured locality at 2.4x here and
  * the walk reaches vertices in adjacency order, not allocation order.
  *
- * ⚠️ AND THE SINK IS ASSERTED. Reading a property and discarding it invites V8 to drop the load; each
+ * AND THE SINK IS ASSERTED. Reading a property and discarding it invites V8 to drop the load; each
  * arm accumulates something derived from the value and the total is checked.
  */
 import { Graph } from '@lenke/core';

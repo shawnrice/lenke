@@ -1,17 +1,17 @@
 /*
  * Item 2108 — is `collect`'s 0.175 ms a DEFECT or just 300 values' worth of work?
  *
- * ⚠️⚠️ **DIVIDE BY THE RIGHT DENOMINATOR, BEFORE PROFILING ANYTHING.** Item 2107 left `size(collect(a.n))`
+ * **DIVIDE BY THE RIGHT DENOMINATOR, BEFORE PROFILING ANYTHING.** Item 2107 left `size(collect(a.n))`
  * at 0.175 ms where `min(a.n)` now costs 0.032 — 5.5x. But `collect` MATERIALIZES every value and `min`
  * folds to one, so some gap is the job rather than a defect. Item 2096's headline was 8x ROW COUNT and
  * item 2099 normalized a hop row by input edges; the same discipline applies here before a profile is
  * worth taking.
  *
- * 🔑 SO IT SWEEPS THE COLLECTED COUNT. A fixed overhead shows as a cost that barely moves; a per-value
- * cost shows as a flat ns/value. ⚠️ And `min` is swept BESIDE it over the same rows, so the comparison is
+ * SO IT SWEEPS THE COLLECTED COUNT. A fixed overhead shows as a cost that barely moves; a per-value
+ * cost shows as a flat ns/value. And `min` is swept BESIDE it over the same rows, so the comparison is
  * two folds over ONE walk rather than two different queries.
  *
- * ⚠️ THE TAG SELECTIVITY IS THE KNOB, so the WALK is identical at every point and only the number of
+ * THE TAG SELECTIVITY IS THE KNOB, so the WALK is identical at every point and only the number of
  * values collected changes. Varying the fixture instead would change both at once.
  */
 import { Graph } from '@lenke/core';
@@ -24,7 +24,7 @@ const REPS = Number(process.env.REPS ?? 15);
 const g = new Graph();
 
 /*
- * ⚠️ EACH VERTEX GETS A `bucket` AT EVERY SCALE, so one fixture serves the whole sweep. Selecting
+ * EACH VERTEX GETS A `bucket` AT EVERY SCALE, so one fixture serves the whole sweep. Selecting
  * `bucket{k}` collects roughly NODES*FANOUT/2^k values from an otherwise identical walk.
  */
 for (let i = 0; i < NODES; i += 1) {
@@ -75,7 +75,7 @@ console.log(
   `  ${'rows walked'.padStart(12)} ${'collect ms'.padStart(11)} ${'ns/value'.padStart(9)} ${'min ms'.padStart(8)} ${'ratio'.padStart(7)}`,
 );
 
-/* ⚠️ Descending k so the LARGEST selection runs first — a warm-up artefact would then flatter the small
+/* Descending k so the LARGEST selection runs first — a warm-up artefact would then flatter the small
  * rows, which is the opposite of the conclusion being tested. */
 for (const k of (process.env.KS ?? '11,9,7,5,3,1,0').split(',').map(Number)) {
   const where = `WHERE b.b${k} = 'hit'`;

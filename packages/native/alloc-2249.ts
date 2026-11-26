@@ -1,15 +1,15 @@
 /**
- * ⚠️⚠️ **`node --heap-prof` DOES NOT WORK FOR THIS WORKLOAD (item 2249), so this measures allocation
+ * **`node --heap-prof` DOES NOT WORK FOR THIS WORKLOAD (item 2249), so this measures allocation
  * DIRECTLY.** Two attempts at the sampling heap profiler reported 3.4 MB and then 4.1 MB total for runs that
  * materialize 80,000-320,000 rows per round — physically impossible — with Node's own module loader as the
  * top frame both times, and +7 KB/round of churn delta. It is missing ~95% of allocations, so its silence
  * is not evidence.
  *
- * 🔑 `process.memoryUsage().heapUsed` around each phase is crude but DIRECT: it cannot attribute to a frame,
+ * `process.memoryUsage().heapUsed` around each phase is crude but DIRECT: it cannot attribute to a frame,
  * but it answers the question item 2248 actually left — **is the first-read-after-write penalty accompanied
  * by extra ALLOCATION (a rebuilt structure) or not (pure recomputation over existing data)?**
  *
- * ⚠️ `heapUsed` moves with GC as well as allocation, so the run reports the per-phase deltas across many
+ * `heapUsed` moves with GC as well as allocation, so the run reports the per-phase deltas across many
  * rounds AND the series, not a single pair — a GC between samples shows up as a negative delta rather than
  * quietly biasing a mean.
  */

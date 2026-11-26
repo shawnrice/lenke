@@ -14,14 +14,14 @@
 //! unlabelled one does not. One point is not a curve, so this sweeps selectivity and reads the
 //! crossover off the two lines.
 //!
-//! ⚠️ TWO STORES PER POINT, DIFFERING ONLY IN THE INDEX, so the comparison is seek-vs-scan and not
+//! TWO STORES PER POINT, DIFFERING ONLY IN THE INDEX, so the comparison is seek-vs-scan and not
 //! fixture-vs-fixture: the same generator, the same values, the same label, `create_index` called on
 //! one. The matched row count prints, because a sweep whose arms answer different numbers is
 //! comparing different questions (item 1203's trap).
 //!
 //! CONTROL: `count(*)` with no predicate, which no index can help and no selectivity can move.
 //!
-//! ⚠️ THE COLUMNS ARE "NO INDEX" AND "INDEXED", NOT "SCAN" AND "SEEK", and the first version of
+//! THE COLUMNS ARE "NO INDEX" AND "INDEXED", NOT "SCAN" AND "SEEK", and the first version of
 //! this probe labelled them the latter — which inverted the whole reading until a plan column was
 //! added. The planner emits an `IndexSeek` for an equality EVEN WITH NO INDEX (the operator then
 //! degrades to a label scan), and WITH an index it correctly declines to seed above ~1.6% and
@@ -106,7 +106,7 @@ fn main() {
             format!("{rows_a:.0} vs {rows_b:.0} DIFFER")
         };
 
-        // ⚠️ THE PLAN SHAPE PER ROW, because a ratio without it is uninterpretable — item 1216
+        // THE PLAN SHAPE PER ROW, because a ratio without it is uninterpretable — item 1216
         // spent five hypotheses on sweeps a query never executed. "seek" here is only a seek if
         // the planner actually chose one; where it did not, the column is a second scan and the
         // ratio is noise.

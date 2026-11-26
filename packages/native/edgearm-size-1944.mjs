@@ -1,11 +1,11 @@
 // Item 1944 — IS ITEM 1940'S EDGE-DRIVEN ARM A REGRESSION AT 1M EDGES?
 //
-// ⚠️⚠️ THIS ASKS ABOUT A RISK I INTRODUCED, which is why it comes before the bigger `deduped hop`
+// THIS ASKS ABOUT A RISK I INTRODUCED, which is why it comes before the bigger `deduped hop`
 // number. Item 1943's `MIXED=1` diff put `CONTROL one-hop projection` at **164 ns a row** (131.18 ms
 // / 800,000) on a 200,000-vertex / 1,000,000-edge fixture — where item 1942 measured the SAME arm at
 // **56 ns a row** on 50,000 / 100,000, with a hand ceiling of 36.
 //
-// 🔑 THE ARM'S PER-ROW COST ROUGHLY TRIPLES WITH SIZE AND THE COUNTING ARM'S DOES NOT. Items
+// THE ARM'S PER-ROW COST ROUGHLY TRIPLES WITH SIZE AND THE COUNTING ARM'S DOES NOT. Items
 // 1939/1940 swept the coverage THRESHOLD across sizes but never swept the ARM itself: every
 // measurement of it was at 50,000 vertices. CLAUDE.md's rule — "cache-resident and not are different
 // questions; the transition is between 200k and 1M elements" — applies to an O(|E|) scan over a
@@ -18,7 +18,7 @@
 //     ARM=on  bun edgearm-size-1944.mjs        # as shipped
 //     ARM=off bun edgearm-size-1944.mjs        # after setting the threshold to 1.01 and rebuilding
 //
-// ⚠️ Run under a cap — a 1M-edge fixture per rep is what [[dogfood-sim-resource-limits]] is about.
+// Run under a cap — a 1M-edge fixture per rep is what [[dogfood-sim-resource-limits]] is about.
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
 
@@ -125,6 +125,6 @@ for (const spec of SIZES) {
 }
 
 console.log(
-  '\n⚠️ ns/row RISING with edge count is the finding. Compare ARM=on against ARM=off: if `off` is\n' +
+  '\nns/row RISING with edge count is the finding. Compare ARM=on against ARM=off: if `off` is\n' +
     '   FASTER at 1M edges, item 1940 shipped a regression at scale and its gate needs a size term.',
 );

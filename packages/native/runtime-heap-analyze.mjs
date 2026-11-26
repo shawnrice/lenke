@@ -14,12 +14,12 @@
  *          --heap-prof-interval=16384 runtime-profile-write-probe.mjs <shape> <reps>
  *     node runtime-heap-analyze.mjs $D
  *
- * ⚠️ READ `selfSize`, NOT the sample COUNT. V8's heap profile is a TREE whose nodes carry aggregated
+ * READ `selfSize`, NOT the sample COUNT. V8's heap profile is a TREE whose nodes carry aggregated
  * `selfSize` in bytes; the flat `samples` array is the individual sampled allocations and is sparse
  * (84 entries for a 288 ms run at a 16 KB interval). Summing samples would be a much noisier
  * estimate of the same quantity.
  *
- * ⚠️ IT MEASURES BYTES ALLOCATED, NOT GC TIME. Allocating a lot is the usual cause of GC time but the
+ * IT MEASURES BYTES ALLOCATED, NOT GC TIME. Allocating a lot is the usual cause of GC time but the
  * mapping is not linear — short-lived garbage in the nursery is far cheaper per byte than anything
  * that gets promoted. So a big number here LOCATES the pressure; it does not price the fix. Pairing
  * it with the CPU profile's GC share is what makes it actionable.

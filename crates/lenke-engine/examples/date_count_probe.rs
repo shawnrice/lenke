@@ -15,7 +15,7 @@
 //! bit, so item 1220's rewrite does NOT transfer unchanged and its 3.19x does not predict this.
 //! That is the question.
 //!
-//! ⚠️ THIS PROBE EXISTS BECAUSE A DEFERRAL WAS STALE. `CLAUDE.md` lists "temporal-column cost needs
+//! THIS PROBE EXISTS BECAUSE A DEFERRAL WAS STALE. `CLAUDE.md` lists "temporal-column cost needs
 //! host `Temporal` construction" among the questions that cannot be asked from an example. It can:
 //! `lib.rs` re-exports `lenke_engine_core::temporal`, `Temporal::Date` is a public variant and
 //! `Date { days: i32 }` has a public field, so a date column builds from here in one line.

@@ -28,7 +28,7 @@ const DEG = Number(process.env.GATE_DEG ?? 3);
 /*
  * NINE reps, not three, and a MEDIAN of the post-warmup ones rather than a min.
  *
- * ⚠️ At this bench's default fixture its rows are 0.7-3.0 ms and two runs of the SAME build disagree by
+ * At this bench's default fixture its rows are 0.7-3.0 ms and two runs of the SAME build disagree by
  * 2.1-2.5x: item 2365 measured `position 3` at 1.1 then 2.7, `position 4` at 3.0 then 1.4, and the
  * three-spellings table at inline 1.0 / clause 1.5 in one run and 1.4 / 1.4 in the next. **So the single
  * min-of-3 figure this bench used to print could not resolve anything under ~2.5x**, and a reader (me)

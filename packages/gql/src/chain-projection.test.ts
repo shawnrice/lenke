@@ -1,7 +1,7 @@
 /**
  * `detectChainProjection` (item 1814) — a chain of three or more segments returning rows.
  *
- * ⚠️ THE ORACLE IS THE ENGINE'S OWN GENERAL MATCHER, reached by RESPELLING the same query with an
+ * THE ORACLE IS THE ENGINE'S OWN GENERAL MATCHER, reached by RESPELLING the same query with an
  * unused relationship VARIABLE. `hopOf` refuses `rel.variable !== undefined`, so
  * `-[r:R]->` declines the rung while meaning exactly what `-[:R]->` means when `r` is never read.
  * That gives a differential oracle inside one engine, which is what this family needs: the route is
@@ -63,7 +63,7 @@ const branching = (): Graph => {
   // a1 -> b1 -> {c1, c2} -> d1 ; a2 -> b2 -> c3 -> {d1, d2} ; then one more level for the
   // four-segment case, which otherwise compares two EMPTY results and asserts nothing.
   //
-  // ⚠️ EDGE IDS ARE `r*`, NOT `e*`, so no vertex id can ever collide with one. A vertex and an edge
+  // EDGE IDS ARE `r*`, NOT `e*`, so no vertex id can ever collide with one. A vertex and an edge
   // sharing an id is out of contract and SILENTLY destroys the vertex's labels and properties (one
   // id-keyed map across two id spaces, item 1588 — WON'T FIX, document only), and it cost nine
   // tests in this session once already.
@@ -132,7 +132,7 @@ describe('the rung fires for its own shape and not for its neighbours', () => {
   });
 
   /**
-   * ⚠️ `DISTINCT` MOVED FROM THE LINE ABOVE TO HERE AT ITEM 1820, and the reason it is a separate
+   * `DISTINCT` MOVED FROM THE LINE ABOVE TO HERE AT ITEM 1820, and the reason it is a separate
    * test rather than a flipped boolean is that the two groups are declined for DIFFERENT reasons
    * and only one of them was ever about capability:
    *
@@ -153,7 +153,7 @@ describe('the rung fires for its own shape and not for its neighbours', () => {
     expect(takesRung(`${chain} RETURN DISTINCT d.k AS k`)).toBe(true);
     expect(takesRung(`${chain} RETURN DISTINCT d.k AS k, d.s AS s`)).toBe(true);
 
-    // ⚠️ The combinations, because admitting `DISTINCT` must not drag a pager or a sort in with
+    // The combinations, because admitting `DISTINCT` must not drag a pager or a sort in with
     // it — each of these is still a `plainRowProjectionIgnoringDistinct` refusal.
     expect(takesRung(`${chain} RETURN DISTINCT d.k AS k LIMIT 2`)).toBe(false);
     expect(takesRung(`${chain} RETURN DISTINCT d.k AS k SKIP 1`)).toBe(false);
@@ -166,7 +166,7 @@ describe('the rung fires for its own shape and not for its neighbours', () => {
   });
 
   /**
-   * ⚠️ AN UNREAD PATH VARIABLE IS ADMITTED, AND I ASSERTED THE OPPOSITE FIRST. `compileLinear`
+   * AN UNREAD PATH VARIABLE IS ADMITTED, AND I ASSERTED THE OPPOSITE FIRST. `compileLinear`
    * rewrites the clauses before any detector runs, and one of those rewrites ELIDES a path variable
    * nothing reads — so by the time `detectChainProjection` sees the pattern there is no `pathVar`
    * left to refuse. That is not this rung's behaviour but the engine's, checked across the family:
@@ -193,7 +193,7 @@ describe('the rung fires for its own shape and not for its neighbours', () => {
       false,
     );
     /**
-     * ⚠️ THIS EXPECTATION FLIPPED AT ITEM 1847, and the rule is to say why in place rather than
+     * THIS EXPECTATION FLIPPED AT ITEM 1847, and the rule is to say why in place rather than
      * quietly edit it. A TYPE UNION used to decline — "one edge type per leg is what the adjacency
      * bucket read assumes" — and that cost **616-653 ns a row against the single-type chain's
      * 92-94**. `walkUnion`/`sweepUnion` read the buckets of each named type instead, with
@@ -208,7 +208,7 @@ describe('the rung fires for its own shape and not for its neighbours', () => {
   });
 
   /**
-   * ⚠️ A MEASURED REFUSAL, not a conservative one. The general matcher rejects a start BEFORE
+   * A MEASURED REFUSAL, not a conservative one. The general matcher rejects a start BEFORE
    * expanding it; this walk would pay one test per ROW. Admitted at two hops it measured 3.7x
    * WORSE (see `hop2-projection.ts`), and the ratio of rows to start vertices only grows with
    * depth.
@@ -235,7 +235,7 @@ describe('the rung answers what the general matcher answers', () => {
   });
 
   /**
-   * ⚠️ THE MULTIPLICITY IS THE POINT OF THIS ONE. Two distinct paths reach `d1` through `b1`, and
+   * THE MULTIPLICITY IS THE POINT OF THIS ONE. Two distinct paths reach `d1` through `b1`, and
    * `c3` reaches both `d1` and `d2` — so the correct answer REPEATS a value, and a walk that
    * deduped or lost a branch would still return plausible rows. Asserted against the fixture
    * directly as well as against the matcher, because both paths could in principle share a bug.
@@ -292,7 +292,7 @@ describe('the rung answers what the general matcher answers', () => {
   });
 
   /**
-   * ⚠️ UNKNOWN MUST DROP LIKE FALSE. A clause `WHERE` keeps only rows whose predicate is definitely
+   * UNKNOWN MUST DROP LIKE FALSE. A clause `WHERE` keeps only rows whose predicate is definitely
    * TRUE, so a comparison against an ABSENT property keeps nothing — which is why the gate tests
    * `asTruth(...) !== true` rather than falsiness.
    */
@@ -333,7 +333,7 @@ describe('the rung answers what the general matcher answers', () => {
 });
 
 /**
- * ⚠️ THE SELF-LOOP QUESTION, ASKED AT DEPTH THREE RATHER THAN ASSUMED FROM DEPTH TWO.
+ * THE SELF-LOOP QUESTION, ASKED AT DEPTH THREE RATHER THAN ASSUMED FROM DEPTH TWO.
  *
  * `hop2-projection.ts` measured that the path MODE is not load-bearing across two segments — the
  * default, `WALK`, `TRAIL` and `ACYCLIC` all returned the same rows including one that reuses a loop
@@ -392,7 +392,7 @@ describe('a self-loop at depth three', () => {
 /**
  * Item 1816 — the BLOCKED LEVEL-SYNCHRONOUS sweep and the gate that chooses it.
  *
- * ⚠️ TWO THINGS HERE ARE NOT COVERED BY THE SUITE ABOVE, AND BOTH WERE MEASURED TO BE UNCOVERED.
+ * TWO THINGS HERE ARE NOT COVERED BY THE SUITE ABOVE, AND BOTH WERE MEASURED TO BE UNCOVERED.
  *
  * The first is the BLOCK BOUNDARY. `SWEEP_BLOCK` is 4096 starts and every fixture in this file is
  * three orders of magnitude smaller, so the 33 pre-existing tests that a `throw` in `sweepBlock`
@@ -464,7 +464,7 @@ describe('item 1816 — the blocked sweep', () => {
   });
 
   /**
-   * ⚠️ THE CASE THE SWEEP CANNOT ANSWER, which is why the gate exists. Batching a level discards the
+   * THE CASE THE SWEEP CANNOT ANSWER, which is why the gate exists. Batching a level discards the
    * path that reached it, so an INTERIOR read has to route to the depth-first descent. If the gate
    * ever admitted this, the rows would be wrong rather than slow.
    */
@@ -499,7 +499,7 @@ describe('item 1816 — the blocked sweep', () => {
  */
 describe('item 1816 — farEndOnly', () => {
   /**
-   * ⚠️ EXPRESSIONS COME FROM THE PARSER, NOT FROM HAND. The first cut of this test built
+   * EXPRESSIONS COME FROM THE PARSER, NOT FROM HAND. The first cut of this test built
    * `{kind: 'property', target: {kind: 'variable', …}}` by hand and every case threw:
    * `freePredicateVars` has an exhaustive `never` arm, the real node is `{kind: 'prop', variable,
    * key}`, and a hand-written AST is a guess about the grammar that drifts the moment the grammar

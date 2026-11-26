@@ -2,7 +2,7 @@
  * THE LAZY-EMISSION COVERAGE SCREEN (item 1616) — does any test actually DRAIN each generator in
  * the two TS executors?
  *
- * ⚠️ THE QUESTION IS NOT "is this code tested" BUT "is this ROUTE taken by a test", and the two come
+ * THE QUESTION IS NOT "is this code tested" BUT "is this ROUTE taken by a test", and the two come
  * apart in a specific, repeating way. Item 1615 found two mutants SURVIVING in a fused walk's LAZY
  * loop while their EAGER twins died: every `HopWalk` in the Gremlin executor is written twice — a
  * generator and a `drain()` — and `toArray` with an empty residual reads `drain`, so a suite that
@@ -30,7 +30,7 @@
  * reads 13/13 and 11/11. Run it after adding a `HopWalk`, a selector driver, or any generator in
  * these files.
  *
- * ⚠️ IT MUST RUN THE SUITE OF THE PACKAGE IT MUTATES. A mutation against `packages/gql/src` is
+ * IT MUST RUN THE SUITE OF THE PACKAGE IT MUTATES. A mutation against `packages/gql/src` is
  * invisible to `packages/native`'s tests, which import `@lenke/gql` — the BUILT DIST — so they
  * sail straight past it until a rebuild. That is `fuzzers-read-built-dists` applied to a unit test,
  * and it is why `anyWalk`'s claim is asserted in BOTH packages.
@@ -76,7 +76,7 @@ const TARGETS = [
 ].filter((t) => WHICH === 'all' || t.engine === WHICH);
 
 /**
- * ⚠️ THE PRISTINE COPIES LIVE UNDER `target/`, which is gitignored AND survives the reboot a runaway
+ * THE PRISTINE COPIES LIVE UNDER `target/`, which is gitignored AND survives the reboot a runaway
  * mutant may force. `/tmp` does not: CLAUDE.md records a scratchpad wiped by exactly that reboot,
  * with the file reconstructed by hand from `git diff`.
  */
@@ -90,7 +90,7 @@ const runSuite = (pkg) => {
     encoding: 'utf8',
     timeout: 1_800_000,
     /**
-     * ⚠️ `maxBuffer` IS LOAD-BEARING AND THE DEFAULT 1 MB IS NOT ENOUGH, which this screen found by
+     * `maxBuffer` IS LOAD-BEARING AND THE DEFAULT 1 MB IS NOT ENOUGH, which this screen found by
      * misreporting its own result. One GQL mutant fails 655 tests; bun prints a diff per failure,
      * the output blew past 1 MB, `spawnSync` killed the child, and the run came back `status: null`
      * — which the check below reads as DID-NOT-RUN. So the LOUDEST mutant in the pass looked like
@@ -99,7 +99,7 @@ const runSuite = (pkg) => {
     maxBuffer: 256 * 1024 * 1024,
   });
 
-  // ⚠️ BOTH STREAMS. `bun test` writes its result line to STDERR, never stdout — a check that reads
+  // BOTH STREAMS. `bun test` writes its result line to STDERR, never stdout — a check that reads
   // one stream calls a passing run "did not run" and a failing one a pass (items 767, 772-773).
   return { code: p.status, out: `${p.stdout ?? ''}${p.stderr ?? ''}` };
 };

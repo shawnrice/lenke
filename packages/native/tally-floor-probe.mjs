@@ -12,7 +12,7 @@
  * `matches` + the comparators are ~15% and `get properties` ~10%, which leaves most of the 6.9 ns
  * inside the loop itself — unattributed.
  *
- * ⚠️ EACH ARM ADDS EXACTLY ONE THING to the one above it, so a difference names its own cause.
+ * EACH ARM ADDS EXACTLY ONE THING to the one above it, so a difference names its own cause.
  * Every arm returns the SAME COUNT and the probe throws if they disagree — an arm that skips work
  * by answering a different question is the failure mode four separate items in this corpus have hit
  * (chain count 1479, values walk 1480/1483, presence count 1485, hop-count 1488).

@@ -1,19 +1,19 @@
 // A CLAUSE `WHERE` ON THE START OF A VAR-LENGTH PATTERN, carried into the reachability rung
 // (item 1906).
 //
-// ⚠️⚠️ THE GAP IT CLOSES IS THIS REPO'S FIRST-NAMED DEFECT CLASS. `CLAUDE.md` lists the shapes every
+// THE GAP IT CLOSES IS THIS REPO'S FIRST-NAMED DEFECT CLASS. `CLAUDE.md` lists the shapes every
 // index-seeding bug the old engine had took, and "a clause `WHERE` vs an inline `{k: $x}`" is one of
 // them. Here the inline spelling reached `reachShortcut` and the clause spelling reached NO rung:
 //
 //     MATCH (a:T {n: $p})-[:E]->{1,3}(b:T) RETURN DISTINCT b.n     342.45 ms
-//     MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p RETURN DISTINCT b.n   2996.17   ⬅ 8.75x
-//     ... the same query with NO seed at all                        405.22   ⬅ so seeding COST 7.4x
+//     MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p RETURN DISTINCT b.n   2996.17   <- 8.75x
+//     ... the same query with NO seed at all                        405.22   <- so seeding COST 7.4x
 //
 // The last line is audit item 159's rule — "a filter that makes a query slower is a declined fast
 // path, not the cost of filtering" — and it is the thing that makes this a bug rather than a
 // missing optimization.
 //
-// ⚠️ NATIVE IS THE ORACLE, because every spelling here returns the same rows and the risk is
+// NATIVE IS THE ORACLE, because every spelling here returns the same rows and the risk is
 // entirely in WHICH vertices the rung seeds from. A wrong seed set is a wrong answer that no
 // same-engine comparison would catch: the TS rung and the TS general path could agree while both
 // differed from native, and the inline spelling shares the rung the clause one now takes.
@@ -29,7 +29,7 @@ import { graphFromNdjson } from './graph.js';
 /**
  * A fixture where the SEED SET decides the answer.
  *
- * ⚠️ THE REACHABLE SETS OF THE TWO `n` GROUPS MUST DIFFER, or a wrong seed set would answer
+ * THE REACHABLE SETS OF THE TWO `n` GROUPS MUST DIFFER, or a wrong seed set would answer
  * correctly by accident — the same trap item 1903 paid for with a tie-heavy fixture. Here `n = 1`
  * vertices lead into the `k = 10..` chain and `n = 2` vertices into the `k = 20..` chain, with no
  * edge between the two components.
@@ -60,16 +60,16 @@ describe.if(nativeReady)('a carried start WHERE seeds the same set native does',
 
   /** `[text, params]` — every shape the gate admits, and the near misses beside them. */
   const CASES: readonly [string, Record<string, unknown>][] = [
-    // ⚠️ THE PAIR. These two must agree with each other AND with native.
+    // THE PAIR. These two must agree with each other AND with native.
     ['MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p RETURN DISTINCT b.k AS x ORDER BY x', { p: 1 }],
     ['MATCH (a:T {n: $p})-[:E]->{1,3}(b:T) RETURN DISTINCT b.k AS x ORDER BY x', { p: 1 }],
     // The other component, so a seed set that ignored the predicate would show.
     ['MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p RETURN DISTINCT b.k AS x ORDER BY x', { p: 2 }],
     // No seed at all — the union of both components.
     ['MATCH (a:T)-[:E]->{1,3}(b:T) RETURN DISTINCT b.k AS x ORDER BY x', {}],
-    // ⚠️ A PREDICATE MATCHING NOTHING must answer empty rather than everything.
+    // A PREDICATE MATCHING NOTHING must answer empty rather than everything.
     ['MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p RETURN DISTINCT b.k AS x ORDER BY x', { p: 77 }],
-    // ⚠️ A NULL-VALUED key: `a.n = $p` with `$p` null is UNKNOWN, so no seed qualifies.
+    // A NULL-VALUED key: `a.n = $p` with `$p` null is UNKNOWN, so no seed qualifies.
     [
       'MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p RETURN DISTINCT b.k AS x ORDER BY x',
       {
@@ -88,14 +88,14 @@ describe.if(nativeReady)('a carried start WHERE seeds the same set native does',
         q: 'A',
       },
     ],
-    // ⚠️ `IS NULL` on the start: `z0` is the only seed, reaching `b2` only.
+    // `IS NULL` on the start: `z0` is the only seed, reaching `b2` only.
     ['MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n IS NULL RETURN DISTINCT b.k AS x ORDER BY x', {}],
     // Other bounds and the unbounded forms, so the carried gate is exercised on every arm.
     ['MATCH (a:T)-[:E]->{1,1}(b:T) WHERE a.n = $p RETURN DISTINCT b.k AS x ORDER BY x', { p: 1 }],
     ['MATCH (a:T)-[:E]->{0,2}(b:T) WHERE a.n = $p RETURN DISTINCT b.k AS x ORDER BY x', { p: 1 }],
     ['MATCH (a:T)-[:E]->+(b:T) WHERE a.n = $p RETURN DISTINCT b.k AS x ORDER BY x', { p: 1 }],
     ['MATCH (a:T)-[:E]->*(b:T) WHERE a.n = $p RETURN DISTINCT b.k AS x ORDER BY x', { p: 1 }],
-    // ⚠️ THE NEAR MISSES, which the rung DECLINES — carried here so a later change that admits one
+    // THE NEAR MISSES, which the rung DECLINES — carried here so a later change that admits one
     // of them has to come past this file with an answer.
     ['MATCH (a:T)-[:E]->{1,3}(b:T) WHERE b.k > $p RETURN DISTINCT b.k AS x ORDER BY x', { p: 10 }],
     ['MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.g = b.g RETURN DISTINCT b.k AS x ORDER BY x', {}],
@@ -115,20 +115,20 @@ describe.if(nativeReady)('a carried start WHERE seeds the same set native does',
   }
 
   /**
-   * ⚠️ THE TWO SPELLINGS AGAINST EACH OTHER, which is the claim the whole item is about — and a
+   * THE TWO SPELLINGS AGAINST EACH OTHER, which is the claim the whole item is about — and a
    * separate assertion from agreeing with native, because they could both be wrong in the same way
    * only if native were too.
    */
   test('the clause and inline spellings answer identically on every NON-NULL seed value', () => {
     /*
-     * ⚠️⚠️ **NULL IS EXCLUDED BECAUSE THE TWO SPELLINGS ARE NOT THE SAME QUESTION THERE, and that
+     * **NULL IS EXCLUDED BECAUSE THE TWO SPELLINGS ARE NOT THE SAME QUESTION THERE, and that
      * is a settled engine semantic rather than this item's business.** With `$p` null:
      *
      *     WHERE a.n = $p     ->  []            three-valued equality, UNKNOWN matches nothing
      *     (a:T {n: $p})      ->  the row       a property-value match, and null is a PRESENT
      *                                          value here ([[null-first-class-policy]])
      *
-     * ⚠️ Verified to hold in BOTH engines and for the node, hop AND var-length shapes alike, so it
+     * Verified to hold in BOTH engines and for the node, hop AND var-length shapes alike, so it
      * is consistent policy and not a divergence — the `{ p: null }` case above asserts the clause
      * spelling against native directly. It is written down because "equivalent spellings must cost
      * the same" only binds where they ARE equivalent, and this pair is the exception.
@@ -149,7 +149,7 @@ describe.if(nativeReady)('a carried start WHERE seeds the same set native does',
     }
   });
 
-  /** ⚠️ AND NOT EVERY ANSWER IS EMPTY — two engines agree trivially on nothing. */
+  /** AND NOT EVERY ANSWER IS EMPTY — two engines agree trivially on nothing. */
   test('the seeded shapes return rows, and DIFFERENT rows per component', () => {
     const q = 'MATCH (a:T)-[:E]->{1,3}(b:T) WHERE a.n = $p RETURN DISTINCT b.k AS x ORDER BY x';
 

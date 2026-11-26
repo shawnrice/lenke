@@ -1,6 +1,6 @@
 // Item 1956 — do the count-terminal tests have TEETH? Nine mutants on the rung.
 //
-// ⚠️ EVIDENCE OF EXECUTION, NOT AN EXIT CODE. `bun test` writes `N pass`/`N fail` to STDERR, so both
+// EVIDENCE OF EXECUTION, NOT AN EXIT CODE. `bun test` writes `N pass`/`N fail` to STDERR, so both
 // streams are concatenated and searched for a result line BEFORE the exit code is read.
 //
 //     bun countterm-mutants-1956.mjs
@@ -20,7 +20,7 @@ const original = readFileSync(PRISTINE, 'utf8');
 const MUTANTS = [
   // ── item 1957: the no-move (edge-valued) surface ──────────────────────────────────────────────
   {
-    name: '⚠⚠ THE MOVE IS MANDATORY AGAIN (item 1957 undone)',
+    name: 'THE MOVE IS MANDATORY AGAIN (item 1957 undone)',
     expect: 'kill',
     from: `  const moved = move?.kind === wanted;`,
     to: `  const moved = move?.kind === wanted;
@@ -31,37 +31,37 @@ const MUTANTS = [
 `,
   },
   {
-    name: '⚠⚠ THE MOVE IS TREATED AS ALWAYS PRESENT, so an edge plan projects the far end',
+    name: 'THE MOVE IS TREATED AS ALWAYS PRESENT, so an edge plan projects the far end',
     expect: 'kill',
     from: `  const moved = move?.kind === wanted;`,
     to: `  const moved = true;`,
   },
   {
-    name: '⚠⚠ THE MOVE IS NEVER CONSUMED, so a moved plan projects the EDGE',
+    name: 'THE MOVE IS NEVER CONSUMED, so a moved plan projects the EDGE',
     expect: 'kill',
     from: `  const moved = move?.kind === wanted;`,
     to: `  const moved = false;`,
   },
   {
-    name: '⚠⚠ THE PROJECTION POSITION IGNORES the move, so a moved plan reads the move as its proj',
+    name: 'THE PROJECTION POSITION IGNORES the move, so a moved plan reads the move as its proj',
     expect: 'kill',
     from: `  const projAt = moved ? at + 1 : at;`,
     to: `  const projAt = at;`,
   },
   {
-    name: '⚠⚠ THE PROJECTION POSITION ALWAYS SKIPS one, so an edge plan skips its own projection',
+    name: 'THE PROJECTION POSITION ALWAYS SKIPS one, so an edge plan skips its own projection',
     expect: 'kill',
     from: `  const projAt = moved ? at + 1 : at;`,
     to: `  const projAt = at + 1;`,
   },
   {
-    name: '⚠⚠ `valuePick` READS THE WRONG ENDPOINT (in place of out)',
+    name: '`valuePick` READS THE WRONG ENDPOINT (in place of out)',
     expect: 'kill',
     from: `  return outward ? (edge) => edge.to.properties[key] : (edge) => edge.from.properties[key];`,
     to: `  return outward ? (edge) => edge.from.properties[key] : (edge) => edge.to.properties[key];`,
   },
   {
-    name: '⚠⚠ `valuePick` READS THE EDGE even when the plan moved',
+    name: '`valuePick` READS THE EDGE even when the plan moved',
     expect: 'kill',
     from: `const valuePick = (key: string, moved: boolean, outward: boolean): ((edge: Edge) => unknown) => {
   if (!moved) {
@@ -73,7 +73,7 @@ const MUTANTS = [
   }`,
   },
   {
-    name: '⚠⚠ `elementPick` yields the EDGE even when the plan moved',
+    name: '`elementPick` yields the EDGE even when the plan moved',
     expect: 'kill',
     from: `const elementPick = (moved: boolean, outward: boolean): ((edge: Edge) => unknown) => {
   if (!moved) {
@@ -85,7 +85,7 @@ const MUTANTS = [
   }`,
   },
   {
-    name: '⚠⚠ `idPick` takes an ENDPOINT id on an edge plan',
+    name: '`idPick` takes an ENDPOINT id on an edge plan',
     expect: 'kill',
     from: `const idPick = (moved: boolean, outward: boolean): ((edge: Edge) => unknown) => {
   if (!moved) {
@@ -97,7 +97,7 @@ const MUTANTS = [
   }`,
   },
   {
-    name: '⚠⚠ THE COUNT TERMINAL IS CONSUMED, so the count step is DROPPED from the plan',
+    name: 'THE COUNT TERMINAL IS CONSUMED, so the count step is DROPPED from the plan',
     expect: 'kill',
     from: `  return proj.kind === 'count'
     ? { pick: elementPick(moved, outward), drops: false, consumed: false }
@@ -108,7 +108,7 @@ const MUTANTS = [
   },
   {
     name: 'the count terminal sets `drops: true` (no sentinel can ever appear)',
-    // ⚠️ I EXPECTED A KILL AND WAS WRONG, and the rung's own header already said why: `drops`
+    // I EXPECTED A KILL AND WAS WRONG, and the rung's own header already said why: `drops`
     // only matters when `pick` can return `undefined`. For a count `pick` is `(far) => far`, which
     // returns the element itself and can never be the sentinel, so the flag is unreachable. The
     // file documents the identical equivalence for the bare move and for `id()`. Recorded with the
@@ -125,7 +125,7 @@ const MUTANTS = [
     : undefined;`,
   },
   {
-    name: '⚠⚠ EVERY terminal is admitted, not just count',
+    name: 'EVERY terminal is admitted, not just count',
     expect: 'kill',
     from: `  return proj.kind === 'count'
     ? { pick: elementPick(moved, outward), drops: false, consumed: false }
@@ -133,8 +133,8 @@ const MUTANTS = [
     to: `  return { pick: elementPick(moved, outward), drops: false, consumed: false };`,
   },
   {
-    name: '⚠⚠ THE COUNT TERMINAL IS REFUSED AGAIN (the item undone)',
-    // ✅ CAUGHT, and this one is [[perf-gate-needs-its-own-test]] actually working. A route choice
+    name: 'THE COUNT TERMINAL IS REFUSED AGAIN (the item undone)',
+    // CAUGHT, and this one is [[perf-gate-needs-its-own-test]] actually working. A route choice
     // is answer-equivalent, so no differential test can see it — but the rung is EXPORTED and the
     // route test asserts `rest.map(kind) === ['count']`, which fails the moment the plan declines.
     // A perf decision made testable by extracting it, rather than left to the A/B alone.
@@ -145,20 +145,20 @@ const MUTANTS = [
     to: `  return undefined;`,
   },
   {
-    name: '⚠⚠ `values(k)` stops being consumed, so the projection runs TWICE',
+    name: '`values(k)` stops being consumed, so the projection runs TWICE',
     expect: 'kill',
     from: `    return { pick: valuePick(valueKey, moved, outward), drops: true, consumed: true };`,
     to: `    return { pick: valuePick(valueKey, moved, outward), drops: true, consumed: false };`,
   },
   {
-    name: '⚠⚠ `id()` stops being consumed',
+    name: '`id()` stops being consumed',
     expect: 'kill',
     from: `    return { pick: idPick(moved, outward), drops: false, consumed: true };`,
     to: `    return { pick: idPick(moved, outward), drops: false, consumed: false };`,
   },
   {
     name: 'a bare move sets `consumed: true` (there is no step after it to drop)',
-    // ⚠️ ALSO NOT A KILL, and the proof is one line of arithmetic. The branch is reached only
+    // ALSO NOT A KILL, and the proof is one line of arithmetic. The branch is reached only
     // when `proj === steps[projAt]` is `undefined`, i.e. the plan ENDS — at the move if it moved,
     // after the `has` run if it did not (item 1957 added the second case and the proof survives it
     // unchanged). Either way `slice(projAt)` and `slice(projAt + 1)` are both empty, so the flag
@@ -176,13 +176,13 @@ const MUTANTS = [
   }`,
   },
   {
-    name: '⚠⚠ THE REST SLICE IGNORES `consumed` and always drops one step',
+    name: 'THE REST SLICE IGNORES `consumed` and always drops one step',
     expect: 'kill',
     from: `    rest: steps.slice(projAt + (picked.consumed ? 1 : 0)),`,
     to: `    rest: steps.slice(projAt + 1),`,
   },
   {
-    name: '⚠⚠ THE REST SLICE NEVER drops a step, so a consumed projection runs twice',
+    name: 'THE REST SLICE NEVER drops a step, so a consumed projection runs twice',
     expect: 'kill',
     from: `    rest: steps.slice(projAt + (picked.consumed ? 1 : 0)),`,
     to: `    rest: steps.slice(projAt),`,
@@ -214,7 +214,7 @@ const base = runSuite();
 console.log(`baseline: ran=${String(base.ran)} failing=${String(base.failing)}\n`);
 
 if (!base.ran || base.failing !== 0) {
-  console.log('⚠️ BASELINE NOT CLEAN');
+  console.log('BASELINE NOT CLEAN');
   process.exit(1);
 }
 
@@ -224,7 +224,7 @@ for (const m of MUTANTS) {
   const count = original.split(m.from).length - 1;
 
   if (count !== 1) {
-    console.log(`❌ ANCHOR DRIFT (${String(count)} matches)  ${m.name}`);
+    console.log(`ANCHOR DRIFT (${String(count)} matches)  ${m.name}`);
     unexpected.push(`${m.name} [ANCHOR]`);
     continue;
   }
@@ -245,16 +245,16 @@ for (const m of MUTANTS) {
     }
 
     if (!r.ran) {
-      return '❌ DID-NOT-RUN';
+      return 'DID-NOT-RUN';
     }
 
-    return killed ? `✅ caught   ${String(r.failing)} failing` : '❌ SURVIVED';
+    return killed ? `caught   ${String(r.failing)} failing` : 'SURVIVED';
   };
 
   const verdict = verdictOf();
   const asExpected = m.expect === 'kill' ? killed || died : !killed && !died && r.ran;
 
-  console.log(`${asExpected ? '  ' : '⚠️'} ${verdict.padEnd(30)} ${m.name}`);
+  console.log(`${asExpected ? '  ' : ''} ${verdict.padEnd(30)} ${m.name}`);
 
   if (!asExpected) {
     unexpected.push(m.name);
@@ -265,7 +265,7 @@ copyFileSync(PRISTINE, SRC);
 console.log('\n# restored');
 
 if (unexpected.length > 0) {
-  console.log(`\n⚠️ ${String(unexpected.length)} UNEXPECTED:`);
+  console.log(`\n${String(unexpected.length)} UNEXPECTED:`);
 
   for (const u of unexpected) {
     console.log(`  - ${u}`);

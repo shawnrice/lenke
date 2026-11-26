@@ -19,7 +19,7 @@
  * drains when the JS stack unwinds, and `global.gc()` does not unwind it. So in a synchronous run
  * the pending drain pins each graph forever.
  *
- * ⚠️ THIS IS BOUNDED RETENTION, NOT AN UNBOUNDED LEAK, and the distinction is the whole finding:
+ * THIS IS BOUNDED RETENTION, NOT AN UNBOUNDED LEAK, and the distinction is the whole finding:
  * `YIELD=1` (one `await setTimeout(0)` per round) flattens the staircase completely. Async callers
  * — which is every normal embedding — release each graph on the next tick. The exposure is
  * synchronous batch work: a test suite, a bench sweep, a CLI that builds, computes and discards
@@ -29,7 +29,7 @@
  *     ARM=full YIELD=1 node --expose-gc graph-retention-probe.mjs       # flat
  *     ARM=empty node --expose-gc graph-retention-probe.mjs              # control: 0.00 MB/round
  *
- * ⚠️ NEEDS `--expose-gc`. Without it `global.gc` is undefined and every reading is whatever V8
+ * NEEDS `--expose-gc`. Without it `global.gc` is undefined and every reading is whatever V8
  * happened to collect on its own, which is not the question.
  *
  * Measured (N=20,000, per-round growth after two forced GCs):

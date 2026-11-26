@@ -1,17 +1,17 @@
 /**
- * ⚠️⚠️ **IS `getVertexById` STILL O(1) AT SCALE, OR DOES IT GROW? (item 2281)** The growth sweep measured
+ * **IS `getVertexById` STILL O(1) AT SCALE, OR DOES IT GROW? (item 2281)** The growth sweep measured
  * 83 ns at 10k rising to 372 ns at 160k — 4.5x over 16x in N. That is the user's standing constraint, so it
  * needs a floor before it is called a defect. Two confounds are visible before measuring:
  *
- * 🔑 **1. A 160k-entry Map does not fit in cache.** Random lookups miss, and that cost is unavoidable for
+ * **1. A 160k-entry Map does not fit in cache.** Random lookups miss, and that cost is unavoidable for
  *    ANY hash map — it is O(1) in operations, not in cache misses. The floor below is a raw `Map.get` over
  *    the same keys at the same N, so whatever the memory hierarchy charges is charged to BOTH arms.
  *
- * 🔑 **2. MY OWN KEYS GREW WITH N.** `v9999` is 5 chars and `v159999` is 7 — and string hashing is O(len),
+ * **2. MY OWN KEYS GREW WITH N.** `v9999` is 5 chars and `v159999` is 7 — and string hashing is O(len),
  *    so part of that 4.5x was me making the keys longer. Every id here is FIXED-WIDTH (`v0000123`), which
  *    removes the term entirely.
  *
- * ✅ If the floor rises the same way, there is nothing to fix and the constraint holds. If `getVertexById`
+ * If the floor rises the same way, there is nothing to fix and the constraint holds. If `getVertexById`
  * rises FASTER than the floor, the gap is ours.
  */
 import { Graph } from '@lenke/core';
@@ -85,10 +85,10 @@ for (const N of SIZES) {
     };
 
     /*
-     * ⚠️⚠️ **THE MIRROR MAP WAS AN UNFAIR FLOOR.** `getVertexById` is literally
+     * **THE MIRROR MAP WAS AN UNFAIR FLOOR.** `getVertexById` is literally
      * `this.verticesById.get(id) ?? null` — one lookup, no box cache — so a 2.81x gap could not be the
      * wrapper. The mirror stored tiny `{id}` objects while the real map holds full Vertex objects, which is
-     * a different memory profile at the SAME entry count. 🔑 The fair floor is THE SAME MAP: identical
+     * a different memory profile at the SAME entry count. The fair floor is THE SAME MAP: identical
      * entries, identical values, only the call wrapper differs.
      */
     const store = g.verticesById;

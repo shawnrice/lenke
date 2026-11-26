@@ -1,16 +1,16 @@
 /*
  * Item 2103 — is the 330x a FAST RUNG that is SLOWER than falling through to the generic matcher?
  *
- * 🔑 `matching.ts`'s `orient` already exists and does exactly the right thing — "pick which end of a
+ * `matching.ts`'s `orient` already exists and does exactly the right thing — "pick which end of a
  * fixed-length path to seed from: the side with the smaller estimated seed" — and its own comment cites
  * THIS authz shape as its documented case. It has ONE caller, on `matchPattern`'s general branch.
  *
- * ⚠️ So if the row-returning query were reaching `matchPattern`, it would be oriented. The hypothesis:
+ * So if the row-returning query were reaching `matchPattern`, it would be oriented. The hypothesis:
  * it is taken by a fast RUNG that walks from the written start and never orients — a rung whose route
  * is WORSE than declining. [[rung-precedence-decides-speed]], and the 1.37-1.72x regression
  * [[vary-only-the-projection]] records for a helper that cannot decline.
  *
- * 🔑 THE TEST: make every rung decline WITHOUT changing the question, then compare. A trailing vacuous
+ * THE TEST: make every rung decline WITHOUT changing the question, then compare. A trailing vacuous
  * `LIMIT` is the lever items 2079/2087 both used for exactly this — it defeats a length-gated rung and
  * cannot change the answer when it exceeds the row count.
  */
@@ -70,7 +70,7 @@ const BASE =
 const shapes = {
   'rows, as written (a rung takes it)': BASE,
   /*
-   * ⚠️ `LIMIT 100000` CANNOT CHANGE THE ANSWER — the answer is 451 rows — but it puts a step after the
+   * `LIMIT 100000` CANNOT CHANGE THE ANSWER — the answer is 451 rows — but it puts a step after the
    * projection, which length-gated rungs refuse. If this is FASTER, the rung is losing to the generic
    * matcher and `orient` is the reason.
    */
@@ -106,7 +106,7 @@ for (const [name, q] of Object.entries(shapes)) {
   console.log(`  ${name.padEnd(40)} ${r.ms.toFixed(2).padStart(8)} ms   ${r.n} rows`);
 }
 
-// ⚠️ All three must answer the SAME number of rows, or the comparison is of different questions.
+// All three must answer the SAME number of rows, or the comparison is of different questions.
 if (counts.size !== 1) {
   throw new Error(`row counts differ across spellings: ${[...counts].join(', ')}`);
 }

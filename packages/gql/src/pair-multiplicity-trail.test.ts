@@ -12,7 +12,7 @@ import { query } from './index.js';
  * query, with a CSR neighbour-slice scan that allocates nothing — worth **22-28% at 4/4 across two
  * degrees** on `quant44` and `varlen24`, with GC at a million nodes dropping 401.9 ms to 258.6.
  *
- * ⚠️ AND THE BENCH COULD NOT TEST THE ONE CASE THE FUNCTION EXISTS FOR. Instrumenting the original
+ * AND THE BENCH COULD NOT TEST THE ONE CASE THE FUNCTION EXISTS FOR. Instrumenting the original
  * counted, at both 100,000 and 1,000,000 nodes, **`dupes = 0`**: the fixture is a permutation at
  * `FANOUT=1..4` and has NO parallel edges, so every multiplicity is exactly 1 and the whole structure
  * carried no information. A change that returned a constant 1 would have measured as a 28% win and
@@ -87,7 +87,7 @@ describe('PARALLEL EDGES, where multiplicity is more than 1 (item 1453)', () => 
     return g;
   };
 
-  test('⚠️ depth 2, 3 and 4 all match the enumerator', () => {
+  test('depth 2, 3 and 4 all match the enumerator', () => {
     const g = parallel();
 
     for (const k of [1, 2, 3, 4]) {
@@ -123,7 +123,7 @@ describe('SELF-LOOPS and back-edges, where a trail revisits a vertex (item 1453)
     return g;
   };
 
-  test('⚠️ a trail may REVISIT a vertex but not an edge — depths 1 to 4', () => {
+  test('a trail may REVISIT a vertex but not an edge — depths 1 to 4', () => {
     // THE CASE THAT SEPARATES a trail from a simple path. `a -> b -> a -> b` is not a trail (it
     // reuses `ab`), but `a -> a -> b -> c` is. Only an edge-level enumerator gets this right, which
     // is why `trails` tracks edge ids rather than vertices.
@@ -178,7 +178,7 @@ describe('the RANGE forms, where the correction is per level (item 1453)', () =>
     return g;
   };
 
-  test('⚠️ `{1,4}` is the SUM of the exact depths, which pins the per-level correction', () => {
+  test('`{1,4}` is the SUM of the exact depths, which pins the per-level correction', () => {
     // Item 602's distinction: a correction applied once for the whole range answers `{3,3}` right
     // and `{1,3}` wrong. So the range must equal the sum of its levels, each checked against the
     // enumerator independently.
@@ -203,7 +203,7 @@ describe('the RANGE forms, where the correction is per level (item 1453)', () =>
 });
 
 describe('a NON-EDGE pair must answer zero, not a stale count (item 1453)', () => {
-  test('⚠️ two components, so most pairs have no edge at all', () => {
+  test('two components, so most pairs have no edge at all', () => {
     // The slice scan answers 0 for a pair it never finds, where the `Map` answered 0 via `?? 0`.
     // A scan that fell through to the wrong slice would over-count here, and a disconnected fixture
     // is where that shows: no trail may cross between the components.

@@ -492,7 +492,7 @@ export const parse = (
 
   const check = (type: TokenType): boolean => peek().type === type;
 
-  // ⚠️ THE DOUBLE `peek()` IS DELIBERATE-BY-MEASUREMENT (item 1499), not an oversight. This runs
+  // THE DOUBLE `peek()` IS DELIBERATE-BY-MEASUREMENT (item 1499), not an oversight. This runs
   // once per keyword ALTERNATIVE the recursive-descent parser tries at every position, and a screen
   // put it at 3.2% of an uncached query with ZERO audit mentions — so it looked like free money.
   // Hoisting the token into a local (`const t = peek(); return t.type === … && t.value === kw;`)

@@ -21,7 +21,7 @@
  *   learned that a profiler's self-time is an attribution rather than a counterfactual.
  * - **712** diagnosed a live spelling flag and named a next step.
  * - **713** BUILT that next step, measured it converging, and then found
- *   `rejectedByElementDirect`'s own 🛑 marker: tried and reverted at item **644**, same mechanism,
+ *   `rejectedByElementDirect`'s own REVERTED marker: tried and reverted at item **644**, same mechanism,
  *   same magnitude, and rejected for a correctness reason. The ablation reproduced the exact test
  *   failure 644 cites. `CLOSED.md` was searched first, for `inline`, for `clause`, and for the row
  *   names; 644 is in none of those, because its reason lives in that code comment.
@@ -50,7 +50,15 @@ const ROOTS = ['packages', 'crates'];
 
 // The vocabulary this repo actually uses, gathered by grepping for each form rather than guessed.
 // `WITHDRAWN` and `NOT BUILT` are included because items 312 and 442 used them for the same act.
-const MARKERS = /(REJECTED|REVERTED|REFUTED|WITHDRAWN|NOT BUILT|WAS TRIED|DECLINED ON|🛑)/;
+//
+// THE EMOJI MARKER IS GONE (item 2412), AND IT WAS MOSTLY NOISE. A decorative stop sign was one
+// alternative here, and it matched 29 comment lines that carried no word marker - of which only
+// FIVE were levers at all. The rest said "note this" ("THERE IS DELIBERATELY NO DEPTH-5 ROW", "THE
+// SOURCE MUST BE SELECTIVE"), which is not what this tool reports, so every run asked its reader to
+// skip them. The five were reworded into the vocabulary above (items 716, 722, 724, 733 and the
+// decomposition note in `exec/tests.rs`) and are still reported; the emoji is not replaced, because
+// a marker that cannot be typed as a word is one a grep cannot be taught.
+const MARKERS = /(REJECTED|REVERTED|REFUTED|WITHDRAWN|NOT BUILT|WAS TRIED|DECLINED ON)/;
 
 /** `(item 644)` / `(audit item 424)` / `item 358`. */
 const ITEM = /\b(?:audit )?item\s+(\d{2,4})\b/gi;

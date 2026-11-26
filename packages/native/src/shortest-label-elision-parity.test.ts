@@ -1,6 +1,6 @@
 // THE ENDPOINT LABEL ELISION on both shortest-path walks (item 1908), against native.
 //
-// ⚠️⚠️ **THE ELISION IS A GRAPH PROPERTY, SO THE TEST HAS TO VARY THE GRAPH.** `effectiveLabel`
+// **THE ELISION IS A GRAPH PROPERTY, SO THE TEST HAS TO VARY THE GRAPH.** `effectiveLabel`
 // returns `undefined` when every vertex carries the label, and the walk then skips the test
 // entirely. A fixture where the label is universal proves the fast case and says NOTHING about the
 // filtering one — so every query below runs against TWO graphs: one where the endpoint label is
@@ -8,7 +8,7 @@
 // compile-time decision, and item 1609 measured a per-ELEMENT `effectiveLabel` call at 1.32x WORSE
 // on a graph where it can never elide.
 //
-// ⚠️ AND `ALL SHORTEST` IS HERE BESIDE `ANY SHORTEST` because both walks took the change; they are
+// AND `ALL SHORTEST` IS HERE BESIDE `ANY SHORTEST` because both walks took the change; they are
 // separate functions with the same call, and testing one would leave the other's elision unchecked.
 import { describe, expect, test } from 'bun:test';
 
@@ -87,7 +87,7 @@ describe.if(nativeReady)('the shortest-path endpoint label elision', () => {
   }
 
   /**
-   * ⚠️ AND THE TWO GRAPHS MUST ANSWER DIFFERENTLY, or every assertion above would pass with the
+   * AND THE TWO GRAPHS MUST ANSWER DIFFERENTLY, or every assertion above would pass with the
    * label ignored entirely — which is exactly the bug a wrong elision would be.
    */
   test('the selective graph returns FEWER rows than the universal one', () => {

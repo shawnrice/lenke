@@ -7,12 +7,12 @@
  * `d` is reachable by a walk of length `d`, so it is in the answer exactly when `1 <= d <= max`" —
  * is exactly the kind of reasoning that is convincing and wrong.
  *
- * ⚠️ SO THE ORACLE IS THE GENERAL MATCHER, REACHED BY FORCING THE RUNG TO DECLINE. Comparing the
+ * SO THE ORACLE IS THE GENERAL MATCHER, REACHED BY FORCING THE RUNG TO DECLINE. Comparing the
  * rung against itself in another spelling proves nothing if both spellings take it; the first
  * check of this change did that and was self-consistent while saying nothing. This runs each query
  * twice — once with the detector live, once with it returning `null` — and compares the SETS.
  *
- * ⚠️ THE ARMS ARE ASSERTED by a marker in the built dist, and the FIXTURES are the ones where a
+ * THE ARMS ARE ASSERTED by a marker in the built dist, and the FIXTURES are the ones where a
  * shortest-distance search can go wrong: a self-loop, a 2-cycle, a 3-cycle, a diamond with two
  * path lengths to the same vertex, and a chain long enough to exceed every bound tested.
  *
@@ -168,10 +168,10 @@ try {
 
     disagreements += bad.length;
     console.log(`## ${name}`);
-    console.log(bad.length === 0 ? '   all agree' : bad.map((b) => `   ⚠️ ${b}`).join('\n'));
+    console.log(bad.length === 0 ? '   all agree' : bad.map((b) => `   ${b}`).join('\n'));
   }
 
-  const verdict = disagreements === 0 ? ' — the bounded arm matches the general matcher' : ' ⚠️';
+  const verdict = disagreements === 0 ? ' — the bounded arm matches the general matcher' : '';
 
   console.log(`\n# ${compared} comparisons, ${disagreements} disagreement(s)${verdict}`);
 } finally {

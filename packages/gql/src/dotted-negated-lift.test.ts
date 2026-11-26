@@ -23,7 +23,7 @@ import { parsePredicate } from './parser.js';
 //     [CTL] NOT (n.a = 5)   4.80    ->  4.29    flat, flat form lifted since item 1272
 //     [CTL] n.m.k = 5      10.68    -> 10.88    flat, dotted equality lifted since item 900
 //
-// ⚠️ EQUALITY ONLY, AND THE RESTRICTION IS NaN — the same hole item 1272 demonstrated for the flat
+// EQUALITY ONLY, AND THE RESTRICTION IS NaN — the same hole item 1272 demonstrated for the flat
 // form. `NOT (x >= 2)` is NOT `x < 2`, because every ordering comparison against NaN is FALSE here,
 // so the negation is TRUE where the flip is FALSE. The ordering assertions below are what fail if
 // `NEGATED_COMPARE` is ever widened.
@@ -48,7 +48,7 @@ const ids = (where: string): string[] =>
     .sort();
 
 describe('a DOTTED negated compare lifts by flipping the operator (item 1290)', () => {
-  test('⚠️ ROUTE: the flip lands in pathProps, and an ORDERING operator does NOT lift', () => {
+  test('ROUTE: the flip lands in pathProps, and an ORDERING operator does NOT lift', () => {
     const lifted = (src: string) => compilePredicate(undefined, parsePredicate(src), 'n');
 
     // `NOT (n.m.k = 5)` becomes `n.m.k <> 5`, which is not an equality, so it lands in `pathProps`
@@ -68,7 +68,7 @@ describe('a DOTTED negated compare lifts by flipping the operator (item 1290)', 
     expect(notNe.pathProps?.[0].op).toBe('=');
     expect(notNe.where).toBeUndefined();
 
-    // ⚠️ EVERY ORDERING OPERATOR STAYS ON THE GENERIC PATH. This is the assertion that fails if the
+    // EVERY ORDERING OPERATOR STAYS ON THE GENERIC PATH. This is the assertion that fails if the
     // flip table is widened, and `negated-compare-lift.test.ts` demonstrates what that costs with a
     // NaN param — which is not coerced the way a stored NaN is, so the divergence is reachable.
     for (const op of ['>', '>=', '<', '<=']) {
@@ -95,7 +95,7 @@ describe('a DOTTED negated compare lifts by flipping the operator (item 1290)', 
     expect(other.where).toBeDefined();
   });
 
-  test('⚠️ the two spellings answer identically, on every cell state', () => {
+  test('the two spellings answer identically, on every cell state', () => {
     // The whole point: equivalent spellings must not differ. `nok` has the record but not the
     // segment and `nom` has no record, so both read UNKNOWN and a filter keeps only clean TRUE —
     // they drop under BOTH spellings, which is why the answer is 2 and not 4.
@@ -137,7 +137,7 @@ describe('a DOTTED negated compare lifts by flipping the operator (item 1290)', 
     expect(ids('NOT (n.m.k = 5) AND n.nm IS NOT NULL')).toEqual(['k1', 'k9']);
   });
 
-  test('⚠️ it survives a HOP, where the far-end MERGE must carry pathProps', () => {
+  test('it survives a HOP, where the far-end MERGE must carry pathProps', () => {
     // The inline far constraint is what reaches `mergeFarPreds` — leaving it out is why item 1289's
     // equivalent mutant survived. Both far nodes satisfy the inline `{nm: 'x'}`; only one satisfies
     // the clause, so a dropped list answers 2.

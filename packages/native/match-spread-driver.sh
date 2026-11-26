@@ -5,7 +5,7 @@
 # tags }` literal -- WORSE, 15858 / 17275 / 15885. The spread is not the problem and hand-writing
 # the literal loses whatever shape the spread was preserving."
 #
-# ⚠️ THAT WAS MEASURED BEFORE ITEM 1746. The traverser had TWO shapes then (startTraverser 4 fields,
+# THAT WAS MEASURED BEFORE ITEM 1746. The traverser had TWO shapes then (startTraverser 4 fields,
 # extend 4), and 1746 unified all three constructors on 5 fields including `sack`. So "whatever
 # shape the spread was preserving" may no longer differ from a hand-written literal -- and the old
 # explicit literal omitted `sack` entirely, which under today's constructors would itself create the

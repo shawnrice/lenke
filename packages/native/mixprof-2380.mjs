@@ -2,13 +2,13 @@
  * What dominates a CPU profile of a MIXED workload — many query shapes against one graph, round-robin,
  * the way an application drives the engine (item 2380).
  *
- * ⚠️ EVERY PROFILE THIS STRETCH HAS BEEN OF A SINGLE SHAPE, and that is the right instrument for an A/B
+ * EVERY PROFILE THIS STRETCH HAS BEEN OF A SINGLE SHAPE, and that is the right instrument for an A/B
  * (`mixdelta-2338` measured the sharing penalty at 1-9%, which is what licenses quoting isolated figures).
  * But it answers a different question from this one. A single-shape profile sees monomorphic dispatch; a
  * mixed one sees the sites an application actually creates, and a frame can dominate here that no
  * single-shape profile shows at all.
  *
- * ⚠️ THE FIXTURE IS DELIBERATELY SMALL AND THE LOOP LONG. Item 2372's profile of a single arm was useless
+ * THE FIXTURE IS DELIBERATELY SMALL AND THE LOOP LONG. Item 2372's profile of a single arm was useless
  * because a 60,000-edge build swamped 724 samples; the cure is a build that is negligible against the
  * timed section, and the shapes here are all flat in |E| or linear with a small constant.
  *
@@ -34,7 +34,7 @@ for (let i = 0; i < NODES; i += 1) {
      * label-elision gates `label-vacuity-gates-fast-paths` records across 7 files. LABELS=2 (the default)
      * gives one vertex in seven a different label, so those gates DECLINE.
      *
-     * ⚠️ That knob is the realistic-mode question, and it is NOT what `MIXED=1` tests in the screens:
+     * That knob is the realistic-mode question, and it is NOT what `MIXED=1` tests in the screens:
      * the record says *"`MIXED=1` adds ONE ISOLATED off-label vertex, and a vertex with no edges cannot
      * affect a hop count"*. One isolated vertex declines a gate with a minimal perturbation; a real
      * people-graph has several labels each carrying substantial vertices AND edges, which declines the
@@ -46,7 +46,7 @@ for (let i = 0; i < NODES; i += 1) {
 }
 
 /*
- * ⚠️⚠️ `LABELS=2` ADDS OFF-LABEL VERTICES; IT DOES NOT RELABEL EXISTING ONES — and the first version did
+ * `LABELS=2` ADDS OFF-LABEL VERTICES; IT DOES NOT RELABEL EXISTING ONES — and the first version did
  * relabel, which was a WORK-PARITY DEFECT that corrupted items 2383 and 2384. Giving one vertex in seven
  * the label `Admin` instead of `Person` left `MATCH (n:Person)` matching 14% FEWER ROWS, so the grouped
  * count read **0.90x** — the realistic arm FASTER — which is fewer rows, not label elision. Item 1934's
@@ -79,12 +79,12 @@ for (let j = 0; j < NODES * FAN; j += 1) {
   graph.addEdge({ id: `e${j}`, from: a, to: b, labels: ['KNOWS'], properties: { w: j % 89 } });
 }
 
-/* ⚠️ A FUNCTIONAL graph answers correctly and measures fast (item 702 / 1518). */
+/* A FUNCTIONAL graph answers correctly and measures fast (item 702 / 1518). */
 if (seen.size < NODES * 0.5) {
   throw new Error(`degenerate fixture: ${seen.size} distinct endpoints of ${NODES}`);
 }
 
-/** ⚠️ `on` is `'vertex'`/`'edge'`, not `'node'` — the engine's own error named the fix. */
+/** `on` is `'vertex'`/`'edge'`, not `'node'` — the engine's own error named the fix. */
 graph.createIndex({ on: 'vertex', kind: 'exact', keys: ['name'] });
 
 /*
@@ -165,7 +165,7 @@ const t0 = performance.now();
 /*
  * THE SHAPE WEIGHTING, which item 2383 named as its own caveat (item 2384).
  *
- * ⚠️ Item 2383 measured label vacuity at 5.5% over these eight shapes in EQUAL proportion, which no
+ * Item 2383 measured label vacuity at 5.5% over these eight shapes in EQUAL proportion, which no
  * application does, and said so. Inventing a "realistic" weighting would be worse than none, so this
  * brackets it with two defensible EXTREMES instead and reports a range:
  *
@@ -189,7 +189,7 @@ const PLAN = SHAPES.flatMap(([name, fn]) => {
   }
 
   /*
-   * ⚠️ `analytic` BUNDLES TWO SHAPE FAMILIES, so it cannot say which one produces the 1.26x item 2384
+   * `analytic` BUNDLES TWO SHAPE FAMILIES, so it cannot say which one produces the 1.26x item 2384
    * measured. These two weight each alone (item 2385): `grouped` is `detectGroupedNodeCount`'s rung (the
    * 15.6% frame of item 2382's attribution) and `hopcount` is `bareDegreeSum` under `startOnlyHopCount`
    * (the 14.1% frame). One of them walks a label bucket the elision gates can skip; the other may not.

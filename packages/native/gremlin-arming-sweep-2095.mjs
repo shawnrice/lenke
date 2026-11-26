@@ -1,12 +1,12 @@
 /*
  * Item 2095 — does GREMLIN's `seenBefore` have the cliff item 2093/2094 found in GQL's arming?
  *
- * ⚠️ `second-ask.ts`'s `seenBefore` is STRUCTURALLY IDENTICAL to the policy item 2094 replaced: a
+ * `second-ask.ts`'s `seenBefore` is STRUCTURALLY IDENTICAL to the policy item 2094 replaced: a
  * `Set` per topology version, armed on the second ask. So the cliff SHOULD transfer — but "should"
  * is not a measurement, and the two engines build different structures from different rungs, so the
  * build cost and the per-read saving (the two numbers that set the break-even) may differ.
  *
- * 🔑 EVERY ARM DOES THE SAME NUMBER OF READS and gets at least `MIN_WRITES` topology versions — item
+ * EVERY ARM DOES THE SAME NUMBER OF READS and gets at least `MIN_WRITES` topology versions — item
  * 2094's instrument fault was an arm with ONE write, where a history-based policy cannot converge and
  * its figure is the warm-up's verdict rather than the policy's.
  */
@@ -80,7 +80,7 @@ for (const perVersion of [1, 2, 3, 4, 6, 12, 24]) {
   best = Math.min(best, perRead);
   worst = Math.max(worst, perRead);
 
-  // ⚠️ The reads must SEE the graph, or every timing is of an empty walk.
+  // The reads must SEE the graph, or every timing is of an empty walk.
   if (rows === 0) {
     throw new Error('no rows read — the traversal is not seeing the graph');
   }

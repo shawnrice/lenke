@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { assertBranching } from './fixture-branching.js';
 
 /**
- * ⚠️ NO GENERATOR IN THIS CORPUS MAY USE A TARGET THAT IS INVARIANT UNDER `k -> k + N` (item 1633).
+ * NO GENERATOR IN THIS CORPUS MAY USE A TARGET THAT IS INVARIANT UNDER `k -> k + N` (item 1633).
  *
  * `to = (a * k + b) % N` is invariant under `k -> k + N`, and every generator here loops
  * `for (k = 0; k < N * FANOUT; k++)`, so one vertex's FANOUT edges are exactly `k0, k0+N, k0+2N, …`
@@ -19,7 +19,7 @@ import { assertBranching } from './fixture-branching.js';
  * nine. CLAUDE.md's standing rule is to count the DISTINCT endpoints before trusting a number off a
  * fixture.
  *
- * ⚠️ A COMMENT DID NOT STOP IT. `hop-rows-floor-probe.mjs` has carried a nine-line warning about
+ * A COMMENT DID NOT STOP IT. `hop-rows-floor-probe.mjs` has carried a nine-line warning about
  * exactly this since item 1518 and nine other files kept the defect anyway, so this is a TEST.
  *
  * It forbids the corpus's own degenerate spellings by text rather than inspecting behaviour, which is
@@ -27,7 +27,7 @@ import { assertBranching } from './fixture-branching.js';
  * catches the copy-paste that produced every instance so far. `assertBranching` is the behavioural
  * check, for a probe to call on its own numbers.
  *
- * ⚠️ `readFileSync`, NOT `grep` — CLAUDE.md records that grep silently skips files it decides are
+ * `readFileSync`, NOT `grep` — CLAUDE.md records that grep silently skips files it decides are
  * binary, and this corpus has files with non-ASCII characters in their comments.
  */
 const ROOT = join(import.meta.dir, '..');
@@ -43,7 +43,7 @@ const DEGENERATE = [
 ];
 
 /**
- * ⚠️ WHERE THE FORM IS HARMLESS, WITH THE REASON. The invariance only bites when a vertex's edges
+ * WHERE THE FORM IS HARMLESS, WITH THE REASON. The invariance only bites when a vertex's edges
  * are strided by N, which needs (a) more than one edge per vertex and (b) a FLAT loop over
  * `k < N * fanout`. Three shapes break one of those, and each is listed with why rather than
  * silently excluded — an allowlist without reasons becomes a place to hide the next instance.
@@ -106,7 +106,7 @@ describe('no fixture generator is invariant under k -> k + N', () => {
 
       for (const [i, line] of lines.entries()) {
         const trimmed = line.trim();
-        // ⚠️ A DOC COMMENT MAY QUOTE THE BAD FORM to explain why it is bad — item 1632's own fix
+        // A DOC COMMENT MAY QUOTE THE BAD FORM to explain why it is bad — item 1632's own fix
         // does, and so does this file. So a hit only counts outside a comment line.
         const isComment =
           trimmed.startsWith('//') || trimmed.startsWith('*') || trimmed.startsWith('/*');
@@ -130,7 +130,7 @@ describe('no fixture generator is invariant under k -> k + N', () => {
 
     expect(offenders).toEqual([]);
 
-    // ⚠️ AND EVERY ALLOWLIST ENTRY MUST STILL MATCH SOMETHING. An entry whose line moved or whose
+    // AND EVERY ALLOWLIST ENTRY MUST STILL MATCH SOMETHING. An entry whose line moved or whose
     // code was fixed would otherwise sit there excusing a line number that now means something
     // else — which is how an allowlist turns into the hiding place this one is meant not to be.
     expect([...ALLOWED.keys()].filter((at) => !seen.has(at))).toEqual([]);
@@ -161,7 +161,7 @@ describe('assertBranching', () => {
     ).not.toThrow();
   });
 
-  test('⚠️ REJECTS the degenerate form — proving the guard has teeth', () => {
+  test('REJECTS the degenerate form — proving the guard has teeth', () => {
     const n = 2000;
 
     expect(() =>

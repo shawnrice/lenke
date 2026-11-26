@@ -20,14 +20,14 @@
  *    hopvaluesn (ctl)  pick 40.8%                          get properties 25.1%   drain 31.8%
  * ```
  *
- * ⚠️ `start-filtered-hop-values.ts` ALREADY RECORDS A REFUTATION NEARBY, and it is a different
+ * `start-filtered-hop-values.ts` ALREADY RECORDS A REFUTATION NEARBY, and it is a different
  * shape. Its header prices `hasLabel(Q).out(E).values(k)` — a filter on the START side, 200,000
  * visits — and measured the gate at ~40 ns a visit, with compiled gates, per-plan materialization
  * and a single-gate loop all refuted (732 → 738, 757.7, 731). This is the FAR side: the test count
  * is 1M rather than 200k, and the profile attributes 138 ns per edge to the gate closure rather
  * than 40. Nothing on that list is re-attempted here; the question is whether 138 is real.
  *
- * ⚠️ AND `has(k, ALWAYS-TRUE)` IS THE CONTROL THAT SEPARATES THE TWO EFFECTS (item 570's rule:
+ * AND `has(k, ALWAYS-TRUE)` IS THE CONTROL THAT SEPARATES THE TWO EFFECTS (item 570's rule:
  * `WHERE true` is THE control for "why is the filtered version slower"). It runs the identical 1M
  * tests and removes NO rows, so:
  *
@@ -51,7 +51,7 @@ for (let i = 0; i < NODES; i += 1) {
   g.addVertex({ id: `u${i}`, labels: ['User'], properties: { k: i % 97, n: i } });
 }
 
-/** ⚠️ Split on the REPEAT INDEX — items 1516/1518; a linear `(a*k+b)%N` makes the graph functional. */
+/** Split on the REPEAT INDEX — items 1516/1518; a linear `(a*k+b)%N` makes the graph functional. */
 let edges = 0;
 
 for (let k = 0; k < NODES * FANOUT; k += 1) {

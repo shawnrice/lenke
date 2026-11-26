@@ -1,7 +1,7 @@
 /**
  * The compiler's query-scoped state, and the reason `executor.ts` was one 12,000-line file.
  *
- * ⚠️ THESE WERE AN IMPLICIT CHANNEL BETWEEN `compile` AND EVERYTHING IT CALLS (item 1664). `compile`
+ * THESE WERE AN IMPLICIT CHANNEL BETWEEN `compile` AND EVERYTHING IT CALLS (item 1664). `compile`
  * installed three collector `Set`s as module-level `let`s, ran the compiler, and then inspected what
  * the compiler had put in them — so `compileExpr` 10,000 lines away reported an unbound `$param` or
  * an unknown function by MUTATING A VARIABLE rather than by returning anything, and nothing in the
@@ -12,14 +12,14 @@
  * surfaced thousands of lines away as `Property 'add' does not exist on type 'never'` — pointing at
  * the reader rather than the cause.
  *
- * ⚠️ AND THE CHANNEL IS NOW NAMED RATHER THAN IMPLIED, which `import/no-mutable-exports` is right to
+ * AND THE CHANNEL IS NOW NAMED RATHER THAN IMPLIED, which `import/no-mutable-exports` is right to
  * have insisted on. The first version of this module exported all five bindings as mutable `let`s
  * and the rule flagged every one; the rule's rationale — that a mutable export hides where data
  * actually flows — is exactly the defect documented above, so satisfying it improved the code
  * instead of working around it. `noteParam(name)` at a call site says what is happening where
  * `paramCollector?.add(name)` did not.
  *
- * ⚠️ `execEpoch` IS THE ONE EXCEPTION, AND IT IS MEASURED, NOT CONVENIENCE. Every other value here
+ * `execEpoch` IS THE ONE EXCEPTION, AND IT IS MEASURED, NOT CONVENIENCE. Every other value here
  * is read ONCE per compile, so an accessor call costs nothing. `execEpoch` is read inside the
  * CLOSURE that `memoizeIfUncorrelated` returns — i.e. per row, on every memo check — so it stays an
  * ESM live binding, which a reader sees update and which collapses back to a direct variable
@@ -32,7 +32,7 @@
  * Bumped once per plan invocation. Memo caches key on it, so a value computed for one execution is
  * never reused by the next — see the `haystack` and uncorrelated-subquery memos in `core.ts`.
  *
- * ⚠️ Exported as a mutable binding deliberately; see the header. Read per ROW.
+ * Exported as a mutable binding deliberately; see the header. Read per ROW.
  */
 export let execEpoch = 0;
 
@@ -81,7 +81,7 @@ export const noteCountParamName = (name: string): void => {
 /**
  * Run `body` with the three collectors and the memo flag installed, restoring all four afterwards.
  *
- * ⚠️ SCOPED RATHER THAN SET/RESTORE BY HAND, so the invariant cannot be broken from outside. The
+ * SCOPED RATHER THAN SET/RESTORE BY HAND, so the invariant cannot be broken from outside. The
  * previous shape had `compile` save four values, assign four, and restore them in its own `finally`
  * — correct, but it put a four-way invariant in the caller where a nested or faulting compile could
  * leak one. Here there is nothing for a caller to get wrong.

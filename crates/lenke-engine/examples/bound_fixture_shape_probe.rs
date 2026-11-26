@@ -7,7 +7,7 @@
 //! `Column::Num`, both about half-selective. So the slow behaviour was not universal, and the win's
 //! breadth is whatever distinguishes those two fixtures.
 //!
-//! ⚠️ THIS PROBE ONLY MEANS ANYTHING ON THE PRE-FIX CODE. After item 1205 every single ordering
+//! THIS PROBE ONLY MEANS ANYTHING ON THE PRE-FIX CODE. After item 1205 every single ordering
 //! bound takes the vectorizing arm, so all rows read ~92us and the question is invisible. Run it at
 //! `HEAD~1` (or any commit before a5910e2a), where the two fixtures still disagree.
 //!
@@ -42,7 +42,7 @@ fn store_of(nodes: u32, wide: bool, narrow: bool, periodic: bool) -> Store {
     let mut rng = support::Lcg::seeded();
 
     for i in 0..nodes {
-        // ⚠️ THE DIMENSION THAT TURNED OUT TO MATTER. The corpus fixture writes
+        // THE DIMENSION THAT TURNED OUT TO MATTER. The corpus fixture writes
         // `("age", Value::Num(f64::from(i % 100)))` — a PERIODIC sequence, 0..99 over and over —
         // where this probe used random values. The slow arm is branchy
         // (`if present[i] && cmp(data[i])`), so a periodic column gives it runs of 50 false then

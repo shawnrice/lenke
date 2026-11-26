@@ -243,7 +243,7 @@ describe('the gql() template form caches on its stable text', () => {
 });
 
 /**
- * ⚠️ ITEM 1509 — the LRU `delete` + `set` now runs ONLY while the cache is at its cap, because
+ * ITEM 1509 — the LRU `delete` + `set` now runs ONLY while the cache is at its cap, because
  * below the cap nothing is evicted and the recency order it records is never read. That was 24.5%
  * of a 103 ns warm call and the gate is worth 1.15-1.32x.
  *
@@ -254,7 +254,7 @@ describe('the gql() template form caches on its stable text', () => {
  * observable without timing anything: an evicted text's next sighting is a MISS, and a miss on a
  * text that is not in the admission filter ADDS it there, so `seen` moves.
  */
-describe('⚠️ recency is still tracked once the cache is full (item 1509)', () => {
+describe('recency is still tracked once the cache is full (item 1509)', () => {
   const g = new Graph();
 
   g.addVertex({ id: 'lru1', labels: ['T'], properties: { k: 1 } });
@@ -262,7 +262,7 @@ describe('⚠️ recency is still tracked once the cache is full (item 1509)', (
   test('a hot entry survives a full turnover of the rest of the cache', () => {
     const { cap } = parseCacheStats();
     const tag = `lru${Date.now()}`;
-    // ⚠️ LITERAL-FREE ON PURPOSE. `WHERE t.k = 1` would be auto-parameterized (item 1502), so
+    // LITERAL-FREE ON PURPOSE. `WHERE t.k = 1` would be auto-parameterized (item 1502), so
     // the cache key would be the LIFTED text and `query` would reach `parseCached`'s gate instead
     // of `parseCacheHit`'s — testing the cold route while believing it tested the hot one. With no
     // literal, `normalizeLiterals` declines and the original text is the key.
@@ -312,7 +312,7 @@ describe('⚠️ recency is still tracked once the cache is full (item 1509)', (
     expect(seenBefore).toBeGreaterThanOrEqual(0);
   });
 
-  test('⚠️ the same holds on the AUTO-PARAMETERIZED route, which has its own gate', () => {
+  test('the same holds on the AUTO-PARAMETERIZED route, which has its own gate', () => {
     // A literal makes `query` rewrite the text and cache the LIFTED form, so the hit is served by
     // `parseCached` rather than `parseCacheHit`. Both gates exist; this reaches the other one.
     const { cap } = parseCacheStats();

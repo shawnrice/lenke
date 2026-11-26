@@ -1,11 +1,11 @@
 // `V().choose(<vertex filter>, <one hop>, <one hop>).values(k)` fused (item 1999).
 //
-// ⚠️⚠️ **A ROUTE CHOICE, SO ANSWER-EQUIVALENT — the 2,447-test suite passes either way.** The route
+// **A ROUTE CHOICE, SO ANSWER-EQUIVALENT — the 2,447-test suite passes either way.** The route
 // assertions here are the only thing that can see a gate mutant
 // ([[perf-gate-needs-its-own-test]]), and the answer assertions the only thing that can see a walk
 // mutant, because the general `chooseStep` answers identically.
 //
-// 🔑 FOUR THINGS THIS FILE EXISTS FOR, each of which a naive test misses:
+// FOUR THINGS THIS FILE EXISTS FOR, each of which a naive test misses:
 //
 //   1. **BOTH ARMS LIVE.** The fixture's test holds for 2 of 6 vertices. A fixture where the test
 //      holds everywhere exercises only the `then` arm — and on the workload screen's own row the
@@ -124,7 +124,7 @@ describe('chooseHopValues: the route', () => {
   });
 
   test('TAKES a test on an INDEXED key — a `choose` test must never be seeked', () => {
-    // ⚠️ `collectVertexFilters` REFUSES a seekable filter by default, which is right for a filter
+    // `collectVertexFilters` REFUSES a seekable filter by default, which is right for a filter
     // route (hand it to the seek) and wrong here: a seek narrows to the survivors, and `choose`
     // emits for the NON-survivors too — they are exactly who takes the else arm. So the route
     // passes `refuseSeekable: false`, and without this test the mutant restoring the default
@@ -162,7 +162,7 @@ describe('chooseHopValues: the route', () => {
   });
 
   test('TAKES a `hasKey` test — the guard that declined it was narrower than the admission', () => {
-    // ⚠️ `collectVertexFilters` compiles a single-key `hasKey` into a `present` predicate, and the
+    // `collectVertexFilters` compiles a single-key `hasKey` into a `present` predicate, and the
     // `every(isVertexFilterStep)` guard that once stood in front of it did NOT admit `hasKey` — so
     // the guard declined this shape while reading like a safety check. The mutation round found it
     // by SURVIVING its own deletion. This test is what keeps the widened surface honest.
@@ -176,7 +176,7 @@ describe('chooseHopValues: the route', () => {
   });
 
   test('the CSR walk waits for EVERY eligible arm, not just one', () => {
-    // ⚠️ A PERFORMANCE POLICY, answer-identical, and the third survivor of the mutation round until
+    // A PERFORMANCE POLICY, answer-identical, and the third survivor of the mutation round until
     // this test existed. With only one arm warm, `csrBothArms` would leave the other eligible arm on
     // the per-vertex bucket path — correct, but it commits the walk before the cheap route exists
     // for half the vertices. Readable without timing: only `csrBothArms` carries a `drain`.
@@ -197,7 +197,7 @@ describe('chooseHopValues: the route', () => {
 
   test('DECLINES a HOP test — that asks whether an edge exists, not a vertex predicate', () => {
     expect(routed(traversal(V(), choose(out('E'), values('n'), constant('none'))))).toBe(false);
-    // ⚠️ THE ARMS MUST BE VALID FOR THIS TO TEST THE TEST. The shape above also has a non-hop
+    // THE ARMS MUST BE VALID FOR THIS TO TEST THE TEST. The shape above also has a non-hop
     // `then` arm, so it declines on the ARM check and never reaches the filter admission at all —
     // which is why the mutant that ignored `collectVertexFilters` returning `undefined` SURVIVED
     // the first mutation round. This shape has two legal hop arms, so the only thing that can
@@ -232,7 +232,7 @@ describe('chooseHopValues: the answers', () => {
     );
 
     // `a` and `c` pass the test and take `out('E')`; `b`, `d`, `e`, `f` fail it and take `in_('E')`.
-    // ⚠️ THE ANSWER MUST MATCH NEITHER BARE HOP — if it equals one of them the route collapsed to a
+    // THE ANSWER MUST MATCH NEITHER BARE HOP — if it equals one of them the route collapsed to a
     // single arm, which every other assertion in this file would still pass.
     expect(rows).not.toEqual(toArray(traversal(V(), out('E'), values('n')), g));
     expect(rows).not.toEqual(toArray(traversal(V(), in_('E'), values('n')), g));
@@ -299,18 +299,18 @@ describe('chooseHopValues: the answers', () => {
 
 describe('a residual count() rides the walk (item 2028)', () => {
   /*
-   * ⚠️⚠️ **`count()` USED TO DECLINE THE ENTIRE PLAN**, so the route census read this family's count
+   * **`count()` USED TO DECLINE THE ENTIRE PLAN**, so the route census read this family's count
    * shape GENERIC — and for `choose`/`branch` with **4002 `applyStep` calls**, the sub-plan
    * re-dispatched per traverser, which is the exact cost the rung exists to remove. A `pickFor` audit
    * found FOUR rungs carrying the gap item 1956 closed for the edge-filter rung and item 2027 for
    * the `optional` one.
    *
-   * ⚠️ ANSWER-EQUIVALENT, so the route assertion is the only thing that can see the rung declining
+   * ANSWER-EQUIVALENT, so the route assertion is the only thing that can see the rung declining
    * ([[perf-gate-needs-its-own-test]]) — and the RESIDUAL'S CONTENT is asserted, not its presence
    * (item 2021: a wrong `rest` still returns an object, then declines downstream with the same
    * answer).
    *
-   * ⚠️ THE GATE NEED NOT CHECK `count`'s SCOPE, where item 2020's FUSED count must: an unconsumed
+   * THE GATE NEED NOT CHECK `count`'s SCOPE, where item 2020's FUSED count must: an unconsumed
    * terminal is still run by its own step, so `Scope.local` is honoured by `countStep` itself.
    */
   const g = build();
@@ -333,7 +333,7 @@ describe('a residual count() rides the walk (item 2028)', () => {
 
   test('the count equals the row count of the same walk without it', () => {
     /*
-     * 🔑 THE ORACLE IS THE SHAPE WITHOUT `count()`: its `rest` is empty, so it takes the walk
+     * THE ORACLE IS THE SHAPE WITHOUT `count()`: its `rest` is empty, so it takes the walk
      * directly and does not share the code under test. A non-empty row list is asserted first,
      * because 0 === 0 agrees trivially.
      */

@@ -1,7 +1,7 @@
 // Item 1962 — teeth for the permuted sort arm. ORDER is byte-identity on a sort path, so the
 // mutants that matter are the ones that permute rows rather than the ones that drop them.
 //
-// ⚠️ Both streams are concatenated and searched for a result line BEFORE the exit code is read:
+// Both streams are concatenated and searched for a result line BEFORE the exit code is read:
 // `bun test` reports to STDERR.
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, readFileSync, writeFileSync } from 'node:fs';

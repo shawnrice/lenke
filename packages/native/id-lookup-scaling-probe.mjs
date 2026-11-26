@@ -14,7 +14,7 @@
  * what external-id results, `_MERGE`, edge reconstruction on reload and every `from`/`to` resolution
  * go through.
  *
- * ⚠️ THE LOOKUP KEYS ARE DRAWN IN A SHUFFLED ORDER and the keys are the ids actually inserted. A
+ * THE LOOKUP KEYS ARE DRAWN IN A SHUFFLED ORDER and the keys are the ids actually inserted. A
  * sequential sweep measures the allocator's layout as much as the map, and a miss-heavy sweep measures
  * the negative path — both are legitimate questions, so `MODE` selects:
  *
@@ -76,7 +76,7 @@ const keysFor = (n, prefix) => {
 };
 
 /**
- * ⚠️ A MISS RETURNS `null`, NOT `undefined` — and this probe's own assertion is what found that out,
+ * A MISS RETURNS `null`, NOT `undefined` — and this probe's own assertion is what found that out,
  * by reporting 10,000 hits on a sweep of keys that were never inserted. `!= null` covers both, which
  * is the only comparison that makes the hit count mean what it says.
  */
@@ -112,7 +112,7 @@ const timeLookups = (fn, keys) => {
 };
 
 /**
- * ⚠️ THE CONTROL, AND WITHOUT IT THIS PROBE DRAWS THE WRONG CONCLUSION. A hash map at 1,000,000
+ * THE CONTROL, AND WITHOUT IT THIS PROBE DRAWS THE WRONG CONCLUSION. A hash map at 1,000,000
  * entries is slower PER LOOKUP than at 10,000 whatever its complexity, because the table stops
  * fitting in cache — that is memory hierarchy, not an extra comparison. The first run of this probe
  * reported "NOT FLAT, per-lookup cost grows with N" at 4.91x and that verdict was unsound.

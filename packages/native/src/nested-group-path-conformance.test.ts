@@ -12,7 +12,7 @@
 //         so a multi-element unit went to `allWalk` (one hop per repetition) instead of
 //         `walkSegments`. One wrong branch, all three symptoms.
 //
-// ⚠️ THE EXPECTATIONS ARE HAND-ENUMERATED, not taken from either engine. Fixture `1->2`, `3->2`,
+// THE EXPECTATIONS ARE HAND-ENUMERATED, not taken from either engine. Fixture `1->2`, `3->2`,
 // `3->4`, all `KNOWS`; unit `(x)-[:KNOWS]->(m)<-[:KNOWS]-(y)`; default TRAIL:
 //
 //   from 1:  1 -(e1)-> 2 , then 2 <-(e2)- 3      (2 <-(e1)- 1 would reuse e1)
@@ -95,7 +95,7 @@ suite('a path bound over a NESTED subpath group', () => {
   });
 
   test('MODE-SENSITIVITY: WALK and TRAIL differ, and both engines agree on each', () => {
-    // ⚠️ THIS IS THE ASSERTION THAT PROVED TS WRONG, and it is now the sharpest regression guard.
+    // THIS IS THE ASSERTION THAT PROVED TS WRONG, and it is now the sharpest regression guard.
     // WALK permits edge reuse and TRAIL forbids it, so on this fixture they CANNOT agree — TS used
     // to answer the same three rows under both, which no correct implementation can do.
     const w = agree(`MATCH p = WALK ${UNIT} (t) RETURN t.n AS n`);

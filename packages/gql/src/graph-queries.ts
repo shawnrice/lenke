@@ -81,13 +81,13 @@ const inSteps = function* (v: Vertex, label: LabelExpr | undefined): Iterable<St
  * The ONE bucket a directed single-type hop reads, or `undefined` when the shape needs `expand`
  * (item 1621).
  *
- * ⚠️ WHY A CALLER WOULD WANT THIS RATHER THAN `expand`. `expand` is a GENERATOR that yields a fresh
+ * WHY A CALLER WOULD WANT THIS RATHER THAN `expand`. `expand` is a GENERATOR that yields a fresh
  * `{ edge, node }` per edge, so a caller pays one resume and one object allocation per edge — and
  * `expand` was **16.3%** of the grouped-hop count's profile with the garbage collector at 8.1%
  * beside it. For the directed single-type case there is nothing to iterate but one `Set` and nothing
  * to dedupe, so a caller that loops it directly pays neither.
  *
- * ⚠️ IT RETURNS `undefined` FOR EVERY OTHER SHAPE, AND THAT IS THE LOAD-BEARING PART.
+ * IT RETURNS `undefined` FOR EVERY OTHER SHAPE, AND THAT IS THE LOAD-BEARING PART.
  * `detectGroupedHopCount`'s own comment records what hand-rolling the general case cost: a `T|S`
  * edge counted TWICE under `-[:T|S]->`, because the per-type buckets both hold it and only
  * `expand`'s `Set` dedupes across them. So this helper refuses anything but the shape `expand`
@@ -107,7 +107,7 @@ export const directedBucket = (
   }
 
   const forward = direction === 'out';
-  // ⚠️ The vertex's CACHED box, not a string-keyed lookup — item 1618, which measured the three
+  // The vertex's CACHED box, not a string-keyed lookup — item 1618, which measured the three
   // ways at 59.7 ns / 30.5 / 16.1 over 200,000 vertices.
   const set = (forward ? v.adjFrom : v.adjTo)?.get(label.name);
 
@@ -124,7 +124,7 @@ const EMPTY_EDGES: ReadonlySet<Edge> = new Set();
  * The TWO buckets an UNDIRECTED single-type hop reads, out first then in, or `undefined` when the
  * shape needs `expand` (item 1803).
  *
- * ⚠️ **THE TUPLE IS NOT A COST TO REMOVE, AND ITEM 1804 MEASURED THAT.** This frame profiles at
+ * **THE TUPLE IS NOT A COST TO REMOVE, AND ITEM 1804 MEASURED THAT.** This frame profiles at
  * 9.9% of `hop3rowsboth` and allocates once per visited vertex, so returning the two sets
  * SEPARATELY (one `typeBucket(v, label, forward)` call per half, nothing allocated) is the obvious
  * next move. It is **0.971x — 2.9% SLOWER**, three alternated rounds, ranges not overlapping: the
@@ -136,17 +136,17 @@ const EMPTY_EDGES: ReadonlySet<Edge> = new Set();
  * every remaining `expand` sample in the GQL probe is `both`, three generator layers deep —
  * `expand` → `outSteps`/`inSteps` → `edgesMatching` — at ~31% of `hop3rowsboth`.
  *
- * ⚠️ ORDER IS THE CONTRACT, NOT AN INCIDENT. `expand` walks outgoing then incoming "matching the
+ * ORDER IS THE CONTRACT, NOT AN INCIDENT. `expand` walks outgoing then incoming "matching the
  * natural read order of an undirected pattern", so this returns the pair in that order and the
  * caller must keep it. Row order is compared byte-for-byte against the Rust engine, so getting this
  * backwards is a divergence, not a cosmetic difference.
  *
- * ⚠️ A SELF-LOOP IS IN BOTH BUCKETS AND MUST BE EMITTED ONCE, so the CALLER skips it on the
+ * A SELF-LOOP IS IN BOTH BUCKETS AND MUST BE EMITTED ONCE, so the CALLER skips it on the
  * in-pass. `expand` does the same and says why in its own words: "a self-loop is indexed under both
  * `edgesFromByLabel` and `edgesToByLabel` for `v`, so an undirected (`both`) walk would yield it
  * twice — once as an out-step, once as an in-step. The out-step already emitted it; skip the
  * duplicate. (Directed `in` keeps it.)" This helper returns the raw buckets and leaves that to the
- * caller, because the directed arm must NOT skip it. ⚠️ I wrote the opposite here first and 39 gql
+ * caller, because the directed arm must NOT skip it. I wrote the opposite here first and 39 gql
  * tests said so on the first build. (The DEDUPE `directedBucket`'s header mentions is a different
  * thing: the multi-type case in `edgesMatching`, which both helpers refuse.)
  */
@@ -164,7 +164,7 @@ export const bothBuckets = (
 };
 
 /**
- * ⚠️ `incidentEdges` / `farEnd` WERE HERE AND ARE GONE — item 1622 built them, measured them, and
+ * `incidentEdges` / `farEnd` WERE HERE AND ARE GONE — item 1622 built them, measured them, and
  * REFUTED the lever. Do not re-attempt without reading `docs/reviews/CLOSED.md` item 1622.
  *
  * The idea was sound on paper: `expand` is a generator that allocates one `{ edge, node }` per edge
@@ -213,7 +213,7 @@ export const expand = function* (graph: Graph, v: Vertex, rel: Adjacency): Itera
   if (rel.direction !== 'both' && label?.kind === 'label') {
     const forward = rel.direction === 'out';
     /**
-     * ⚠️ THE VERTEX'S OWN CACHED BOX, not a STRING-KEYED lookup into the graph (item 1618).
+     * THE VERTEX'S OWN CACHED BOX, not a STRING-KEYED lookup into the graph (item 1618).
      *
      * This read `(forward ? graph.edgesFromByLabel : graph.edgesToByLabel).get(v.id)` — one hash of
      * an id string per expansion, on the hottest line of the matcher. `Vertex.adjFrom`/`adjTo`
@@ -263,7 +263,7 @@ export const expand = function* (graph: Graph, v: Vertex, rel: Adjacency): Itera
  * adjacency indexes as `expand`. Used to enforce that a plain `DELETE` (without
  * `DETACH`) refuses to orphan relationships.
  *
- * ⚠️ BOTH BOXES, and that is load-bearing rather than defensive: a vertex with ONLY IN-edges is
+ * BOTH BOXES, and that is load-bearing rather than defensive: a vertex with ONLY IN-edges is
  * incident, and reading `adjFrom` alone would let a plain `DELETE` silently orphan them. The mutant
  * that dropped `adjTo` SURVIVED item 1618's pass — no test deleted such a vertex — so it is pinned
  * now in `expand-reads-adjacency-box.test.ts`.
@@ -310,11 +310,11 @@ export const labelsMatch = (labels: ReadonlySet<string>, expr: LabelExpr): boole
 /**
  * A node matches when it has no label constraint or its label set satisfies it.
  *
- * ⚠️ ITEM 1599 — TWO REJECTED LEVERS, and the ablation that made them look worth having.
+ * ITEM 1599 — TWO REJECTED LEVERS, and the ablation that made them look worth having.
  *
  * This is the most-called helper in the hot paths (~70 sites in `shortcuts.ts` and
  * `hop-projection.ts` alone), and after item 1598 took the predicate cost out from under it,
- * `evalLabelExpr` showed **46.1% SELF time** in a profile of the 400-hit seeded count. ⚠️ Item
+ * `evalLabelExpr` showed **46.1% SELF time** in a profile of the 400-hit seeded count. Item
  * 1597 had priced the same frame at "~1.1x, NOT a target" when it was 8.9% — a share is a share OF
  * something, and closing a neighbouring target re-prices it. So it was re-priced properly, by
  * ABLATION at `buildNodeCount`'s seeded loop (the test replaced with `() => true`: a wrong answer
@@ -347,7 +347,7 @@ export const labelsMatch = (labels: ReadonlySet<string>, expr: LabelExpr): boole
  * ```
  *
  * So identity is **slower than hoisting the getter** and worth ~1.6 ns a candidate over what the
- * engine does today — 400 × 1.6 ns is ~5% of the query. ⚠️ **That refutes the lever AND removes a
+ * engine does today — 400 × 1.6 ns is ~5% of the query. **That refutes the lever AND removes a
  * reason to settle the owner decision it was blocked on**: memory's `label-index-vs-setter` records
  * that `verticesByLabel` is not maintained by the `v.labels =` setter, so the bucket and `v.labels`
  * can disagree — and the engine already trusts the bucket on the UNSEEDED route of the same
@@ -365,19 +365,19 @@ export const matchesLabel = (v: Vertex, expr: LabelExpr | undefined): boolean =>
   }
 
   /*
-   * ⚠️⚠️ **THE SINGLE-LABEL CASE READS `soleLabel`, NOT THE SET (item 2085).** `v.labels.has(n)` is a
+   * **THE SINGLE-LABEL CASE READS `soleLabel`, NOT THE SET (item 2085).** `v.labels.has(n)` is a
    * pointer chase — vertex -> box -> `.set` -> hash bucket — and over 200,000 scattered candidates it
    * measured **14.52 ns a test against 7.56** for this compare, a 1.92x. The label test is **52% of
    * a MIXED-label `hopfilter`** by profile (`evalLabelExpr` 29.0%, `matchesLabel` 15.9%, `get labels`
    * 7.0%), so this is the biggest single term in a query over a REALISTIC schema.
    *
-   * ⚠️ WHY ITEM 1599's REFUTATION DOES NOT COVER THIS. It refuted two levers — compiling the test per
+   * WHY ITEM 1599's REFUTATION DOES NOT COVER THIS. It refuted two levers — compiling the test per
    * query (FLAT) and testing bucket identity (SLOWER, and blocked by the unmaintained
    * `verticesByLabel`) — both measured over **400 candidates**, where the same probe reads 4.73
    * against 3.89 (1.22x). The saving is a CACHE MISS, so it barely exists cache-resident. CLAUDE.md's
    * first rule, earning itself: sweep the size.
    *
-   * ⚠️ `soleLabel === undefined` MEANS ZERO **OR MANY**, so the fallback is required and is not an
+   * `soleLabel === undefined` MEANS ZERO **OR MANY**, so the fallback is required and is not an
    * optimisation detail: a multi-labelled vertex must still match either of its labels.
    */
   if (expr.kind === 'label') {

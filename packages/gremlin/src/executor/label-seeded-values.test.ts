@@ -1,14 +1,14 @@
 /*
  * Item 2037 — `V().hasLabel(L).values(k)` fused onto `seedFromIndex`'s stream.
  *
- * ⚠️⚠️ **EVERY TEST HERE NEEDS A NON-VACUOUS LABEL, AND THAT IS THE WHOLE POINT.** `dropVacuousLabels`
+ * **EVERY TEST HERE NEEDS A NON-VACUOUS LABEL, AND THAT IS THE WHOLE POINT.** `dropVacuousLabels`
  * REMOVES a `hasLabel` step that every vertex satisfies, so on a single-label graph this plan becomes
  * `V().values(k)` and `nodeValuesShortcut` answers it — the code under test is never reached. One
  * ISOLATED off-label vertex (no edges, so no answer changes) is what makes the step survive. A
  * single-label fixture would pass every assertion below while exercising nothing, which is item
  * 2018's lesson: 13 passing tests exercised none of a new path.
  *
- * ⚠️ THE ROUTE IS OBSERVABLE THROUGH `drain`: this fusion consumed the whole plan, so it offers one,
+ * THE ROUTE IS OBSERVABLE THROUGH `drain`: this fusion consumed the whole plan, so it offers one,
  * while the generic pipeline returns a bare generator. That is the only way to see a route that is
  * ANSWER-EQUIVALENT by construction ([[perf-gate-needs-its-own-test]]).
  */
@@ -46,7 +46,7 @@ const build = (): Graph => {
   // No `k` at all — its row must be DROPPED, not emitted as `undefined`.
   g.addVertex({ id: 'd', labels: ['T'], properties: { other: 'od' } });
 
-  // ⚠️ THE OFF-LABEL VERTEX that makes `T` non-vacuous, so the `hasLabel` step survives. Isolated and
+  // THE OFF-LABEL VERTEX that makes `T` non-vacuous, so the `hasLabel` step survives. Isolated and
   // off-label, so it contributes to no answer here.
   g.addVertex({ id: 'off', labels: ['Q'], properties: { k: 99 } });
 
@@ -73,7 +73,7 @@ describe('label-seeded values fusion (item 2037)', () => {
 
   test('the values are correct, and a missing key is DROPPED not emitted', () => {
     /*
-     * ⚠️ `toStrictEqual`, not `toEqual`: bun's `toEqual` treats a trailing `undefined` as equal to its
+     * `toStrictEqual`, not `toEqual`: bun's `toEqual` treats a trailing `undefined` as equal to its
      * absence, so a mutant emitting `undefined` for `d` survives `toEqual`
      * ([[toequal-blind-to-trailing-undefined]]). `d` is LAST in insertion order, which is exactly the
      * position that blindness covers.
@@ -126,7 +126,7 @@ describe('label-seeded values fusion (item 2037)', () => {
 
   test('a LEADING hop answers correctly — and `drain` does NOT prove which rung did it', () => {
     /*
-     * ⚠️⚠️ **MY FIRST VERSION OF THIS TEST ASSERTED `claimed(...) === false` AND FAILED, because the
+     * **MY FIRST VERSION OF THIS TEST ASSERTED `claimed(...) === false` AND FAILED, because the
      * PREMISE was wrong rather than the code.** `V().hasLabel(T).out(E).values(k)` is served by the
      * FUSED HOP WALK, which legitimately offers its own `drain` — so drain-presence discriminates
      * only where no other drain-offering rung applies. The gate's accept/decline behaviour is
@@ -138,7 +138,7 @@ describe('label-seeded values fusion (item 2037)', () => {
 
   test('the ITERATOR and `drain` agree, element for element and in order', () => {
     /*
-     * ⚠️ TWO DERIVATIONS OF ONE WALK, which is item 169's lesson — and Gremlin results are compared
+     * TWO DERIVATIONS OF ONE WALK, which is item 169's lesson — and Gremlin results are compared
      * ORDERED by the differential fuzzer, so a divergence between them would be a cross-engine
      * failure rather than an unspecified-order liberty.
      */
@@ -164,7 +164,7 @@ describe('label-seeded values fusion (item 2037)', () => {
 
 describe('a trailing order() end to end (item 2042)', () => {
   /*
-   * ⚠️⚠️ **THE ORDER IS THE ANSWER HERE, so this asserts the SEQUENCE against an independent sort** —
+   * **THE ORDER IS THE ANSWER HERE, so this asserts the SEQUENCE against an independent sort** —
    * not a row count, which `sink` already matched while the plan took the slow route. The fixture
    * scrambles `k` so a sort is genuinely required, and carries one ISOLATED off-label vertex so the
    * `hasLabel` step SURVIVES; without it `dropVacuousLabels` deletes the step and this test would
@@ -217,14 +217,14 @@ describe('the gate itself, called directly (item 2037)', () => {
     expect([...out!.values]).toStrictEqual([7]);
     expect((out!.values as { drain: () => unknown[] }).drain()).toStrictEqual([7]);
 
-    // ⚠️ THE RESIDUAL'S CONTENT, not merely its presence (item 2021): an empty `rest` is what tells
+    // THE RESIDUAL'S CONTENT, not merely its presence (item 2021): an empty `rest` is what tells
     // the caller the walk answered the whole plan.
     expect(out!.rest).toStrictEqual([]);
   });
 
   test('a TRAILING step is REPORTED as the residual rather than declining (item 2042)', () => {
     /*
-     * ⚠️⚠️ **THIS IS THE WHOLE OF ITEM 2042.** The first cut required `steps.length === 1`, so a
+     * **THIS IS THE WHOLE OF ITEM 2042.** The first cut required `steps.length === 1`, so a
      * trailing `order()` declined the plan and took item 1630's in-place sort with it — 2.31-2.36x on
      * two fixtures. The residual is now handed back for `fusedProjectedResidual` to fuse.
      */

@@ -4,17 +4,17 @@
  * The deletion test from the other side: for every family, time its sorted queries AS WRITTEN and
  * again with `ORDER BY` stripped. The difference is what the sort costs that family.
  *
- * ⚠️ IT IS NOT A SORT BENCHMARK — it is how item 1866 found a ROUTE gap. Two rows did not add up:
+ * IT IS NOT A SORT BENCHMARK — it is how item 1866 found a ROUTE gap. Two rows did not add up:
  * `var-length` paid 34.1 ms of "sort" over **78 rows**, and `projection` 28.6 ms at **10.5x** the
  * query that produced its rows. Sorting 78 rows cannot cost 34 ms, so the difference was not
  * sorting at all — `ORDER BY` was declining a rung. Reading the per-family rows against the ROW
  * COUNTS is what makes that visible; a single total would have read as "sorting is expensive".
  *
- * ⚠️ READ THE ROW COUNT BESIDE THE MILLISECONDS, ALWAYS. A family whose sort cost is large and
+ * READ THE ROW COUNT BESIDE THE MILLISECONDS, ALWAYS. A family whose sort cost is large and
  * whose row count is tiny is a route gap. A family whose cost scales with its rows (`chain-rows`,
  * 188.7 ms over 1.4M) is a real sort and nothing here will help it.
  *
- * ⚠️ AND THE NOISE FLOOR IS VISIBLE IN THE OUTPUT: `grouped` reads NEGATIVE (-2.4 ms), which is
+ * AND THE NOISE FLOOR IS VISIBLE IN THE OUTPUT: `grouped` reads NEGATIVE (-2.4 ms), which is
  * this instrument telling you ~2 ms is indistinguishable from zero. Anything under that is not a
  * finding.
  *
@@ -80,7 +80,7 @@ const build = () => {
 
 const g = build();
 const work = JSON.parse(readFileSync(WORK_FILE, 'utf8'));
-// ⚠️ The strip stops at a trailing LIMIT/OFFSET so the WINDOW survives and only the ORDER goes —
+// The strip stops at a trailing LIMIT/OFFSET so the WINDOW survives and only the ORDER goes —
 // removing the page too would change how many rows each arm produces and compare two workloads.
 const strip = (t) => t.replace(/ ORDER BY [^]*?(?= (LIMIT|OFFSET) |$)/, '');
 
@@ -161,7 +161,5 @@ for (const o of out) {
 
 console.log(`TOTAL sort cost ${total.toFixed(1)} ms`);
 console.log('');
-console.log(
-  '# ⚠️ A LARGE `sort` WITH FEW `rows` IS A ROUTE GAP, NOT A SORT. That is how item 1866',
-);
+console.log('# A LARGE `sort` WITH FEW `rows` IS A ROUTE GAP, NOT A SORT. That is how item 1866');
 console.log('#    found the parameterized page falling off every projection rung.');

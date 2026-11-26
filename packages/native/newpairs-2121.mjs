@@ -1,9 +1,9 @@
 /*
  * Item 2121 — the two precedence pairs the extended census exposed.
  *
- * 🔑 Adding twelve shapes took the census from 22/36 rungs reached to 34/36 and surfaced two pairs nobody
+ * Adding twelve shapes took the census from 22/36 rungs reached to 34/36 and surfaced two pairs nobody
  * had priced: `chainFoldLevels > chainFoldedAggregate` and `chainGroupedLevels > hop2GroupedCount`.
- * ⚠️ A starved rung is a CANDIDATE — item 2118 priced the sibling pair and found the starvation correct
+ * A starved rung is a CANDIDATE — item 2118 priced the sibling pair and found the starvation correct
  * by 37x, so these get the same treatment rather than an assumption either way.
  */
 import { Graph } from '@lenke/core';
@@ -36,7 +36,7 @@ const shapes = {
   chain3_foldedagg:
     'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P)-[:E]->(d:P) RETURN count(DISTINCT d.k) AS c',
   hop2_groupedstart: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN a.k AS k, count(*) AS c',
-  /* ⚠️ CONTROLS the killed gates cannot reach. */
+  /* CONTROLS the killed gates cannot reach. */
   hop2_count_ctl: 'MATCH (a:P)-[:E]->(b:P)-[:E]->(c:P) RETURN count(*) AS c',
   node_proj_ctl: 'MATCH (n:P) RETURN n.k AS k',
 };

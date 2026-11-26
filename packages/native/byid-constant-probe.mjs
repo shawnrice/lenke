@@ -13,11 +13,11 @@
  * which V8 inlines less readily than a prototype method. `verticesById` is a plain field (checked),
  * so the only candidates are that call shape and the `?? null`.
  *
- * ⚠️ THE RAW-MAP ROW IS THE CONTROL, AND IT IS IN THE SAME PROCESS AS THE ARM. A parallel `Map`
+ * THE RAW-MAP ROW IS THE CONTROL, AND IT IS IN THE SAME PROCESS AS THE ARM. A parallel `Map`
  * holding the same keys is untouched by any source change, so if it moves between arms the reading
  * is the build or the machine. It also makes the ratio directly comparable to item 1729's.
  *
- * ⚠️ IDS ARE LOOKED UP IN A SCRAMBLED ORDER, not insertion order: a sequential sweep of a Map's own
+ * IDS ARE LOOKED UP IN A SCRAMBLED ORDER, not insertion order: a sequential sweep of a Map's own
  * key order measures a best case the engine never sees.
  *
  *     ARM=base node byid-constant-probe.mjs
@@ -95,7 +95,7 @@ const timeRow = (name) => {
   };
 };
 
-// ⚠️ ROW ORDER IS ALTERNATED BY ARGV so the first-measured row is not always the engine's: the row
+// ROW ORDER IS ALTERNATED BY ARGV so the first-measured row is not always the engine's: the row
 // that runs first gets a monomorphic dispatch site (item 762's redistribution trap, from the other
 // side).
 const first = process.env.FIRST ?? 'engine';

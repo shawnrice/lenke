@@ -65,7 +65,7 @@ const cannotFault = (e: Expr): boolean =>
  * `SKIP` the rung must slice off its own rows, and `0` means "no unsorted window here" (either
  * there is no window at all, or there is an `ORDER BY` and `outputColumnSorts` owns the decision).
  *
- * ⚠️ THE TWO HALVES OF THE RULE PULL OPPOSITE WAYS, which is why it is one function rather than a
+ * THE TWO HALVES OF THE RULE PULL OPPOSITE WAYS, which is why it is one function rather than a
  * condition inline (item 1776).
  *
  *   - A `LIMIT`, with or without a skip, DECLINES — and the decline is a statement about
@@ -87,7 +87,7 @@ const cannotFault = (e: Expr): boolean =>
  * already owns vacuous windows, and a second opinion about them here is a second thing to be wrong
  * about.
  *
- * ⚠️ `typeof proj.skip === 'number'` IS REDUNDANT AT RUNTIME and is kept because the TYPECHECKER
+ * `typeof proj.skip === 'number'` IS REDUNDANT AT RUNTIME and is kept because the TYPECHECKER
  * is what enforces it — mutation established that rather than my reading it. Replacing it with
  * `true` leaves all 23 tests in `skip-only-page.test.ts` green, because `{ param: 's' } > 0` is
  * already false, so the `> 0` test declines a parameterized skip on its own. It is not a survivor
@@ -122,14 +122,14 @@ export const unsortedPageRoute = (proj: {
 /**
  * The rows a rung produced, with item 1776's skip-only page applied — `0` being the no-page case.
  *
- * ⚠️ THE BOUND IS RESOLVED PER CALL, which is what lets a PARAMETERIZED page take a rung at all
+ * THE BOUND IS RESOLVED PER CALL, which is what lets a PARAMETERIZED page take a rung at all
  * (item 1778). `deferredRoute` and `outputColumnSorts` both decline a parameterized window, and
  * that is right for THEM: a `LIMIT $n` decides between a heap and a sort-and-slice, so the ROUTE
  * depends on the value while the plan cache is shared across params. A skip-only page has no such
  * dependence — every non-negative skip takes the same route and differs only in where the slice
  * lands — so the only thing that must wait for `params` is the number, and that waits here.
  *
- * ⚠️ AND THE VALUE IS ALREADY VALIDATED BY THE TIME THIS RUNS, which is the other half of why this
+ * AND THE VALUE IS ALREADY VALIDATED BY THE TIME THIS RUNS, which is the other half of why this
  * is safe rather than merely faster. `noteCountParam` registers a bound's `$param` at compile time
  * and `compile.ts` checks it eagerly before a row is produced — non-negative integer, bound at all
  * — so a negative or fractional bound raises `E_INVALID_VALUE` on EITHER route, and `rows.slice()`
@@ -147,7 +147,7 @@ export type ColSort = { col: string; descending: boolean; nullsFirst: boolean | 
 /**
  * A resolved sort, plus the window to apply AFTER it (item 610).
  *
- * ⚠️ `page` CARRIES AN UNRESOLVED, PARAMETERIZED WINDOW and is absent for a literal one (item
+ * `page` CARRIES AN UNRESOLVED, PARAMETERIZED WINDOW and is absent for a literal one (item
  * 1867). `skip`/`limit` stay NUMBERS so `sortRowsByColumns` and every other caller are untouched —
  * `reachability.ts` and `node-scan.ts`'s top-k arms build their own plans and never set this — and
  * `sortedRows` resolves it per call into exactly those two fields. Keeping the numeric pair as the
@@ -181,7 +181,7 @@ export const outputColumnSorts = (
   const { skip, limit } = ret.projection;
   const windowed = skip !== undefined || limit !== undefined;
   /**
-   * ⚠️⚠️ A PARAMETERIZED WINDOW IS NOW ADMITTED, AND THIS USED TO DECLINE IT (item 1867). The
+   * A PARAMETERIZED WINDOW IS NOW ADMITTED, AND THIS USED TO DECLINE IT (item 1867). The
    * reason it gave was that *"resolving it would make the route depend on a binding the plan is
    * cached across"* — and the plan cache really is shared that way (`planCache` is a
    * `WeakMap<Query, Plan>` keyed on the AST, which `parseCache` keys by TEXT), so that concern is
@@ -193,7 +193,7 @@ export const outputColumnSorts = (
    * wait for `params` is the number. `sortedRows` waits for it, exactly as `pageSlice` does for
    * item 1778's skip-only page.
    *
-   * ⚠️ AND THE DISTINCTION FROM THE TOP-K RUNGS IS LOAD-BEARING, because they share this one's
+   * AND THE DISTINCTION FROM THE TOP-K RUNGS IS LOAD-BEARING, because they share this one's
    * stated reason and do NOT share its verdict. `deferredRoute` and `deferredSortedNodeWalk` pick
    * the HEAP at compile time and size it from the bound, so for them the route genuinely does
    * depend on the value and `typeof limit !== 'number'` must stay. Two gates, one reason between
@@ -554,7 +554,7 @@ export const boundedTopKeyed = <T>(
  * rows deliberately (`farDrivenHopWalk`) must therefore decline the sort rather than sort here.
  */
 /**
- * ⚠️ `params` IS REQUIRED, AND THAT IS THE POINT (item 1867). A parameterized window travels on
+ * `params` IS REQUIRED, AND THAT IS THE POINT (item 1867). A parameterized window travels on
  * `plan.page` and has to be resolved per call; the first cut of that change made `page` an OPTIONAL
  * field resolved only in `sortedRows`, and `node-scan.ts` calls this function DIRECTLY — so the
  * window was silently dropped and `ORDER BY x LIMIT $n` returned **600 rows where 5 were
@@ -566,7 +566,7 @@ export const boundedTopKeyed = <T>(
  */
 export const sortRowsByColumns = (rows: Row[], plan: SortPlan, params: Params): Row[] => {
   /**
-   * ⚠️⚠️ THE PARAMETERIZED WINDOW IS RESOLVED AND THE FUNCTION RE-ENTERED, rather than resolved
+   * THE PARAMETERIZED WINDOW IS RESOLVED AND THE FUNCTION RE-ENTERED, rather than resolved
    * inline — and that shape is MEASURED, not stylistic. The first cut destructured `page` and ran
    * two ternaries at the top of this function, which EVERY projection rung calls. The literal
    * controls moved the wrong way for it: `OFFSET 100 LIMIT 20` went **0.68 -> 1.00 ms (1.47x
@@ -583,7 +583,7 @@ export const sortRowsByColumns = (rows: Row[], plan: SortPlan, params: Params): 
       rows,
       {
         sorts: plan.sorts,
-        // ⚠️ `?? 0` IS REDUNDANT AT RUNTIME and is kept because the TYPECHECKER enforces it —
+        // `?? 0` IS REDUNDANT AT RUNTIME and is kept because the TYPECHECKER enforces it —
         // mutation established that rather than my reading it. `page.skip` is built as
         // `skip ?? 0`, so it is never `undefined`, and `resolveCount` returns `undefined` only
         // for an `undefined` input; a mutant making this `?? 1` therefore SURVIVES. It is not a
@@ -612,7 +612,7 @@ export const sortRowsByColumns = (rows: Row[], plan: SortPlan, params: Params): 
   // and this admits to `n/16`, inside the win. A looser `* 8` was built first and measured 0.95x
   // on `LIMIT 20,000`, which is the regression this constant exists to keep out.
   /**
-   * ⚠️ A ZERO LIMIT IS ANSWERED HERE, AND IT HAS TO BE (item 1867). `outputColumnSorts` refuses a
+   * A ZERO LIMIT IS ANSWERED HERE, AND IT HAS TO BE (item 1867). `outputColumnSorts` refuses a
    * LITERAL `LIMIT 0` at compile time, and its note calls that guard "SPEED, not correctness" on
    * the grounds that a mutant admitting it SURVIVES — which was true while the only way in was the
    * slice below, where `slice(skip, skip)` is `[]`. A PARAMETERIZED `LIMIT $n` cannot be refused at
@@ -650,7 +650,7 @@ export const sortRowsByColumns = (rows: Row[], plan: SortPlan, params: Params): 
           // than a second derivation. The module's note carries the numbers and the refuted
           // warm-up explanation -- read it before changing the scan.
           //
-          // ⚠️ THIS SAID "~1.06x on a numeric one" AND "why the numeric arm is KEPT", AND BOTH
+          // THIS SAID "~1.06x on a numeric one" AND "why the numeric arm is KEPT", AND BOTH
           // WERE WRONG (item 1808). `SortColumnKind` is `'string' | 'generic'`: there is no
           // numeric arm. It was built, measured six times across four runs (0.93x-1.18x,
           // straddling 1.0) and DROPPED, which the module says in terms. A call-site comment
@@ -716,7 +716,7 @@ export const sortedRows = (
  * The same wrapper for item 1776's SKIP-ONLY PAGE: drop the first `skip` rows a rung produced, or
  * return it unchanged when there is no such page (`skip === 0`).
  *
- * ⚠️ IT IS THE CALLER'S JOB TO HAVE FORCED AN ORDER THIS MAY BE SLICED. A sort is
+ * IT IS THE CALLER'S JOB TO HAVE FORCED AN ORDER THIS MAY BE SLICED. A sort is
  * order-INVARIANT in the sense that matters here — it decides the order itself — while a skip
  * INHERITS whichever order the walk produced, so slicing a walk whose visit order differs from the
  * general path's returns different ROWS, not merely different order. For the hop rung that means
@@ -742,11 +742,11 @@ export const pagedRows = (inner: RowsProducer | null, skip: CountValue): RowsPro
 /**
  * A `RETURN` clause with its sort and window removed — item 1827, shared since item 1849.
  *
- * ⚠️ THE SORT IS STRIPPED FROM BOTH THE AST AND THE COMPILED CLAUSE. An ordered rung gates on the
+ * THE SORT IS STRIPPED FROM BOTH THE AST AND THE COMPILED CLAUSE. An ordered rung gates on the
  * AST projection (`plainRowProjection` refuses an `orderBy`) and builds rows from the compiled one,
  * so leaving either in place would make the base detector decline the shape it is being handed.
  *
- * ⚠️ IT LIVES HERE BECAUSE THREE RUNGS NOW USE IT. `chain-projection` and `hop2-projection` each
+ * IT LIVES HERE BECAUSE THREE RUNGS NOW USE IT. `chain-projection` and `hop2-projection` each
  * carried their own copy, which is item 1832's near-twin hazard: two identical helpers that must
  * stay identical, with nothing to make a drift loud. `outputColumnSorts` and `sortedRows` — the
  * other two halves of the same trick — already live here.

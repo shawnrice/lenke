@@ -4,7 +4,7 @@
  * The same two-build device as `optional-oracle-1884.mjs`: PRE replaces `hopValuesCsr`'s call site
  * in the BUILT dist with `void 0`, POST is shipped, both arms asserted by marker.
  *
- * ⚠️ AND EACH QUERY RUNS THREE TIMES, which this rung needs and the others did not. Its second-call
+ * AND EACH QUERY RUNS THREE TIMES, which this rung needs and the others did not. Its second-call
  * policy means call 1 is the BUCKET walk and call 2 the CSR — so the three calls cover the bucket
  * walk, the CSR's eager `drain` (what `toArray` uses) and the CSR's LAZY iterator (via `run`), and
  * a disagreement between them is reported as a result rather than hidden by comparing arms only.
@@ -107,7 +107,7 @@ for (const [fname, spec] of Object.entries(fixtures)) {
     let got;
 
     try {
-      // ⚠️ THREE CALLS, because the rung DECLINES its own first call (the amortization policy). Call
+      // THREE CALLS, because the rung DECLINES its own first call (the amortization policy). Call
       // 1 is the bucket walk, call 2 the CSR through 'toArray''s eager drain, call 3 the CSR
       // through the LAZY iterator via 'run' — and all three must agree, which is the real claim.
       const first = toArray(make(), g).map(mark);
@@ -159,7 +159,7 @@ try {
     throw new Error('the rung call site is not in the dist exactly once — rebuild, then re-run');
   }
 
-  // PRE: the kill switch ALONE. ⚠️ The first cut wrote `${KILLED} ?? ${COUNTER}` so the arm could
+  // PRE: the kill switch ALONE. The first cut wrote `${KILLED} ?? ${COUNTER}` so the arm could
   // also COUNT its (expected zero) claims — and `??` on `void 0` falls straight through, so the
   // "killed" arm called the rung 51 times. The arm assertion caught it, which is the whole reason
   // it is there; the PRE arm's proof is the KILL_1889 marker plus a counter that is never set.
@@ -189,7 +189,7 @@ try {
   }
 } finally {
   copyFileSync(PRISTINE, DIST);
-  // ⚠️ THE GENERATED CHILD IS REMOVED HERE. It has to live in `packages/native` for `@lenke/*` to
+  // THE GENERATED CHILD IS REMOVED HERE. It has to live in `packages/native` for `@lenke/*` to
   // resolve, so it cannot go in the scratchpad — and left behind it is a lint target the gate
   // fails on (which is how this line came to exist).
   rmSync(CHILD, { force: true });
@@ -224,12 +224,10 @@ console.log(
 );
 
 for (const [name, a, b] of bad) {
-  console.log(`\n❌ ${name}\n   generic: ${a}\n   fused:   ${b}`);
+  console.log(`\n${name}\n   generic: ${a}\n   fused:   ${b}`);
 }
 
-console.log(
-  bad.length === 0 ? '\n✅ every pair identical' : `\n⚠️ ${String(bad.length)} DIVERGENCE(S)`,
-);
+console.log(bad.length === 0 ? '\nevery pair identical' : `\n${String(bad.length)} DIVERGENCE(S)`);
 
 if (bad.length > 0) {
   process.exitCode = 1;

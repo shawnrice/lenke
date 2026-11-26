@@ -2,7 +2,7 @@
  * `count()` over an ID-SEEDED source (item 1649): `V(ids).count()` and `V(ids).<one hop>.count()`
  * now answer from the graph's own indexes instead of walking the traverser pipeline.
  *
- * ⚠️ THE ORACLE IS THE ENGINE'S GENERAL PATH, NOT A HAND-COUNTED LITERAL. A route choice is
+ * THE ORACLE IS THE ENGINE'S GENERAL PATH, NOT A HAND-COUNTED LITERAL. A route choice is
  * answer-equivalent by definition, so what has to be pinned is that the two routes AGREE — and this
  * corpus has shipped three seeding bugs whose hand-written expectation was simply wrong (item 1306's
  * `hasId` rewrite raised where the filter did not AND failed to dedupe; item 1643 repeated the
@@ -67,7 +67,7 @@ const CASES: readonly (readonly [string, Plan, Plan])[] = [
   ['one id', traversal(V('a'), count()), traversal(V('a'))],
   ['a missing id', traversal(V('zz'), count()), traversal(V('zz'))],
   ['two ids, one missing', traversal(V('a', 'zz'), count()), traversal(V('a', 'zz'))],
-  // ⚠️ DUPLICATES ARE NOT DEDUPED — `sourceFromIds` yields one traverser per resolving id.
+  // DUPLICATES ARE NOT DEDUPED — `sourceFromIds` yields one traverser per resolving id.
   ['a duplicate id', traversal(V('a', 'a'), count()), traversal(V('a', 'a'))],
   ['every id', traversal(V('a', 'b', 'c', 'd'), count()), traversal(V('a', 'b', 'c', 'd'))],
   ['an isolated vertex', traversal(V('d'), count()), traversal(V('d'))],
@@ -89,7 +89,7 @@ const CASES: readonly (readonly [string, Plan, Plan])[] = [
     traversal(V('a'), out('ZZ'), count()),
     traversal(V('a'), out('ZZ')),
   ],
-  // ⚠️ EVERY DIRECTION OF THE UNTYPED HOP, not just `out()`. A mutant that made the INWARD helper
+  // EVERY DIRECTION OF THE UNTYPED HOP, not just `out()`. A mutant that made the INWARD helper
   // answer 0 for an untyped hop instead of declining SURVIVED the first version of this file,
   // because `out()` exercises only the outward helper — so `V(id).in_().count()` would have
   // answered 0. One case per helper arm.
@@ -101,7 +101,7 @@ const CASES: readonly (readonly [string, Plan, Plan])[] = [
   ['bothE, UNTYPED', traversal(V('a'), bothE(), count()), traversal(V('a'), bothE())],
   ['in, one label', traversal(V('a'), in_('U'), count()), traversal(V('a'), in_('U'))],
   ['in, the self-loop label', traversal(V('a'), in_('T'), count()), traversal(V('a'), in_('T'))],
-  // ⚠️ `both` sees the self-loop TWICE: one edge from its source and one from its target.
+  // `both` sees the self-loop TWICE: one edge from its source and one from its target.
   [
     'both, the self-loop label',
     traversal(V('a'), both('T'), count()),
@@ -219,7 +219,7 @@ const CASES: readonly (readonly [string, Plan, Plan])[] = [
     traversal(V(), hasId(5), out('T')),
   ],
 
-  // ⚠️ A TRAILING FILTER AFTER A `hasId` HOP. A mutant that widened the `hasId` arm from two mid
+  // A TRAILING FILTER AFTER A `hasId` HOP. A mutant that widened the `hasId` arm from two mid
   // steps to three SURVIVED without this: `[hasId, out, has]` would have been answered as
   // `[hasId, out]`, silently dropping the filter and over-counting. The seeded twin was covered and
   // the `hasId` spelling was not.
@@ -244,7 +244,7 @@ const CASES: readonly (readonly [string, Plan, Plan])[] = [
   ['a duplicate edge id', traversal(E('e1', 'e1'), count()), traversal(E('e1', 'e1'))],
 ];
 
-describe('⚠️ the seeded count agrees with the walk it replaces', () => {
+describe('the seeded count agrees with the walk it replaces', () => {
   for (const [label, counted, streamed] of CASES) {
     test(label, () => {
       const viaWalk = toArray(streamed, g).length;
@@ -257,9 +257,9 @@ describe('⚠️ the seeded count agrees with the walk it replaces', () => {
   }
 });
 
-describe('⚠️ the rung is actually TAKEN, and declines where it should', () => {
+describe('the rung is actually TAKEN, and declines where it should', () => {
   /**
-   * ⚠️ WITHOUT THIS THE WHOLE FILE CAN PASS VACUOUSLY. A route choice is answer-equivalent, so
+   * WITHOUT THIS THE WHOLE FILE CAN PASS VACUOUSLY. A route choice is answer-equivalent, so
    * every test above stays green if the rung is never reached — and `rung-precedence-decides-speed`
    * records that a WILLING rung starved by a broader one above it in the chain looks exactly like a
    * rung that works. `countShortcut` returning a number IS the route.
@@ -287,7 +287,7 @@ describe('⚠️ the rung is actually TAKEN, and declines where it should', () =
   for (const [label, plan] of [
     ['an UNTYPED out', traversal(V('a'), out(), count())],
     ['hasId + an UNTYPED hop', traversal(V(), hasId('a'), out(), count())],
-    // ⚠️ THE ROUTE MUST NOT DEPEND ON THE DATA. Nothing resolves here, so an eligibility test made
+    // THE ROUTE MUST NOT DEPEND ON THE DATA. Nothing resolves here, so an eligibility test made
     // per resolving id would never run and the rung would answer 0 — right by luck, for a query it
     // declines when an id does resolve.
     ['hasId + an untyped hop, NO id resolving', traversal(V(), hasId('zz'), out(), count())],
@@ -317,7 +317,7 @@ describe('⚠️ the rung is actually TAKEN, and declines where it should', () =
 
 describe('the arithmetic is pinned, not only self-consistent', () => {
   /**
-   * ⚠️ A SELF-CONSISTENT PAIR CAN BOTH BE WRONG. The table above would pass if the walk itself were
+   * A SELF-CONSISTENT PAIR CAN BOTH BE WRONG. The table above would pass if the walk itself were
    * broken, so these few assert the numbers the fixture was BUILT to produce — and the three that
    * matter are the ones a naive implementation gets wrong.
    */
@@ -343,9 +343,9 @@ describe('the arithmetic is pinned, not only self-consistent', () => {
   });
 });
 
-describe('⚠️ the two spellings are NOT the same question', () => {
+describe('the two spellings are NOT the same question', () => {
   /**
-   * ⚠️ ITEM 1306'S FINDING, PINNED. `V(ids)` walks the id LIST, so a duplicate id yields two
+   * ITEM 1306'S FINDING, PINNED. `V(ids)` walks the id LIST, so a duplicate id yields two
    * traversers; `hasId(ids)` FILTERS the element set, so each element is tested once. The two rungs
    * must therefore disagree here — a single shared implementation would be a wrong answer for one
    * of them, and it is the reason `hasId(ids)` is not rewritten to `V(ids)` wholesale.
@@ -367,7 +367,7 @@ describe('⚠️ the two spellings are NOT the same question', () => {
   });
 });
 
-describe('⚠️ it RAISES where the general path raises', () => {
+describe('it RAISES where the general path raises', () => {
   /**
    * Element ids are strings in this engine and a numeric literal is a type error at resolution, not
    * a coercion (`asStringId`, matching TinkerPop's string id manager). A rung that resolved ids

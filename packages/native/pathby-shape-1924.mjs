@@ -10,7 +10,7 @@ g.addEdge({ id: 'e1', from: vx('a'), to: vx('b'), labels: ['E'], properties: {} 
 g.addEdge({ id: 'e2', from: vx('a'), to: vx('c'), labels: ['E'], properties: {} });
 
 /**
- * ⚠️ NOT `JSON.stringify`, which renders `undefined` INSIDE AN ARRAY AS `null` and hid the real
+ * NOT `JSON.stringify`, which renders `undefined` INSIDE AN ARRAY AS `null` and hid the real
  * value in the first version of this probe. `evalBy` returns NO_VALUE for an absent key and `byOr`
  * maps that to `undefined` — so the row holds `undefined`, not `null`, and a fusion building `null`
  * would be a wrong answer that JSON comparison could never see.

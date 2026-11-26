@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2022 — the merge's PRE/POST on the shape that actually exercises it.
 #
-# ⚠️⚠️ **THE WHOLE-SCREEN SWEEP CANNOT SHOW THIS WIN, and that is a property of the screen rather
+# **THE WHOLE-SCREEN SWEEP CANNOT SHOW THIS WIN, and that is a property of the screen rather
 # than of the change.** The merge fires only on an UNCORRELATED product — a comma pattern of
 # independent legs, or a second MATCH clause sharing no names — and the one screen family that has
 # those is `multi-pattern`, which the screen caps at its 15 s BUDGET ("1/100 queries in 15000 ms") in
@@ -11,7 +11,7 @@
 # So the target is measured on `crossproduct-sort-2017.mjs`, which drives the same shape without a
 # budget, and the screen's flat families are reported alongside as the controls.
 #
-# ⚠️ ONE ARM PER PROCESS, order-alternated, trap-restored — items 762, 2018, 2020.
+# ONE ARM PER PROCESS, order-alternated, trap-restored — items 762, 2018, 2020.
 set -u
 
 ROOT=/home/shawn/projects/pl-graph

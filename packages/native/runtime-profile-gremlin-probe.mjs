@@ -15,12 +15,12 @@
  *     node --cpu-prof --cpu-prof-dir=<dir> --cpu-prof-name=g-<shape>.cpuprofile \
  *          runtime-profile-gremlin-probe.mjs <shape> <reps>
  *
- * ⚠️ `toArray` takes (plan, graph) IN THAT ORDER. Item 1349 lost a round to calling it (graph, plan),
+ * `toArray` takes (plan, graph) IN THAT ORDER. Item 1349 lost a round to calling it (graph, plan),
  * which throws nothing useful — it just measures the wrong thing.
  *
- * ⚠️ `@lenke/gremlin` is a BUILT DIST. A source edit reaches this probe only after `bun run build`.
+ * `@lenke/gremlin` is a BUILT DIST. A source edit reaches this probe only after `bun run build`.
  *
- * ⚠️ EVERY `SHAPES` ENTRY IS BUILT ONCE, AT MODULE LEVEL, AND THE PLAN OBJECT IS REUSED ACROSS REPS.
+ * EVERY `SHAPES` ENTRY IS BUILT ONCE, AT MODULE LEVEL, AND THE PLAN OBJECT IS REUSED ACROSS REPS.
  * That is the right isolation for a profile — it measures EXECUTION and keeps plan construction out
  * of the frames — but it means this probe cannot see construction at all, and a caller whose values
  * vary pays it on every call because Gremlin has no parameter binding (item 1577). Item 1577 cut
@@ -32,7 +32,7 @@
  * `hophas` and `valuesk`, whose execution dwarfs it. So a number from THIS probe is the serving cost
  * only for shapes whose execution dominates; for a cheap point query it is roughly HALF of it.
  *
- * ⚠️ Take the MEDIAN of several runs, not one. The `reused` arm is steady (0.137-0.147 us for
+ * Take the MEDIAN of several runs, not one. The `reused` arm is steady (0.137-0.147 us for
  * `control`) but the `fresh` arm spikes — 0.262, 0.284, then 1.006 across three runs — which is the
  * GC of allocating a plan per call, and a single run can read the share as high as 85.8%.
  */
@@ -79,7 +79,7 @@ import { profileWindow } from './windowed-profile.mjs';
 
 const SHAPE = process.argv[2] ?? 'hopcount3';
 const REPS = Number(process.argv[3] ?? 200);
-/** ⚠️ See the size note in `runtime-profile-probe.mjs`: 20,000 is the CACHE-RESIDENT regime only. */
+/** See the size note in `runtime-profile-probe.mjs`: 20,000 is the CACHE-RESIDENT regime only. */
 const NODES = Number(process.env.NODES ?? 20_000);
 const COVER = Number(process.env.COVER ?? 1);
 const FANOUT = Number(process.env.FANOUT ?? 5);
@@ -96,7 +96,7 @@ const build = () => {
     g.addVertex({
       id: `v${i}`,
       /*
-       * ⚠️ COVER CONTROLS THE LABEL'S COVERAGE (item 2040), which is the variable that decides whether
+       * COVER CONTROLS THE LABEL'S COVERAGE (item 2040), which is the variable that decides whether
        * a CSR arm testing EVERY slot beats a seeded walk visiting only the selected starts. `P` on
        * everything (COVER=1) is the vacuous end; `P` on a tenth is where the trade should invert. The
        * off-label vertices get `R` so they are still reachable by other shapes.
@@ -107,7 +107,7 @@ const build = () => {
   }
 
   /*
-   * ⚠️⚠️ **MIXED=1 APPENDS ONE ISOLATED OFF-LABEL VERTEX, AND WITHOUT IT EVERY LABELLED SHAPE HERE
+   * **MIXED=1 APPENDS ONE ISOLATED OFF-LABEL VERTEX, AND WITHOUT IT EVERY LABELLED SHAPE HERE
    * PROFILES THE WRONG ARM** (item 2039). `P` covers every vertex above, so `dropVacuousLabels`
    * DELETES any `hasLabel('P')` step and the profile shows a plan the step never reached. One
    * isolated off-label vertex (no edges, so no answer changes) makes the step survive — which is the
@@ -121,7 +121,7 @@ const build = () => {
     g.addEdge({
       id: `e${k}`,
       from: g.getVertexById(`v${(k * 7919) % NODES}`),
-      // ⚠️ THE REPEAT INDEX IS LOAD-BEARING (item 1518). Any linear `(a*k + b) % N` is invariant
+      // THE REPEAT INDEX IS LOAD-BEARING (item 1518). Any linear `(a*k + b) % N` is invariant
       // under `k -> k + N`, and the FANOUT edges leaving one vertex are exactly k0, k0+N, k0+2N, …
       // — so the old `(k * 104_729) % NODES` sent EVERY one of them to the SAME target. Degrees
       // looked perfect and the graph was functional: one distinct out-neighbour per vertex at any
@@ -168,7 +168,7 @@ const SHAPES = {
   hoporder: traversal(V(), out('E'), values('k'), order()),
   // Grouping, the twin of GQL's `grouped`, which item 1358 found is 66% of its shape.
   grouped: traversal(V(), groupCount({ by: 'k' })),
-  // ⚠️ THE HOP VARIANTS — item 1833. `rung-gap-screen.mjs` reports `groupCount` as the ONLY modifier
+  // THE HOP VARIANTS — item 1833. `rung-gap-screen.mjs` reports `groupCount` as the ONLY modifier
   // that degrades with depth on the Gremlin side (14.3-21.9x its own `rows` cell at depths 2-5),
   // and it is the only flag the grid raises in BOTH engines. The node-level row above cannot show
   // it: the cliff is between depth 1 and depth 2.
@@ -188,7 +188,7 @@ const SHAPES = {
   filterchain: traversal(V(), hasLabel('P'), has('k', gt(44)), count()),
   // De-duplication over a hop, which materializes a set per traversal.
   hopdedupe: traversal(V(), out('E'), dedupe(), count()),
-  // ⚠️ A HOP WITH A FILTER AFTER IT (item 1493). `filterchain` filters the VERTEX SET (200,000
+  // A HOP WITH A FILTER AFTER IT (item 1493). `filterchain` filters the VERTEX SET (200,000
   // tests) and `hopbare` walks without filtering; neither is the common real shape, which is to
   // walk and then filter the FAR end — one test per EDGE, so the test count scales with FANOUT
   // rather than with |V|. Item 1492 measured this at 51.8 ms against `hopbare`'s 44.5 at
@@ -203,7 +203,7 @@ const SHAPES = {
   // that gap is exactly where item 1473 found a 4.63x defect (`combineRows` built a key set both
   // UNION branches discarded). The same question asked of Gremlin.
 
-  // ⚠️ OPPOSITE DIRECTIONS DELIBERATELY. Item 1460 fuses `union(out(T), out(T))` into one hop, so a
+  // OPPOSITE DIRECTIONS DELIBERATELY. Item 1460 fuses `union(out(T), out(T))` into one hop, so a
   // same-direction union would measure the fusion rather than the union machinery.
   unioned: traversal(V(), union(out('E'), in_('E')), count()),
   // A wide projection: two sub-traversals materialized per row.
@@ -215,7 +215,7 @@ const SHAPES = {
   // A named step and a select, the shape a join is written as.
   selected: traversal(V(), as_('a'), out('E'), select('a'), count()),
   // Grouping with a REDUCER, which `groupCount` above does not exercise.
-  // ⚠️ `keyBy`, NOT `by`. `group`'s config form is `{ keyBy, valueBy }` while `groupCount`'s is
+  // `keyBy`, NOT `by`. `group`'s config form is `{ keyBy, valueBy }` while `groupCount`'s is
   // `{ by }`, and this row passed `{ by: 'k' }` for eight hundred items. A stray property is spread
   // into the step and `keyBy` is left undefined, which means GROUP BY SELF: measured at item 1735,
   // `group({by:'k'})` returns 2000 buckets over 2000 vertices where `group({keyBy:'k'})` returns 97.
@@ -229,13 +229,13 @@ const SHAPES = {
   groupbyself: traversal(V(), group(), count()),
   // Barrier: the whole stream collapsed into one list.
   folded: traversal(V(), values('k'), fold(), count()),
-  // ⚠️ `values()` DIRECTLY, with nothing after it to dilute the measurement. Item 1476 found
+  // `values()` DIRECTLY, with nothing after it to dilute the measurement. Item 1476 found
   // `projectValues` at 49.22% of `folded` — but `folded` also pays `foldStep`, so a change to
   // `values` measured only there would be divided by work it did not touch.
   valuesonly: traversal(V(), values('k'), count()),
   // Two keys, which takes the multi-key arm the single-key specialization must not change.
   valuestwo: traversal(V(), values('k', 'n'), count()),
-  // ⚠️ ROWS, NOT COUNT (item 1485): a trailing single-key `values(k)` under a `count()` is a
+  // ROWS, NOT COUNT (item 1485): a trailing single-key `values(k)` under a `count()` is a
   // presence filter and the values are never produced, so a count tail measures the shortcut rather
   // than the read. These two force the rows out, and differ only in the fused walk's `pick`:
   // `far.properties[k]` against `far.id`. 149 ns/row against 53 at 200,000 — the gap IS the
@@ -244,7 +244,7 @@ const SHAPES = {
   hopidrows: traversal(V(), out('E'), id()),
 
   /**
-   * ⚠️ Item 1614: THE SECOND HOP UNDER A ROW-RETURNING TAIL, which the screen has never covered.
+   * Item 1614: THE SECOND HOP UNDER A ROW-RETURNING TAIL, which the screen has never covered.
    * Every two-hop shape above ends in `count()`, which `hopChainCount` answers from degrees without
    * walking at all (item 590) — so the whole two-hop WALK has only ever been profiled in the arm
    * where it does not run. `gremlin-cliff-finder.ts` priced the row-returning twin at **315 ns a
@@ -272,14 +272,14 @@ const SHAPES = {
   // PER-CALL cost, not a per-row one, so none of items 1613-1636's walk fusions touch it — and it
   // is what every point query pays.
   //
-  // ⚠️ THE PLAN IS REUSED HERE, like every shape in this file, so this measures EXECUTION only.
+  // THE PLAN IS REUSED HERE, like every shape in this file, so this measures EXECUTION only.
   // Construction is the other half and has its own instrument (`gremlin-build-share-probe.mjs`,
   // where item 1578 measured it at a MEDIAN of 48.1% of `V().count()`).
   point: traversal(V(), hasId('v12345'), values('k')),
   pointcount: traversal(V(), hasId('v12345'), count()),
 
   /**
-   * ⚠️ Item 1615: the two shapes item 1614 LEFT on the pipeline, and the only two the cliff finder
+   * Item 1615: the two shapes item 1614 LEFT on the pipeline, and the only two the cliff finder
    * still reads that way. Both are a two-hop walk with a `has` in it, and both now sit beside a
    * FUSED neighbour, which is what makes their cost a route loss rather than honest filtering:
    *
@@ -299,7 +299,7 @@ const SHAPES = {
   // surfaces and none has ever been in a profile — the same question that found `groupStep` (1.27x)
   // and `projectValues` (1.39x) on this probe.
   //
-  // ⚠️ Profiled at 200+ reps from the start. Item 1476: a 72-sample profile ranked the wrong frame,
+  // Profiled at 200+ reps from the start. Item 1476: a 72-sample profile ranked the wrong frame,
   // and item 1477 confirmed the clean side of the same lesson.
 
   // Variable-length: `repeat(out('E')).times(2)`. At FANOUT=5 that is 25 rows per source, so the
@@ -308,7 +308,7 @@ const SHAPES = {
   // The declarative join. Two bound names over one hop, which is the smallest shape that exercises
   // the matcher rather than a single pattern.
   matched: traversal(V(), match(pipe(as_('a'), out('E'), as_('b'))), count()),
-  // ⚠️ TWO AND THREE PATTERNS, because `matched` above has exactly ONE and that is the worst case
+  // TWO AND THREE PATTERNS, because `matched` above has exactly ONE and that is the worst case
   // for anything that amortizes over the solver's DEPTH (item 1559). The DFS is depth 1 there, so a
   // change that trades k copies along a path for 1 at the leaf cannot show anything: k IS 1. These
   // two give the matcher an actual join to solve.
@@ -317,7 +317,7 @@ const SHAPES = {
     match(pipe(as_('a'), out('E'), as_('b')), pipe(as_('b'), out('E'), as_('c'))),
     count(),
   ),
-  // ⚠️ A THREE-PATTERN `matched3` IS DELIBERATELY ABSENT. It measured 2383 ms a REP at FANOUT=5
+  // A THREE-PATTERN `matched3` IS DELIBERATELY ABSENT. It measured 2383 ms a REP at FANOUT=5
   // (125 solutions a source), so it would add ~8 minutes to a 200-rep sweep. Item 1478 made the
   // same call about the 3-hop end-filtered question for the same reason: a shape whose single rep
   // takes seconds makes a probe nobody runs. Two patterns already give the solver a real join, and
@@ -334,13 +334,13 @@ const SHAPES = {
   // Per-traverser scoping: `local` runs its sub-traversal once per incoming traverser, so it is the
   // shape where sub-plan setup cost is paid N times rather than once.
   localized: traversal(V(), local(pipe(outE(), inV())), count()),
-  // ⚠️ THE HAND FLOOR for `localized`: the same inner chain written WITHOUT the local() wrapper.
+  // THE HAND FLOOR for `localized`: the same inner chain written WITHOUT the local() wrapper.
   // `local` re-dispatches its sub-plan once per incoming traverser, and for a plan made only of
   // per-traverser steps (a flatMap chain with no barrier) that scoping changes nothing — so this is
   // the answer `local` could give if it fused. The gap between the two IS the opportunity, measured
   // before building the gate rather than after (item 1465's rule: price with a floor first).
   localfloor: traversal(V(), outE(), inV(), count()),
-  // ⚠️ THE SHAPES THAT ACTUALLY TRAVERSE. The two above both end in a bare `count()`, which a chain
+  // THE SHAPES THAT ACTUALLY TRAVERSE. The two above both end in a bare `count()`, which a chain
   // count can answer WITHOUT walking (0.07 ms) — so their ratio measures whether the count shortcut
   // applies, not what the walk costs. Appending `values('k')` defeats the shortcut in both arms, so
   // these are the pair that prices `local`'s per-traverser dispatch honestly.
@@ -354,14 +354,14 @@ const SHAPES = {
   // question is whether the per-traverser RE-DISPATCH (`applyPlanToStream` walking the step array
   // through a 103-arm switch, once per row) is itself expensive enough to be worth attacking.
   //
-  // ⚠️ Realistic forms. Item 1474's `coalesced` used `coalesce(out('E'), V())`, whose second arm
+  // Realistic forms. Item 1474's `coalesced` used `coalesce(out('E'), V())`, whose second arm
   // rescans the whole graph — a shape nobody writes, and one whose cost is the rescan rather than
   // the dispatch.
   optionald: traversal(V(), optional(pipe(out('E'))), count()),
   coalesced2: traversal(V(), coalesce(pipe(out('E')), pipe(identity())), count()),
   // The floor for both: the arm that almost always wins, with no branch wrapper at all.
   branchfloor: traversal(V(), out('E'), count()),
-  // ⚠️ And the honest pair, since a bare `count()` tail is answered by a chain count without
+  // And the honest pair, since a bare `count()` tail is answered by a chain count without
   // walking (item 1479 learned this the hard way at 377x). At FANOUT 5 every vertex has out-edges,
   // so `optional(out('E'))` always takes its first arm and the floor is semantically comparable.
   optionalvalues: traversal(V(), optional(pipe(out('E'))), values('k'), count()),
@@ -426,7 +426,7 @@ if (sink === 0) {
 }
 
 /*
- * ⚠️⚠️ THE CLOSED-FRAMES REMINDER IS PRINTED, NOT JUST FILED (item 1985).
+ * THE CLOSED-FRAMES REMINDER IS PRINTED, NOT JUST FILED (item 1985).
  *
  * `PROBES.md` opens with a table of frames that are closed targets, and its own sentence is "read
  * this BEFORE nominating anything from a profile". CLAUDE.md's rule, though, is to read `PROBES.md`
@@ -439,7 +439,7 @@ if (sink === 0) {
  * profile, before anyone reads the frames.
  */
 const CLOSED_FRAMES_NOTE =
-  '# ⚠️ Before nominating a frame from this profile, read the CLOSED-FRAMES table at the top of ' +
+  '# Before nominating a frame from this profile, read the CLOSED-FRAMES table at the top of ' +
   'PROBES.md.\n#    indexEdgeLabel, getEdgeById/getVertexById, commitElementLabels, set labels, ' +
   '#commitNormalized,\n#    insertEdge, pushTokens, addVertex and (garbage collector) are ALL ' +
   'closed targets — indexEdgeLabel has\n#    SIX prior arrivals. A profile whose top frames are ' +

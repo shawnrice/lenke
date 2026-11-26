@@ -1,20 +1,20 @@
 // THE TWO-HOP COUNT against a hand walk, at a fixture ABOVE the dense admission threshold
 // (item 1982).
 //
-// ⚠️⚠️ **THIS FILE EXISTS BECAUSE THE SUITE'S FIXTURES CANNOT REACH THE DENSE ARM AT ALL.**
+// **THIS FILE EXISTS BECAUSE THE SUITE'S FIXTURES CANNOT REACH THE DENSE ARM AT ALL.**
 // `denseChainCount` admits only when `seeds.length > max(vertexCount >> 4, 1024)`, so on any graph
 // below 1,024 vertices it is unreachable BY ARITHMETIC — and every other fixture in this package is
 // far below that. Item 1978 found the same shape of hole one package over: a parity suite passing
 // 801 assertions while never entering the route it named.
 //
-// 🔭 **THE ROUTE IT ANTICIPATES IS NOT BUILT.** Items 1859-1861 priced the dense slot route for this
+// **THE ROUTE IT ANTICIPATES IS NOT BUILT.** Items 1859-1861 priced the dense slot route for this
 // shape at 3.97x and declined it on item 1695's criterion (the two-hop walk is 52 ms against a
 // 160 ms rebuild, so the build can be wasted). Item 1982 re-opened that — item 1889's second-ask
 // policy removes the waste — but located the target on a DIFFERENT arm than first assumed, so the
 // build is deferred. What ships here is the coverage that arm will need: three hop directions and a
 // topology write, each against a hand walk over the adjacency, on a fixture the dense gate admits.
 //
-// ⚠️ The three direction cases are NOT decoration. An unfiltered two-hop count is answered by a
+// The three direction cases are NOT decoration. An unfiltered two-hop count is answered by a
 // DEGREE INNER PRODUCT (`sum over w of arrivals(w) * departures(w)`, item 590), and `both.out` and
 // `out.both` come out different because a `both` hop's two factors coincide — so a route change that
 // got direction wrong would be visible only here.
@@ -27,7 +27,7 @@ import { count, hasLabel, in_, out, toArray, traversal, V } from '../index.js';
 import { twoHopDenseShape } from './count-shortcut.js';
 
 /**
- * ⚠️ 2,000 VERTICES, NOT A HANDFUL. `max(2000 >> 4, 1024)` is 1024, so a full-graph frontier of
+ * 2,000 VERTICES, NOT A HANDFUL. `max(2000 >> 4, 1024)` is 1024, so a full-graph frontier of
  * 2,000 clears it; at 1,024 or fewer the dense arm cannot fire at all and this file would assert
  * nothing. The number is checked in the first test rather than trusted.
  */
@@ -168,7 +168,7 @@ describe('the two-hop count agrees with a hand walk above the dense threshold', 
 });
 
 /*
- * ⚠️⚠️ THE ROUTE CHOICE AS ARITHMETIC. The tests above check the ANSWER, which both arms get right —
+ * THE ROUTE CHOICE AS ARITHMETIC. The tests above check the ANSWER, which both arms get right —
  * so they cannot see a gate mutant at all. These can.
  */
 describe('twoHopDenseShape', () => {

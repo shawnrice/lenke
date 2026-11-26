@@ -64,7 +64,7 @@ export type LabelBox = {
   /**
    * The element's ONE label when it has exactly one, `undefined` for zero or many (item 2085).
    *
-   * ⚠️⚠️ **MAINTAINED IN `commitElementLabels` AND NOWHERE ELSE**, which is the only reason this is
+   * **MAINTAINED IN `commitElementLabels` AND NOWHERE ELSE**, which is the only reason this is
    * safe to add: that function's own doc calls it "the single funnel for every label write — the two
    * element setters and the four add/remove-label methods here", and nothing mutates `box.set` in
    * place (checked: the only in-place `Set.add`/`delete` calls on this codebase's label path are
@@ -74,7 +74,7 @@ export type LabelBox = {
    * WHY IT EXISTS. `matchesLabel` is the most-called helper in the hot paths, and `v.labels.has(n)`
    * is a pointer chase — element -> box -> `.set` -> hash bucket. Measured over 200,000 scattered
    * candidates, 200,000 tests either way: **14.52 ns against 7.56** for a compare against this
-   * field, a **1.92x** on the test. ⚠️ At 400 candidates the same probe reads 4.73 against 3.89
+   * field, a **1.92x** on the test. At 400 candidates the same probe reads 4.73 against 3.89
    * (1.22x) — the saving is a CACHE MISS, so it barely exists cache-resident and is why item 1599,
    * measuring 400 candidates, priced this family as unreachable.
    */
@@ -791,7 +791,7 @@ export class Graph {
    * truth per id.
    */
   /**
-   * ⚠️ KEYED BY THE BARE ID AND SHARED BETWEEN VERTICES AND EDGES, which is the one place the
+   * KEYED BY THE BARE ID AND SHARED BETWEEN VERTICES AND EDGES, which is the one place the
    * "exactly ONE source of truth per id" invariant above does not hold: vertex ids and edge ids are
    * INDEPENDENT spaces (`verticesById` / `edgesById`), so an edge reusing a vertex's id silently
    * replaces that vertex's box. Same for {@link Graph.elementLabels}. A documented limitation, not
@@ -1245,19 +1245,19 @@ export class Graph {
    * A monotonic counter bumped whenever the graph's TOPOLOGY changes — a vertex or an edge added or
    * removed. Advances SYNCHRONOUSLY, which is the whole reason it exists.
    *
-   * ⚠️ `version` AND `epoch(name)` CANNOT SERVE THIS PURPOSE, and item 1571 declined a cache over
+   * `version` AND `epoch(name)` CANNOT SERVE THIS PURPOSE, and item 1571 declined a cache over
    * exactly that: both are deferred, reading 0 through three mutations and moving only after a task
    * drain, so a cache keyed on either hands a STALE result to the ordinary
    * `g.addEdge(...); query(g, …)` shape. `vertexCount`/`edgeCount` advance eagerly but cannot serve
    * either — a delete plus an add leaves both unchanged while the topology differs.
    *
-   * ⚠️ TOPOLOGY, NOT MUTATION. A property write does NOT bump this, nor does a VERTEX label
+   * TOPOLOGY, NOT MUTATION. A property write does NOT bump this, nor does a VERTEX label
    * write, deliberately: a consumer caching an adjacency structure is not invalidated by either,
    * and bumping would throw away work on every `SET`. Anything keyed on this must therefore depend
    * on the vertex set, the edges, and the edges' TYPES only. (The vertex set is in scope because a
    * CSR numbers vertices by iteration order, so an add or remove shifts every index.)
    *
-   * ⚠️ AN **EDGE** LABEL WRITE DOES BUMP IT, AND THAT IS NOT AN INCONSISTENCY WITH THE LINE
+   * AN **EDGE** LABEL WRITE DOES BUMP IT, AND THAT IS NOT AN INCONSISTENCY WITH THE LINE
    * ABOVE. The adjacency boxes (`Vertex.adjFrom`/`adjTo`, i.e. `edgesFromByLabel`) are keyed BY
    * EDGE TYPE, so `addLabelToEdge` moves an edge between buckets through
    * `indexEdgeLabel`/`deIndexEdgeLabel` without going anywhere near `insertEdge`. Every consumer of
@@ -1266,7 +1266,7 @@ export class Graph {
    * serve a stale answer after `SET`-style label surgery. A vertex label write touches
    * `verticesByLabel`, which no adjacency structure is derived from, so it stays out.
    *
-   * ⚠️ IT IS FOR INVALIDATION, SO IT ONLY HAS TO BE CONSERVATIVE, NOT EXACT. A rollback replays the
+   * IT IS FOR INVALIDATION, SO IT ONLY HAS TO BE CONSERVATIVE, NOT EXACT. A rollback replays the
    * transaction's inverse operations through these same public mutators, so it bumps this too and a
    * cache correctly rebuilds; over-invalidating costs a rebuild, where under-invalidating would
    * serve a wrong answer. Never compare two values for ordering or subtract them — the only sound
@@ -1736,7 +1736,7 @@ export class Graph {
       // rollback replay restores known-good state — never re-check.
     } else if (this.txDepth > 0) {
       /*
-       * ⚠️⚠️ **GUARDED, AND ITEM 2182 REVERTED THIS ON A BAD READING — see item 2184.** With no vertex-side
+       * **GUARDED, AND ITEM 2182 REVERTED THIS ON A BAD READING — see item 2184.** With no vertex-side
        * check declared there is nothing for `runDeferredChecks` to find, so recording the id is pure cost.
        * A DELETION TEST under the differential profiler priced it exactly: removing this one line takes
        * the transaction's penalty on a bulk add from **340.2 to 171.0 ns/op**, i.e. HALF, and makes both
@@ -1883,7 +1883,7 @@ export class Graph {
    */
   commitElementLabels = (id: string, next: Set<string>): void => {
     const box = this.elementLabels.get(id);
-    // ⚠️ DERIVED HERE AND ONLY HERE — see `LabelBox.sole`. Computed once per WRITE, so the
+    // DERIVED HERE AND ONLY HERE — see `LabelBox.sole`. Computed once per WRITE, so the
     // `values().next()` iterator it costs is paid on a label change, never on a read.
     const sole = soleLabelOf(next);
 
@@ -2014,7 +2014,7 @@ export class Graph {
    * Adds an Edge to the Graph. Accepts either an existing Edge or params to
    * construct a new one.
    *
-   * ⚠️ **AN EDGE ID MUST NOT EQUAL A VERTEX ID.** Ids are expected to be unique across BOTH
+   * **AN EDGE ID MUST NOT EQUAL A VERTEX ID.** Ids are expected to be unique across BOTH
    * element kinds, not merely within each — `verticesById` and `edgesById` are separate maps, but
    * {@link Graph.elementProperties} and {@link Graph.elementLabels} are each keyed by the bare id
    * and shared, so an edge that reuses a vertex's id REPLACES that vertex's labels and properties:
@@ -2184,7 +2184,7 @@ export class Graph {
      * did not move. `indexEdgeLabel` below is why: item 312 priced it at 810 ns across seven hash
      * operations and it is 29.8% of this path, so the endpoint lookups were never the cost.
      *
-     * ⚠️ AND THE CORRECTNESS ARGUMENT FOR IT DOES NOT HOLD EITHER, which is the part worth
+     * AND THE CORRECTNESS ARGUMENT FOR IT DOES NOT HOLD EITHER, which is the part worth
      * recording. It looks like the id form also fixes a latent bug: where an endpoint id is absent
      * the resolved form compares `null === null` and counts a self-loop that does not exist. No
      * reachable path produces that — `addEdge` asserts both endpoints resolve, the `Edge.isEdge`
@@ -2193,7 +2193,7 @@ export class Graph {
      * therefore equivalent today, and the id form would have been a 30-line comment buying a
      * measured 0.999x.
      *
-     * ⚠️ If it is ever changed, BOTH SITES MOVE TOGETHER — `removeEdge`'s copy below decrements the
+     * If it is ever changed, BOTH SITES MOVE TOGETHER — `removeEdge`'s copy below decrements the
      * same running tally, and changing one alone would leave `selfLoopCount` permanently wrong with
      * nothing throwing.
      */
@@ -2842,18 +2842,18 @@ export class Graph {
   /**
    * Can ANY commit-time vertex check fire? (item 2181)
    *
-   * 🔑 `runDeferredChecks` revisits every id in `txTouched` and asks exactly three questions —
+   * `runDeferredChecks` revisits every id in `txTouched` and asks exactly three questions —
    * `missingRequired`, `typeViolation`, `uniqueConflict` — plus the validator registry. Each reads only
    * the collections below, so when all seven are empty **there is nothing for the commit-time pass to
    * find**, and recording the id was pure cost.
    *
-   * ⚠️ ALL SEVEN ARE LOAD-BEARING and the list is exhaustive by construction, read off what those three
+   * ALL SEVEN ARE LOAD-BEARING and the list is exhaustive by construction, read off what those three
    * predicates touch: `missingRequired` → required + typeNotNull; `typeViolation` → typeConstraints +
    * recordConstraints; `uniqueConflict` → uniqueConstraints; plus cardinality (a vertex lands in
    * `txTouched` from an EDGE write for exactly this check) and the validator registry. **Adding an
    * eighth constraint kind without adding it here would skip its deferred check.**
    *
-   * 🔑 Computed LIVE rather than memoized: a constraint created inside an open transaction would make a
+   * Computed LIVE rather than memoized: a constraint created inside an open transaction would make a
    * cached flag stale, and seven `size` reads on empty maps are cheaper than the `Set.add` this replaces.
    */
   private get hasDeferrableVertexChecks(): boolean {
@@ -2875,12 +2875,12 @@ export class Graph {
 
     if (this.txDepth > 0) {
       /*
-       * ⚠️⚠️ **THE RECORD IS SKIPPED WHEN NO COMMIT-TIME CHECK COULD READ IT** (item 2181). A profile of
+       * **THE RECORD IS SKIPPED WHEN NO COMMIT-TIME CHECK COULD READ IT** (item 2181). A profile of
        * `MATCH (a:Person) SET a.seen = 1` over 200,000 vertices put `deferConstraint` at **8.0%** and
        * `runDeferredChecks` at **5.4%** on a graph with ZERO constraints — 13.4% spent recording ids so a
        * commit-time pass could ask three questions that had no answers to find.
        *
-       * 🔑 The return value is unchanged: inside a transaction the inline gate is ALWAYS skipped, because
+       * The return value is unchanged: inside a transaction the inline gate is ALWAYS skipped, because
        * either the commit-time pass will do the work or there is no work. Only the bookkeeping is
        * conditional.
        */
@@ -4370,7 +4370,7 @@ export class Graph {
    * paid four allocations for a rollback that could not happen. Audit item 334; the native
    * engine had the same shape at item 331, where `record_change` took its `Change` by value.
    *
-   * ⚠️ "EVERY CALL SITE" IS TRUE ONLY OF THIS CLASS, AND GUARDING THE OTHERS MEASURED NOTHING
+   * "EVERY CALL SITE" IS TRUE ONLY OF THIS CLASS, AND GUARDING THE OTHERS MEASURED NOTHING
    * (item 861). `Vertex` and `Edge` call `recordUndo` four times each and cannot reach a private
    * getter, so every property write there builds its inverse closure unconditionally — and
    * `setProperties`/`removeProperties` also build the `Object.fromEntries(...)` captures it closes

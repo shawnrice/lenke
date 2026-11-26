@@ -2,7 +2,7 @@
  * Item 2016 — IS `edge-filter-floor-1882.mjs`'s "unfiltered floor" THE SAME WALK WITHOUT A
  * PREDICATE, OR A DIFFERENT DATA STRUCTURE?
  *
- * ⚠️⚠️ **THE QUESTION EXISTS BECAUSE TWO DERIVATIONS OF THE PREDICATE'S COST DISAGREED BY 4x.** At
+ * **THE QUESTION EXISTS BECAUSE TWO DERIVATIONS OF THE PREDICATE'S COST DISAGREED BY 4x.** At
  * 200,000/5 the floor probe reads `filtered` 98 ns and `unfiltered` 52 ns per edge visit, which it
  * presents as the predicate costing 1.88x. Solving the two arms as `tests·T + picks·P` gives
  * **T = 68 ns a test** — more than the pick, which chases a far vertex. The CPU profile of the
@@ -10,19 +10,19 @@
  * **8.6%**, i.e. a test around 18 ns. Both cannot be right, and the usual reason is that the two
  * arms are not the same walk.
  *
- * 🔑 **THE HYPOTHESIS IS `seenBefore`.** `hopValuesCsr` (item 1889) serves the UNFILTERED shape over
+ * **THE HYPOTHESIS IS `seenBefore`.** `hopValuesCsr` (item 1889) serves the UNFILTERED shape over
  * a flat `Int32Array` CSR, but only from the SECOND ask on a topology version — item 1889's
  * second-ask policy, so a one-shot query never pays a build. `edge-filtered-hop-values.ts` has NO
  * CSR arm at all: it walks `Set`s of boxed edges on every ask, forever. If that is what is being
  * measured, then the floor probe's `unfiltered` arm is NOT this walk minus a predicate — it is a
  * different data structure, and the 1.88x is mostly route rather than predicate.
  *
- * ⚠️ MIN-OF-N CANNOT SEE THIS, WHICH IS WHY THIS FILE EXISTS. With REPS >= 2 the CSR is armed for
+ * MIN-OF-N CANNOT SEE THIS, WHICH IS WHY THIS FILE EXISTS. With REPS >= 2 the CSR is armed for
  * every rep but the first, so the minimum is always the armed one and the cold ask never shows.
  * [[ts-spelling-probe]] records the same lesson from the other side: print the per-rep series before
  * trusting any summary of it.
  *
- * ⚠️ ONE SHAPE PER PROCESS (item 762), because the three arms share a dispatch site otherwise and
+ * ONE SHAPE PER PROCESS (item 762), because the three arms share a dispatch site otherwise and
  * the figure belongs to the mix.
  *
  *     for s in filtered unfiltered hop; do SHAPE=$s bun edge-filter-series-2016.mjs; done
@@ -53,7 +53,7 @@ let edges = 0;
 
 for (let e = 0; e < N * FANOUT; e += 1) {
   const i = e % N;
-  // ⚠️ SPLIT ON THE REPEAT INDEX — CLAUDE.md's rule. `to = (a*k + b) % N` is invariant under
+  // SPLIT ON THE REPEAT INDEX — CLAUDE.md's rule. `to = (a*k + b) % N` is invariant under
   // `k -> k + N`, so without `hop` in the expression one vertex's FANOUT edges all land on ONE
   // target and every degree statistic still reads correctly.
   const hop = Math.floor(e / N);
@@ -70,11 +70,11 @@ for (let e = 0; e < N * FANOUT; e += 1) {
 
 const SHAPES = {
   filtered: () => traversal(V(), outE('E'), has('w', gt(3)), inV(), values('n')),
-  // ⚠️ `edge-filter-floor-1882.mjs` CALLS THIS THE FLOOR. The point of this file is whether it is.
+  // `edge-filter-floor-1882.mjs` CALLS THIS THE FLOOR. The point of this file is whether it is.
   unfiltered: () => traversal(V(), outE('E'), inV(), values('n')),
   hop: () => traversal(V(), out('E'), values('n')),
   /*
-   * ⚠️ THE HONEST CEILING FOR THE FILTERED WALK, and it is NOT the `unfiltered` arm above. It does
+   * THE HONEST CEILING FOR THE FILTERED WALK, and it is NOT the `unfiltered` arm above. It does
    * exactly what `edge-filtered-hop-values.ts`'s `drain` does, over the same `Set`s: per vertex one
    * bucket lookup, then per edge one edge-property read, the predicate inline, and the far vertex's
    * property. Same structure as the shipped walk, which is what makes it a floor (CLAUDE.md: a hand
@@ -82,7 +82,7 @@ const SHAPES = {
    */
   hand: 'HAND',
   /*
-   * ⚠️ AND THE FLAT-ARRAY CEILING — what an EDGE-indexed CSR could add, which is the lever item
+   * AND THE FLAT-ARRAY CEILING — what an EDGE-indexed CSR could add, which is the lever item
    * 1893's header priced at 62.23 against 34.69 and did not build. Built here per-process so the
    * build cost is NOT in the timed loop: the question is what the WALK would cost over a flat array,
    * not what arming it costs (the second-ask policy is the answer to that, as on the unfiltered
@@ -90,7 +90,7 @@ const SHAPES = {
    */
   flat: 'FLAT',
   /*
-   * 🔑 **AND THE SAME ARRAY WALKED LINEARLY, WITH NO `off`/`len` AT ALL.** This shape never needs the
+   * **AND THE SAME ARRAY WALKED LINEARLY, WITH NO `off`/`len` AT ALL.** This shape never needs the
    * vertex — the predicate reads the EDGE's bag and the projection reads `edge.to` — so the per-vertex
    * loop exists only to find the next bucket. Appending the buckets in `graph.vertices` order makes a
    * linear pass over the edge array produce exactly the nested loop's sequence, which matters because
@@ -99,7 +99,7 @@ const SHAPES = {
    */
   flatlinear: 'FLATLINEAR',
   /*
-   * ⚠️⚠️ **THE ARM THAT SETTLES WHAT THE REMAINING GAP IS.** `flatlinear` INLINES the predicate and
+   * **THE ARM THAT SETTLES WHAT THE REMAINING GAP IS.** `flatlinear` INLINES the predicate and
    * the projection; the engine cannot — it compiles them to closures, because the key, the operator
    * and the projected key are plan data and [[no-runtime-codegen]] is FIRM (no `new Function`: it
    * forces `unsafe-eval` into every embedder's CSP). So this arm is `flatlinear` with exactly the
@@ -109,7 +109,7 @@ const SHAPES = {
    */
   flatclosure: 'FLATCLOSURE',
   /*
-   * ⚠️⚠️ **`flatclosure` BUT WITH A DYNAMIC PROPERTY KEY, which is the one thing left that the
+   * **`flatclosure` BUT WITH A DYNAMIC PROPERTY KEY, which is the one thing left that the
    * engine does and the hand arms do not.** `valuePick`/`compileEdgeTests` close over `key` as a
    * STRING VARIABLE — `edge.properties[key]` — because the key is plan data. A literal
    * `edge.properties.w` gets an inline cache on a fixed object shape; a variable-keyed load takes
@@ -276,7 +276,7 @@ let rows = 0;
 
 for (let r = 0; r < REPS; r += 1) {
   const t0 = performance.now();
-  // ⚠️ A LOOKUP, NOT NESTED TERNARIES — a third hand arm would have nested again.
+  // A LOOKUP, NOT NESTED TERNARIES — a third hand arm would have nested again.
   const HANDS = {
     HAND: handRows,
     FLAT: () => flatRows(flatTables),
@@ -306,7 +306,7 @@ console.log(
     `   best = ${((best * 1e6) / edges).toFixed(0)} ns/edge-visit`,
 );
 /*
- * ⚠️ `first/best` IS THE WHOLE READING. A walk with a second-ask CSR shows a cold first rep and a
+ * `first/best` IS THE WHOLE READING. A walk with a second-ask CSR shows a cold first rep and a
  * flat tail; a walk without one is flat from rep 0 (modulo JIT warm-up, which moves the first two
  * or three reps on EVERY arm and is why the series is printed rather than summarized).
  */

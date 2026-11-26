@@ -1,7 +1,7 @@
 // A cross-engine divergence on an ELEMENT returned from a `CASE` branch, found at item 1873 while
 // settling a key-space question for an unrelated optimization.
 //
-// ⚠️ THE SHAPE OF THE DISAGREEMENT, and it is a VALUE divergence — the engines return different
+// THE SHAPE OF THE DISAGREEMENT, and it is a VALUE divergence — the engines return different
 // answers to a determinate question:
 //
 //     MATCH (n:L) RETURN CASE WHEN n.n = 1 THEN n ELSE n.s END AS k
@@ -13,19 +13,19 @@
 // a plain `RETURN n` agrees too — checked, so this is specific to an element flowing through a
 // `CASE`, not to element rendering over FFI.
 //
-// ⚠️ WHICH ENGINE IS RIGHT IS NOT IN DOUBT HERE, unlike item 1817's parse-surface question. A
+// WHICH ENGINE IS RIGHT IS NOT IN DOUBT HERE, unlike item 1817's parse-surface question. A
 // vertex is not the number `0`. ISO-GQL's conditional expression yields the value of the chosen
 // branch, and the chosen branch is bound to a node — so TS is right and native is dropping the
 // element for what looks like an internal ordinal. It is pinned rather than fixed because the fix
 // is in the RUST engine, which is outside what this item set out to touch.
 //
-// ⚠️ IT IS PINNED WITH `test.failing` BECAUSE THE DIVERGENCE REGISTRY CANNOT TAKE IT.
+// IT IS PINNED WITH `test.failing` BECAUSE THE DIVERGENCE REGISTRY CANNOT TAKE IT.
 // `divergence-registry.ts` deliberately has no `value` axis and says so in terms: "if the engines
 // disagree about the answer to a determinate question, that is a bug in one of them, and no entry
 // may excuse it." So a value divergence gets a failing test that flips to passing the day it is
 // fixed, which is the only form of record that cannot quietly become permanent.
 //
-// ⚠️ AND THE FUZZER DOES NOT REACH IT. The differential fuzzer generates no `CASE` whose branches
+// AND THE FUZZER DOES NOT REACH IT. The differential fuzzer generates no `CASE` whose branches
 // differ in TYPE — this was found by a hand-written probe asking a different question entirely
 // (`distinct-count-keyspace-1873.ts`, whose own first fixture failed to create the collision it
 // was built for). A shape no generator produces has no coverage, which is why the probe is kept.
@@ -69,7 +69,7 @@ describe.if(nativeReady)('an element returned from a CASE branch', () => {
   });
 
   /**
-   * ⚠️ THE DIVERGENCE. Pinned as FAILING: it flips to passing the day native stops dropping the
+   * THE DIVERGENCE. Pinned as FAILING: it flips to passing the day native stops dropping the
    * element, and until then it is a red line in the suite rather than a note nobody reads.
    */
   test.failing('native drops the element and returns an integer', () => {
@@ -81,7 +81,7 @@ describe.if(nativeReady)('an element returned from a CASE branch', () => {
   });
 
   /**
-   * ⚠️ AND THE COUNT AGREES, WHICH IS WHY THIS WAS NEARLY MISSED. `count(DISTINCT <the CASE>)`
+   * AND THE COUNT AGREES, WHICH IS WHY THIS WAS NEARLY MISSED. `count(DISTINCT <the CASE>)`
    * reads 6 on both engines over the wider fixture item 1873 built — native's integers are
    * distinct from each other and from the strings, so the CARDINALITY survives while the VALUES do
    * not. A probe that only counted would have reported agreement.

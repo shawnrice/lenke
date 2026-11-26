@@ -1,12 +1,12 @@
 /*
  * Item 2115 — WHERE does `hop + store + values`'s ~105 unexplained ms go?
  *
- * 🔑 WHAT IS ESTABLISHED. `hop + values` is 28 ms and `hop + store + values` 139 at 200,000 vertices /
+ * WHAT IS ESTABLISHED. `hop + values` is 28 ms and `hop + store + values` 139 at 200,000 vertices /
  * 600,000 edges. Item 2114 blamed the bag; item 2115's floor refuted that — pushing 600,000 of the
  * engine's own vertex objects costs **2.4 ms**, and through a `pick`-shaped closure the pushes add 5.6 ms
- * over the same read. ⚠️ So ~105 ms is unaccounted for and this profile is to name it.
+ * over the same read. So ~105 ms is unaccounted for and this profile is to name it.
  *
- * ⚠️ ROUNDS ARE HIGH AND THE FIXTURE IS BUILT ONCE, so the graph construction is a small share of the
+ * ROUNDS ARE HIGH AND THE FIXTURE IS BUILT ONCE, so the graph construction is a small share of the
  * samples — item 1933's rule, and item 2110 is what happens when it is ignored (a profile whose top
  * frames were all `insertEdge` and `set labels`).
  *
@@ -70,7 +70,7 @@ for (let r = 0; r < ROUNDS; r += 1) {
   series.push(performance.now() - t0);
 }
 
-/* ⚠️ THE FIRST FIVE REPS ARE DROPPED: the CSR arms on the SECOND ask of a topology version, and the
+/* THE FIRST FIVE REPS ARE DROPPED: the CSR arms on the SECOND ask of a topology version, and the
  * per-rep series shows it settling only by rep 6 (204 134 58 58 56 36 35 35 35). A median over all reps
  * reports the arming, not the steady state. */
 const sorted = series.slice(5).sort((a, b) => a - b);

@@ -2,19 +2,19 @@
  * THE INLINE-PREDICATE GATE: can a rung serve this pattern\'s inline properties itself, or must it
  * decline to the general matcher?
  *
- * ⚠️ THE MOST-SHARED MACHINERY IN THE RUNG LADDER, and the reason it is its own module (item 1669):
+ * THE MOST-SHARED MACHINERY IN THE RUNG LADDER, and the reason it is its own module (item 1669):
  * ten or eleven of the thirteen `detect*` entry points reach `inlineHolds`, `inlinePredOf`,
  * `predFor` and `composeInlineGate`. Every rung has to answer the same question before it can claim
  * a query, so the answer belongs below all of them rather than inside the file they used to share.
  *
- * ⚠️ `composeInlineGate` IS WHERE "EQUIVALENT SPELLINGS COST THE SAME" IS ENFORCED, and it is the
+ * `composeInlineGate` IS WHERE "EQUIVALENT SPELLINGS COST THE SAME" IS ENFORCED, and it is the
  * defect class CLAUDE.md opens with. A clause `WHERE u.k = 5` and an inline `{k: 5}` are the same
  * predicate written two ways; a rung that recognises one and declines the other makes them cost
  * 100-300x differently while returning identical answers, so no correctness test can see it. Audit
  * item 125 measured exactly that — a 4x gap between a clause `WHERE` and an inline `{k: v}` on a
  * one-hop count — and this gate is what keeps the two converged.
  *
- * ⚠️ `specializedConjunct` IS A PERFORMANCE DECISION WITH A CORRECTNESS EDGE. Specializing a
+ * `specializedConjunct` IS A PERFORMANCE DECISION WITH A CORRECTNESS EDGE. Specializing a
  * conjunct is sound only when the predicate has an operator form; `undefined` means it does not,
  * and then the caller must keep the general `matches` path. Item 1492 measured the specialization
  * at 14.20 -> 5.45 ns a vertex, so the temptation to widen it is real — but a specialization that
@@ -168,7 +168,7 @@ export const inlineHolds = (
  * slow ones. Both spellings go through the general path's own `inlineHolds` / `nodeWhereOf`,
  * which is what keeps this filter identical to the general path's rather than merely similar.
  *
- * ⚠️ NOT shared with `detectGroupedNodeAggregate`, whose gate is character-identical at the
+ * NOT shared with `detectGroupedNodeAggregate`, whose gate is character-identical at the
  * `reduceRight` and at everything above the `WHERE` — but carries the `WHERE` through
  * `compilePredicate` and its own `freePredicateVars` loop instead of `nodeWhereOf`. The two are
  * not interchangeable, and an anchored edit here matches BOTH sites; that is how this was found.
@@ -189,7 +189,7 @@ export const inlineHolds = (
  * EVERY carried `InlinePred` must hold, composed into ONE closure — the single implementation of a
  * per-element inline gate.
  *
- * ⚠️ ITEM 1601 EXTRACTED THIS FROM EIGHT IDENTICAL COPIES, and the duplication was not cosmetic:
+ * ITEM 1601 EXTRACTED THIS FROM EIGHT IDENTICAL COPIES, and the duplication was not cosmetic:
  * item 1600 put its fast arm in `nodeScanGate`'s copy and the other seven — the three-hop interior,
  * the two-hop middle, the keyed, anchored and far-side walks — silently kept the slow one. That is
  * the shape this file's own note warns about ("two copies of one shape rule is how the far endpoint
@@ -210,7 +210,7 @@ export const composeInlineGate = (preds: readonly InlinePred[]): InlineGate | un
      * lever one consumer along. `inlineHolds` -> `satisfies` re-dispatches over twelve carriers
      * per element; `specializeSingleProp` resolves the single-carrier case to one closure.
      *
-     * ⚠️ THE SIZE OF THIS IS AN ABLATION, not a profile share (item 1104). Replacing the gate call
+     * THE SIZE OF THIS IS AN ABLATION, not a profile share (item 1104). Replacing the gate call
      * in `detectNodeProjection`'s streaming walk with `() => true` — a wrong answer measured only
      * to price the right one — on `MATCH (u:User) WHERE u.team = $v RETURN u.score`, 400 rows of
      * 20,000 seeded, one shape per process:
@@ -227,7 +227,7 @@ export const composeInlineGate = (preds: readonly InlinePred[]): InlineGate | un
      * gone the rung sits exactly on a floor that walks the bucket, tests the label and builds one
      * row. That is what nominated this rather than a frame name.
      *
-     * ⚠️ AND IT GOES HERE, NOT IN THE LOOPS. The gate has thirteen call sites and
+     * AND IT GOES HERE, NOT IN THE LOOPS. The gate has thirteen call sites and
      * `executor-edits-perturb` prices a new walk variant at up to 16% on UNRELATED rows, so a fast
      * arm added per site would cost more than it buys. Composed here the signature is unchanged,
      * every site benefits, and no loop body moves.
@@ -256,7 +256,7 @@ export const composeInlineGate = (preds: readonly InlinePred[]): InlineGate | un
  * One gate conjunct's per-element closure when it can be pre-resolved, else `undefined` so the
  * caller keeps `inlineHolds`.
  *
- * ⚠️ A SEPARATE EXPORTED FUNCTION BECAUSE IT IS A ROUTE CHOICE, and a route choice is
+ * A SEPARATE EXPORTED FUNCTION BECAUSE IT IS A ROUTE CHOICE, and a route choice is
  * answer-equivalent — so every mutant of it survives the differential tests and it needs a test of
  * its own (`perf-gate-needs-its-own-test`, and item 1064's `topKPlan` is the same shape).
  * `gate-conjunct-route.test.ts` is that test.

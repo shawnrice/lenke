@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2025 — mutation round on the existence-filtered scan rung.
 #
-# ⚠️⚠️ **FIRST, DOES THE TEST FILE REACH THE NEW CODE AT ALL?** Item 2018 wrote 13 tests for a new
+# **FIRST, DOES THE TEST FILE REACH THE NEW CODE AT ALL?** Item 2018 wrote 13 tests for a new
 # path and every walk mutant SURVIVED them, because rungs above answered each shape and the new code
 # never ran. The `count-never-fused` mutant below is that check made permanent: it forces
 # `fusableProjectedCount` to return false, so the fused case declines everywhere. It is
@@ -52,11 +52,11 @@ MUTANTS=(
   "test-inverted@@    if (!hasAdjacency(v, hop)) {@@s@    if (!hasAdjacency(v, hop)) {@    if (hasAdjacency(v, hop)) {@"
   "test-always-true@@    if (!hasAdjacency(v, hop)) {@@s@    if (!hasAdjacency(v, hop)) {@    if (false) {@"
   "values-emits-undefined@@    if (key in props) {@@s@    if (key in props) {@    if (true) {@"
-  # ⚠️⚠️ EXPECTED SURVIVOR, AND UNOBSERVABLE BY CONSTRUCTION rather than untested. The value model
+  # EXPECTED SURVIVOR, AND UNOBSERVABLE BY CONSTRUCTION rather than untested. The value model
   # maps a stored `undefined` to NULL ([[numeric-model-f64]]), so a PRESENT key never reads
   # `undefined` and the two tests cannot differ on any reachable graph. `key in props` is kept
   # because it is `projectValues`' own rule — consistency with the engine, not an observable.
-  # ⚠️ ALSO NOTE anchors=5: that line appears in all five walks in this file, so a line anchor edits
+  # ALSO NOTE anchors=5: that line appears in all five walks in this file, so a line anchor edits
   # every one of them. Scoped to this rung's walk with a sed address range (item 2020's lesson).
   "values-presence-to-undefined@@    if (key in props) {@@/const nodeValuesWhereWalk/,/^};/s@    if (key in props) {@    if (props[key] !== undefined) {@"
   # ---- THE GATE ----
@@ -65,7 +65,7 @@ MUTANTS=(
   "gate-admits-multikey@@  if (proj.kind !== 'values' || proj.keys.length !== 1) {@@s@proj.keys.length !== 1@proj.keys.length < 1@"
   "gate-admits-narrowed-source@@  if (source.kind !== 'V' || (source.ids?.length ?? 0) > 0) {@@/export const nodeValuesWhereShortcut/,/^};/s@(source.ids?.length ?? 0) > 0@(source.ids?.length ?? 0) > 1@"
   "gate-admits-four-steps@@  if (steps.length !== 3) {@@/export const nodeValuesWhereShortcut/,/^};/s@  if (steps.length !== 3) {@  if (steps.length < 3) {@"
-  # ⚠️ ANSWER-EQUIVALENT: the pipeline answers identically, so this SHOULD survive the answer tests
+  # ANSWER-EQUIVALENT: the pipeline answers identically, so this SHOULD survive the answer tests
   # and must be caught by a ROUTE assertion. Item 2018's lesson as a standing check.
   "rung-never-fires@@  if (steps.length !== 3) {@@/export const nodeValuesWhereShortcut/,/^};/s@  if (steps.length !== 3) {@  if (true) {@"
 )

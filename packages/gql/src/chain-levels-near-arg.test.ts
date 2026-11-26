@@ -8,24 +8,24 @@
  *       after    16
  * ```
  *
- * ⚠️⚠️ **NOT A DECLINE — AN ANSWER, AND A FAST ONE.** `a` is unbound inside the per-vertex pass, so
+ * **NOT A DECLINE — AN ANSWER, AND A FAST ONE.** `a` is unbound inside the per-vertex pass, so
  * `a.n` evaluated to `undefined`, became `null`, and was excluded as a null: `count` answered 0 and
  * `min`/`max`/`sum`/`avg` answered `null`. Every one of those is a plausible-looking value, which is
  * why no fixture caught it for 400 items.
  *
- * 🔑 **THE CONDITION, NOT THE QUERY — which is what this file is built around.** The defect needs
+ * **THE CONDITION, NOT THE QUERY — which is what this file is built around.** The defect needs
  * BOTH halves at once: a chain the level fold ADMITS (plain directed single-type hops, no
  * relationship variable, no `WHERE`, no inline properties, no union types, no label expression) AND
  * an aggregate whose argument reads something other than the far node. Change either half and the
  * query is correct, because it falls to the path-walk rung that binds every variable. So a test that
  * merely aggregates over a chain passes against the broken gate — and most of this suite did.
  *
- * ⚠️ THE FIXTURE IS LAYERED, NOT A RING, AND THAT IS LOAD-BEARING. On a ring every vertex is both a
+ * THE FIXTURE IS LAYERED, NOT A RING, AND THAT IS LOAD-BEARING. On a ring every vertex is both a
  * start and a far end, so `min(a.n)` and `min(d.n)` COINCIDE and a near-arg test is satisfied by the
  * far-arg answer. Four disjoint layers make every variable's value set disjoint from every other's,
  * so each assertion below can only be met by binding the variable it names.
  *
- * ⚠️ EVERY `near` TEST HERE HAS A `far` CONTROL THAT STAYS ON THE FOLD. Mutating the fix away must
+ * EVERY `near` TEST HERE HAS A `far` CONTROL THAT STAYS ON THE FOLD. Mutating the fix away must
  * leave those passing — otherwise the pair says "something changed" rather than "this changed".
  */
 import { describe, expect, test } from 'bun:test';
@@ -37,7 +37,7 @@ import { query } from './index.js';
 /**
  * Four layers of two vertices each, every vertex of a layer pointing at BOTH vertices of the next.
  *
- * ⚠️ FANOUT 2 is deliberate: it gives the level recurrence a multiplicity greater than 1 at every
+ * FANOUT 2 is deliberate: it gives the level recurrence a multiplicity greater than 1 at every
  * reached vertex, so the arm under test is the weighted one item 2409 shipped and not a degenerate
  * `u_v = 1` pass that cannot tell a weighted fold from a plain one.
  *
@@ -47,7 +47,7 @@ import { query } from './index.js';
  */
 const layered = (startNull = false): Graph => {
   const g = new Graph();
-  // ⚠️ A null START value is built IN, not assigned after: `addVertex` freezes the property bag, so
+  // A null START value is built IN, not assigned after: `addVertex` freezes the property bag, so
   // `v.properties.n = null` throws rather than mutating (and a test that did it inside a try would
   // silently assert nothing).
   const layers: (number | null)[][] = [
@@ -92,7 +92,7 @@ const one = (g: Graph, text: string): unknown => {
 
 describe('item 2410 — an aggregate over a non-far variable on the chain level fold', () => {
   /*
-   * ⚠️ THE PATH COUNT IS ESTABLISHED FIRST AND FROM THE ROW FORM, because every expectation below is
+   * THE PATH COUNT IS ESTABLISHED FIRST AND FROM THE ROW FORM, because every expectation below is
    * a statement about it. `count(a.n)` answering 0 is only a defect once the walk is known to have
    * 16 paths carrying a non-null `a.n`; asserting the 16 separately is what makes the rest readable.
    */
@@ -130,7 +130,7 @@ describe('item 2410 — an aggregate over a non-far variable on the chain level 
   });
 
   /*
-   * ⚠️⚠️ **THE CONTROL, AND IT MUST SURVIVE THE MUTANT.** The far end is what the fold is FOR, and
+   * **THE CONTROL, AND IT MUST SURVIVE THE MUTANT.** The far end is what the fold is FOR, and
    * item 2409's weighted arm answers it. Every number here is the same arithmetic over a different
    * variable, so if a mutant that removes the fix breaks these too, the pair proves nothing about
    * which variable was bound.
@@ -146,7 +146,7 @@ describe('item 2410 — an aggregate over a non-far variable on the chain level 
   });
 
   /*
-   * ⚠️ A MIDDLE variable is the same defect and is tested separately, because a fix that compared
+   * A MIDDLE variable is the same defect and is tested separately, because a fix that compared
    * against "the START variable" rather than "the far variable" would pass every test above and
    * still answer these wrongly. `b` and `c` each lie on 8 of the 16 paths.
    */
@@ -162,7 +162,7 @@ describe('item 2410 — an aggregate over a non-far variable on the chain level 
   });
 
   /*
-   * ⚠️ TWO HOPS AS WELL AS THREE. The level fold admits both widths, and a fix applied at one is
+   * TWO HOPS AS WELL AS THREE. The level fold admits both widths, and a fix applied at one is
    * item 1822's situation — the unfixed neighbour becomes the anomaly. Expectations come from the
    * row form here rather than by hand, because a 2-hop chain over four layers matches L0→L1→L2 AND
    * L1→L2→L3 and the hand count is the part that would go wrong.
@@ -179,7 +179,7 @@ describe('item 2410 — an aggregate over a non-far variable on the chain level 
   });
 
   /*
-   * ⚠️ NULL EXCLUSION IS THE TRAP THAT MADE THE DEFECT INVISIBLE, so it is pinned on the near-arg
+   * NULL EXCLUSION IS THE TRAP THAT MADE THE DEFECT INVISIBLE, so it is pinned on the near-arg
    * path too. The wrong answer WAS a null exclusion — every `a.n` read `undefined`, so `count`
    * excluded all 16 and answered 0. A fixture where the start genuinely carries a null must
    * therefore exclude exactly that one vertex's paths and no others.
@@ -197,7 +197,7 @@ describe('item 2410 — an aggregate over a non-far variable on the chain level 
   });
 
   /*
-   * ⚠️ AN EXPRESSION MIXING THE TWO is the shape a `reads.size === 1` test must also refuse, and it
+   * AN EXPRESSION MIXING THE TWO is the shape a `reads.size === 1` test must also refuse, and it
    * is not covered by any single-variable case above: `sum(a.n + d.n)` reads BOTH, so the far
    * variable IS among its free variables and a check that merely asked "does it read the far node"
    * would admit it and silently drop `a.n`.

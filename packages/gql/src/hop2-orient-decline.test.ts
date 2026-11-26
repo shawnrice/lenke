@@ -2,11 +2,11 @@
  * Item 2104 — `hop2Projection` declines at execution time when the matcher would seed from the other
  * end of the pattern.
  *
- * ⚠️⚠️ **THE DECLINE IS ANSWER-EQUIVALENT, so every mutant of it survives a behavioural test** — the
+ * **THE DECLINE IS ANSWER-EQUIVALENT, so every mutant of it survives a behavioural test** — the
  * standing rule. What CAN be asserted is: (a) the answers are identical whichever route runs, for every
  * spelling; (b) the decline actually FIRES, by the only observable that distinguishes the routes.
  *
- * 🔑 (b) IS THE HARD HALF, and the observable is ROW ORDER. The rung walks from the pattern's written
+ * (b) IS THE HARD HALF, and the observable is ROW ORDER. The rung walks from the pattern's written
  * start; the matcher it hands back to seeds the far end and emits in that order instead. Row order is
  * unspecified by policy — so this test does NOT assert a particular order. It asserts that the
  * oriented route produces a DIFFERENT order from the un-oriented one, which is only true if the
@@ -40,7 +40,7 @@ const build = (users: number, withIndex: boolean): Graph => {
   let e = 0;
 
   /*
-   * ⚠️⚠️ **THE MEMBERSHIPS ARE ADDED IN DESCENDING USER ORDER, AND THAT IS LOAD-BEARING.** The rung
+   * **THE MEMBERSHIPS ARE ADDED IN DESCENDING USER ORDER, AND THAT IS LOAD-BEARING.** The rung
    * emits in User-SCAN order (ascending id); the matcher, seeding the one Doc, emits in the TEAM's
    * adjacency order. Added ascending, those two coincide on this fixture — and three mutants against
    * the decline SURVIVED because of it, exactly as this file's header warned they could. Added
@@ -84,7 +84,7 @@ const namesOf = (rows: readonly Record<string, unknown>[]): string[] =>
   rows.map((r) => String(r.n));
 
 describe('hop2Projection orientation decline (item 2104)', () => {
-  test('⚠️ the ANSWER is identical whichever route runs — indexed and not', () => {
+  test('the ANSWER is identical whichever route runs — indexed and not', () => {
     for (const withIndex of [false, true]) {
       const g = build(40, withIndex);
       const fwd = namesOf(query(g, FWD, { d: 'd1' })).sort();
@@ -99,7 +99,7 @@ describe('hop2Projection orientation decline (item 2104)', () => {
   });
 
   /*
-   * ⚠️⚠️ **THE DECLINE HAS NO BEHAVIOURAL OBSERVABLE, AND TWO TESTS HERE TRIED TO FIND ONE AND FAILED.**
+   * **THE DECLINE HAS NO BEHAVIOURAL OBSERVABLE, AND TWO TESTS HERE TRIED TO FIND ONE AND FAILED.**
    * Both routes return the same rows IN THE SAME ORDER — measured `u37,u33,u29,u25` from the rung and
    * from the matcher, indexed or not. So the gate is tested DIRECTLY, which is the standing rule for a
    * route choice; three mutants survived the order-based attempt.
@@ -115,15 +115,15 @@ describe('hop2Projection orientation decline (item 2104)', () => {
       return match!.patterns![0];
     };
 
-    test('🔑 WITH an index on the far key the rung HANDS BACK — the 59x case', () => {
+    test('WITH an index on the far key the rung HANDS BACK — the 59x case', () => {
       const g = build(40, true);
 
       expect(shouldDeclineToOrientedMatcher(g, cPathOf(FWD), { d: 'd1' })).toBe(true);
     });
 
-    test('⚠️ WITHOUT an index it KEEPS the written order — a label bucket may not outvote', () => {
+    test('WITHOUT an index it KEEPS the written order — a label bucket may not outvote', () => {
       /*
-       * 🔑 `orient`'s own rule: a LABEL-BUCKET estimate is not evidence against the written start, so
+       * `orient`'s own rule: a LABEL-BUCKET estimate is not evidence against the written start, so
        * with no seek available the pattern stays put and this rung must still answer. A decline here
        * would be a pure loss — the matcher would do the same scan with more overhead.
        */
@@ -132,20 +132,20 @@ describe('hop2Projection orientation decline (item 2104)', () => {
       expect(shouldDeclineToOrientedMatcher(g, cPathOf(FWD), { d: 'd1' })).toBe(false);
     });
 
-    test('⚠️ written from the DOC already, it KEEPS the query — no needless flip-flop', () => {
+    test('written from the DOC already, it KEEPS the query — no needless flip-flop', () => {
       const g = build(40, true);
 
       expect(shouldDeclineToOrientedMatcher(g, cPathOf(REV), { d: 'd1' })).toBe(false);
     });
 
-    test('⚠️ a QUANTIFIED segment is refused — reversing a quantified walk is not handled', () => {
+    test('a QUANTIFIED segment is refused — reversing a quantified walk is not handled', () => {
       /*
-       * 🔑 THIS TEST EXISTS BECAUSE A MUTANT SURVIVED. `farEndSeeksNarrower` refuses a pattern with a
+       * THIS TEST EXISTS BECAUSE A MUTANT SURVIVED. `farEndSeeksNarrower` refuses a pattern with a
        * quantifier, mirroring `orient`'s own first gate ("patterns with a variable-length segment keep
        * their written orientation — reversing a quantified walk is not handled here"). Deleting that
        * clause changed no answer in this file until the shape was actually asked for.
        *
-       * ⚠️ A quantified pattern never reaches `hop2Projection` anyway, so this guards the PREDICATE
+       * A quantified pattern never reaches `hop2Projection` anyway, so this guards the PREDICATE
        * rather than the rung — which is precisely why it needs its own assertion rather than relying
        * on a query.
        */
@@ -164,7 +164,7 @@ describe('hop2Projection orientation decline (item 2104)', () => {
       );
 
       /*
-       * 🔑 THE NARROWING THAT MATTERS. `orient` WOULD reverse this (4 Docs against 40 Users, on bucket
+       * THE NARROWING THAT MATTERS. `orient` WOULD reverse this (4 Docs against 40 Users, on bucket
        * size alone) — and that is no reason to give up this rung's fused walk, which items 1821/1822
        * measured at 13.8x. Only a genuine SEEK counts, so the gate says KEEP.
        */
@@ -182,7 +182,7 @@ describe('hop2Projection orientation decline (item 2104)', () => {
     expect(rows).toHaveLength(40);
   });
 
-  test('⚠️ the COMPOSING rungs inherit the decline and still answer correctly', () => {
+  test('the COMPOSING rungs inherit the decline and still answer correctly', () => {
     /*
      * `hop2FoldedAggregate` and `hop2GroupedCount` fold over this walk's rows, so they had to learn
      * the decline too — a fold over a handed-back walk has nothing to fold. Both answers are checked

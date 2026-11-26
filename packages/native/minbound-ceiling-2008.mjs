@@ -6,18 +6,18 @@
  * serves TRAIL, SIMPLE and the default — 10 mode divergences at `min >= 2`, because a walk may reuse
  * an edge where a trail may not.
  *
- * 🔑 **BUT ITEM 2004'S MECHANISM APPLIES AND NEEDS NO THEOREM: a TRAIL DFS collecting endpoints has
+ * **BUT ITEM 2004'S MECHANISM APPLIES AND NEEDS NO THEOREM: a TRAIL DFS collecting endpoints has
  * trail-ness as its LOOP CONDITION.** `perSourceTrailCount` already does exactly this for counts —
  * a DFS over CSR edge POSITIONS carrying a `used` set — so the shape is in the codebase and proven.
  * The question is only whether it is worth building, and that is a ceiling measurement.
  *
- * ⚠️ THE CEILING IS OVER THE **CSR**, NOT THE ADJACENCY BUCKETS. Item 1999 priced a `choose` target
+ * THE CEILING IS OVER THE **CSR**, NOT THE ADJACENCY BUCKETS. Item 1999 priced a `choose` target
  * at 2.96x against a hand ceiling that read the adjacency through `v.adjFrom.get(T)`, and the fused
  * route then beat that "ceiling" by 2.11x because the ceiling itself was a bucket walk. A ceiling is
  * only a floor if it uses the data structure the cure would use. This one walks `Int32Array`
  * neighbours with a `Uint8Array` marker, which is what the engine's own fused arms use.
  *
- * ⚠️ AND IT CHECKS ITS ANSWER AGAINST THE ENGINE, because a ceiling that answers something else is
+ * AND IT CHECKS ITS ANSWER AGAINST THE ENGINE, because a ceiling that answers something else is
  * not a ceiling. The engine's `{2,3}` DISTINCT is the oracle.
  *
  *     bun minbound-ceiling-2008.mjs
@@ -124,7 +124,7 @@ const handTrailRows = () => {
     for (let k = off[v]; k < end; k += 1) {
       const e = eid[k];
 
-      // ⚠️ THE TRAIL CONDITION, and the reason this needs no theorem about walks: a repeated EDGE is
+      // THE TRAIL CONDITION, and the reason this needs no theorem about walks: a repeated EDGE is
       // simply not a candidate. Item 2004's acyclic arm is the same DFS keyed on the VERTEX instead.
       if (usedEdge[e] === 1) {
         continue;
@@ -160,7 +160,7 @@ const time = (fn) => {
 
 const bound = `{${String(MIN)},${String(MAX)}}`;
 /*
- * ⚠️ `no-raw-interpolation` is suppressed below: `bound` is built from this file's own MIN/MAX
+ * `no-raw-interpolation` is suppressed below: `bound` is built from this file's own MIN/MAX
  * numbers, nothing is caller- or data-derived, and a quantifier is SYNTAX — no `$param` can express
  * `{2,3}`, and a tagged template would bind it as a value and produce a syntax error.
  */
@@ -186,7 +186,7 @@ console.log(
   `answers agree              ${eSet === hSet ? 'YES' : `NO\n  engine ${eSet.slice(0, 120)}\n  hand   ${hSet.slice(0, 120)}`}`,
 );
 console.log(
-  '\n# ⚠️ The hand arm includes its own CSR build, because the cure would pay that too.\n' +
-    '# ⚠️ It is the DEFAULT mode (= trail) that the realistic corpus draws, which is why the\n' +
+  '\n# The hand arm includes its own CSR build, because the cure would pay that too.\n' +
+    '# It is the DEFAULT mode (= trail) that the realistic corpus draws, which is why the\n' +
     '#    trail condition is in the loop rather than a per-level BFS (item 2007 refuted that).',
 );

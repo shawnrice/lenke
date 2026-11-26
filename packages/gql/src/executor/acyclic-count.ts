@@ -11,7 +11,7 @@ import { alwaysTrue } from './shortcuts.js';
 /**
  * `MATCH ACYCLIC (a)-[:T]->{m,n}(b) RETURN count(*)` — counted by a per-source DFS (item 2002).
  *
- * ⚠️⚠️ **WHY THIS IS ITS OWN MODULE AND NOT A MODE FLAG IN `var-length-count.ts`.** That file
+ * **WHY THIS IS ITS OWN MODULE AND NOT A MODE FLAG IN `var-length-count.ts`.** That file
  * answers a WALK or a TRAIL with a level-wise recurrence over `Float64Array`s plus a closed-form
  * correction, and its own header records what happens when a new mode is admitted into that
  * machinery without every bound moving together: **item 692 relaxed the detector to depth 4 and
@@ -23,14 +23,14 @@ import { alwaysTrue } from './shortcuts.js';
  * Nothing here touches `walkLevelCount`, `varLengthDegreeCount` or `takesTheLevelRecurrence`, so
  * there is no sibling bound to leave stale.
  *
- * 🔑 **AND IT NEEDS NO INCLUSION-EXCLUSION, WHICH IS THE POINT.** Item 2001 derived a closed-form
+ * **AND IT NEEDS NO INCLUSION-EXCLUSION, WHICH IS THE POINT.** Item 2001 derived a closed-form
  * acyclic correction twice and both were wrong — the first invisibly so on any graph without dense
  * self-loops (the error term was `sum(L_a^2)`, which is ~0 on the workload screen's own fixtures).
  * A DFS that carries the visited set has no correction to get wrong: acyclicity is the DFS's own
  * loop condition. `perSourceTrailCount` is the same idea one axis over — it carries visited EDGE
  * POSITIONS — so this is that function's structure with the set keyed on the vertex instead.
  *
- * ⚠️ THE THREE SEMANTICS THIS GETS RIGHT BY CONSTRUCTION, each pinned in
+ * THE THREE SEMANTICS THIS GETS RIGHT BY CONSTRUCTION, each pinned in
  * `packages/native/src/acyclic-selfloop-parity.test.ts` against the Rust engine:
  *
  *   - A SELF-LOOP is skipped, because its far end is the vertex we are standing on and that is
@@ -59,7 +59,7 @@ export type AcyclicCountSpec = {
 };
 
 /**
- * ⚠️⚠️ **THE WORK CEILING IS A HANG GUARD, NOT A ROUTE CHOICE — and sizing it as a route choice was
+ * **THE WORK CEILING IS A HANG GUARD, NOT A ROUTE CHOICE — and sizing it as a route choice was
  * a measured mistake** (item 2002). This started at `levels * (|V| + |E|)`, copied from
  * `perSourceBudget`, with the stated reasoning that "a route that exceeds the work the level-wise
  * recurrence would have cost has lost its reason to exist". **That reasoning is wrong for this
@@ -78,7 +78,7 @@ export type AcyclicCountSpec = {
  *
  * So the ceiling is deliberately generous, and its only job is to refuse to sit in a DFS whose path
  * count is astronomical — a case where the general loop would not finish either, but where
- * declining at least returns control. ⚠️ It is NOT a performance tuning knob: lowering it cannot
+ * declining at least returns control. It is NOT a performance tuning knob: lowering it cannot
  * make any query faster, it can only send a query back to the slower arm.
  */
 const WORK_FACTOR = 64;
@@ -89,12 +89,12 @@ const budgetFor = (max: number, vertices: number, edges: number): number =>
 /**
  * Count acyclic paths from `src`, or `undefined` if the budget blows.
  *
- * ⚠️ `seen` IS ONE SET REUSED ACROSS SOURCES, cleared per source rather than reallocated — the
+ * `seen` IS ONE SET REUSED ACROSS SOURCES, cleared per source rather than reallocated — the
  * per-frame-allocation lever this repo has rejected before ([[closed-perf-targets]], the per-frame
  * adjacency hash at item 172). A `Set` per source would allocate |sources| of them for a walk that
  * is already the cheap arm.
  *
- * ⚠️ AND IT IS A `Set<number>` OF CSR SLOTS, not of `Vertex` objects: slots are small integers so
+ * AND IT IS A `Set<number>` OF CSR SLOTS, not of `Vertex` objects: slots are small integers so
  * the set is monomorphic, and `order[slot]` recovers the vertex only where a predicate needs it.
  */
 export const acyclicPerSourceCount = (graph: Graph, spec: AcyclicCountSpec): number | undefined => {
@@ -111,7 +111,7 @@ export const acyclicPerSourceCount = (graph: Graph, spec: AcyclicCountSpec): num
   let blown = false;
 
   const extend = (v: number, len: number): void => {
-    // ⚠️ THE ENDPOINT TEST IS APPLIED AT EVERY ADMISSIBLE LENGTH, not only at `max`. A quantified
+    // THE ENDPOINT TEST IS APPLIED AT EVERY ADMISSIBLE LENGTH, not only at `max`. A quantified
     // `{1,3}` counts paths of length 1, 2 AND 3, so each is a row of its own and each must be
     // tested — counting only the deepest is the off-by-a-whole-level this shape invites.
     if (len >= 1 && len >= min && passes(order[v])) {
@@ -152,18 +152,18 @@ export const acyclicPerSourceCount = (graph: Graph, spec: AcyclicCountSpec): num
   };
 
   /*
-   * ⚠️⚠️ **`min === 0` ADMITS THE ZERO-LENGTH PATH — one row per source — AND OMITTING IT WAS A
+   * **`min === 0` ADMITS THE ZERO-LENGTH PATH — one row per source — AND OMITTING IT WAS A
    * WRONG ANSWER SHIPPED AT ITEM 2002.** The differential fuzzer caught it at item 2005 as
    * `MATCH ACYCLIC (a:T)<-[:F]-{0,2}(b) RETURN count(*)`, a VALUE divergence, which
    * `divergence-registry.ts` says no entry may excuse. On a 3-chain, `{0,1}` reads 5 for WALK and
    * TRAIL and **2** for ACYCLIC — short by exactly the source count.
    *
-   * ⚠️ AND IT WAS GREEN AT ITEM 2002, because the draw needs `mode = acyclic` AND `min = 0`
+   * AND IT WAS GREEN AT ITEM 2002, because the draw needs `mode = acyclic` AND `min = 0`
    * together and the fuzzer picks both at random. A passing generative run is evidence about the
    * SHAPES IT DREW, which is why the `{0,k}` case now has a named cross-engine test
    * (`acyclic-minzero-parity.test.ts`) rather than relying on being redrawn.
    *
-   * ⚠️ `passes` APPLIES TO IT. The zero-length path's endpoint IS its start, so the endpoint
+   * `passes` APPLIES TO IT. The zero-length path's endpoint IS its start, so the endpoint
    * predicate and label have to hold for the source itself — and `src` has already had the SEED
    * test applied, so both ends are tested exactly once. `{0,0}` never arrives here: the detector
    * refuses `max < 1`.
@@ -178,7 +178,7 @@ export const acyclicPerSourceCount = (graph: Graph, spec: AcyclicCountSpec): num
 
   for (const s of src) {
     /*
-     * ⚠️ `idx.get` CANNOT MISS, and a guard here was DELETED at item 2004 after two false
+     * `idx.get` CANNOT MISS, and a guard here was DELETED at item 2004 after two false
      * justifications. `csrFor` builds `order` from `[...graph.verticesById.values()]`, so every
      * vertex has a slot — an isolated one and one carrying only another edge type included, which is
      * what the guard's note claimed made it reachable. Its second justification, a staleness window,
@@ -203,13 +203,13 @@ export const acyclicPerSourceCount = (graph: Graph, spec: AcyclicCountSpec): num
 /**
  * The detector's ACYCLIC arm: `detectVarLengthCount`'s closure for this mode (item 2002).
  *
- * ⚠️ IT LIVES HERE AND NOT IN `var-length-count.ts` FOR TWO REASONS, one architectural and one
+ * IT LIVES HERE AND NOT IN `var-length-count.ts` FOR TWO REASONS, one architectural and one
  * mechanical. Architecturally, nothing about ACYCLIC belongs in the file that owns the walk/trail
  * arithmetic — that separation is what guarantees no shared bound can be left stale, which is the
  * failure item 692 recorded. Mechanically, written inline it took `detectVarLengthCount` to a lint
  * complexity of 38 against a cap of 35, the cap that file's own note warns is already reached.
  *
- * ⚠️ THE CLOSURE MAY RETURN `undefined`, which is the runtime decline `clauses.ts` documents as this
+ * THE CLOSURE MAY RETURN `undefined`, which is the runtime decline `clauses.ts` documents as this
  * rung's privilege (item 1399) — it falls through to the general clause loop, the arm that serves
  * this mode today, so a decline is a no-op rather than a regression.
  */
@@ -251,12 +251,12 @@ export const acyclicCountRow = (args: {
       passes,
       seedPasses,
       /*
-       * ⚠️ THE **COMPILED** NODE, not the AST one — which is what makes all three seed spellings
+       * THE **COMPILED** NODE, not the AST one — which is what makes all three seed spellings
        * seek (item 1979). `compileLinear` attaches a clause `WHERE` reading the start to the
        * compiled node as `pred`/`seedHints`, so one call finds the same index candidate for
        * `WHERE a.n = $p`, `(a {n: $p})` and `(a WHERE a.n = $p)` alike.
        *
-       * ⚠️ Only when there IS a start predicate: a node without one has nothing to seek, and
+       * Only when there IS a start predicate: a node without one has nothing to seek, and
        * `seekedSeeds` returning `undefined` is what keeps the label-extent path for that case
        * (routing it through the seeker's generator instead cost 1.37-1.72x at item 1979).
        */

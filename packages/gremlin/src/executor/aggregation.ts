@@ -134,7 +134,7 @@ export const aggregateComparable = function* (
  *   - `aggregateNumber`: `asNumber` THROWS on a non-number (TinkerPop raises rather than coercing),
  *     and `mean` divides by the count of non-null values.
  *
- * ⚠️ ONE KEY ONLY. `values(j, k)` emits one value PER KEY per element, so a single accumulator
+ * ONE KEY ONLY. `values(j, k)` emits one value PER KEY per element, so a single accumulator
  * would silently count differently — the same non-equivalence `fuseValuesIsCount` refuses.
  */
 /**
@@ -142,7 +142,7 @@ export const aggregateComparable = function* (
  * fusedValuesAggregate} replaces? `undefined` means "not this shape", and the ordinary dispatch
  * runs unchanged.
  *
- * ⚠️ ONE KEY ONLY. `values(j, k)` emits one value PER KEY per element, so a single accumulator
+ * ONE KEY ONLY. `values(j, k)` emits one value PER KEY per element, so a single accumulator
  * would silently aggregate differently — the same non-equivalence `fuseValuesIsCount` refuses.
  */
 export const fusableValuesAggregate = (
@@ -172,7 +172,7 @@ export const fusableValuesAggregate = (
  * A residual that is ONE global aggregate, for the already-projected values a fused hop walk
  * produced — item 1857 for `min`/`max`, item 2408 for `sum`/`mean`.
  *
- * ⚠️⚠️ **`sum`/`mean` WERE REFUSED HERE FOR FIVE HUNDRED ITEMS, AND THE REASON IS NOW RETIRED
+ * **`sum`/`mean` WERE REFUSED HERE FOR FIVE HUNDRED ITEMS, AND THE REASON IS NOW RETIRED
  * RATHER THAN FORGOTTEN.** This gate used to read: "those two are ORDER-SENSITIVE in the last ulp
  * of an f64 addition, and byte-identity with the Rust engine is a hard invariant here — a different
  * summation order is a different answer." Both halves were true as stated, and the second one no
@@ -185,15 +185,15 @@ export const fusableValuesAggregate = (
  *   - **item 2400's OWNER RULING** had already freed the premise it rested on, that the fused
  *     walk's visit order must match the pipeline's: walk order is implementation-dependent.
  *
- * 🔑 **AND THE INVARIANT HELD ANYWAY, WHICH IS WHY THIS COSTS NOTHING TO TAKE.** Item 1918 built
+ * **AND THE INVARIANT HELD ANYWAY, WHICH IS WHY THIS COSTS NOTHING TO TAKE.** Item 1918 built
  * this exact fusion, measured it against the RUST engine over the FFI on a reciprocal ramp — 12
  * shapes, **12/12 bit-identical**, with a control proving the fixture can see summation order — and
  * reverted it, because overturning a refusal two prior items had made deliberately was the owner's
- * call rather than its own. Item 2401 made that call. ⚠️ Do NOT re-pin that bit-identity as a test
+ * call rather than its own. Item 2401 made that call. Do NOT re-pin that bit-identity as a test
  * invariant: it is a measured fact about today's walks, not the contract, and pinning it would
  * rebuild the lock in a new place.
  *
- * ⚠️ IT IS A DIFFERENT ENTRY POINT FROM {@link fusableValuesAggregate}, NOT A WIDENING, because the
+ * IT IS A DIFFERENT ENTRY POINT FROM {@link fusableValuesAggregate}, NOT A WIDENING, because the
  * inputs differ: that one sees a `values` step still in the plan and reads the property off each
  * element; here the fused walk has already extracted the values, so the fold takes them raw.
  */
@@ -223,20 +223,20 @@ export const fusableProjectedAggregate = (
 /**
  * Fold already-projected values to one `sum`/`mean` — item 2408, built and reverted at item 1918.
  *
- * ⚠️ THE SEMANTICS ARE `fusedValuesAggregate`'S NUMERIC ARM, deliberately mirrored line for line,
+ * THE SEMANTICS ARE `fusedValuesAggregate`'S NUMERIC ARM, deliberately mirrored line for line,
  * exactly as {@link foldProjectedMinMax} mirrors its non-numeric one: a `null` is SKIPPED (not
  * added as 0), `asNumber` THROWS on a non-number rather than coercing — TinkerPop raises — `mean`
  * divides by the count of NON-NULL values, and an input with no non-null value answers `null`
  * rather than nothing. Each of those five is a named mutant in `numfold-mutants-1918.mjs`.
  *
- * ⚠️⚠️ **IT TAKES ITEM 1919's EAGER DRAIN, AND I PREDICTED IT WOULD NOT — 1.58x on `sum`, 1.49x on
+ * **IT TAKES ITEM 1919's EAGER DRAIN, AND I PREDICTED IT WOULD NOT — 1.58x on `sum`, 1.49x on
  * `mean`, measured only because the claim was written down and then checked.** The reasoning
  * against it was specific and wrong: item 1919 priced the drain at 2.09x on a STRING column but
  * only 1.15x on a numeric one, and a `sum` column is numeric BY CONSTRUCTION (`asNumber` throws
  * otherwise) — so a drain looked like an 800,000-slot allocation bought for ~15% on a reduce that
  * needs one accumulator.
  *
- * 🔑 **WHAT REFUTED IT WAS THE TWIN'S OWN NUMBER IN THE SAME RUN.** After the fusion landed,
+ * **WHAT REFUTED IT WAS THE TWIN'S OWN NUMBER IN THE SAME RUN.** After the fusion landed,
  * `values(k).min()` — which drains — sat at 65.51 ms against the bare walk's 62.18, while this
  * fold, iterating, sat at 97.77. Two folds over the same walk, one ON its floor and one 1.57x
  * above it, differing in exactly the drain. `numfold-drain-ab-2408.sh`, 3 order-alternated rounds:
@@ -249,12 +249,12 @@ export const fusableProjectedAggregate = (
  *   min      66.44      64.87    CONTROL, flat
  * ```
  *
- * ⚠️ AND THE ALLOCATION ARGUMENT WAS NOT WRONG, IT WAS OUTWEIGHED: the array is still built, and
+ * AND THE ALLOCATION ARGUMENT WAS NOT WRONG, IT WAS OUTWEIGHED: the array is still built, and
  * the generator boundary it removes costs more than the 800,000 slots cost. That is item 1919's
  * finding — a value crossing a generator boundary is the per-element term, not the work done with
  * it — and the numeric column pays it too.
  *
- * ⚠️ THE DRAIN CANNOT CHANGE THE ANSWER even for an order-sensitive reduce: it yields the same
+ * THE DRAIN CANNOT CHANGE THE ANSWER even for an order-sensitive reduce: it yields the same
  * elements in the same order, so the left fold re-associates nothing. Order is why this fold needed
  * an owner ruling at all, and the drain is the one part of it that never did.
  */
@@ -263,7 +263,7 @@ export const foldProjectedNumeric = (values: HopWalk, kind: 'sum' | 'mean'): unk
   let count = 0;
   let sawNonNull = false;
 
-  // ⚠️ NAMED `drained` RATHER THAN `src`, which is the twin's name for the same thing, so that a
+  // NAMED `drained` RATHER THAN `src`, which is the twin's name for the same thing, so that a
   // mutation anchor on this loop reaches ONE of the two folds. The first A/B here lost a run to a
   // line that occurred twice ([[ambiguous-anchor-strings]]).
   const drained = values.drain === undefined ? values : values.drain();
@@ -288,7 +288,7 @@ export const foldProjectedNumeric = (values: HopWalk, kind: 'sum' | 'mean'): unk
 /**
  * Fold already-projected values to one `min`/`max`.
  *
- * ⚠️ THE SEMANTICS ARE `fusedValuesAggregate`'S NON-NUMERIC ARM, deliberately mirrored: a `null`
+ * THE SEMANTICS ARE `fusedValuesAggregate`'S NON-NUMERIC ARM, deliberately mirrored: a `null`
  * is skipped, the comparison is `compareTotal` (not `<`, so mixed types have a total order), and
  * an input with no non-null value answers `null` rather than nothing. The two are verified against
  * each other by test rather than by inspection — a near-twin that must stay identical is item
@@ -300,7 +300,7 @@ export const foldProjectedMinMax = (values: HopWalk, kind: 'min' | 'max'): unkno
   let seen = false;
 
   /**
-   * ⚠️ THE EAGER DRAIN WHEN THE WALK OFFERS ONE (item 1919) — **2.09x on a STRING key**, and the
+   * THE EAGER DRAIN WHEN THE WALK OFFERS ONE (item 1919) — **2.09x on a STRING key**, and the
    * reason it matters so much more there than for a number is worth keeping.
    *
    * `toArray` already prefers a walk's `drain` (item 1412) and `foldProjectedList` takes it for
@@ -314,7 +314,7 @@ export const foldProjectedMinMax = (values: HopWalk, kind: 'min' | 'max'): unkno
    *   CONTROL values(s)  76.74 -> 78.19      flat
    * ```
    *
-   * 🔑 WHY THE STRING KEY PAYS 8x WHAT THE NUMERIC ONE DOES, which is the part that was not obvious:
+   * WHY THE STRING KEY PAYS 8x WHAT THE NUMERIC ONE DOES, which is the part that was not obvious:
    * it is NOT the comparison. `strcmp-ceiling-1919.mjs` priced all 800,000 string comparisons at
    * ~11 ms in a tight loop (and `compareCodePoints` at 13.5 ns a call), against a 123 ms gap. Both
    * profiles put >52% in the SAME frame — the CSR walk's lazy iterator — but it costs ~105 ns an
@@ -322,15 +322,15 @@ export const foldProjectedMinMax = (values: HopWalk, kind: 'min' | 'max'): unkno
    * yield as SMIs; a string yields a HEAP POINTER. Removing the generator removes that difference,
    * which is why the win tracks the VALUE TYPE rather than the comparator.
    *
-   * ⚠️ AND THAT IS WHY THE COMPARATOR REDUCTION WAS **NOT** BUILT. `sort-key-specialize.ts`'s string
+   * AND THAT IS WHY THE COMPARATOR REDUCTION WAS **NOT** BUILT. `sort-key-specialize.ts`'s string
    * arm is real for `order()`, and the obvious move here was to reuse it — classifying as the fold
    * goes, which needs no O(n) pre-scan. Priced first: **4.98 ms** of the row on ASCII, and
    * **nothing at all** once 1 string in 1000 carries a surrogate. Do not re-attempt it for this
    * fold.
    *
-   * ⚠️ ORDER WAS NEVER A QUESTION HERE, which is why this arm needed no decision while
+   * ORDER WAS NEVER A QUESTION HERE, which is why this arm needed no decision while
    * `sum`/`mean` waited for one until item 2408: `min`/`max` over a total order are
-   * order-INVARIANT, so draining cannot change the answer even in the last ulp. ✅ And item 2408
+   * order-INVARIANT, so draining cannot change the answer even in the last ulp. And item 2408
    * took the same drain for {@link foldProjectedNumeric}, where it is worth 1.58x/1.49x — the
    * drain is order-PRESERVING, so even an order-sensitive reduce can have it.
    */
@@ -360,18 +360,18 @@ export const foldProjectedMinMax = (values: HopWalk, kind: 'min' | 'max'): unkno
 /**
  * Is the residual exactly a global `fold()`? (item 1909.)
  *
- * ⚠️⚠️ **A FOLD'S ELEMENT ORDER IS ITS ANSWER, which is why this needs an argument the `min`/`max`
+ * **A FOLD'S ELEMENT ORDER IS ITS ANSWER, which is why this needs an argument the `min`/`max`
  * arm does not.** Item 1857 folded those in place because they are ORDER-INVARIANT, and item 1630
  * sorted a residual `order()` in place because sorting DESTROYS the input order — neither cares what
  * the walk's visit order is. A `fold` preserves it, so fusing one is sound only if the fused walk's
  * order IS the pipeline's.
  *
- * ✅ IT IS, AND NOT BY ASSUMPTION: `toArray` already returns these walks' drained output directly,
+ * IT IS, AND NOT BY ASSUMPTION: `toArray` already returns these walks' drained output directly,
  * and the differential fuzzer compares Gremlin results IN ORDER against the Rust engine. So any
  * walk whose order differed from the pipeline's would already be failing on the bare projection —
  * the order is the contract, not an accident of the fusion.
  *
- * ⚠️ `toList` IS NOT ADMITTED. It is a separate step kind in this AST and a terminal rather than a
+ * `toList` IS NOT ADMITTED. It is a separate step kind in this AST and a terminal rather than a
  * barrier; widening to it would be a second question with its own emit semantics.
  */
 export const fusableProjectedFold = (rest: readonly Step[]): boolean => {
@@ -381,7 +381,7 @@ export const fusableProjectedFold = (rest: readonly Step[]): boolean => {
 
   const [step] = rest;
 
-  // ⚠️ NO SCOPE CHECK, AND A MUTANT IS WHY. `fusableProjectedAggregate` guards `min`/`max` against
+  // NO SCOPE CHECK, AND A MUTANT IS WHY. `fusableProjectedAggregate` guards `min`/`max` against
   // a non-global scope because those steps carry one in this surface — `fold` does NOT: its AST
   // node is `{ kind: 'fold' }` with no scope field at all. A guard against it SURVIVED mutation,
   // which is what dead code looks like (item 1899 deleted one in the same position for the same
@@ -392,7 +392,7 @@ export const fusableProjectedFold = (rest: readonly Step[]): boolean => {
 /**
  * Is the residual exactly `aggregate(k).cap(k)` or `store(k).cap(k)`? (item 1911.)
  *
- * ⚠️⚠️ **ITEM 1909 REFUSED THIS PAIR AND THE REASON IT GAVE DOES NOT HOLD AT THIS SCOPE.** That
+ * **ITEM 1909 REFUSED THIS PAIR AND THE REASON IT GAVE DOES NOT HOLD AT THIS SCOPE.** That
  * entry said a side effect which "also PASSES THE STREAM THROUGH is a different emit contract from a
  * barrier that replaces it, and `aggregate` and `store` differ from each other on eagerness in
  * TinkerPop" — both true in general, and both UNOBSERVABLE here, which reading the two steps
@@ -409,10 +409,10 @@ export const fusableProjectedFold = (rest: readonly Step[]): boolean => {
  *     distinction is real and is what the `rest.length === 2` bound preserves: anything AFTER `cap`
  *     declines, and so does anything between the side effect and it.
  *
- * ⚠️ THE KEYS MUST MATCH, and that is not a formality: `aggregate('a').cap('b')` yields side effect
+ * THE KEYS MUST MATCH, and that is not a formality: `aggregate('a').cap('b')` yields side effect
  * `b`, which this plan never populated — an empty list, not the walk.
  *
- * ⚠️ AND NO OTHER STEP MAY REFERENCE A SIDE EFFECT, which the caller's `rest` bound gives for free
+ * AND NO OTHER STEP MAY REFERENCE A SIDE EFFECT, which the caller's `rest` bound gives for free
  * here: the fused rungs claim `V()` plus one hop, so a plan reaching this residual has exactly four
  * steps and the two in `rest` are the only ones that can touch `ctx`. A second `aggregate('x')`
  * earlier would make `cap` yield the CONCATENATION, and there is no room for one.
@@ -420,29 +420,29 @@ export const fusableProjectedFold = (rest: readonly Step[]): boolean => {
 /**
  * `aggregate(k).count()` / `store(k).count()` over a fused walk (item 2069).
  *
- * ⚠️⚠️ **ITEM 1909 REFUSED THE PASS-THROUGH FORM ON A CONTRACT ARGUMENT, AND THAT ARGUMENT DOES NOT
+ * **ITEM 1909 REFUSED THE PASS-THROUGH FORM ON A CONTRACT ARGUMENT, AND THAT ARGUMENT DOES NOT
  * BIND UNDER `count`.** Its reason, quoted from `index.ts`: "a side effect that also PASSES THE
  * STREAM THROUGH is a different emit contract from a barrier that replaces it, and `aggregate` and
  * `store` differ from each other on eagerness in TinkerPop."
  *
- * 🔑 **BOTH HALVES OF THAT ARE TRUE AND NEITHER IS OBSERVABLE HERE, because `count()` is a
+ * **BOTH HALVES OF THAT ARE TRUE AND NEITHER IS OBSERVABLE HERE, because `count()` is a
  * NON-CANCELLING FULL CONSUMER.** The eagerness difference becomes visible only when something
  * downstream stops the stream early — `projected-fold.test.ts` pins exactly that shape, where
  * `aggregate(x).limit(0).cap(x)` yields 6 and `store(y).limit(0).cap(y)` yields 1. A `count` never
  * rejects a traverser, so eager and lazy collection reach the same bag and the same number.
  *
- * ⚠️ **THE BAG IS STILL POPULATED, IDENTICALLY.** `ast.ts` exposes `sideEffects` to expression
+ * **THE BAG IS STILL POPULATED, IDENTICALLY.** `ast.ts` exposes `sideEffects` to expression
  * evaluation, so a bag is observable in general; this fusion is NOT licensed to skip it just because
  * this shape's query never reads it. Same contents, same order, same eagerness — only the traverser
  * per element goes.
  *
- * ⚠️ `cap` IS NOT ADMITTED HERE and `count` is not admitted by {@link fusableProjectedBagCap}: the
+ * `cap` IS NOT ADMITTED HERE and `count` is not admitted by {@link fusableProjectedBagCap}: the
  * two arms are disjoint by their second step, so neither can shadow the other.
  */
 /**
  * A BARE TRAILING `aggregate(k)` over a fused walk — the barrier with nothing after it (item 2070).
  *
- * ⚠️⚠️ **`store` IS DELIBERATELY NOT ADMITTED, AND THAT IS THE WHOLE CONTRACT.** Item 2069 could take
+ * **`store` IS DELIBERATELY NOT ADMITTED, AND THAT IS THE WHOLE CONTRACT.** Item 2069 could take
  * BOTH bag steps because `count()` consumes the stream entirely, so eager and lazy collection were
  * indistinguishable. Here the residual is the LAST step and the stream passes through to the caller,
  * who may stop early — `hop-values.ts`'s rule is that "`run` stays as lazy as it was for a caller
@@ -465,27 +465,27 @@ export const fusableProjectedBarrier = (rest: readonly Step[]): boolean =>
 /**
  * A bare trailing `store(k)`: the walk banked into the bag, LAZY for the caller — item 2112.
  *
- * ⚠️⚠️ **WHY `store` COULD NOT USE {@link barrierProjectedBag}, AND STILL CANNOT.** That returns the
+ * **WHY `store` COULD NOT USE {@link barrierProjectedBag}, AND STILL CANNOT.** That returns the
  * DRAINED ARRAY, so every consumer gets an eager result — and `run` is the public lazy API, so a caller
- * that `break`s out would have caused elements to be collected it never pulled. ⚠️ `aggregate` is
+ * that `break`s out would have caused elements to be collected it never pulled. `aggregate` is
  * exempt because it already materializes its upstream by contract; `store` does not.
  *
- * 🔑 **THIS RESULT IS LAZY AS AN ITERATOR AND EAGER VIA `drain`**, which is both halves of item 1412's
+ * **THIS RESULT IS LAZY AS AN ITERATOR AND EAGER VIA `drain`**, which is both halves of item 1412's
  * rule: the breaking caller takes the iterator and bags only what it pulled; `toArray` takes `drain` and
  * bags everything, which is its definition.
  *
- * ⚠️⚠️ **ONE GENERATOR, PULLED BY BOTH PATHS — AND THAT IS THE WHOLE CORRECTNESS ARGUMENT.** Item 2098
+ * **ONE GENERATOR, PULLED BY BOTH PATHS — AND THAT IS THE WHOLE CORRECTNESS ARGUMENT.** Item 2098
  * built this with the iterator walking the source while `drain()` called the source's OWN `drain`, which
  * is TWO independent paths both pushing to the bag: an element reached by both is pushed twice and the
  * bag SILENTLY DOUBLES (demonstrated there, at 10 where 5 is correct). That item concluded a single-use
- * latch was needed. 🔑 It is not: a generator cannot yield the same element twice, so pulling ONE of them
+ * latch was needed. It is not: a generator cannot yield the same element twice, so pulling ONE of them
  * from both paths makes "exactly once" the generator's own guarantee rather than new state this code has
  * to maintain. No latch, no flag, no consumed-bit.
  *
- * ⚠️ IT DELIBERATELY DOES NOT USE `values.drain`. The fused walks' drains are `[...walk()]` — they call
+ * IT DELIBERATELY DOES NOT USE `values.drain`. The fused walks' drains are `[...walk()]` — they call
  * the walk factory AGAIN and re-walk from scratch, which would re-bag everything the iterator already
  * pulled. Driving the iterator here is what keeps this independent of every walk's drain, so no walk
- * needs a new contract. 🔑 That costs the drain its fast path, and the cost is measured: item 2111 priced
+ * needs a new contract. That costs the drain its fast path, and the cost is measured: item 2111 priced
  * this arm at **1.50x over the generic path** (16.0 ns/row against 24.0), where a slice-backed drain
  * would have been 2.11x — the 2.1x item 2098 advertised was measured against a `values.slice()` drain
  * this engine does not have.
@@ -526,7 +526,7 @@ export const barrierProjectedStore = (
 /**
  * The drained walk pushed into the bag and PASSED THROUGH (item 2070).
  *
- * ⚠️ IT RETURNS THE DRAINED ARRAY, NOT A COUNT — the barrier passes its stream on, which is what
+ * IT RETURNS THE DRAINED ARRAY, NOT A COUNT — the barrier passes its stream on, which is what
  * makes this different from {@link countProjectedBag}. The bag is filled FIRST, in walk order, so the
  * result is answer-identical to the generic path and not merely equal in length.
  */
@@ -562,7 +562,7 @@ export const fusableProjectedBagCount = (rest: readonly Step[]): boolean => {
   }
 
   /*
-   * ⚠️ A GLOBAL `count()` ONLY. `count(local)` counts WITHIN each element rather than the stream, so
+   * A GLOBAL `count()` ONLY. `count(local)` counts WITHIN each element rather than the stream, so
    * it is a different question and must not reach a drain of the whole walk.
    */
   return counted.kind === 'count' && !('scope' in counted && counted.scope === 'local');
@@ -571,7 +571,7 @@ export const fusableProjectedBagCount = (rest: readonly Step[]): boolean => {
 /**
  * The drained walk pushed into the side-effect bag, answered as its LENGTH (item 2069).
  *
- * ⚠️ THE BAG IS FILLED BEFORE THE COUNT IS RETURNED, in walk order, which is what makes this
+ * THE BAG IS FILLED BEFORE THE COUNT IS RETURNED, in walk order, which is what makes this
  * answer-identical to the generic path rather than merely equal in the number.
  */
 export const countProjectedBag = (
@@ -605,7 +605,7 @@ export const fusableProjectedBagCap = (rest: readonly Step[]): boolean => {
     return false;
   }
 
-  // ⚠️ `subgraph` ALSO WRITES A KEY `capStep` READS FIRST (`ctx.subgraphs`), and it is deliberately
+  // `subgraph` ALSO WRITES A KEY `capStep` READS FIRST (`ctx.subgraphs`), and it is deliberately
   // not admitted above: its value is a GRAPH, not a bag of the walk's elements.
   return capped.kind === 'cap' && capped.key === bag.key;
 };
@@ -613,7 +613,7 @@ export const fusableProjectedBagCap = (rest: readonly Step[]): boolean => {
 /**
  * The already-projected values as ONE list-shaped row.
  *
- * ⚠️⚠️ **THE DRAIN IS THE WHOLE POINT, not a micro-optimization.** The generic `foldStep` wraps every
+ * **THE DRAIN IS THE WHOLE POINT, not a micro-optimization.** The generic `foldStep` wraps every
  * element in a traverser and pulls them through the generator chain: at 200,000 vertices /
  * 1,000,000 edges `V().out(E)` materializes in **4.48 ms** via the walk's drain and **99.47** when a
  * `fold()` follows it, and `V().out(E).values(k)` goes **42.99 -> 137.77** the same way. Both deltas
@@ -623,16 +623,16 @@ export const fusableProjectedBagCap = (rest: readonly Step[]): boolean => {
 /**
  * A RESIDUAL THAT IS ONLY A GLOBAL `count()` (item 2020).
  *
- * ⚠️⚠️ **COUNTING COST 2.1x MATERIALIZING, which is the wrong way round and is what nominated this.**
+ * **COUNTING COST 2.1x MATERIALIZING, which is the wrong way round and is what nominated this.**
  * On the Gremlin screen at 50,000 vertices, one shape per process:
  *
  * ```text
- *     V().outE(E).has(w, gt 3).inV()           5.31 ms   ⬅ builds 85,713 ROWS
- *     V().outE(E).has(w, gt 3).inV().count()  11.20      ⬅ builds ONE number
+ *     V().outE(E).has(w, gt 3).inV()           5.31 ms   <- builds 85,713 ROWS
+ *     V().outE(E).has(w, gt 3).inV().count()  11.20      <- builds ONE number
  *     V().outE(E).has(w, gt 3).count()        11.05
  * ```
  *
- * 🔑 **THE CAUSE IS THAT `count` LEFT THE RESIDUAL NON-EMPTY AND NO FUSED CASE CLAIMED IT.** A walk
+ * **THE CAUSE IS THAT `count` LEFT THE RESIDUAL NON-EMPTY AND NO FUSED CASE CLAIMED IT.** A walk
  * whose `rest` is empty is returned whole and `toArray` reads its `drain` (item 1412); a walk with a
  * residual goes to the generic route, which wraps every element in a traverser for `countStep`. Item
  * 1956 made `count` RIDE this rung rather than decline the plan — "it is not consumed, deliberately"
@@ -643,7 +643,7 @@ export const fusableProjectedBagCap = (rest: readonly Step[]): boolean => {
  * Item 1909 priced that iteration directly: ~95 ms per 800,000 elements (~119 ns each) against a
  * drained 4.48 ms, with 73% of the profile in `generatorResume` and the adjacency generator.
  *
- * ⚠️ `count` CARRIES A SCOPE, UNLIKE `fold` — `{ kind: 'count'; scope?: 'global' | 'local' }`. A
+ * `count` CARRIES A SCOPE, UNLIKE `fold` — `{ kind: 'count'; scope?: 'global' | 'local' }`. A
  * LOCAL count counts each traverser's own iterable value rather than the stream, which is a
  * different question, so it is refused here exactly as `fusableProjectedAggregate` refuses it for
  * `min`/`max`. (`fusableProjectedFold` has no such guard and says why: `fold`'s node has no scope
@@ -677,17 +677,17 @@ const countIterable = (it: Iterable<unknown>): number => {
 };
 
 /**
- * ⚠️ THE DRAIN IS PREFERRED, and for this family that is two wins rather than one: it skips the
+ * THE DRAIN IS PREFERRED, and for this family that is two wins rather than one: it skips the
  * traverser wrapping AND it is where item 2016's flat edge array lives, so an edge-filtered count
  * now takes the same linear pass its projecting sibling does. A walk without a `drain` is counted in
  * one pass rather than materialized — `[...values].length` would allocate an array to throw away.
  *
- * ⚠️ RETURNS A ONE-ELEMENT ARRAY, which is Gremlin's contract for a reducing terminal and what
+ * RETURNS A ONE-ELEMENT ARRAY, which is Gremlin's contract for a reducing terminal and what
  * `foldProjectedList` returns for its own.
  */
 export const countProjectedWalk = (values: HopWalk): unknown[] => {
   /*
-   * ⚠️⚠️ **THREE ARMS, AND THE ORDER IS MEASURED, NOT STYLISTIC (item 2062).** An A/B over the only
+   * **THREE ARMS, AND THE ORDER IS MEASURED, NOT STYLISTIC (item 2062).** An A/B over the only
    * three rows that reach this function — found by census, not assumed — split in OPPOSITE
    * directions: `countIterable` was 1.15x FASTER on the scan-where row and 2.99x/3.57x SLOWER on the
    * two edge rows. So neither of the original arms may be preferred globally, and `count` exists for
@@ -729,7 +729,7 @@ export const fusedValuesAggregate = function* (
 
     const props = el.properties;
 
-    // ⚠️ THIS GUARD IS CURRENTLY REDUNDANT, AND IT STAYS. Mutation says so rather than reading:
+    // THIS GUARD IS CURRENTLY REDUNDANT, AND IT STAYS. Mutation says so rather than reading:
     // removing it SURVIVED the whole suite, because a missing key reads as `undefined` and the very
     // next test (`v == null`) skips it. So for these four terminals "absent" and "present null" are
     // indistinguishable.
@@ -792,7 +792,7 @@ export const fusedValuesAggregate = function* (
  * terminal is not a reduce. But `fuseOrderTake` (item 1574) folds a following `take(n)` into the
  * order as a `cap`, so a capped order IS bounded and can be driven the same way.
  *
- * ⚠️ WHY, and it is the fast side that named the target (item 1590's method). GQL answers
+ * WHY, and it is the fast side that named the target (item 1590's method). GQL answers
  * `RETURN n.k ORDER BY k LIMIT 10` in 0.935 ms against Gremlin's 3.479 — the biggest ABSOLUTE
  * cross-surface gap left. Profiling the SLOW side then showed where its time goes, and it is not
  * the sort: `streamTopByBys` is 23.2% while the generator chain feeding it is **48.6%**
@@ -822,7 +822,7 @@ export const fusedValuesTopK = function* (
    * A generator, NOT an array: the whole point of a capped order is that the stream is never
    * materialised, which item 1576 established for this shape.
    *
-   * ⚠️ **ITS 54% IS ATTRIBUTION, NOT COST — PROVED BY DELETING IT (item 1809).** This frame
+   * **ITS 54% IS ATTRIBUTION, NOT COST — PROVED BY DELETING IT (item 1809).** This frame
    * profiles at **54.0% of `hopordercap`**, which reads as one generator resume per element for a
    * property read. Removing the layer entirely — hand `streamTopByBys` the TRAVERSER stream with
    * this read as its `project`, which it already applies per item — measured **1.014x on the
@@ -838,7 +838,7 @@ export const fusedValuesTopK = function* (
     for (const t of stream) {
       const el = t.value;
 
-      // ⚠️ THIS GUARD IS UNREACHABLE TODAY, and it stays. Mutation says so rather than reading:
+      // THIS GUARD IS UNREACHABLE TODAY, and it stays. Mutation says so rather than reading:
       // removing it SURVIVED, because `assertFrontierTypes` rejects `values()` on a non-element
       // frontier at PLAN time — `inject(5).values('k')` raises "values() reads from a graph
       // element, but the frontier is a projected…" before any of this runs. So the guard defends
@@ -871,7 +871,7 @@ export const fusedValuesTopK = function* (
  * Is this pair `values(k)` + a capped global `order()` — the shape {@link fusedValuesTopK}
  * replaces? `undefined` means "not this shape".
  *
- * ⚠️ A CAP IS REQUIRED. An uncapped `order()` sorts the whole stream, so there is nothing to bound
+ * A CAP IS REQUIRED. An uncapped `order()` sorts the whole stream, so there is nothing to bound
  * and the fusion would have to materialise — exactly what it is meant to avoid. The cap arrives
  * from `fuseOrderTake`, which runs earlier in `effectivePlan`, so this pass sees it already folded.
  */
@@ -890,7 +890,7 @@ export const fusableValuesTopK = (
     return undefined;
   }
 
-  // ⚠️ `bys` IS ADMITTED WHEN IT IS EXACTLY ONE IDENTITY BY, and finding that out is why this
+  // `bys` IS ADMITTED WHEN IT IS EXACTLY ONE IDENTITY BY, and finding that out is why this
   // reads the way it does. `order()` bare arrives with no `bys` at all, but the natural DESCENDING
   // spelling — `order().by(Order.desc)` — arrives as `bys: [{kind:'identity', direction:'desc'}]`.
   // The first version of this gate refused any `bys`, which made the `desc` parameter below DEAD
@@ -912,7 +912,7 @@ export const fusableValuesTopK = (
  * Does this `order` sort by the VALUE ITSELF, and in which direction? `undefined` means it does
  * not — a `by` of any other kind projects a different sort key, which is a different question.
  *
- * ⚠️ SHARED BY TWO GATES ON PURPOSE. Item 1591's first version of this logic refused any `bys` at
+ * SHARED BY TWO GATES ON PURPOSE. Item 1591's first version of this logic refused any `bys` at
  * all, which made its own `desc` parameter DEAD CODE: `order().by(Order.desc)` arrives as
  * `bys: [{kind:'identity', direction:'desc'}]`, not as `desc: true`, so the descending spelling
  * silently took the unfused path while the tests covering it appeared to exercise the fused one.
@@ -938,7 +938,7 @@ const identityOrderDesc = (next: Extract<Step, { kind: 'order' }>): boolean | un
  * Is a FUSED hop walk's residual nothing but a global `order()` over the values it already
  * produced? `undefined` means "not this shape" (item 1630).
  *
- * ⚠️ WHY THIS EXISTS WHEN ITEM 1394 CLOSED THE ROW. That item priced the three candidates item 879
+ * WHY THIS EXISTS WHEN ITEM 1394 CLOSED THE ROW. That item priced the three candidates item 879
  * left open — `evalBy` plus `project` at 0.1% (refuted), the comparator at ~4.3%, `[...stream]` at
  * ~5% — and concluded nothing was open. The accounting was right and none of it is re-attempted
  * here. What changed is the MECHANISM: item 1586 built the values fusion and item 1591 extended it
@@ -958,7 +958,7 @@ const identityOrderDesc = (next: Extract<Step, { kind: 'order' }>): boolean | un
  *    engine hop+values+order+LIMIT  272.00 for TEN ROWS  <- the capped spelling is in the same hole
  * ```
  *
- * ⚠️ THE WALK MUST BE IN VALUE MODE — and that gate is CONSERVATIVE, not load-bearing, which I
+ * THE WALK MUST BE IN VALUE MODE — and that gate is CONSERVATIVE, not load-bearing, which I
  * found out by writing a test that passed for the wrong reason. `hopValuesShortcut` also serves a
  * bare hop (`pick` = the far vertex) and `id()`, and `order()` over graph ELEMENTS throws by
  * contract. I expected `sortByBys`' element pass to be what raises, which would make this the one
@@ -992,7 +992,7 @@ export const fusableProjectedOrder = (
     return undefined;
   }
 
-  // ⚠️ A CAP DECLINES, AND THAT IS MEASURED RATHER THAN ASSUMED. `fuseOrderTake` folds a trailing
+  // A CAP DECLINES, AND THAT IS MEASURED RATHER THAN ASSUMED. `fuseOrderTake` folds a trailing
   // `take(n)` into the order as a `cap`, and `orderStep` already takes a streaming top-k for it.
   // The first version of this gate admitted the cap and drove `streamTopByBys` from here, which
   // measured **FLAT** — `hopordercap` 2988.4 / 3335.4 / 2942.1 ms PRE against 3035.2 / 2977.6 /
@@ -1003,7 +1003,7 @@ export const fusableProjectedOrder = (
     return undefined;
   }
 
-  // ⚠️ VALUE MODE ONLY. See the note above: the other two walk modes emit elements (or ids), and an
+  // VALUE MODE ONLY. See the note above: the other two walk modes emit elements (or ids), and an
   // element stream must reach `sortByBys` so it can throw.
   if (consumedLast?.kind !== 'values' || consumedLast.keys.length !== 1) {
     return undefined;
@@ -1036,14 +1036,14 @@ export const fusedProjectedOrder = (
     const { drain } = values;
     const acc = typeof drain === 'function' ? drain() : [...values];
 
-    // ⚠️ THE ELEMENT PASS IS KEPT, and mutation will report it unreachable. `sortByBys` raises
+    // THE ELEMENT PASS IS KEPT, and mutation will report it unreachable. `sortByBys` raises
     // before sorting when any key is a graph element, and it does so even for a stream of ONE where
     // no comparison happens — so a comparator-side check would not be equivalent. In value mode a
     // property value cannot be a Vertex or Edge, which makes this the same deliberately-unreachable
     // guard `fusedValuesTopK` documents above: the static shape is a SEPARATE mechanism that could
     // narrow, and without this the fault would surface from inside a sort rather than at the step.
     /**
-     * ⚠️ THE CLASSIFICATION RIDES THIS PASS, WHICH IS WHY THE NUMERIC ARM IS FREE HERE (item 1807).
+     * THE CLASSIFICATION RIDES THIS PASS, WHICH IS WHY THE NUMERIC ARM IS FREE HERE (item 1807).
      *
      * Both specialization modules record a numeric arm as BUILT, MEASURED and DROPPED — six GQL
      * readings straddling 1.0 — and both name the same reason and the same open question: "a FLOOR
@@ -1056,7 +1056,7 @@ export const fusedProjectedOrder = (
      * REMOVES `allPlainStrings`'s separate scan, so the numeric arm arrives with no scan to eat it
      * and the string arm gets cheaper on the way past.
      *
-     * ⚠️ ONE COMPARATOR SERVES BOTH, and that is exact rather than convenient: for two non-null
+     * ONE COMPARATOR SERVES BOTH, and that is exact rather than convenient: for two non-null
      * surrogate-free strings and for two non-null NaN-free numbers, `compareTotal` reduces to the
      * SAME expression — `x < y ? -1 : x > y ? 1 : 0` — which is `reducedValueComparator`'s body.
      * The casts inside it are erased at runtime.
@@ -1093,7 +1093,7 @@ export const fusedProjectedOrder = (
     // what makes item 1712's correct code-point ordering affordable — that fix cost 1.55x-1.68x
     // here. The scan runs once; `compareTotal` still answers every column it declines.
     //
-    // ⚠️ THIS IS THE SITE THE `values(k).order()` ROW ACTUALLY REACHES. The first attempt wired
+    // THIS IS THE SITE THE `values(k).order()` ROW ACTUALLY REACHES. The first attempt wired
     // only `sortByBys` and changed nothing at all: a counter on all six sort sites showed the row
     // entering HERE and the admit/decline counter never firing.
     acc.sort(allStr || allNum ? reducedValueComparator(opts.desc) : general);
@@ -1187,7 +1187,7 @@ const reduceComparable = (items: readonly unknown[], kind: 'min' | 'max'): unkno
 // Sort `items` IN PLACE by projecting each through the `bys` (first = primary
 // key, rest = tie-breakers, in order). Per-by direction prefers the By's
 // `direction`; falls back to the step-level `desc` (legacy `order({desc})` form).
-// ⚠️ `boundedTop` LIVED HERE — a heap keeping the `cap` best entries, items 1064/1574, with the
+// `boundedTop` LIVED HERE — a heap keeping the `cap` best entries, items 1064/1574, with the
 // stable tie-break on arrival index that made it equal to a full sort's prefix. Item 1790 DELETED
 // it as UNREACHABLE, and the reason is that `sortByBys` is only ever called WITHOUT a cap: item
 // 1576 moved every capped `order()` to `streamTopByBys`, which keeps its own heap and never
@@ -1208,11 +1208,11 @@ const sortByBys = <T>(
    * `desc` is the step-level direction. There is no `cap`: a capped `order()` goes to
    * `streamTopByBys` instead and never reaches here (item 1790 deleted the dead branch).
    *
-   * ⚠️ ONE OBJECT RATHER THAN A SECOND PARAMETER because a seventh positional argument trips
+   * ONE OBJECT RATHER THAN A SECOND PARAMETER because a seventh positional argument trips
    * `max-params`, and the rule is right: `(items, project, bys, desc, graph, ctx)` is three
    * trailing values nobody can read at a call site.
    *
-   * ⚠️ THE KEYS ARE EVALUATED FOR EVERY ITEM, with the element check running over all of them,
+   * THE KEYS ARE EVALUATED FOR EVERY ITEM, with the element check running over all of them,
    * before anything is ordered. Not incidental: `sortByBys` evaluates every key before the element
    * check precisely so a throwing `by` wins over the element fault, and skipping rejected items
    * would silently drop both faults. `streamTopByBys` carries the same rule for the capped shape.
@@ -1262,7 +1262,7 @@ const sortByBys = <T>(
   // over two `unknown` loads ~20M times are the ~~unpriced candidates. Do not re-attempt this
   // rewrite; price those first~~ candidates. See packages/native/order-cost-probe.ts.
   //
-  // ⚠️ ALL THREE ARE NOW PRICED AND ALL THREE ARE CLOSED (item 1394), off a WINDOWED profile of
+  // ALL THREE ARE NOW PRICED AND ALL THREE ARE CLOSED (item 1394), off a WINDOWED profile of
   // `hoporder` — the Gremlin bench had no windowing until item 1392, which is why they stayed
   // unpriced this long:
   //
@@ -1277,7 +1277,7 @@ const sortByBys = <T>(
   // fan-in 1 against 73.5 at fan-in 100, with the bare-hop control flat at 75.9/77.6), which item
   // 1392 closed as having no per-row lever. ~~Nothing is open on this row.~~
   //
-  // ⚠️ THE ~4.3% ABOVE IS THE NUMERIC COMPARATOR, AND THE STRING ONE IS A DIFFERENT QUESTION
+  // THE ~4.3% ABOVE IS THE NUMERIC COMPARATOR, AND THE STRING ONE IS A DIFFERENT QUESTION
   // (item 1713). `hoporder` — the row every figure above was measured on — sorts `k`, a NUMBER,
   // where UTF-16 order already equals code-point order and `compareTotal` falls through its cheapest
   // path. A STRING key pays the whole dispatch chain plus `compareCodePoints` plus a surrogate regex
@@ -1370,7 +1370,7 @@ const sortByBys = <T>(
  *     DRAIN   for-of, no array  consume  48.8      sort  0.0
  *     => accumulation ~= 53.6 ms of 153.6 total  ->  ~1.54x, NOT the 4.4x item 1574 implied
  *
- * ⚠️ ELEMENT FAULTS ARE DEFERRED TO THE END OF THE LOOP, and that is the whole correctness argument.
+ * ELEMENT FAULTS ARE DEFERRED TO THE END OF THE LOOP, and that is the whole correctness argument.
  * `sortByBys` evaluates every key before checking any of them for elements, so an `evalBy` that
  * throws wins over the element fault — item 890 recorded that phase order as guarded by construction
  * only, and item 1575 finally tested it (`by(pipe(fail(…)))` under a `choose`, so one item's key is
@@ -1379,11 +1379,11 @@ const sortByBys = <T>(
  * compared across engines. Setting a flag and throwing after the loop reproduces the old precedence
  * exactly.
  *
- * ⚠️ A `cap` OF 0 STILL DRAINS AND STILL FAULTS. `order().limit(0)` evaluates every key today, so an
+ * A `cap` OF 0 STILL DRAINS AND STILL FAULTS. `order().limit(0)` evaluates every key today, so an
  * early return would silently stop raising — the `cap > 0` guard sits on the heap ACCESS, not on the
  * loop.
  *
- * ⚠️ NO ONE-`by` SPECIALIZATION HERE, deliberately, unlike `sortByBys`. That fast path (item 879)
+ * NO ONE-`by` SPECIALIZATION HERE, deliberately, unlike `sortByBys`. That fast path (item 879)
  * pays off over `n log n` comparisons; a bounded heap does ~`n` of them — one against the root per
  * item — so the multi-key loop is a constant on a term that is already linear.
  */
@@ -1401,7 +1401,7 @@ const sortByBys = <T>(
  * rejecting "most values in O(1) against its heap root (`beatsRoot`)" — so this is the Gremlin side
  * adopting a measured idea rather than a new one.
  *
- * ⚠️ FOUR BEHAVIOURS ARE COPIED EXACTLY, NOT RE-DERIVED, because each is observable:
+ * FOUR BEHAVIOURS ARE COPIED EXACTLY, NOT RE-DERIVED, because each is observable:
  *
  *   1. `at` increments for EVERY item, including the ones skipped, because ties break on ARRIVAL
  *      and the general path increments before any skip can happen.
@@ -1672,7 +1672,7 @@ export const orderStep = function* (
   }
 
   /**
-   * ⚠️ ONE `by` WITH NO DIRECTION OF ITS OWN takes the allocation-free ingest (item 1810). A
+   * ONE `by` WITH NO DIRECTION OF ITS OWN takes the allocation-free ingest (item 1810). A
    * per-`by` direction is refused because `streamTopByKey` folds the step-level `desc` into one
    * `sign`; a `by` that overrides it would need the general path's `dirs` array.
    */

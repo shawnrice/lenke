@@ -1,5 +1,5 @@
 /**
- * ⚠️ **THIS FILE ASSERTED THE OPPOSITE UNTIL ITEM 1793, AND IT WAS WRONG.** Its claim was
+ * **THIS FILE ASSERTED THE OPPOSITE UNTIL ITEM 1793, AND IT WAS WRONG.** Its claim was
  * `match()` COUNTS DISTINCT VARIABLE BINDINGS; A HOP CHAIN COUNTS PATHS — so two parallel edges
  * giving the same `(a, b)` pair were ONE solution. TinkerPop emits one traverser per TRAVERSAL
  * RESULT, so they are TWO, and this engine's own Rust side already answered that way.
@@ -16,12 +16,12 @@
  *     match(…).select('c').count()               2            1            2
  * ```
  *
- * ⚠️ **SO THE MATCH AND THE CHAIN AGREE ON EVERY ROW**, and the TS engine was the only one of the
+ * **SO THE MATCH AND THE CHAIN AGREE ON EVERY ROW**, and the TS engine was the only one of the
  * three that disagreed. The cause was one block in `executor/match.ts`: when a pattern's end tag is
  * unbound, the solver collected the inner traversal's DISTINCT output values and bound each once.
  * Deduplicating there drops a solution per parallel edge.
  *
- * ⚠️ **WHAT ITEM 1655 CONCLUDED FROM THE WRONG PREMISE.** It measured
+ * **WHAT ITEM 1655 CONCLUDED FROM THE WRONG PREMISE.** It measured
  * `match(a-T->b, b-T->c).count()` at **332.4 ms a call against the chain's 1.40 — 237x** (438.8
  * with a `select('c')` tail, 313x), built a planner rewrite flattening the match into the chain,
  * then REVERTED it as a wrong answer on the strength of the table above read the other way round.
@@ -29,7 +29,7 @@
  * 237x is a live equivalent-spelling gap again. It is NOT re-opened by this item — the rewrite also
  * has to survive the second objection below, which still stands on its own evidence.
  *
- * ⚠️ **AND THE FUZZERS COULD NOT HAVE CAUGHT THIS.** The engines diverged on a 3-vertex graph, so
+ * **AND THE FUZZERS COULD NOT HAVE CAUGHT THIS.** The engines diverged on a 3-vertex graph, so
  * nothing subtle was needed — `gremlin-fuzz` simply never builds PARALLEL EDGES, which is the same
  * blindness class as [[fuzzer-blind-to-one-column-group]]. A divergence of this size surviving
  * 20,000 generated queries is a statement about the generator, not about the engines.
@@ -65,7 +65,7 @@ const chainOf = (parallel: boolean): Graph => {
 
 const twoPatterns = () => [pipe(as_('a'), out('T'), as_('b')), pipe(as_('b'), out('T'), as_('c'))];
 
-describe('⚠️ a match SOLUTION is a traversal result, so parallel edges are separate solutions', () => {
+describe('a match SOLUTION is a traversal result, so parallel edges are separate solutions', () => {
   test('they agree when no edge is parallel — the case that hid the bug', () => {
     // This is the pair item 1655 verified on, and it cannot distinguish the two readings. An
     // answer invariant to the property under test cannot validate a claim about it, which is this
@@ -94,7 +94,7 @@ describe('⚠️ a match SOLUTION is a traversal result, so parallel edges are s
   });
 
   /**
-   * ⚠️ A `select(tag)` tail reads a BINDING rather than the tag map the step emits, so it is the
+   * A `select(tag)` tail reads a BINDING rather than the tag map the step emits, so it is the
    * independent check that the multiplicity is the SOLVER's and not an artefact of how the step's
    * output value is counted. It moved with the fix, from 1 to 2.
    */
@@ -105,7 +105,7 @@ describe('⚠️ a match SOLUTION is a traversal result, so parallel edges are s
   });
 
   /**
-   * ⚠️ THE OBJECTION THAT STILL STANDS, and the reason this item does not re-open item 1655's
+   * THE OBJECTION THAT STILL STANDS, and the reason this item does not re-open item 1655's
    * rewrite on its own: a `match` step's output VALUE is a tag map, not the chain's end element,
    * so even where the COUNTS agree the two spellings are not interchangeable mid-plan. A rewrite
    * would have to prove nothing downstream reads the step's value as an element.

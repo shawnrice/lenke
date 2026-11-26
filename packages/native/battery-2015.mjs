@@ -1,7 +1,7 @@
 /**
  * Item 2015 — answer-equivalence battery for `V().branch(values(k)).option(m, <arm>)….none(<arm>)`.
  *
- * ⚠️⚠️ **THE FIXTURE THAT PRICED THIS RUNG CANNOT CHECK IT.** `coalesce-vs-optional-1990.mjs` gives
+ * **THE FIXTURE THAT PRICED THIS RUNG CANNOT CHECK IT.** `coalesce-vs-optional-1990.mjs` gives
  * EVERY vertex an `n` and an out-edge, so three of the four semantics this route has to get right
  * are invisible there:
  *
@@ -17,7 +17,7 @@
  * So this fixture makes the test key sparse, the projected key sparser, leaves one vertex matching
  * no option, and gives one vertex no edge at all.
  *
- * ⚠️ COMPARED POSITIONALLY against the general path, not as a checksum. Gremlin stream order for a
+ * COMPARED POSITIONALLY against the general path, not as a checksum. Gremlin stream order for a
  * single-type step with no `order()` is compared ORDERED against native by `gremlin-fuzz`'s
  * `unordered` decision ([[order-is-unspecified]] does not cover it), so a route that reorders is
  * WRONG rather than merely different — and a checksum cannot see that (item 1955).
@@ -26,7 +26,7 @@
  * `fusedProjectedValues`' chain with `(false ? branchValueHop(effective, graph) : undefined)`,
  * rebuild (`npx nx build @lenke/gremlin`), run, keep the output; then restore, rebuild, run, diff.
  *
- * ⚠️ NOT `undefined ??` IN FRONT, which is what `battery-2014.mjs` used to say: `undefined ?? f()`
+ * NOT `undefined ??` IN FRONT, which is what `battery-2014.mjs` used to say: `undefined ?? f()`
  * evaluates `f()`, so it disables nothing and compares the route against itself. See that file's
  * header for the correction.
  *
@@ -49,7 +49,7 @@ import {
 const g = new Graph();
 
 /*
- * ⚠️ `t` IS THE TEST KEY (SPARSE) AND `p` THE PROJECTED ONE (SPARSER). The `t` values deliberately
+ * `t` IS THE TEST KEY (SPARSE) AND `p` THE PROJECTED ONE (SPARSER). The `t` values deliberately
  * include one that matches no option (2), one vertex with no `t` at all, a vertex with no `p`, and a
  * vertex with no edge of any type.
  */
@@ -92,7 +92,7 @@ const SHAPES = {
     traversal(V(), B().option(0, out('E')).option(1, in_('E')).none(identity()), values('p')),
   'two hops + none, elements': () =>
     traversal(V(), B().option(0, out('E')).option(1, in_('E')).none(identity())),
-  // ⚠️ NO `none()` — an unmatched traverser is DROPPED, which is the semantic `choose` reverses.
+  // NO `none()` — an unmatched traverser is DROPPED, which is the semantic `choose` reverses.
   'no none, values': () => traversal(V(), B().option(0, out('E')), values('p')),
   'no none, elements': () => traversal(V(), B().option(0, out('E'))),
   'identity option, hop none': () =>
@@ -110,7 +110,7 @@ const SHAPES = {
     traversal(V(), B().option(0, out('E')).option(0, in_('E')).none(identity()), values('p')),
   'trailing step': () =>
     traversal(V(), B().option(0, out('E')).none(identity()), values('p'), identity()),
-  // ⚠️ SHAPES THE RUNG MUST DECLINE — here so a gate that wrongly admits one shows as a diff.
+  // SHAPES THE RUNG MUST DECLINE — here so a gate that wrongly admits one shows as a diff.
   'LIST KEY (declines)': () => traversal(V(), B().option([1], out('E')).none(identity())),
   'NaN KEY (declines)': () => traversal(V(), B().option(Number.NaN, out('E')).none(identity())),
   'NULL KEY (declines)': () => traversal(V(), B().option(null, out('E')).none(identity())),
@@ -150,9 +150,7 @@ for (const [name, make] of Object.entries(SHAPES)) {
     unstable += 1;
   }
 
-  console.log(
-    `${same ? '  ' : '⚠️'} ${name.padEnd(28)} ${same ? got[0] : got.join('\n     VS  ')}`,
-  );
+  console.log(`${same ? '  ' : ''} ${name.padEnd(28)} ${same ? got[0] : got.join('\n     VS  ')}`);
 }
 
 console.log(`\n${String(unstable)} UNSTABLE`);

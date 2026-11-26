@@ -1,13 +1,13 @@
 /**
  * MUTATION RUN for item 1869's fused scan dedupe.
  *
- * ⚠️ TWO FILES ARE MUTATED, because the item has two halves with different hazards.
+ * TWO FILES ARE MUTATED, because the item has two halves with different hazards.
  * `node-values.ts` holds the new rung — a wrong walk is a WRONG ANSWER and the answer tests have
  * teeth. `dedupe-filter.ts` holds the predicate EXTRACTED from `dispatch.ts` — a mistake there is a
  * wrong answer on the PIPELINE too, so its mutants must be caught by tests that never touch the new
  * rung at all.
  *
- * ⚠️ EVIDENCE OF EXECUTION FROM BOTH STREAMS — `bun test` reports to STDERR.
+ * EVIDENCE OF EXECUTION FROM BOTH STREAMS — `bun test` reports to STDERR.
  */
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, readFileSync, writeFileSync } from 'node:fs';
@@ -93,7 +93,7 @@ const MUTANTS = [
 
 const TESTS = [
   'src/executor/node-values-dedupe.test.ts',
-  // ⚠️ THE PIPELINE'S OWN DEDUPE TESTS, so a mutant in the EXTRACTED predicate is caught by code
+  // THE PIPELINE'S OWN DEDUPE TESTS, so a mutant in the EXTRACTED predicate is caught by code
   // that never goes near the new rung. Without these the extraction would be untested.
   'src/dedupe-key-namespace.test.ts',
   'src/dedupe-temporal.test.ts',
@@ -102,7 +102,7 @@ const TESTS = [
 
 const verdictOf = (r) => {
   if (!r.ran) {
-    return '⚠️ DID-NOT-RUN';
+    return 'DID-NOT-RUN';
   }
 
   if (r.status === 124 || r.status === 137) {
@@ -150,7 +150,7 @@ for (const m of MUTANTS) {
   const occurrences = base[m.file].split(m.from).length - 1;
 
   if (occurrences !== 1) {
-    console.log(`${m.name.padEnd(50)} ⚠️ ANCHOR MATCHED ${occurrences} TIMES — not applied`);
+    console.log(`${m.name.padEnd(50)} ANCHOR MATCHED ${occurrences} TIMES — not applied`);
     continue;
   }
 

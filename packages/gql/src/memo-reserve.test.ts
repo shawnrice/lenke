@@ -14,7 +14,7 @@ import { type SlotMemo, memoReserve } from './executor/shortcuts.js';
  *
  * — which silently drops the last entry **every time the buffer doubles**.
  *
- * ⚠️ FOUR BLACK-BOX ATTEMPTS FAILED TO CATCH IT, and the two theories behind them were both wrong:
+ * FOUR BLACK-BOX ATTEMPTS FAILED TO CATCH IT, and the two theories behind them were both wrong:
  *
  *   * "the fixtures are too small to grow the buffer" — a counter in the growth branch showed it
  *     fires **3 times** on a 4,096-slot fixture, with 2 of those having entries to copy.
@@ -71,7 +71,7 @@ const readBack = (m: SlotMemo): number[] => {
 };
 
 describe('memoReserve preserves every written entry across growth (item 1418)', () => {
-  test('⚠️ 5,000 single-entry slots — the mutant-killer', () => {
+  test('5,000 single-entry slots — the mutant-killer', () => {
     // THE DIRECT GUARD. The initial buffer is empty and the first allocation is 1024 entries, so
     // 5,000 slots force several doublings. Each slot's value is its own index, so a lost entry shows
     // up as a 0 in a known position rather than as a count that might coincide.

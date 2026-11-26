@@ -1,7 +1,7 @@
 /**
  * REALISTIC GQL WORKLOAD SHAPES, for the differential fuzzer's second arm.
  *
- * ⚠️ WHY THIS EXISTS. A census of the differential fuzzer's generator (`FUZZ_DUMP`) over 20,000
+ * WHY THIS EXISTS. A census of the differential fuzzer's generator (`FUZZ_DUMP`) over 20,000
  * queries said it was skewed badly away from what anyone actually runs against a graph database:
  *
  *     node-only (no edge traversed)   60.8%
@@ -19,7 +19,7 @@
  * incidental: the planner SEEKS on `$param` (see the native property-index work), and this repo's
  * "equivalent spellings must cost the same" rule is built on the `$x = u.k` / `u.k = $x` pair.
  *
- * ⚠️ WHY IT IS A SECOND ARM AND NOT A REBALANCE OF THE FIRST. The existing generator's band
+ * WHY IT IS A SECOND ARM AND NOT A REBALANCE OF THE FIRST. The existing generator's band
  * boundaries are load-bearing: roughly twenty coverage floors at the end of the fuzzer are
  * calibrated against the shares those bands produce, and the file's own history records three
  * separate occasions where adding an arm diluted a neighbour's counter and had to be re-measured.
@@ -27,12 +27,12 @@
  * ADDITIVE — its own iterations, its own counters, its own floors — and not one existing boundary
  * moves. The whole differential fuzzer costs ~2s for 20,000 queries, so the second arm is cheap.
  *
- * ⚠️ EVERY FAMILY IS CHECKED NON-VACUOUS. A query that matches nothing compares nothing, which is
+ * EVERY FAMILY IS CHECKED NON-VACUOUS. A query that matches nothing compares nothing, which is
  * the trap item 51 and item 63 both fell into. `workload-queries.test.ts` asserts that each family
  * returns rows on the fuzzer's fixture, so a family that silently stops matching FAILS rather than
  * passing quietly.
  *
- * ⚠️ ONLY SPELLINGS BOTH ENGINES ACCEPT. `param-support-probe.mjs` priced twenty parameter
+ * ONLY SPELLINGS BOTH ENGINES ACCEPT. `param-support-probe.mjs` priced twenty parameter
  * spellings against both engines before any of this was written; nineteen agree and are used here.
  * The twentieth, `SKIP $k`, is a live divergence — TS's parser restricts `SKIP` to a literal while
  * native accepts a parameter — and is pinned in `workload-queries.test.ts` rather than generated,
@@ -50,7 +50,7 @@ export type Workload = {
   /**
    * The `ORDER BY` is TOTAL, so the comparison must be IN ORDER rather than as a multiset.
    *
-   * ⚠️ STATED BY THE GENERATOR, NOT RE-DERIVED FROM THE TEXT. Item 1040's band generated exactly
+   * STATED BY THE GENERATOR, NOT RE-DERIVED FROM THE TEXT. Item 1040's band generated exactly
    * the right ordered query and was then compared as a multiset anyway, because the harness
    * recognised ordering by sniffing for a sentinel substring the band did not emit — 298 queries
    * that asked the ordered question and 0 that checked it. A generator that knows the answer
@@ -78,7 +78,7 @@ const TYPES = ['E', 'F', 'E|F'] as const;
 /**
  * The node label to anchor on.
  *
- * ⚠️ `T` IS ON EVERY VERTEX, SO THE ENGINE ELIDES IT. That makes `(n:T)` useless for exercising
+ * `T` IS ON EVERY VERTEX, SO THE ENGINE ELIDES IT. That makes `(n:T)` useless for exercising
  * label filtering itself — the same reason the adversarial arm's targeted shapes reach for `U`.
  * `U` is on exactly one vertex, so the filter has to be applied rather than inherited from a
  * seed; the unlabeled spelling is a third route again (no label elision at all).
@@ -87,13 +87,13 @@ const LABELS = [':T', ':T', ':U', ''] as const;
 /**
  * The property a predicate reads.
  *
- * ⚠️ `nu` IS NULL ON SOME VERTICES AND ABSENT ON OTHERS, which is the realistic case and the one
+ * `nu` IS NULL ON SOME VERTICES AND ABSENT ON OTHERS, which is the realistic case and the one
  * that reaches THREE-VALUED LOGIC: a comparison against a missing or null value is UNKNOWN, the
  * row drops, and an engine that treats UNKNOWN as FALSE agrees with one that treats it correctly
  * on every query where nothing is null. `n` and `x` are present everywhere, so a generator using
  * only those never asks the question. `zz` is carried by no vertex at all.
  *
- * ⚠️ WEIGHTED, NOT UNIFORM, AND THE WEIGHTS ARE THE POINT. `U` is on one vertex of six and `zz`
+ * WEIGHTED, NOT UNIFORM, AND THE WEIGHTS ARE THE POINT. `U` is on one vertex of six and `zz`
  * on none, so drawing them uniformly would make roughly half of every scan family's queries
  * EMPTY — and an empty result compares nothing, which is the trap these families exist to avoid.
  * Repeating the dense options halves that cost while keeping the selective and absent ones
@@ -112,7 +112,7 @@ const date = (v: string): Record<string, string> => ({ '@date': v });
 /**
  * Attach an `ORDER BY` — or deliberately NOT, which is half the point of this helper.
  *
- * ⚠️ REALISTIC IS NOT THE SAME AS ROUTED, AND THIS COST A WHOLE DRAFT OF THIS FILE. The first
+ * REALISTIC IS NOT THE SAME AS ROUTED, AND THIS COST A WHOLE DRAFT OF THIS FILE. The first
  * version put an `ORDER BY` on every query it generated, so that the comparison could be made in
  * order. Every family still looked right, every census axis improved, and the `chain-rows` family
  * reached the chain rung it was written for ZERO times — because that rung DECLINES an `ORDER BY`
@@ -129,7 +129,7 @@ const date = (v: string): Record<string, string> => ({ '@date': v });
  * So both spellings are drawn. Unordered is compared as a multiset, which is the correct
  * invariant for an unordered result (`order-is-unspecified`) and loses nothing.
  *
- * ⚠️ PAGING ONLY WHEN ORDERED. A `LIMIT` with no `ORDER BY` lets row order decide WHICH rows
+ * PAGING ONLY WHEN ORDERED. A `LIMIT` with no `ORDER BY` lets row order decide WHICH rows
  * survive, so two engines that are both correct can return different rows. Generating that would
  * manufacture divergences out of a settled non-question, so `page` is reachable only on the
  * ordered branch.
@@ -140,7 +140,7 @@ const withOrder = (
   keys: string,
   page = '',
   /**
-   * ⚠️ AN EXPRESSION SPELLING OF THE SAME ORDERING, where one exists (item 1902). `keys` is a list
+   * AN EXPRESSION SPELLING OF THE SAME ORDERING, where one exists (item 1902). `keys` is a list
    * of output ALIASES, so every ordered query this corpus generated spelled the key as a bound
    * name — and the engine routes the two spellings DIFFERENTLY: `outputColumnSorts` serves a name
    * (and, since item 642, a `prop`), while an expression key reaches the deferred compiled-key arm
@@ -148,7 +148,7 @@ const withOrder = (
    * "a generator that only ever spells a query one way guards only the route that spelling takes,
    * and the fuzzer cannot tell you which route that is."
    *
-   * ⚠️ THE EXPRESSION MUST ORDER IDENTICALLY, or `ordered: true` would be a lie and the harness
+   * THE EXPRESSION MUST ORDER IDENTICALLY, or `ordered: true` would be a lie and the harness
    * would compare two different correct answers. Callers pass a MONOTONE rewrite of the same key
    * over a key they know is numeric — `n.n + 0` for `n.n` — so the two spellings are one question.
    */
@@ -254,16 +254,16 @@ const neighbors = (r: () => number): Workload => {
   ]);
 
   /*
-   * ⚠️⚠️ A SORT KEY THAT READS THE OTHER END, drawn a quarter of the time (item 1903). Every body
+   * A SORT KEY THAT READS THE OTHER END, drawn a quarter of the time (item 1903). Every body
    * here projects `b.n AS x` — the FAR end — so ordering by `x` only ever gave the walk a key it
    * was already building. A key naming `a` is a different ROUTE: the deferred arm hands the walk a
    * reduced projection carrying that endpoint, and deriving its binding flags from the real items
    * was a TS-only WRONG ANSWER on four of five end/key combinations (`a.n` ascending came back in
-   * the walk's arrival order instead). ⚠️ The corpus could not see it because no generated query
+   * the walk's arrival order instead). The corpus could not see it because no generated query
    * had ever put a bare variable read in a sort key — the same blind spot item 1902 closed for the
    * NODE shape, here for the hop.
    *
-   * ⚠️ `a.n, x` RATHER THAN `a.n` ALONE: ties under `a.n` would leave row order to the walk's
+   * `a.n, x` RATHER THAN `a.n` ALONE: ties under `a.n` would leave row order to the walk's
    * arrival order, which is a genuine non-question between two correct engines
    * ([[order-is-unspecified]]), so the projected column breaks them and keeps `ordered: true` true.
    */
@@ -275,7 +275,7 @@ const neighbors = (r: () => number): Workload => {
 /**
  * Two, three and four hops RETURNING ROWS — the shape the old generator produced zero of.
  *
- * ⚠️ THREE SPELLING AXES, ALL LOAD-BEARING, AND THE ROUTE DEPENDS ON EVERY ONE:
+ * THREE SPELLING AXES, ALL LOAD-BEARING, AND THE ROUTE DEPENDS ON EVERY ONE:
  *
  *   - FAR-END-ONLY vs INTERIOR read. A far-end-only projection is answered by a batched sweep
  *     that discards the path; reading an interior variable must route to the depth-first
@@ -346,7 +346,7 @@ const aggregate = (r: () => number): Workload => {
     `MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)-[:E]->(d:T) RETURN count(*) AS x`,
     'MATCH (n:T) RETURN count(DISTINCT n.x) AS x',
     /**
-     * ⚠️ MULTI-HOP FOLDS, ADDED AT ITEM 1831 BECAUSE THEY HAD NO COVERAGE AT ALL. Every multi-hop
+     * MULTI-HOP FOLDS, ADDED AT ITEM 1831 BECAUSE THEY HAD NO COVERAGE AT ALL. Every multi-hop
      * shape above is a `count(*)` — which is item 1816's finding repeating one modifier over: item
      * 1830 gave `min`/`max`/`count(x)` a rung at two and three hops, and the differential fuzzer
      * generated NOT ONE query that could reach it. A rung with no cross-engine coverage is a rung
@@ -358,7 +358,7 @@ const aggregate = (r: () => number): Workload => {
     } AS x`,
     'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T) RETURN count(DISTINCT c.n) AS x',
     /**
-     * ⚠️ A FLOAT-VALUED `sum`/`avg`, WHICH IS THE ONLY WAY SUMMATION ORDER BECOMES OBSERVABLE. The
+     * A FLOAT-VALUED `sum`/`avg`, WHICH IS THE ONLY WAY SUMMATION ORDER BECOMES OBSERVABLE. The
      * fixture carries no float literals, and an integer sum in f64 is EXACT whatever the order — so
      * `sum(b.n)` can never expose the last-ulp sensitivity that `foldFor`'s comment warns about and
      * that items 1829/1830 refused `sum` over. Multiplying by 0.1 makes the addends inexact, so two
@@ -367,7 +367,7 @@ const aggregate = (r: () => number): Workload => {
     `MATCH (a:T)-[:E]->(b:T) RETURN sum(b.n * 0.1) AS x`,
     `MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T) RETURN avg(c.n * 0.1) AS x`,
     /**
-     * ⚠️ `collect`, WHICH WAS NOT GENERATED AT ALL. Its ORDER IS ITS ANSWER, so it is the one
+     * `collect`, WHICH WAS NOT GENERATED AT ALL. Its ORDER IS ITS ANSWER, so it is the one
      * aggregate whose cross-engine comparison tests row order directly rather than a reduction over
      * it — exactly the property items 1829/1830 refused to assume.
      */
@@ -519,7 +519,7 @@ const projection = (r: () => number): Workload => {
 
   return {
     family: 'projection',
-    // ⚠️ ONLY THE SINGLE-KEY, `n.n AS x` BODIES GET AN EXPRESSION SPELLING. `a.n AS x, e.w AS y` is
+    // ONLY THE SINGLE-KEY, `n.n AS x` BODIES GET AN EXPRESSION SPELLING. `a.n AS x, e.w AS y` is
     // two keys over two variables, and `LET v = n.n + $p1 RETURN v AS x` orders by a LET binding
     // whose expression is not `n.n` — spelling either as `n.n + 0` would order DIFFERENTLY and make
     // `ordered: true` false. The one body that qualifies is the plain `RETURN n.n AS x`.
@@ -582,7 +582,7 @@ export const WORKLOAD_FAMILIES: readonly ((r: () => number) => Workload)[] = [
  * is the failure mode this whole item is about.
  */
 /**
- * ⚠️⚠️ THIS LIST IS SORTED AND {@link WORKLOAD_FAMILIES} IS NOT, SO THEY ARE **NOT INDEX-ALIGNED**.
+ * THIS LIST IS SORTED AND {@link WORKLOAD_FAMILIES} IS NOT, SO THEY ARE **NOT INDEX-ALIGNED**.
  * `WORKLOAD_FAMILY_NAMES[i]` does NOT name `WORKLOAD_FAMILIES[i]` — sorted index 12 is
  * `range-scan` while `WORKLOAD_FAMILIES[12]` is `multiPattern`.
  *
@@ -603,7 +603,7 @@ export const WORKLOAD_FAMILY_NAMES: readonly string[] = [
 /**
  * Draw one realistic workload query.
  *
- * ⚠️ UNIFORM OVER FAMILIES, DELIBERATELY. The whole complaint this answers is a generator skewed
+ * UNIFORM OVER FAMILIES, DELIBERATELY. The whole complaint this answers is a generator skewed
  * ~61% onto one shape, so the fix is not a different skew but a flat draw — and a flat draw over
  * the family LIST means adding a family automatically rebalances rather than needing a band
  * boundary moved by hand, which is what made the first generator's shares so hard to change.

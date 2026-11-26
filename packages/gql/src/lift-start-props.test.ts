@@ -12,7 +12,7 @@ import { parse } from './parser.js';
  * Item 1333: `liftStartProps` lifts inline start properties into the clause `WHERE` for
  * MULTI-PATTERN matches, where it used to refuse `patterns.length !== 1` outright.
  *
- * ⚠️ THIS FILE EXISTS BECAUSE MUTATION SAID THE OTHER ONE WAS VACUOUS. `product-inline-lift.test.ts`
+ * THIS FILE EXISTS BECAUSE MUTATION SAID THE OTHER ONE WAS VACUOUS. `product-inline-lift.test.ts`
  * asserts that the braces spelling seeds rather than walking the label bucket — and restoring the
  * old refusal left every one of its assertions green, because inline props ALREADY seed through
  * `indexCandidates`'s `node.pred.props` path whether or not they are lifted. So the lift is NOT
@@ -92,7 +92,7 @@ describe('item 1558: a SINGLE bare node lifts too, and the refusal that blocked 
     expect(inlineCounts(m)).toEqual([0]);
   });
 
-  // ⚠️ THE ROUTE ASSERTION ABOVE IS NOT ENOUGH, and this is the half that matters: item 778 records
+  // THE ROUTE ASSERTION ABOVE IS NOT ENOUGH, and this is the half that matters: item 778 records
   // that lifting on a bare node is exactly where "one rung's admission gate is another rung's
   // disqualifier" bit — a lifted clause `WHERE` disqualified the unbounded BFS rung and turned two
   // `reachability.test.ts` passes into errors. So pin ANSWERS, for the bare node and for the
@@ -143,7 +143,7 @@ describe('the refusals, each of which a mutant tried to remove', () => {
   });
 
   /**
-   * ⚠️ THE COMPOSED SHAPE, which is what actually broke (item 1556).
+   * THE COMPOSED SHAPE, which is what actually broke (item 1556).
    *
    * Every route test above feeds `liftStartProps` a freshly PARSED query — and that is not the
    * path a real query takes. Auto-parameterization (item 1502) runs BEFORE the parse, so
@@ -155,7 +155,7 @@ describe('the refusals, each of which a mutant tried to remove', () => {
    * `rewrite-composition-is-not-free` is the standing rule this breaks: assert the COMPOSED shape,
    * not each rewrite against hand-written input.
    */
-  test('⚠️ COMPOSED: an inline literal survives auto-parameterization and still lifts', () => {
+  test('COMPOSED: an inline literal survives auto-parameterization and still lifts', () => {
     const q = 'MATCH (a:S), (b:P {k: 7}) RETURN b.k AS x';
     const lifted = normalizeLiterals(q);
 
@@ -183,14 +183,14 @@ describe('the refusals, each of which a mutant tried to remove', () => {
   });
 
   /**
-   * ⚠️ THE ANSWER, not the route — the guard the refusals above were missing (item 1556).
+   * THE ANSWER, not the route — the guard the refusals above were missing (item 1556).
    *
    * Every other test here asserts whether `where` is defined, which a route mutant can satisfy
    * while changing rows. These numbers are what item 260 is actually about: an inline `{k: …}`
    * means IS NULL, so a null value matches BOTH the stored-null vertex and the absent-key one,
    * while the clause form it would be lifted to matches NEITHER.
    */
-  test('⚠️ ANSWERS: lifting a user param would turn 2 rows into 0', () => {
+  test('ANSWERS: lifting a user param would turn 2 rows into 0', () => {
     const g = new Graph();
     const a = g.addVertex({ id: 'a', labels: ['P'], properties: { k: null } });
     const b = g.addVertex({ id: 'b', labels: ['P'], properties: { k: 5 } });

@@ -2,15 +2,15 @@
  * THE SORT-SHAPE MATRIX: one fixture and one shape list, shared by the probe and the test
  * (item 1904).
  *
- * ⚠️ ONE COPY, because `ordered-rows.ts` records item 606's reason for exactly this split — "two
+ * ONE COPY, because `ordered-rows.ts` records item 606's reason for exactly this split — "two
  * copies of this list is how one of them falls behind the other". `sort-matrix-1904.ts` adds the
  * rung census; `sort-matrix.test.ts` is the guard that actually runs on every `bun run test`.
  *
- * ⚠️⚠️ AND IT IS A TEST RATHER THAN ONLY A PROBE FOR A REASON THIS SESSION MEASURED: item 1901
+ * AND IT IS A TEST RATHER THAN ONLY A PROBE FOR A REASON THIS SESSION MEASURED: item 1901
  * found `rung-precedence-census.mjs` had been DARK for ~15 items because nobody ran it. A probe
  * guards nothing between the days somebody remembers it.
  *
- * ⚠️ THE FIXTURE IS BUILT SO THAT EVERY ORDER DIFFERS FROM EVERY OTHER, which is what item 1903
+ * THE FIXTURE IS BUILT SO THAT EVERY ORDER DIFFERS FROM EVERY OTHER, which is what item 1903
  * paid to learn: on the perf screen's tie-heavy graph the broken arm's ARRIVAL order and the
  * correct order share their first ten rows, so a wrong answer measured 7.6x faster and read as a
  * clean win.

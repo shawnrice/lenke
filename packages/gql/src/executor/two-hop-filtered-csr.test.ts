@@ -1,10 +1,10 @@
 // The filtered two-hop count over flat slot runs (item 1690), and the shapes that must decline it.
 //
-// ⚠️ EVERY AGREEMENT TEST IS AGAINST AN INDEPENDENT ROUTE — the same question as a `COUNT { … }`
+// EVERY AGREEMENT TEST IS AGAINST AN INDEPENDENT ROUTE — the same question as a `COUNT { … }`
 // subquery, which goes to the per-anchor composition and cannot reach this arm. A hand-computed
 // expectation would only prove that two copies of my arithmetic agree.
 //
-// ⚠️ AND A ROUTE CHOICE IS ANSWER-EQUIVALENT WHEN IT IS *TIGHTENED*: a wrongly relaxed clause
+// AND A ROUTE CHOICE IS ANSWER-EQUIVALENT WHEN IT IS *TIGHTENED*: a wrongly relaxed clause
 // returns a WRONG COUNT and these tests catch it, while a wrongly tightened one silently abandons
 // the arm and every answer stays right. `twoHopFilteredCsrApplies` carries its own assertions for
 // that second direction.
@@ -17,7 +17,7 @@ import { query } from '../index.js';
 import { twoHopFilteredCsrApplies } from './two-hop-filtered-csr.js';
 
 /**
- * ⚠️ LABEL AND PROPERTY MIXED DIFFERENTLY FROM THE DEGREE. Item 1688's fixture labelled
+ * LABEL AND PROPERTY MIXED DIFFERENTLY FROM THE DEGREE. Item 1688's fixture labelled
  * `i % 4 === 0` while taking the degree from `1 + ((i * 2654435761) % 4)`, which forces every
  * labelled vertex to degree 1 — two cases then counted ZERO with both routes agreeing. In-degree
  * varies too: a linear `(a*i+b) % N` target is a bijection per layer, which makes a k-walk count
@@ -30,7 +30,7 @@ const countOf = (q: string): number => Number(query(g, q)[0].c);
 const viaSubquery = (pattern: string, where = '', anchor = 'a:P'): number =>
   Number(query(g, `MATCH (${anchor}) RETURN sum(COUNT { (a)${pattern}${where} }) AS c`)[0].c);
 
-describe('⚠️ the fixture, before any number measured against it is believed', () => {
+describe('the fixture, before any number measured against it is believed', () => {
   test('in-degree varies and branching exists', () => {
     const inDeg = new Map<string, number>();
 
@@ -84,7 +84,7 @@ describe('the two-hop arm agrees with an independent route', () => {
   });
 });
 
-describe('⚠️ the shapes that must DECLINE, each still answering correctly', () => {
+describe('the shapes that must DECLINE, each still answering correctly', () => {
   /**
    * A label at the END position filters which edges the final DEGREE may count, where the CSR counts
    * them all — the same boundary item 1689 drew. An undirected leg must yield a self-loop ONCE,
@@ -107,8 +107,8 @@ describe('⚠️ the shapes that must DECLINE, each still answering correctly', 
     });
   }
 
-  /** ⚠️ A SELF-LOOP is the case the undirected exclusion exists for, so it gets its own fixture. */
-  test('⚠️ an undirected two-hop over a self-loop agrees', () => {
+  /** A SELF-LOOP is the case the undirected exclusion exists for, so it gets its own fixture. */
+  test('an undirected two-hop over a self-loop agrees', () => {
     const h = new Graph();
     const a = h.addVertex({ id: 'a', labels: ['P'], properties: { k: 11 } });
     const b = h.addVertex({ id: 'b', labels: ['P'], properties: { k: 12 } });
@@ -157,11 +157,11 @@ describe('a write between two counts is seen', () => {
   });
 
   /**
-   * ⚠️ A PROPERTY WRITE MUST BE SEEN THOUGH `topologyVersion` DOES NOT MOVE. The accept mask reads
+   * A PROPERTY WRITE MUST BE SEEN THOUGH `topologyVersion` DOES NOT MOVE. The accept mask reads
    * properties and is rebuilt per call; cached on that signal it would go stale with no signal to
    * catch it.
    */
-  test('⚠️ a property write changes the count with the topology unchanged', () => {
+  test('a property write changes the count with the topology unchanged', () => {
     const h = build(60);
     const before = Number(query(h, Q)[0].c);
     const tv = h.topologyVersion;
@@ -196,11 +196,11 @@ describe('twoHopFilteredCsrApplies — the route choice as a pure function', () 
   });
 
   /**
-   * ⚠️ THE DIRECTION NO DIFFERENTIAL TEST CAN SEE. Each exclusion relaxed is caught by the
+   * THE DIRECTION NO DIFFERENTIAL TEST CAN SEE. Each exclusion relaxed is caught by the
    * agreement tests above; tightened, every answer stays right and the arm is silently abandoned,
    * so only these assertions cover it.
    */
-  test('⚠️ each exclusion declines on its own', () => {
+  test('each exclusion declines on its own', () => {
     expect(twoHopFilteredCsrApplies({ ...ok, firstBoth: true })).toBe(false);
     expect(twoHopFilteredCsrApplies({ ...ok, secondBoth: true })).toBe(false);
     // An END label filters a DEGREE, not a visited vertex.

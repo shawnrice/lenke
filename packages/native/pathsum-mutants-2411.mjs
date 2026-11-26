@@ -5,16 +5,16 @@
 // mutants below attack BOTH halves — the arithmetic (which `chain-path-sum.test.ts` must catch) and
 // the ROUTE (which only `routes-fired.test.ts` can).
 //
-// ⚠️ THREE MUTANTS ARE EXPECTED TO SURVIVE AND ARE LABELLED `[EQUIV]`. Each is answer-equivalent for
+// THREE MUTANTS ARE EXPECTED TO SURVIVE AND ARE LABELLED `[EQUIV]`. Each is answer-equivalent for
 // a reason stated at its entry, not a coverage gap — item 2409's battery spent three iterations on
 // defective mutants (one UNREACHABLE, one a NO-OP, one answer-equivalent) before noticing that
 // predicting the verdict is part of writing the mutant.
 //
-// ⚠️ A VERDICT NEEDS EVIDENCE OF EXECUTION, NOT AN EXIT CODE. `bun test` writes `N pass` / `N fail`
+// A VERDICT NEEDS EVIDENCE OF EXECUTION, NOT AN EXIT CODE. `bun test` writes `N pass` / `N fail`
 // to STDERR, never stdout. Items 767 and 772-773 each got this wrong in opposite directions, so the
 // runner concatenates both streams, finds a result line there, and only then reads the exit code.
 //
-// ⚠️ AND EVERY MUTANT RUNS UNDER A TIMEOUT AND A MEMORY CAP. A mutant is arbitrary broken code, and
+// AND EVERY MUTANT RUNS UNDER A TIMEOUT AND A MEMORY CAP. A mutant is arbitrary broken code, and
 // a rung that declines falls through to a path that materializes every row. Exit 124 or 137 IS the
 // catch.
 //
@@ -30,7 +30,7 @@ const FOLD = 'packages/gql/src/executor/path-sum-fold.ts';
 const CHAIN = 'packages/gql/src/executor/chain-projection.ts';
 const HOP2 = 'packages/gql/src/executor/hop2-projection.ts';
 
-// ⚠️ UNDER `target/`, which is gitignored AND survives the reboot a runaway mutant may force. The
+// UNDER `target/`, which is gitignored AND survives the reboot a runaway mutant may force. The
 // scratchpad does not: CLAUDE.md records a pristine copy lost to exactly that.
 const PRISTINE_DIR = resolve(ROOT, 'target/mutants-2411');
 
@@ -59,7 +59,7 @@ const GATE =
 /**
  * Each mutant is `[label, file, from, to, …]` — a file plus one or more exact string replacements.
  *
- * ⚠️ EVERY ANCHOR IS COUNTED BEFORE IT IS USED (`[[ambiguous-anchor-strings]]`). The gate line is
+ * EVERY ANCHOR IS COUNTED BEFORE IT IS USED (`[[ambiguous-anchor-strings]]`). The gate line is
  * textually IDENTICAL in the two rungs, so a mutant naming the wrong file would silently measure the
  * other width — the per-file pristine copy is what makes the count meaningful.
  */
@@ -276,5 +276,5 @@ console.log(
 );
 
 for (const r of survived.filter((x) => !x.label.startsWith('[EQUIV]'))) {
-  console.log(`⚠️ UNEXPECTED SURVIVOR  ${r.i}  ${r.label}`);
+  console.log(`UNEXPECTED SURVIVOR  ${r.i}  ${r.label}`);
 }

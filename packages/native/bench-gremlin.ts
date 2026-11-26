@@ -54,7 +54,7 @@ const lines = Array.from(
 );
 
 /**
- * ⚠️ THIS FIXTURE WAS FUNCTIONAL UNTIL ITEM 1632, and every degree statistic looked perfect while it
+ * THIS FIXTURE WAS FUNCTIONAL UNTIL ITEM 1632, and every degree statistic looked perfect while it
  * was. `to = (k * 104_729) % N` is INVARIANT under `k -> k + N`, and this loop runs `k < N * 5`, so
  * each vertex's five out-edges were five PARALLEL EDGES TO ONE TARGET: 200,000 distinct `(from, to)`
  * pairs behind 1,000,000 edges, out-degree 5 and distinct-out-neighbours **1** for every vertex.
@@ -78,7 +78,7 @@ for (let k = 0; k < N * 5; k++) {
 }
 
 /**
- * ⚠️ THE FIXTURE CHECKS ITS OWN TOPOLOGY, for item 1516's reason: every degree statistic was already
+ * THE FIXTURE CHECKS ITS OWN TOPOLOGY, for item 1516's reason: every degree statistic was already
  * perfect while the graph was degenerate, and CLAUDE.md's rule is that one line counting the
  * DISTINCT endpoints would have caught it. This is that line, run once at startup, so this corpus
  * cannot silently go back to measuring a functional graph.
@@ -128,12 +128,12 @@ const natG = graphFromNdjson(backend, doc);
 /*
  * ID-SEEDED SOURCES, WHICH THIS BENCH HAD NO ROW FOR AT ALL (item 2375).
  *
- * ⚠️ That hole is why item 2351's `E(id)` asymmetry sat unexamined: `grep` for `V('`/`E('`/`hasId` over
+ * That hole is why item 2351's `E(id)` asymmetry sat unexamined: `grep` for `V('`/`E('`/`hasId` over
  * this file returns nothing, so no row exercised `matchSeededShape`/`seededIdWalk`, and item 1631 records
  * the identical failure — *"`bench:gremlin` had NO ROW for this shape, which is why the TS/native gap on it
  * was never seen"*.
  *
- * 🔑 MULTI-ID, NOT ONE ID, for two reasons. A single lookup is ~215 ns and would print as `0.0` — the
+ * MULTI-ID, NOT ONE ID, for two reasons. A single lookup is ~215 ns and would print as `0.0` — the
  * sub-millisecond trap. And item 2374 shipped the edge arm of this rung but measured only its EAGER
  * one-id path (3.01x); the multi-id `seededIdWalk` generator is the half that went unmeasured, so these
  * rows are the instrument for it.
@@ -152,12 +152,12 @@ const SHAPES: [string, Plan][] = [
   /*
    * SCAN-ROOTED VALUE PROJECTIONS, BOTH ELEMENT TYPES (item 2376).
    *
-   * ⚠️ `E().values(w)` is the shape item 2321 shipped `edgeValuesShortcut` for — 3.47x, 26.6 -> 7.7 ns an
+   * `E().values(w)` is the shape item 2321 shipped `edgeValuesShortcut` for — 3.47x, 26.6 -> 7.7 ns an
    * edge — and this bench had NO row for it, so nothing here guarded that ship. The edge-rooted surface
    * carried only two rows before this, both `count()`s, which are closed forms. Same coverage hole item
    * 2375 closed for id-seeded sources, one shape along.
    *
-   * 🔑 The vertex twin is the control: the two walk a DIFFERENT number of elements (200,000 vertices
+   * The vertex twin is the control: the two walk a DIFFERENT number of elements (200,000 vertices
    * against 1,000,000 edges at this fixture's fanout of 5), so the pair is read PER ELEMENT, not as a
    * ratio between the rows.
    */
@@ -176,7 +176,7 @@ const SHAPES: [string, Plan][] = [
   // `V().out().values(k)` did, which made ADDING a step 1.9x faster (item 880). The
   // `.count()` row above cannot see it — that one is answered by a shortcut.
   //
-  // ⚠️ THE `[bare]` ROW'S ts/native RATIO IS NOT LIKE-FOR-LIKE (item 882). It reads ~0.6, i.e.
+  // THE `[bare]` ROW'S ts/native RATIO IS NOT LIKE-FOR-LIKE (item 882). It reads ~0.6, i.e.
   // native "slower", and that is a difference in what the two RETURN rather than in how fast they
   // are: TS hands back references to vertices already in its graph, while native materializes an
   // OWNED element value per row — external id, sorted labels and a property map. Measured in
@@ -192,7 +192,7 @@ const SHAPES: [string, Plan][] = [
   // the shortcut must move this row and leave that one alone.
   ['V().out().values(age).order()', traversal(V(), out('KNOWS'), values('age'), order())],
   ['V().out().has().count()', traversal(V(), out('KNOWS'), has('age', gt(44)), count())],
-  // ⚠️ A FAR FILTER ON A YIELDING HOP, WHICH THIS SWEEP HAD NO ROW FOR (item 1631). The row above
+  // A FAR FILTER ON A YIELDING HOP, WHICH THIS SWEEP HAD NO ROW FOR (item 1631). The row above
   // is the same filter with `count()`, which a closed-form rung answers without yielding, and
   // `V().out().out().has().values(age)` below is TWO hops; the one-hop yielding shape — the
   // commonest real traversal there is, "walk and keep the far ends that match" — was measured by
@@ -203,7 +203,7 @@ const SHAPES: [string, Plan][] = [
   // unfiltered walk it is a subset of: the cliff finder reported exactly that (188.2 ms for 20,000
   // rows against 132.8 for 999,996) and it turned out to be an instrument artifact, but nothing in
   // the sweep would have caught it had it been real.
-  // ⚠️ IT PROJECTS `id()`, NOT THE KEY IT FILTERS ON, and item 1632 changed it for that reason.
+  // IT PROJECTS `id()`, NOT THE KEY IT FILTERS ON, and item 1632 changed it for that reason.
   // Item 1631 wrote this row as `has('age', eq(30)).values('age')` — where every emitted value is
   // `30` by construction. The answers column is `JSON.stringify(rows).slice(0, 48)`, so it was
   // comparing about fifteen identical values: a differing ROW COUNT was invisible to it, and so was
@@ -220,7 +220,7 @@ const SHAPES: [string, Plan][] = [
   // excludes nothing and the pair is an EQUIVALENT-SPELLING guard as much as a perf row: these
   // two ask the same question and must stay close.
   ['V().hasLabel().has().count()', traversal(V(), hasLabel('Person'), has('age', gt(44)), count())],
-  // ⚠️ THE PRESENCE FORM, AND ITS ABSENCE IS WHY A 3.0x GAP SURVIVED (item 1283). Every `has` row
+  // THE PRESENCE FORM, AND ITS ABSENCE IS WHY A 3.0x GAP SURVIVED (item 1283). Every `has` row
   // above passes a VALUE predicate, so none of them exercises `has('k')` with ONE argument — which
   // builds a different step (`{kind:'hasKey'}`) and reached only one of six count rungs. The row
   // read 7.543 ms against the value-predicate form's 2.573 at 200,000 vertices, both keeping every
@@ -311,7 +311,7 @@ const SHAPES: [string, Plan][] = [
       count(),
     ),
   ],
-  // ⚠️ TWO HOPS WITH A ROW-RETURNING TAIL, which NO row above reached (item 1614) — and the omission
+  // TWO HOPS WITH A ROW-RETURNING TAIL, which NO row above reached (item 1614) — and the omission
   // was load-bearing rather than cosmetic. Every multi-hop row in this suite ends in `count()`,
   // which `hopChainCount` answers from degrees without walking at all (item 590), so the two-hop
   // WALK was only ever benched in the arm where it does not run. `V().out().values(age)` above rode
@@ -326,7 +326,7 @@ const SHAPES: [string, Plan][] = [
     traversal(V(), hasLabel('Person'), out('KNOWS'), out('KNOWS'), values('age')),
   ],
   ['V().out().out().id()', traversal(V(), hasLabel('Person'), out('KNOWS'), out('KNOWS'), id())],
-  // ⚠️ THE FILTERED two-hop walk (item 1615), with the two rows above as its control. This shape
+  // THE FILTERED two-hop walk (item 1615), with the two rows above as its control. This shape
   // cost 4.7x its own UNFILTERED neighbour for a fraction of the rows, because it walked every
   // traverser down the pipeline and filtered at the end. Isolated A/B: 79.18 -> 20.27 ms, 3.91x on
   // the trailing position and 2.68x on the middle one.
@@ -341,7 +341,7 @@ const SHAPES: [string, Plan][] = [
       values('age'),
     ),
   ],
-  // ⚠️ THREE hops YIELDING (item 1617): the generic stacked walk, where the two-hop rows above take
+  // THREE hops YIELDING (item 1617): the generic stacked walk, where the two-hop rows above take
   // the literal nesting. 394.89 -> 103.79 ms isolated, 3.80x. The `count()` twin above is answered
   // from degrees without walking, so it says nothing about this row.
   [
@@ -371,7 +371,7 @@ const SHAPES: [string, Plan][] = [
 const plain = (x: unknown): unknown => (x instanceof Map ? Object.fromEntries(x) : x);
 
 /**
- * ⚠️ WARM-UP REPS THAT ARE NOT TIMED — item 1845, and the row that forced it is in this sweep.
+ * WARM-UP REPS THAT ARE NOT TIMED — item 1845, and the row that forced it is in this sweep.
  *
  * `min` over an UNWARMED series is not the plateau when the series is still descending at rep
  * `REPS`. The two-hop count measured a series of `26.7 11.1 9.3 8.3 17.8 5.9 … 4.2 4.0` in its own
@@ -415,13 +415,13 @@ console.log(
  *
  *     BENCH_ONLY='x3.values' bun bench-gremlin.ts
  *
- * ⚠️ AN ABSOLUTE IS ONLY COMPARABLE WITHIN THE SAME SELECTION, and the direction is not fixed.
+ * AN ABSOLUTE IS ONLY COMPARABLE WITHIN THE SAME SELECTION, and the direction is not fixed.
  * `bench.ts` records one row reading 74.0 among four siblings, 89.2 in the full sweep and 97.0 run
  * ALONE — SLOWER with fewer rows, because the siblings warm the same hop code first — while item
  * 737 measured in-sweep INFLATION on a different row. So neither correction generalizes, and a
  * number from this flag may not be compared with one from the full sweep.
  *
- * ⚠️ IT ALSO DOES NOT MAKE CROSS-ITEM NUMBERS COMPARABLE. Item 1617's "103.79 ms isolated" for the
+ * IT ALSO DOES NOT MAKE CROSS-ITEM NUMBERS COMPARABLE. Item 1617's "103.79 ms isolated" for the
  * three-hop row was measured at 20,000 vertices x FANOUT 4; this sweep's default is a different
  * workload entirely, and reading the two against each other suggested a 4.5x regression that does
  * not exist. Match the FIXTURE before matching the selection.

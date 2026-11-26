@@ -1,7 +1,7 @@
 /**
  * WHAT EXACTLY DOES A QUANTIFIED PATH COUNT COUNT? (item 2001)
  *
- * ⚠️⚠️ **THIS EXISTS BECAUSE I PROVED AN ARITHMETIC AGAINST MY OWN MODEL AND NOT AGAINST THE
+ * **THIS EXISTS BECAUSE I PROVED AN ARITHMETIC AGAINST MY OWN MODEL AND NOT AGAINST THE
  * ENGINE.** `acyclic-correction-2001.mjs` derived an ACYCLIC correction and checked its
  * inclusion-exclusion against a brute-force enumeration of 2-WALKS — both sides mine, both agreeing,
  * and both off by exactly `selfLoops` from what the engine answers. `acyclic-selfloop-2001.mjs` then
@@ -9,7 +9,7 @@
  * wrong model was mine: on `a->a` + `a->b`, WALK `{1,2}` answers **3** where enumerating edge
  * sequences gives **4**.
  *
- * 🔑 **SO THE ROWS HAVE TO BE READ, NOT COUNTED.** A `count(*)` cannot distinguish "paths" from
+ * **SO THE ROWS HAVE TO BE READ, NOT COUNTED.** A `count(*)` cannot distinguish "paths" from
  * "endpoint pairs" from "deduplicated bindings", and those have different corrections. This prints
  * the actual bindings per mode and bound, which is the only thing that settles it.
  *
@@ -42,7 +42,7 @@ g.addEdge({
 });
 
 /*
- * ⚠️ A SECOND PARALLEL EDGE `a->b` IS ADDED BELOW IN THE SECOND BLOCK, not here. Multiplicity is the
+ * A SECOND PARALLEL EDGE `a->b` IS ADDED BELOW IN THE SECOND BLOCK, not here. Multiplicity is the
  * axis that separates "endpoint pairs" from "paths": if two distinct edges a->b give ONE row, the
  * count is over endpoint pairs; if they give two, it is over paths.
  */

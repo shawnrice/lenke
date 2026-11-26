@@ -5,7 +5,7 @@
  * row) against `project the element + materialize` at 26.6 ms for 200,000 (133 ns a row) and flagged
  * the 4.7x as UNEXPLAINED rather than as a defect. This probe explains it.
  *
- * ⚠️ THOSE TWO ROWS ARE NOT COMPARABLE PER ELEMENT, which is the first thing to establish and the
+ * THOSE TWO ROWS ARE NOT COMPARABLE PER ELEMENT, which is the first thing to establish and the
  * reason the 4.7x is not itself a finding:
  *
  *     project the element   MATCH (n:Person) RETURN n              — a LABEL BUCKET scan, 200k rows
@@ -43,7 +43,7 @@ for (let i = 0; i < NODES; i += 1) {
   graph.addVertex({ id: `v${i}`, labels: ['P'], properties: { age: i % 90, name: `n${i}` } });
 }
 
-// ⚠️ The repeat index is in the `to` expression — item 1518's rule. Without it all FANOUT edges of a
+// The repeat index is in the `to` expression — item 1518's rule. Without it all FANOUT edges of a
 // vertex land on one target and the walk never branches.
 for (let k = 0; k < NODES * FANOUT; k += 1) {
   graph.addEdge({
@@ -58,7 +58,7 @@ for (let k = 0; k < NODES * FANOUT; k += 1) {
 }
 
 /**
- * ⚠️ THE PROPERTY NAME MUST EXIST IN THE FIXTURE (item 1526). Every arm here said `.k` and the
+ * THE PROPERTY NAME MUST EXIST IN THE FIXTURE (item 1526). Every arm here said `.k` and the
  * fixture carries `age`/`name`, so every property projection read NULL — `propOf` ran and returned
  * `null`, the row count was unaffected, and nothing in the output looked wrong. Items 1525 and 1523
  * took their numbers that way; the corrected ones are in item 1526. A filtered arm is what exposed
@@ -74,30 +74,30 @@ const ARMS = {
   farnode: 'MATCH (:P)-[:E]->(x) RETURN x',
   relprop: 'MATCH (:P)-[r:E]->() RETURN r.w AS w',
   bucket: 'MATCH (n:P) RETURN n',
-  // ⚠️ THE `star` HAZARD, measured rather than reasoned about (item 1522). If `RETURN *` took the
+  // THE `star` HAZARD, measured rather than reasoned about (item 1522). If `RETURN *` took the
   // same rel-bound walk, skipping the anonymous far binding could change its OUTPUT — `mapToRow`
   // copies EVERY binding with no NUL filter. A cost far above `edge` says star is on the general
   // path instead and the hazard cannot arise.
-  // ⚠️ THE ROUTE PROXY (item 1523). `farnode` is fast because it takes `farDrivenHopWalk` — far
+  // THE ROUTE PROXY (item 1523). `farnode` is fast because it takes `farDrivenHopWalk` — far
   // vertices in CREATION order, item 167's 2.3x — while every rel-reading shape is start-driven.
   // These two read ONE property per row each, one from the far vertex (far-driven) and one from the
   // edge (start-driven), so the pair says whether the ROUTE or the thing being read dominates
   // before any attempt to teach the far-driven walk to bind an edge.
   farprop: 'MATCH (:P)-[:E]->(x) RETURN x.age AS k',
-  // ⚠️ THE SYMMETRIC CASE (item 1524). The far-driven walk's template-and-copy needs "every item is
+  // THE SYMMETRIC CASE (item 1524). The far-driven walk's template-and-copy needs "every item is
   // a pure function of the far end" — one row value set per far vertex, repeated `degree` times.
   // A projection reading only the START has the same shape with the ends swapped: one template per
   // start vertex, repeated `out-degree` times. If that is exploited, `startprop` should land near
   // `farprop` (~132 ns/row); if it is not, near `relprop` (~339).
   startprop: 'MATCH (a:P)-[:E]->() RETURN a.age AS k',
-  // ⚠️ THE MIRROR ITEM 1525 DECLINED (item 1526). A start-only PREDICATE plus a start-only
+  // THE MIRROR ITEM 1525 DECLINED (item 1526). A start-only PREDICATE plus a start-only
   // PROJECTION is foldable for the same reason — the predicate gates the start vertex, and every
   // row it then produces is identical — but item 1525's guard requires `gate === undefined`, so
   // this shape still builds a row per edge. `startpropfilt` against `startprop` is the gap; the
   // `farpropfilt` control carries the SAME predicate with a far projection, which cannot fold.
   startpropfilt: 'MATCH (a:P)-[:E]->() WHERE a.age > 5 RETURN a.age AS k',
   farpropfilt: 'MATCH (a:P)-[:E]->(x) WHERE a.age > 5 RETURN x.age AS j',
-  // ⚠️ THE TWO REMAINING FOLD CANDIDATES (item 1528), from enumerating every walk in
+  // THE TWO REMAINING FOLD CANDIDATES (item 1528), from enumerating every walk in
   // hop-projection.ts for a per-edge `projectRow` with no template:
   //   farpropfiltfar  -> farDrivenFilteredHopWalk. Item 1527's EXACT mirror: a FAR predicate gates
   //                      the far DRIVER, so if the projection reads only the far end its rows are
@@ -105,12 +105,12 @@ const ARMS = {
   //   startpropundir  -> undirectedHopWalk, which has four `projectRow` calls and no template.
   farpropfiltfar: 'MATCH (:P)-[:E]->(x) WHERE x.age > 5 RETURN x.age AS j',
   startpropundir: 'MATCH (a:P)-[:E]-() RETURN a.age AS k',
-  // ⚠️ THE CONTROL THAT ISOLATES THE DECLINE FROM THE UNDIRECTEDNESS. Same undirected hop, same row
+  // THE CONTROL THAT ISOLATES THE DECLINE FROM THE UNDIRECTEDNESS. Same undirected hop, same row
   // count, but the projection reads the FAR end — so `needsStart` is false and `undirectedHopWalk`
   // takes it. Comparing `startpropundir` against the DIRECTED fold would charge the decline for the
   // extra work an undirected hop does anyway; comparing it against this does not.
   farpropundir: 'MATCH (:P)-[:E]-(x) RETURN x.age AS j',
-  // ⚠️ ITEM 1530's CANDIDATES, from enumerating what each walk DECLINES (item 1529's question).
+  // ITEM 1530's CANDIDATES, from enumerating what each walk DECLINES (item 1529's question).
   //   relpropfilt  -> relBoundFilteredHopWalk and relSeekedHopWalk BOTH decline `startOnly`, and
   //                   the start-only predicate closure binds no rel — so a rel-reading projection
   //                   behind a START filter may decline the fast path entirely. `relprop` is the
@@ -119,7 +119,7 @@ const ARMS = {
   //                   the vertex; the edge-pass arm could not. `farpropundir` is the control.
   relpropfilt: 'MATCH (a:P)-[r:E]->() WHERE a.age > 5 RETURN r.w AS w',
   farpropundirgate: 'MATCH (a:P)-[:E]-(x) WHERE a.age > 5 RETURN x.age AS j',
-  // ⚠️ THE LAST UNMEASURED DECLINE IN THIS FAMILY (item 1533). After items 1529/1531/1532 the
+  // THE LAST UNMEASURED DECLINE IN THIS FAMILY (item 1533). After items 1529/1531/1532 the
   // undirected walk still refuses a FAR predicate, and the two-pass arm already applies a far
   // LABEL per edge — so a far predicate has the same place to go. `farpropundir` is the control.
   farpropundirfar: 'MATCH (a:P)-[:E]-(x) WHERE x.age > 5 RETURN x.age AS j',
@@ -159,7 +159,7 @@ for (const name of names) {
     times.push(performance.now() - t0);
   }
 
-  // ⚠️ The window covers only the selected ARM's rep loop, so a profile cannot mix arms.
+  // The window covers only the selected ARM's rep loop, so a profile cannot mix arms.
   if (process.env.PROF_OUT !== undefined && ONLY !== undefined) {
     // eslint-disable-next-line no-await-in-loop
     await profileWindow(process.env.PROF_OUT, () => {

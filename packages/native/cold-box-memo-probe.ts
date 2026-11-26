@@ -1,7 +1,7 @@
 /**
  * Does item 1334's adjacency-box read cost anything on a COLD graph?
  *
- * ⚠️ THIS EXISTS BECAUSE A PRIOR REFUTATION SAYS IT SHOULD. `CLOSED.md` records the box-read lever
+ * THIS EXISTS BECAUSE A PRIOR REFUTATION SAYS IT SHOULD. `CLOSED.md` records the box-read lever
  * as "ALREADY REFUTED at the site: item 355 measured it, and the box is a MEMO, so first touch is
  * 1.21x WORSE (the same hash plus the memo write) while warm is 1.35x better. The two-hop product
  * visits each middle exactly ONCE per query, so cold is all it would ever get."

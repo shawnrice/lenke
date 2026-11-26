@@ -1,20 +1,20 @@
 #!/bin/zsh
 # Item 2017 — the sort-overlay gate's PRE/POST A/B across the WHOLE GQL screen.
 #
-# ⚠️⚠️ **THIS CHANGE IS IN THE GENERAL PROJECTION PATH, SO EVERY GQL QUERY GOES THROUGH IT.** That is
+# **THIS CHANGE IS IN THE GENERAL PROJECTION PATH, SO EVERY GQL QUERY GOES THROUGH IT.** That is
 # a much wider blast radius than a rung: [[executor-edits-perturb]] records a new walk variant
 # costing UNRELATED rows up to 16%, and item 1466 declined a 3.3x on that ground. A single
 # nominated shape is not evidence here — the instrument has to be the whole screen.
 #
-# ⚠️ The screen already runs ONE CHILD PROCESS PER FAMILY, which is what keeps a family's figure out
+# The screen already runs ONE CHILD PROCESS PER FAMILY, which is what keeps a family's figure out
 # of the mix (item 762) and what stops an OOM or hang taking the run.
 #
-# ⚠️ ORDER-ALTERNATED, because the machine drifts and a one-way sweep attributes drift to the change.
+# ORDER-ALTERNATED, because the machine drifts and a one-way sweep attributes drift to the change.
 #
 #   PRE  = the overlay built unconditionally (as before item 2017)
 #   POST = gated on `proj.orderNeedsOutput`
 #
-# ⚠️ The arm is GREPPED before each build — CLAUDE.md's "assert each A/B arm IS the code it claims".
+# The arm is GREPPED before each build — CLAUDE.md's "assert each A/B arm IS the code it claims".
 set -u
 
 ROOT=/home/shawn/projects/pl-graph
@@ -43,7 +43,7 @@ round() {
     grep -E '^[a-z]' | grep -vE '^(family|vertices)')
 }
 
-# ⚠️⚠️ **RESTORE ON ANY EXIT, NOT ONLY AT THE END — AND A KILL IS THE CASE THAT PROVES IT.** Item
+# **RESTORE ON ANY EXIT, NOT ONLY AT THE END — AND A KILL IS THE CASE THAT PROVES IT.** Item
 # 2018's run of this script was killed mid-round by the system's low-memory reaper and left the PRE
 # arm (`&& false`) in `projection.ts`: the fast path silently disabled, the tree still compiling, and
 # nothing to notice it but a `git diff`. The mutation harnesses restore in a loop and re-verify at

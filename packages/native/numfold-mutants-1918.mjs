@@ -1,18 +1,18 @@
 /**
  * DOES `projected-numeric-fold.test.ts` HAVE TEETH? (item 1918)
  *
- * ⚠️ THE SUBJECT IS AN ORDER-SENSITIVE REDUCE, which is what makes this different from the
+ * THE SUBJECT IS AN ORDER-SENSITIVE REDUCE, which is what makes this different from the
  * `min`/`max` fold beside it. A mutant that keeps every value and adds them in a different ORDER is
  * a wrong answer in the last ulp — invisible to any assertion that compares rounded output, and
  * exactly the hazard items 1830/1831 declined to risk. The `fused and declined routes agree BIT FOR
  * BIT` test exists for that mutant and this battery is where it gets checked.
  *
- * ⚠️⚠️ WRITTEN DIRECTLY RATHER THAN TEMPLATED, which is item 1907's lesson: three times in one
+ * WRITTEN DIRECTLY RATHER THAN TEMPLATED, which is item 1907's lesson: three times in one
  * session a slice-based `replace` left a config field pointing at the previous item's subject. Every
  * field here is literal, and every test path was listed from the directory rather than recalled
  * (item 1915 found a non-existent path in its own first draft).
  *
- * ⚠️ UNDER BOTH A TIMEOUT AND A CGROUP CAP — a mutant is arbitrary broken code. The net was proved
+ * UNDER BOTH A TIMEOUT AND A CGROUP CAP — a mutant is arbitrary broken code. The net was proved
  * at item 1915: a 2G cap kills the allocator bomb by SIGNAL after 7.3 s where 16G lets bun exit 1
  * after 49.1 s (so the cap, not the runtime's own ceiling, is doing it), and a bare spin loop exits
  * 124 on the timeout `MemoryMax` never trips. Exit 124 and 137 ARE the mutant being caught.
@@ -49,13 +49,13 @@ const MUTANTS = [
     1,
   ],
   /*
-   * ⚠️⚠️ THIS MUTANT WAS A NO-OP AS WRITTEN AND SURVIVED FOR THAT REASON (found at item 2408, the
+   * THIS MUTANT WAS A NO-OP AS WRITTEN AND SURVIVED FOR THAT REASON (found at item 2408, the
    * first time the battery ran against live code). It replaced `count += 1` with
    * `count = count + 1 + 0` — the same arithmetic, so there was nothing for a test to catch, and
-   * the ❌ SURVIVED line read as a coverage gap in the fold rather than a defect in the battery.
+   * the SURVIVED line read as a coverage gap in the fold rather than a defect in the battery.
    * Item 1918 wrote all twelve and reported none of their verdicts, which is how it shipped.
    *
-   * 🔑 THE INTENT WAS "`mean` DIVIDES BY EVERY VALUE, NULLS INCLUDED", and this is that: a null is
+   * THE INTENT WAS "`mean` DIVIDES BY EVERY VALUE, NULLS INCLUDED", and this is that: a null is
    * COUNTED but not added, so `sum` is untouched and only `mean` moves — which is what makes it a
    * sharp mutant rather than a blunt one.
    */
@@ -88,14 +88,14 @@ const MUTANTS = [
     1,
   ],
   [
-    '⚠️ THE ADDITION ORDER IS REVERSED (a last-ulp wrong answer)',
+    'THE ADDITION ORDER IS REVERSED (a last-ulp wrong answer)',
     'agg',
     '  for (const v of drained) {\n    if (v == null) {\n      continue;\n    }\n\n    sawNonNull = true;\n    total += asNumber(v);\n    count += 1;',
     '  for (const v of [...drained].reverse()) {\n    if (v == null) {\n      continue;\n    }\n\n    sawNonNull = true;\n    total += asNumber(v);\n    count += 1;',
     1,
   ],
   /*
-   * ⚠️ THE DRAIN IS REVERTED — item 2408's second measurement, and the one I got wrong by
+   * THE DRAIN IS REVERTED — item 2408's second measurement, and the one I got wrong by
    * prediction: iterating the walk instead of draining it costs **1.58x on `sum` and 1.49x on
    * `mean`** and is otherwise ANSWER-IDENTICAL, since a drain yields the same elements in the same
    * order. So only `projected-numeric-fold.test.ts`'s walk-with-disagreeing-drain can see it.
@@ -109,7 +109,7 @@ const MUTANTS = [
   ],
   // ---- the gate ----
   /*
-   * ⚠️⚠️ THESE TWO ANCHORS CARRY `const { kind } = step;`, AND THE BARE `if` THEY USED TO USE WENT
+   * THESE TWO ANCHORS CARRY `const { kind } = step;`, AND THE BARE `if` THEY USED TO USE WENT
    * AMBIGUOUS THE MOMENT THE CHANGE LANDED (item 2408). `fusableValuesAggregate` twenty lines above
    * tests the IDENTICAL four kinds; while the projected gate still read `min`/`max` only, the
    * four-kind line was unique to that OTHER function — taking the fusion made it match twice, and
@@ -167,20 +167,20 @@ const MUTANTS = [
 /**
  * Names that MUST survive, each with its reason.
  *
- * ⚠️⚠️ **IT IS EMPTY, AND IT HELD ONE ENTRY UNTIL ITEM 2408 — the route-only mutant, which turned
+ * **IT IS EMPTY, AND IT HELD ONE ENTRY UNTIL ITEM 2408 — the route-only mutant, which turned
  * out to be reachable by a test after all.** Item 1918 reasoned, correctly for the code it had,
  * that "declining the fusion sends `values(k).sum()` back through the generic residual, which
  * answers the SAME f64 in the SAME order … so by construction no answer test can see the route",
  * and left its gates to two instruments.
  *
- * 🔑 **WHAT CHANGED IS THE TEST, NOT THE ARGUMENT.** No ANSWER test can see the route — that part
+ * **WHAT CHANGED IS THE TEST, NOT THE ARGUMENT.** No ANSWER test can see the route — that part
  * stands. But [[perf-gate-needs-its-own-test]]'s actual remedy is to test the GATE as a pure
  * function, and item 1918's test file asserted the REFUSAL (`sum and mean are NOT folded`), so
  * narrowing the gate made that file greener rather than redder. `projected-aggregate.test.ts` now
  * asserts the ADMISSION — `fusableProjectedAggregate([{kind:'sum'}])` is `'sum'` — and the mutant
  * is caught by a unit test instead of only by the route screen.
  *
- * ⚠️ The two instruments are still the gates for the SPEED, which no unit test can be: the route
+ * The two instruments are still the gates for the SPEED, which no unit test can be: the route
  * screen's `agg: hop values sum` row (`generic, 1 applyStep call [sum]` before, `SHORTCUT, 0`
  * after) and `numfold-ab-2408.sh` (1.81x / 1.95x, three controls flat, 3 order-alternated rounds).
  */
@@ -188,10 +188,10 @@ const EXPECTED_SURVIVORS = new Set([]);
 
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
 /** 124 is the timeout firing and 137 the cgroup killing; both are the mutant being caught. */
@@ -212,7 +212,7 @@ const verdictOf = (code) => {
   return code !== 0;
 };
 
-/** ⚠️ BOTH STREAMS CONCATENATED, THEN the exit code: `bun test` reports to STDERR (item 767). */
+/** BOTH STREAMS CONCATENATED, THEN the exit code: `bun test` reports to STDERR (item 767). */
 const runTests = () => {
   const r = spawnSync(
     'timeout',
@@ -237,10 +237,10 @@ const runTests = () => {
 };
 
 /*
- * ✅ **THE CHANGE THIS BATTERY TESTS SHIPPED AT ITEM 2408**, and this guard is kept rather than
+ * **THE CHANGE THIS BATTERY TESTS SHIPPED AT ITEM 2408**, and this guard is kept rather than
  * deleted because it is also the "has the fold been reverted again?" check.
  *
- * ⚠️ IT RAN AS WRITTEN AND IT WAS NOT CLEAN, which is worth recording: item 1918 wrote all twelve
+ * IT RAN AS WRITTEN AND IT WAS NOT CLEAN, which is worth recording: item 1918 wrote all twelve
  * mutants, reported none of their verdicts, and reverted — so the first execution against live
  * code was item 2408's, and it found THREE defects in the battery itself. One mutant was a NO-OP
  * (`count += 1` -> `count = count + 1 + 0`, the same arithmetic) and survived for that reason,
@@ -300,7 +300,7 @@ try {
     const ran = /\d+ pass/.test(r.text) || /\d+ fail/.test(r.text);
 
     if (!ran && r.code !== 124 && r.code !== 137) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-500)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-500)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -328,12 +328,12 @@ try {
 
 if (anchorProblems.length > 0) {
   console.log(
-    `\n⚠️ ${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
+    `\n${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
   );
   process.exitCode = 1;
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

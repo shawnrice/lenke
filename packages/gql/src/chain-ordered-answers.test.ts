@@ -3,12 +3,12 @@ import { describe, expect, test } from 'bun:test';
 /**
  * The ANSWERS the ORDERED chain rungs produce — item 1827.
  *
- * ⚠️ ORDER IS THE ANSWER HERE, WHICH MAKES THIS THE ONE FAMILY IN THE SET WHERE A SET COMPARISON
+ * ORDER IS THE ANSWER HERE, WHICH MAKES THIS THE ONE FAMILY IN THE SET WHERE A SET COMPARISON
  * PROVES NOTHING. Every other test file for these rungs compares SETS, because `order-is-unspecified`
  * is owner policy for unordered rows — and item 1825 learned the hard way that a set oracle lets a
  * dropped sort pass. So every assertion below is an ARRAY equality on the rendered order.
  *
- * ⚠️⚠️ AND MY FIRST ORACLE WAS NOT AN ORACLE AT ALL, WHICH IS THE MOST IMPORTANT NOTE IN THIS FILE.
+ * AND MY FIRST ORACLE WAS NOT AN ORACLE AT ALL, WHICH IS THE MOST IMPORTANT NOTE IN THIS FILE.
  * I compared the rung against `ORDER BY <far>.k`, believing a sort key written as an EXPRESSION
  * declines the rung. It does not: `compileLinear` resolves `c.k` to the output column `k` before any
  * detector runs, so **both spellings take the rung** and every "cross-route" assertion was comparing
@@ -93,13 +93,13 @@ describe('ORDER BY over the deeper chain widths', () => {
   });
 
   /**
-   * ⚠️ NULLS HAVE A DEFINED POSITION IN THE TOTAL ORDER and it is not JavaScript's. The engine sorts
+   * NULLS HAVE A DEFINED POSITION IN THE TOTAL ORDER and it is not JavaScript's. The engine sorts
    * with NaN/null placed by its own rule (`nan-comparison-policy`: sort/min/max use a total order
    * where the predicate semantics do not apply), so this asserts the position the ENGINE chose
    * rather than one I assumed — the general-path comparison below is what makes it an oracle.
    */
   /**
-   * ⚠️ NULLS HAVE A DEFINED POSITION and this asserts it EXPLICITLY rather than against another
+   * NULLS HAVE A DEFINED POSITION and this asserts it EXPLICITLY rather than against another
    * route (see the header). The engine's sort uses a total order where the predicate semantics do
    * not apply (`nan-comparison-policy`), so the position is the engine's choice — pinned here as a
    * fact, which is what makes it a regression guard.
@@ -114,7 +114,7 @@ describe('ORDER BY over the deeper chain widths', () => {
   });
 
   /**
-   * ⚠️ `[1, 1, 2, 2]`, NOT `[2, 1, 2, 1]`, AND THE FIXTURE IS THE REASON. `levels` sets `s` from
+   * `[1, 1, 2, 2]`, NOT `[2, 1, 2, 1]`, AND THE FIXTURE IS THE REASON. `levels` sets `s` from
    * `i % 2`, so a value list that alternates couples `k` to `s` and yields only TWO distinct pairs —
    * which cannot show a second sort key doing anything. The first cut used the alternating list and
    * asserted four pairs; the engine was right and the expectation was wrong, and the rung's order
@@ -127,13 +127,13 @@ describe('ORDER BY over the deeper chain widths', () => {
 
     expect(order).toEqual(['1/s1', '1/s0', '2/s1', '2/s0']);
 
-    // ⚠️ NOT compared against `ORDER BY c.k, c.s DESC` — that resolves to the same columns and takes
+    // NOT compared against `ORDER BY c.k, c.s DESC` — that resolves to the same columns and takes
     // the SAME rung, so it would compare the rung with itself. See the header.
     expect(rows.length).toBe(64);
   });
 
   /**
-   * ⚠️ THE GENUINELY DECLINING SPELLINGS, each with an EXPLICIT expected order. These are the ones
+   * THE GENUINELY DECLINING SPELLINGS, each with an EXPLICIT expected order. These are the ones
    * that catch a mutant ignoring `outputColumnSorts`' decline: with the decline ignored they take
    * the rung with a null sort plan and come back in walk order, and no comparison against another
    * route can see that (the header explains why).
@@ -157,7 +157,7 @@ describe('ORDER BY over the deeper chain widths', () => {
   });
 
   /**
-   * ⚠️ A WINDOW MUST NOT REACH THESE RUNGS, and the oracle is the general path rather than a count:
+   * A WINDOW MUST NOT REACH THESE RUNGS, and the oracle is the general path rather than a count:
    * with a sort, `SKIP`/`LIMIT` is a top-k question, and the rung would sort-then-slice its own
    * rows without the laziness the general path has. The ANSWER must be identical either way, so
    * this asserts that — a mutant admitting a window changes the route but not these rows, so this
@@ -178,7 +178,7 @@ describe('ORDER BY over the deeper chain widths', () => {
   });
 
   /**
-   * ⚠️⚠️ AN INDEPENDENT ORACLE FOR THE DECLINING SPELLING, AND A MUTANT IS WHY IT EXISTS. Every
+   * AN INDEPENDENT ORACLE FOR THE DECLINING SPELLING, AND A MUTANT IS WHY IT EXISTS. Every
    * cross-route test above compares the rung against `ORDER BY <expression>`, which declines
    * (`outputColumnSorts` wants a `var` naming an output column). **That comparison COLLAPSES if a
    * mutant makes both sides take the same route** — the mutant that ignores `outputColumnSorts`'

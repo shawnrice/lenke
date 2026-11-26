@@ -1,6 +1,6 @@
 // `ORDER BY` on a GROUPED aggregate, both rungs (item 1249).
 //
-// ⚠️ ROW ORDER IS THE WHOLE ASSERTION HERE, which is why these use `toEqual` on the full array and
+// ROW ORDER IS THE WHOLE ASSERTION HERE, which is why these use `toEqual` on the full array and
 // never a multiset comparison. Both grouped rungs refused every `ORDER BY` and fell to the general
 // path, which sorted correctly — so the bug this file guards is not a wrong ROW SET, it is a sort
 // that silently does not apply. Every case therefore has an expected order that differs from the
@@ -50,7 +50,7 @@ describe('ORDER BY on a grouped aggregate (item 1249)', () => {
       { c: 'zed', lo: 5 },
       { c: 'mid', lo: 1 },
       { c: 'ash', lo: 3 },
-      // ⚠️ NULL LAST ON DESC TOO, not first. Verified across three spellings — the alias, the key
+      // NULL LAST ON DESC TOO, not first. Verified across three spellings — the alias, the key
       // EXPRESSION, and a filtered variant that routes differently — all agreeing. That is
       // `compareSort`'s policy, which `sortGroupRows` uses rather than re-deriving one, so the
       // fast path cannot drift from the general path on it.
@@ -67,7 +67,7 @@ describe('ORDER BY on a grouped aggregate (item 1249)', () => {
   });
 
   test('BOTH SPELLINGS of the key resolve — the alias and the expression', () => {
-    // ⚠️ THE REASON THIS REUSES THE TALLY'S RULE rather than `outputColumnSorts`: that one matches
+    // THE REASON THIS REUSES THE TALLY'S RULE rather than `outputColumnSorts`: that one matches
     // an output NAME only, and item 1062 measured the asymmetry it creates at 3.8x. So
     // `ORDER BY x.city` must answer exactly what `ORDER BY c` answers.
     const byAlias = query(graph(), 'MATCH (x:P) RETURN x.city AS c, min(x.k) AS lo ORDER BY c');

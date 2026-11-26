@@ -1,7 +1,7 @@
 /**
  * WHAT DOES A HOST LAMBDA STEP COST? `filter(fn)` / `map(fn)` against their declarative twins.
  *
- * ⚠️ THE FIRST GENUINELY UNCOVERED SHAPE IN THE GREMLIN SURFACE (item 1668). A coverage screen over
+ * THE FIRST GENUINELY UNCOVERED SHAPE IN THE GREMLIN SURFACE (item 1668). A coverage screen over
  * all 104 step kinds found 30 with no probe in `packages/native`; cross-checking those against
  * CLOSED.md showed most were measured elsewhere (`simplePath` at items 1464-1466) or are niche
  * (`sack`, `subgraph`, the OLAP trio). Five were neither: `filterFn`, `mapFn`, `flatMapFn`,
@@ -46,7 +46,7 @@ const ARMS = {
     ).length,
 
   // A filter keeping ~1/97 of the vertices — declarative `has` against a host lambda.
-  // ⚠️ The first version of this probe named the LAMBDA arm `filterDecl` and had no declarative
+  // The first version of this probe named the LAMBDA arm `filterDecl` and had no declarative
   // twin at all, so its 27.59 ns was compared against nothing.
   hasDecl: () => toArray(traversal(V(), has('k', 5)), g).length,
   filterLambda: () =>

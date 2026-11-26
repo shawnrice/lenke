@@ -150,7 +150,7 @@ describe('the self-loop rule', () => {
 
 describe('the accumulation ORDER, pinned by float cancellation', () => {
   /**
-   * ⚠️ THIS TEST EXISTS BECAUSE A MUTANT SURVIVED WITHOUT IT. Replacing the eidx merge with a plain
+   * THIS TEST EXISTS BECAUSE A MUTANT SURVIVED WITHOUT IT. Replacing the eidx merge with a plain
    * concatenation (every out-contributor, then every in-contributor) leaves the contributor
    * MULTISET identical, so all 23 other tests passed — small integer features sum exactly, and an
    * exact sum does not care about order.
@@ -317,7 +317,7 @@ describe('an independent oracle over a generated graph', () => {
     const weights: number[] = [];
 
     for (let e = 0; e < edges; e += 1) {
-      // ⚠️ SELF-LOOPS AND PARALLEL EDGES ARE INJECTED, NOT LEFT TO CHANCE. Drawing `from` and `to`
+      // SELF-LOOPS AND PARALLEL EDGES ARE INJECTED, NOT LEFT TO CHANCE. Drawing `from` and `to`
       // independently produced ZERO self-loops across 120 edges — the LCG's low bits mod 40 never
       // collide on consecutive draws — so the self-loop rule the oracle exists to check was never
       // exercised at all. The fixture-statistics test below is what caught it.

@@ -6,7 +6,7 @@
 // `subst` substitutes a bound name only where it is the WHOLE expression or a function's bare
 // ARGUMENT, so a name nested one level inside arithmetic is refused.
 //
-// ⚠️ THE QUESTION IS BREADTH, NOT THE CHAIN. The chain row is one shape; if the one-level
+// THE QUESTION IS BREADTH, NOT THE CHAIN. The chain row is one shape; if the one-level
 // restriction also strands `RETURN a * 2`, `RETURN a > 5`, `ORDER BY a * 2` and so on, this is a
 // family rather than a case — and that is what decides whether a deep substitution is worth its
 // safety argument. Each row prints the clause kinds, so a standing `let` is the finding.
@@ -118,10 +118,10 @@ for (const [label, letForm, handForm] of PAIRS) {
     stranded += 1;
   }
 
-  let mark = gap ? '⬅ STRANDED' : 'folds';
+  let mark = gap ? '<- STRANDED' : 'folds';
 
   if (label.startsWith('REFUSE')) {
-    mark = gap ? 'ok (stands)' : '⚠️ FOLDED';
+    mark = gap ? 'ok (stands)' : 'FOLDED';
   }
 
   console.log(`${label.padEnd(44)} let=[${a.padEnd(22)}] hand=[${b.padEnd(14)}]  ${mark}`);

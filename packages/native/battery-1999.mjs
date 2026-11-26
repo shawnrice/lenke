@@ -1,11 +1,11 @@
 // Item 1999 — answer-equivalence battery for the fused `choose(<vertex filter>, hop, hop)` route.
 //
-// ⚠️⚠️ **A ROUTE CHOICE IS ANSWER-EQUIVALENT, so the 2,447-test suite passes either way and this is
+// **A ROUTE CHOICE IS ANSWER-EQUIVALENT, so the 2,447-test suite passes either way and this is
 // what actually compares the two.** Every shape is asked THREE times, because the CSR arms sit
 // behind `seenBefore` (item 1889's second-ask policy): ask 1 takes `chooseWalk`, asks 2-3 take
 // `csrBothArms`. A single-ask battery exercises half the module.
 //
-// ⚠️ COMPARED POSITIONALLY, NOT AS A MULTISET. Gremlin stream order is a TinkerPop contract that
+// COMPARED POSITIONALLY, NOT AS A MULTISET. Gremlin stream order is a TinkerPop contract that
 // `gremlin-fuzz`'s `unordered` decision compares ORDERED for a single-type step with no `order()`
 // ([[order-is-unspecified]] does not cover it), so a route that reorders is WRONG, not merely
 // different — and a checksum cannot see that (item 1955).
@@ -35,12 +35,12 @@ import {
 const g = new Graph();
 
 /*
- * ⚠️ THE FIXTURE MUST SPLIT ON THE TEST, AND BOTH SIDES MUST BE NON-EMPTY. A graph where every
+ * THE FIXTURE MUST SPLIT ON THE TEST, AND BOTH SIDES MUST BE NON-EMPTY. A graph where every
  * vertex passes the test exercises only the `then` arm, and the `else` arm — which on the workload
  * screen's own row takes 96 of every 97 vertices — would never run. `n` below is 0 for exactly two
  * vertices, so both arms are live and neither is the whole graph.
  *
- * ⚠️ AND `f` HAS NO `n` AT ALL, which is a THIRD case: the test reads a missing property (so it
+ * AND `f` HAS NO `n` AT ALL, which is a THIRD case: the test reads a missing property (so it
  * fails and `f` takes the else arm) AND it is the far end of an edge, so a `values('n')` projection
  * drops the row. `drops` and the test are different mechanisms reading the same absent key.
  */
@@ -80,7 +80,7 @@ const SHAPES = {
     traversal(V(), choose(has('n', 0), out('E'), in_('E')), values('n')),
   'has / out,out .values': () =>
     traversal(V(), choose(has('n', 0), out('E'), out('E')), values('n')),
-  // ⚠️ NO ELSE ARM — per TinkerPop the traverser PASSES THROUGH, which is a different answer from
+  // NO ELSE ARM — per TinkerPop the traverser PASSES THROUGH, which is a different answer from
   // an empty arm and the thing `chooseStep`'s own comment had to record against the AST's comment.
   'has / out, (no else)': () => traversal(V(), choose(has('n', 0), out('E')), values('n')),
   'hasLabel / out,in .values': () =>
@@ -99,7 +99,7 @@ const SHAPES = {
   'has / outEF,outE .values': () =>
     traversal(V(), choose(has('n', 0), out('E', 'F'), out('E')), values('n')),
   'has / untyped,outE': () => traversal(V(), choose(has('n', 0), out(), out('E')), values('n')),
-  // ⚠️ SHAPES THE RUNG MUST DECLINE — here so a gate that wrongly admits one shows up as a diff.
+  // SHAPES THE RUNG MUST DECLINE — here so a gate that wrongly admits one shows up as a diff.
   'HOP TEST (declines)': () => traversal(V(), choose(out('E'), values('n'), constant('none'))),
   'IDENTITY ARM (declines)': () =>
     traversal(V(), choose(has('n', 0), identity(), out('E')), values('n')),
@@ -125,9 +125,7 @@ for (const [name, make] of Object.entries(SHAPES)) {
     unstable += 1;
   }
 
-  console.log(
-    `${same ? '  ' : '⚠️'} ${name.padEnd(26)} ${same ? got[0] : got.join('\n     VS  ')}`,
-  );
+  console.log(`${same ? '  ' : ''} ${name.padEnd(26)} ${same ? got[0] : got.join('\n     VS  ')}`);
 }
 
 console.log(`\n${String(unstable)} UNSTABLE`);

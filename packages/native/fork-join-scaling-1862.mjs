@@ -9,7 +9,7 @@
  *   3. `(a:T), (b:T) WHERE a.n = $p0 AND …`    a filtered product of two scans
  *   4. `(a)-[:E]->(b), (c)-[:F]->(d)`          a GENUINE cross product
  *
- * ⚠️ 3 AND 4 ARE NOT TARGETS AND THAT IS NOT A GUESS: their row COUNT is the answer, so emitting
+ * 3 AND 4 ARE NOT TARGETS AND THAT IS NOT A GUESS: their row COUNT is the answer, so emitting
  * them is the work. 1 is closed. **2 is the one open question**, and it is a large one: `a` is the
  * START of both patterns, so `spliceChainedPatterns` cannot merge them, and the honest answers
  * differ by orders of magnitude —
@@ -20,13 +20,13 @@
  * At N = 1500, F = 4 that is 24,000 against 36,000,000 — a 1500x difference that no single-size
  * timing can tell apart, because either could be "slow".
  *
- * ⚠️ SO THE INSTRUMENT IS A SIZE SWEEP, NOT A TIMING. Doubling N multiplies a join's work by 2 and a
+ * SO THE INSTRUMENT IS A SIZE SWEEP, NOT A TIMING. Doubling N multiplies a join's work by 2 and a
  * product's by 4. The RATIO between consecutive sizes is the signal and it needs no baseline to
  * compare against — which is what makes this answerable without an A/B arm. CLAUDE.md's rule is to
  * sweep the size because cache-resident and not are different questions; here the sweep is not a
  * robustness check on the finding, it IS the finding.
  *
- * ⚠️ AND THE ANSWER IS CHECKED AGAINST THE CLOSED FORM, because a wrong row count would make the
+ * AND THE ANSWER IS CHECKED AGAINST THE CLOSED FORM, because a wrong row count would make the
  * scaling meaningless. For a graph where every vertex has out-degree exactly F, the fork count is
  * N * F^2 whatever the topology — so it validates the SHAPE being measured, not the fixture. The
  * fixture's own branching is asserted separately.
@@ -88,7 +88,7 @@ const SHAPES = {
   // nothing quadratic anywhere is a broken instrument rather than good news.
   product: 'MATCH (a:T)-[:E]->(b:T), (c:T)-[:E]->(d:T) RETURN count(*) AS x',
   /**
-   * ⚠️ AND THE ROW-RETURNING PAIR, which is what the SCREEN actually draws — its fork body ends
+   * AND THE ROW-RETURNING PAIR, which is what the SCREEN actually draws — its fork body ends
    * `RETURN b.n AS x, c.n AS y`, not `count(*)`. A count rung would not touch it. These two emit
    * the SAME number of rows as their `count` twins above, so putting all four in one sweep is what
    * separates "the fork has no count rung" from "the fork produces rows dearly".
@@ -100,7 +100,7 @@ const SHAPES = {
 const REPS = Number(process.env.REPS ?? 3);
 
 /**
- * ⚠️ THE ROW SHAPES REPORT `rows.length` AND THE COUNT SHAPES REPORT THE VALUE, so the `rows` column
+ * THE ROW SHAPES REPORT `rows.length` AND THE COUNT SHAPES REPORT THE VALUE, so the `rows` column
  * means one thing throughout — the number of rows the shape is responsible for. Reading `x` off the
  * first row of a row-returning shape would print a property value in a column labelled `rows`,
  * which is how an instrument reports success while measuring nothing.
@@ -157,7 +157,7 @@ for (const name of Object.keys(SHAPES)) {
     const ratio = prev === null ? null : got.ms / prev;
     const forky = name === 'fork' || name === 'forkRows';
     const expect = forky ? n * FANOUT ** 2 : '';
-    const flag = forky && String(got.answer) !== String(expect) ? `  ⚠️ EXPECTED ${expect}` : '';
+    const flag = forky && String(got.answer) !== String(expect) ? `  EXPECTED ${expect}` : '';
 
     console.log(
       `${name.padEnd(9)} ${String(n).padEnd(7)} ${got.ms.toFixed(1).padStart(7)} ${String(got.answer).padStart(12)}   ${

@@ -15,7 +15,7 @@
  *      65.7 ns/row against 304
  * ```
  *
- * ⚠️ EVERY TWO-HOP SHAPE IN THE PROFILE CORPUS ENDS IN `count()`, which `hopChainCount` answers
+ * EVERY TWO-HOP SHAPE IN THE PROFILE CORPUS ENDS IN `count()`, which `hopChainCount` answers
  * from degrees without walking at all (item 590) — so the two-hop WALK has only ever been profiled
  * in the arm where it does not run. That is why this is a structural hole rather than a known cost.
  *
@@ -26,14 +26,14 @@
  *     bun two-hop-values-floor.ts
  *     NODES=50000 REPS=10 bun two-hop-values-floor.ts
  *
- * ⚠️⚠️⚠️ AND EVEN WITHIN ONE RUN, THIS FILE'S ENGINE-VS-FLOOR RATIOS OVERSTATE BY ~1.55x. Item 1640
+ * AND EVEN WITHIN ONE RUN, THIS FILE'S ENGINE-VS-FLOOR RATIOS OVERSTATE BY ~1.55x. Item 1640
  * re-measured the trailing filtered pair with one arm per process and got **1.25-1.30x** where this
  * file reports **1.97x** — interference moves the engine arm and the floor arm by different amounts
  * inside a single run, so same-run pairing is necessary and NOT sufficient. Use this file to rank
  * shapes against each other; for an engine-vs-floor ratio use a one-measurement-per-process
  * instrument (`closure-env-probe.ts` is the pattern).
  *
- * ⚠️⚠️ COMPARE ENGINE TO FLOOR WITHIN ONE RUN ONLY. Item 1638 measured the trailing engine arm at
+ * COMPARE ENGINE TO FLOOR WITHIN ONE RUN ONLY. Item 1638 measured the trailing engine arm at
  * **1096.86 ms in one run and 1616.45 in the next** — a 1.47x swing, after two arms were added to the
  * same process — while its floor barely moved (828.35 -> 818.51). Twelve arms share one process, so
  * this is items 1631/1634's cross-arm interference at a much larger scale than those items saw. A
@@ -41,7 +41,7 @@
  * own first reading (1.32x) was exactly that mistake. Anything needing per-arm resolution goes ONE
  * ARM PER PROCESS.
  *
- * ⚠️ AND THE THREE FILTER POSITIONS ARE NOT COMPARABLE PER ROW. A two-hop pattern has 5,000,000
+ * AND THE THREE FILTER POSITIONS ARE NOT COMPARABLE PER ROW. A two-hop pattern has 5,000,000
  * paths at 200,000/5, so a LEAD filter tests 200,000 vertices, a MID filter 1,000,000 first-hop far
  * ends and a TRAILING filter 5,000,000 second-hop far ends — five times the predicate work for the
  * same 2,680,230 output rows. The engine reads 603.1 / 353.6 / 328.7 ns a row across them and the
@@ -62,7 +62,7 @@ for (let i = 0; i < NODES; i += 1) {
   g.addVertex({ id: `u${i}`, labels: ['User'], properties: { k: i % 97, n: i } });
 }
 
-/** ⚠️ Split on the REPEAT INDEX — items 1516/1518; a linear `(a*k+b)%N` makes the graph functional. */
+/** Split on the REPEAT INDEX — items 1516/1518; a linear `(a*k+b)%N` makes the graph functional. */
 let edges = 0;
 
 for (let k = 0; k < NODES * FANOUT; k += 1) {
@@ -210,7 +210,7 @@ const handTwoHopFiltered = (): unknown[] => {
 };
 
 /**
- * ⚠️ FLOORS FOR THE MID AND LEAD FILTER POSITIONS, which this instrument did not have (item 1638).
+ * FLOORS FOR THE MID AND LEAD FILTER POSITIONS, which this instrument did not have (item 1638).
  * It floored the TRAILING position only, so the other two had engine numbers and nothing to compare
  * them against — and the three positions differ by a factor of 5 in how many predicate tests they
  * run, which is the whole story of this family.
@@ -338,7 +338,7 @@ const ARMS: Arm[] = [
   },
   { name: 'HAND  2 hop + MID has (FLOOR)', run: () => handTwoHopMidFiltered().length },
   { name: 'HAND  2 hop + LEAD has (FLOOR)', run: () => handTwoHopLeadFiltered().length },
-  // ⚠️ THREE hops, to PRICE what item 1614 leaves open rather than asserting it is worth taking.
+  // THREE hops, to PRICE what item 1614 leaves open rather than asserting it is worth taking.
   {
     name: 'engine 3 hop values  (the pipeline)',
     run: () => toArray(traversal(V(), out('E'), out('E'), out('E'), values('k')), g).length,

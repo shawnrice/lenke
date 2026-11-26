@@ -9,7 +9,7 @@ import { query } from './index.js';
  * `count(DISTINCT <far end>)` over a 1-hop counts the far-driven walk's visits DIRECTLY, with no
  * dedup set — **3.13x**, 6.923 to 2.209 ms at 50,000 vertices / 150,000 edges (item 1590).
  *
- * ⚠️ THE CLAIM THAT MAKES IT SOUND, and what these tests exist to check: `farDrivenFits` requires
+ * THE CLAIM THAT MAKES IT SOUND, and what these tests exist to check: `farDrivenFits` requires
  * `!onStart`, so the walk is keyed on the FAR end and iterates each candidate far vertex exactly
  * ONCE. A set can then only re-derive what the iteration already guaranteed. If that claim is wrong
  * for any shape, the count DOUBLE-COUNTS — so every fixture below is one where a far vertex is
@@ -137,7 +137,7 @@ describe('direction and labels still select the right far ends', () => {
     graph.addEdge({ id: 'x1', from: a, to: d, labels: ['OTHER'] });
 
     expect(oracle(graph, '(a:P)-[:E]->(b)')).toBe(2);
-    // ⚠️ `-->` is not this surface's spelling — it raises "a query must end in RETURN or FINISH",
+    // `-->` is not this surface's spelling — it raises "a query must end in RETURN or FINISH",
     // which reads like a different mistake entirely. `-[]->` and `->` are the untyped forms, and
     // both are exercised here because they are two spellings of one question and must agree.
     expect(oracle(graph, '(a:P)-[]->(b)')).toBe(3);

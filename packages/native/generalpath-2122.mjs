@@ -1,7 +1,7 @@
 /*
  * Item 2122 — the SIX shapes the extended census leaves on the general path. Which are costs?
  *
- * 🔑 Item 2121 took the census to 100 shapes / 34-of-36 rungs. Six shapes reach NO rung at all:
+ * Item 2121 took the census to 100 shapes / 34-of-36 rungs. Six shapes reach NO rung at all:
  *
  * ```text
  *     node.limit               MATCH (n:P) RETURN n.k LIMIT 10
@@ -12,16 +12,16 @@
  *     varlen.proj              MATCH (a:P)-[:E]->{1,3}(b) RETURN b.k
  * ```
  *
- * ⚠️ **A GENERAL-PATH SHAPE IS NOT A DEFECT** — the census says so itself, and most steps have no
+ * **A GENERAL-PATH SHAPE IS NOT A DEFECT** — the census says so itself, and most steps have no
  * shortcut and never will. What makes one a candidate is a FLOOR it misses, so each row below is paired
  * with the cheapest thing that answers the same question.
  *
- * 🔑 THE TWO `LIMIT` ROWS ARE THE SHARPEST HYPOTHESIS. A `LIMIT 10` should exit after ten rows; if it
+ * THE TWO `LIMIT` ROWS ARE THE SHARPEST HYPOTHESIS. A `LIMIT 10` should exit after ten rows; if it
  * costs what the UNLIMITED twin costs, nothing is exiting early — the `eager-tail-cache` class, which
- * this repo has measured at 473x and 3680x in both engines. ⚠️ That is a per-row comparison against the
+ * this repo has measured at 473x and 3680x in both engines. That is a per-row comparison against the
  * same query without the limit, which is the only pairing that can show it.
  *
- * ⚠️ `sum` IS DELIBERATELY NOT FOLDED over the level recurrence (items 1830/2010): a
+ * `sum` IS DELIBERATELY NOT FOLDED over the level recurrence (items 1830/2010): a
  * multiplicity-weighted sum is different arithmetic from a per-path one and f64 addition is not
  * associative, so byte-identity with Rust forbids it. Those rows are priced to SIZE the standing refusal,
  * not to challenge it.
@@ -118,6 +118,6 @@ for (const [name, q, floor] of pairs) {
   const ratio = a.ms / b.ms;
 
   console.log(
-    `  ${name.padEnd(24)} ${a.ms.toFixed(2).padStart(10)} ${b.ms.toFixed(2).padStart(10)} ${ratio.toFixed(2).padStart(7)}x  ${a.rows} / ${b.rows}${ratio > 2 ? '   ⚠️ CANDIDATE' : ''}`,
+    `  ${name.padEnd(24)} ${a.ms.toFixed(2).padStart(10)} ${b.ms.toFixed(2).padStart(10)} ${ratio.toFixed(2).padStart(7)}x  ${a.rows} / ${b.rows}${ratio > 2 ? '   CANDIDATE' : ''}`,
   );
 }

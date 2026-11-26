@@ -9,19 +9,19 @@ import { describe, expect, test } from 'bun:test';
  * that MATERIALIZES all 800,000 values — 226.66 ms against 91.94 — which is the wrong way round for
  * an arm that allocates nothing.
  *
- * ⚠️⚠️ **WHY THIS FILE EXISTED ONCE BEFORE AND WAS DELETED.** Item 1918 built this fold and reverted
+ * **WHY THIS FILE EXISTED ONCE BEFORE AND WAS DELETED.** Item 1918 built this fold and reverted
  * it: the refusal it overturns was made deliberately by items 1830/1831 and pinned by a test named
  * `sum and mean are NOT folded`, whose stated reason was that "byte-identity with the Rust engine is
  * a hard invariant". Item **2401** retired that in favour of a PRECISION contract — `sum`/`avg`
  * accurate to within `n·ε·Σ|xᵢ|`, explicitly NOT bit-identical across engines — and item **2400**
  * had already freed the walk-order premise underneath it.
  *
- * ⚠️ SO THIS FILE DOES NOT PIN BIT-IDENTITY, DELIBERATELY. Item 1918 measured 12/12 bit-identical
+ * SO THIS FILE DOES NOT PIN BIT-IDENTITY, DELIBERATELY. Item 1918 measured 12/12 bit-identical
  * against the Rust engine over the FFI (`sumorder-native-1918.ts`) and that measurement is why
  * taking the fold costs nothing — but it is a fact about today's walks, not the contract. Pinning it
  * here would rebuild in a new place exactly the lock this item removed.
  *
- * ⚠️ THE ORACLE IS A PLAIN JAVASCRIPT REDUCE OVER THE WALK'S OWN OUTPUT, which is outside the
+ * THE ORACLE IS A PLAIN JAVASCRIPT REDUCE OVER THE WALK'S OWN OUTPUT, which is outside the
  * engine. `toArray` of the same traversal WITHOUT the aggregate gives exactly the values being
  * reduced, so `+` over them cannot share a mistake with either engine path — the standard
  * `projected-aggregate.test.ts` sets for the `min`/`max` twin, and item 1832's drift hazard is why
@@ -33,7 +33,7 @@ import { V, mean, out, sum, toArray, traversal, values } from '../index.js';
 import { foldProjectedNumeric } from './aggregation.js';
 
 /**
- * ⚠️ THE VALUES ARE CHOSEN SO THE FOLD'S FIVE RULES ARE EACH OBSERVABLE — every one of them is a
+ * THE VALUES ARE CHOSEN SO THE FOLD'S FIVE RULES ARE EACH OBSERVABLE — every one of them is a
  * named mutant in `numfold-mutants-1918.mjs`: a stored `null` (SKIPPED, not added as 0 and not
  * counted by `mean`), an ABSENT key (never emitted by `values` at all), negatives and a zero (so a
  * falsy correct answer cannot be confused with "no answer"), and an all-null column (which must
@@ -72,13 +72,13 @@ const FIXTURES: Record<string, readonly unknown[]> = {
   'all null': [null, null],
   single: [42],
   /**
-   * ⚠️ A COLUMN THAT SUMS TO ZERO while every element is non-null — the one fixture that tells
+   * A COLUMN THAT SUMS TO ZERO while every element is non-null — the one fixture that tells
    * `sawNonNull` apart from `total !== 0`. Without it, an implementation answering `null` whenever
    * the total is 0 passes every other case here.
    */
   'sums to zero': [5, -5, 2, -2],
   /**
-   * ⚠️ NON-INTEGERS, so `mean`'s division is not exact and `sum`'s accumulation actually rounds.
+   * NON-INTEGERS, so `mean`'s division is not exact and `sum`'s accumulation actually rounds.
    * An all-integer fixture cannot distinguish any two summation orders, which would make the
    * agreement tests below vacuous for the quantity this item is about.
    */
@@ -98,12 +98,12 @@ describe('a residual sum/mean over the fused values walk', () => {
       const gotMean = toArray(traversal(V(), out('E'), values('k'), mean()), g);
 
       /**
-       * ⚠️ THE LENGTH IS PART OF THE ASSERTION, and the value alone was not enough for the twin:
+       * THE LENGTH IS PART OF THE ASSERTION, and the value alone was not enough for the twin:
        * a mutant answering NOTHING for an all-null input instead of `[null]` survives, because
        * `undefined ?? null` and `null` render identically. These terminals always emit exactly one
        * value, so the arity is as much the contract as the number.
        *
-       * ⚠️ Compared as a STRING so a `null` answer and a `0` answer cannot be confused — on
+       * Compared as a STRING so a `null` answer and a `0` answer cannot be confused — on
        * `sums to zero` the correct `sum` IS a falsy value, which is the point of that fixture.
        */
       expect(`${name}/sum: len=${String(gotSum.length)} ${JSON.stringify(gotSum[0] ?? null)}`).toBe(
@@ -136,19 +136,19 @@ describe('a residual sum/mean over the fused values walk', () => {
   });
 
   /**
-   * ⚠️ THE SCAN SPELLING IS THE SECOND OPINION, and for this pair it is a REAL second
+   * THE SCAN SPELLING IS THE SECOND OPINION, and for this pair it is a REAL second
    * implementation rather than a courtesy: `V().values(k).sum()` goes through
    * `fusedValuesAggregate`'s numeric arm — which this fold mirrors line for line, and which the
    * route screen already reports as `agg: values sum  SHORTCUT`. Two near-twins that must stay
    * identical are item 1832's drift hazard, so they are checked against each other as well as
    * against the plain reduce above.
    *
-   * ⚠️⚠️ **AND THIS IS THE ONE PLACE A TOLERANCE IS CORRECT RATHER THAN A WEAKENING, which is
+   * **AND THIS IS THE ONE PLACE A TOLERANCE IS CORRECT RATHER THAN A WEAKENING, which is
    * item 2401's contract doing real work.** The ring fixture gives every vertex exactly one
    * in-edge, so the hop visits the same MULTISET as the scan — but in a ROTATION of its order, and
    * a left fold over a rotation re-associates. Within-engine determinism (`parallelism-stance`)
    * binds the same query run twice, which the tests above assert exactly; these are two DIFFERENT
-   * queries, so what they owe each other is the precision contract — `n·ε·Σ|xᵢ|`. ⚠️ The
+   * queries, so what they owe each other is the precision contract — `n·ε·Σ|xᵢ|`. The
    * tolerance is kept far enough below a real defect to still catch one: `1e-9` sits orders above
    * reassociation noise on these fixtures and orders below a dropped or double-counted row, which
    * is the margin `hop-order-sensitive-aggregates.test.ts` reasons from.
@@ -188,7 +188,7 @@ describe('a residual sum/mean over the fused values walk', () => {
   });
 
   /**
-   * ⚠️ `asNumber` THROWS rather than coercing, because TinkerPop's `sum`/`mean` require `Number`s
+   * `asNumber` THROWS rather than coercing, because TinkerPop's `sum`/`mean` require `Number`s
    * and raise on anything else — and that is the ONE behaviour of this fold a successful answer
    * cannot demonstrate. A mutant dropping `asNumber` makes a numeric string CONCATENATE
    * (`'1' + '2'` is `'12'`), which is a wrong answer rather than an error.
@@ -206,7 +206,7 @@ describe('a residual sum/mean over the fused values walk', () => {
 });
 
 /**
- * ⚠️⚠️ **THE FOLD IS DRIVEN DIRECTLY HERE, AND THAT IS NOT A SHORTCUT.** The generic pipeline
+ * **THE FOLD IS DRIVEN DIRECTLY HERE, AND THAT IS NOT A SHORTCUT.** The generic pipeline
  * answers every shape above IDENTICALLY — that equality is the whole claim of the item — so a
  * mutant that merely declines the route survives every test in the describe block above. Its own
  * gates are the two instruments (`numfold-mutants-1918.mjs` names it an EXPECTED SURVIVOR, and the
@@ -228,7 +228,7 @@ describe('foldProjectedNumeric as a pure function', () => {
     expect(foldProjectedNumeric([], 'mean')).toStrictEqual([null]);
     expect(foldProjectedNumeric([null, null], 'sum')).toStrictEqual([null]);
     expect(foldProjectedNumeric([null, null], 'mean')).toStrictEqual([null]);
-    // ⚠️ AND A REAL ZERO IS NOT THAT CASE: `sawNonNull` is not `total !== 0`.
+    // AND A REAL ZERO IS NOT THAT CASE: `sawNonNull` is not `total !== 0`.
     expect(foldProjectedNumeric([5, -5], 'sum')).toStrictEqual([0]);
     expect(foldProjectedNumeric([5, -5], 'mean')).toStrictEqual([0]);
   });
@@ -240,19 +240,19 @@ describe('foldProjectedNumeric as a pure function', () => {
   });
 
   /**
-   * ⚠️⚠️ **THE ADDITION IS A LEFT FOLD IN THE WALK'S OWN ORDER, AND THIS IS THE TEST FOR THE ONE
+   * **THE ADDITION IS A LEFT FOLD IN THE WALK'S OWN ORDER, AND THIS IS THE TEST FOR THE ONE
    * MUTANT THAT MATTERS.** `numfold-mutants-1918.mjs`'s named hazard is a REVERSED addition order:
    * every value present, the right count, and a wrong answer in the last ulp — invisible to any
    * assertion that compares rounded output.
    *
-   * 🔑 **WHAT IS ASSERTED IS THE FOLD DIRECTION, NOT CROSS-ENGINE IDENTITY.** Item 2401's contract
+   * **WHAT IS ASSERTED IS THE FOLD DIRECTION, NOT CROSS-ENGINE IDENTITY.** Item 2401's contract
    * explicitly permits the Rust engine to re-associate, so a test demanding the same bits from both
    * engines would be asserting a contract this repo does not have. What this engine does owe is
    * within-engine determinism (`parallelism-stance`): the same query over the same graph answers
    * the same way every run, which a left fold in walk order gives and a direction-dependent
    * implementation detail does not.
    *
-   * ⚠️ THE CONTROL COMES FIRST, or the test is vacuous: the two orders of these values must
+   * THE CONTROL COMES FIRST, or the test is vacuous: the two orders of these values must
    * actually differ in f64, and on a reciprocal ramp they do.
    */
   test('adds as a left fold in the input’s order', () => {
@@ -268,7 +268,7 @@ describe('foldProjectedNumeric as a pure function', () => {
   });
 
   /**
-   * ⚠️⚠️ **IT TAKES THE WALK'S `drain`, AND THE FIRST VERSION OF THIS TEST PINNED THE OPPOSITE.**
+   * **IT TAKES THE WALK'S `drain`, AND THE FIRST VERSION OF THIS TEST PINNED THE OPPOSITE.**
    * I reasoned that item 1919's drain was worth 2.09x on a STRING column but only 1.15x on a
    * numeric one, that a `sum` column is numeric by construction, and that an 800,000-slot
    * allocation was therefore not worth ~15% — wrote that down as fact, and then measured it:
@@ -276,7 +276,7 @@ describe('foldProjectedNumeric as a pure function', () => {
    * had been 1.57x above it. `foldProjectedNumeric`'s own note has the table and what refuted the
    * prediction (the twin's number in the same run).
    *
-   * ⚠️ AND THIS IS NOT A ROUTE-ONLY CHANGE DRESSED AS A TEST: taking a walk's `drain` yields the
+   * AND THIS IS NOT A ROUTE-ONLY CHANGE DRESSED AS A TEST: taking a walk's `drain` yields the
    * same elements in the same order, so no answer test can see it — `projected-fold.test.ts` hit
    * exactly this. A walk whose `drain` and iterator DISAGREE is what makes the choice observable,
    * and without this a mutant reverting the drain survives the whole suite.

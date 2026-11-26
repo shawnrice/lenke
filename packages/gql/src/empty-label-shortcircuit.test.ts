@@ -12,7 +12,7 @@
  *   MATCH (a:Q)-[:E]->(b)-[:E]->(c)      148.264 -> 147.201   <- selective, untouched
  * ```
  *
- * ⚠️ THE WRONG-ANSWER RISK IS THE OTHER DIRECTION: a guard that fires for a label which DOES match
+ * THE WRONG-ANSWER RISK IS THE OTHER DIRECTION: a guard that fires for a label which DOES match
  * answers 0 for a query with rows. Most of this file is that control.
  */
 import { describe, expect, test } from 'bun:test';
@@ -60,11 +60,11 @@ describe('item 1552 — an empty label short-circuits the chain', () => {
   });
 
   /**
-   * ⚠️ THE CONTROL THAT MATTERS. A guard that fires too eagerly answers 0 where there are rows,
+   * THE CONTROL THAT MATTERS. A guard that fires too eagerly answers 0 where there are rows,
    * and 0 is exactly what a short-circuit produces — so a wrong guard looks like a working one on
    * every empty-label case and only breaks here.
    */
-  test('⚠️ a label that DOES match is not short-circuited', () => {
+  test('a label that DOES match is not short-circuited', () => {
     const g = build();
 
     // Every vertex is `:P`, so the full 4-cycle: 4 two-hop paths and 4 three-hop paths.
@@ -80,7 +80,7 @@ describe('item 1552 — an empty label short-circuits the chain', () => {
   });
 
   /**
-   * ⚠️ PER EXECUTION, NOT PER COMPILE — the point item 1551 had to establish. `compile(stmt)` is
+   * PER EXECUTION, NOT PER COMPILE — the point item 1551 had to establish. `compile(stmt)` is
    * cached in `planCache`, so a guard decided at compile time would be baked in and answer 0
    * forever once it had seen an empty bucket. Same query text, run before and after the label
    * stops being empty.

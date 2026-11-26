@@ -8,17 +8,17 @@ import { describe, expect, test } from 'bun:test';
  * **2081 ns a row against the unordered shape's 111**. The rung now strips the sort, reuses the
  * base detector's whole gate, and sorts the rows it produced (item 1827's trick).
  *
- * ⚠️ ORDER IS THE ANSWER HERE, so every assertion compares ARRAYS, never sets. That is what makes
+ * ORDER IS THE ANSWER HERE, so every assertion compares ARRAYS, never sets. That is what makes
  * this family different from the DISTINCT rungs, where row order is unspecified: the moment a
  * query says `ORDER BY`, the sequence is the contract.
  *
- * ⚠️ THE ORACLE IS `WHERE true`, WHICH IS A NO-OP THAT DECLINES THE RUNG. An outer clause `WHERE`
+ * THE ORACLE IS `WHERE true`, WHICH IS A NO-OP THAT DECLINES THE RUNG. An outer clause `WHERE`
  * is one of the three modifiers this rung refuses (the other two, an edge variable and a window,
  * change the question or the rows), so `MATCH (a:T) WHERE true OPTIONAL MATCH …` asks EXACTLY the
  * same question down the general path. A hand-written expected array would only re-state what the
  * rung does; this compares two implementations.
  *
- * ⚠️ AND THE NULL ROWS ARE THE POINT OF THE FIXTURE. An OPTIONAL hop emits a NULL-filled row for
+ * AND THE NULL ROWS ARE THE POINT OF THE FIXTURE. An OPTIONAL hop emits a NULL-filled row for
  * every start with no match, so the sort has to place nulls exactly where the general path does —
  * which no fixture of fully-matched vertices would check.
  */
@@ -75,7 +75,7 @@ const seq = (g: Graph, text: string, params: Record<string, unknown> = {}): stri
 /**
  * The same question down the general path.
  *
- * ⚠️ THE DEVICE CHANGED AT ITEM 1851, and this comment is the reason it is a comment. It used to
+ * THE DEVICE CHANGED AT ITEM 1851, and this comment is the reason it is a comment. It used to
  * be a no-op OUTER `WHERE true`, which declined the rung — until item 1851 taught the rung to
  * carry an anchor predicate, at which point `WHERE true` started TAKING it and every comparison
  * here would have become the rung against itself. The assertion in "the rung actually fires for
@@ -138,7 +138,7 @@ describe('an ORDER BY over an optional hop', () => {
 
 describe('the ordered optional rung declines what it must', () => {
   /**
-   * ⚠️ ~~A WINDOW IS REFUSED~~ — **ADMITTED SINCE ITEM 1852.** My note here called refusing it a
+   * ~~A WINDOW IS REFUSED~~ — **ADMITTED SINCE ITEM 1852.** My note here called refusing it a
    * correctness condition because "the order decides WHICH rows survive". The order does decide
    * that, and it is exactly why sort-then-slice is correct: the sort is by OUTPUT COLUMNS and the
    * window applies to the sorted result. `outputColumnSorts` holds the real conditions (no
@@ -161,7 +161,7 @@ describe('the ordered optional rung declines what it must', () => {
   });
 
   /**
-   * ⚠️ ~~A PARAMETERISED window still declines~~ — **ADMITTED SINCE ITEM 1867**, and the reason
+   * ~~A PARAMETERISED window still declines~~ — **ADMITTED SINCE ITEM 1867**, and the reason
    * this note gave ("its value is not known when the route is chosen") was the overstated half of
    * a real concern. The ROUTE does not depend on the value: this rung sorts and slices, and
    * `sortRowsByColumns` picks heap-vs-sort at RUN time against the actual row count. Only the
@@ -178,7 +178,7 @@ describe('the ordered optional rung declines what it must', () => {
 
     expect(routes(text)).toContain('optionalOrderedProjection');
     expect(query(g, text, { n: 3 }).length).toBe(3);
-    // ⚠️ AND AGAINST THE GENERAL ROUTE, which a length check alone cannot do: three rows of the
+    // AND AGAINST THE GENERAL ROUTE, which a length check alone cannot do: three rows of the
     // WRONG three would satisfy it.
     expect(seq(g, text, { n: 3 })).toEqual(seq(g, viaGeneral(text), { n: 3 }));
   });

@@ -6,11 +6,11 @@
  * all — so the maximum graph an embedder can hold has been an unknown, and so has the heap pressure
  * behind every GC share in every TS profile.
  *
- * ⚠️ IT IS A SPEED QUESTION, NOT ONLY A FOOTPRINT ONE. A windowed profile of
+ * IT IS A SPEED QUESTION, NOT ONLY A FOOTPRINT ONE. A windowed profile of
  * `project var-length 1-3 hops` put the garbage collector at **12.67%**, and item 1468 found 6.93%
  * GC inside `labelPropagation`'s CSR build. Allocation per element is what sets that floor.
  *
- * ⚠️ AND IT IS WHY THE ALGORITHM SWEEP CANNOT REACH ITS FOURTH POINT. `algo-scaling-bench` at
+ * AND IT IS WHY THE ALGORITHM SWEEP CANNOT REACH ITS FOURTH POINT. `algo-scaling-bench` at
  * `SIZES=4` OOMs node's default ~4 GB heap at V=1,280,000 for both `onCycle` and
  * `stronglyConnectedComponents` — not an algorithm defect: at the rates below the GRAPH alone is
  * ~3.3 GB there.
@@ -22,7 +22,7 @@
  *     node --expose-gc graph-memory-probe.mjs
  *     V=80000 FANOUT=5 PROPS=3 node --expose-gc graph-memory-probe.mjs
  *
- * ⚠️ READ THE DELTAS, NOT A TOTAL DIVIDED BY V. At FANOUT=2 the per-vertex figure and the
+ * READ THE DELTAS, NOT A TOTAL DIVIDED BY V. At FANOUT=2 the per-vertex figure and the
  * per-vertex-including-its-edges figure differ by 4x, and quoting the wrong one understates the edge
  * cost — which is the larger of the two.
  */

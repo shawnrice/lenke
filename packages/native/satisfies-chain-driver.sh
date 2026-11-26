@@ -2,7 +2,7 @@
 # Item 1749: is `satisfies`' eleven-section chain worth anything?
 #
 #   base      all 11 sections run per element
-#   whereonly ⚠️ CEILING ONLY, WRONG FOR OTHER SHAPES: every section except `pred.where` deleted.
+#   whereonly CEILING ONLY, WRONG FOR OTHER SHAPES: every section except `pred.where` deleted.
 #             Sound for THESE two shapes because a counter confirmed only `where` is populated for
 #             them, but it would silently drop constraints elsewhere -- measurement, never a candidate.
 #
@@ -37,7 +37,7 @@ assert_dist() {
   # removes `labelTestsHold(element` from this function, which exists nowhere else in the bundle.
   got=$(python3 -c "
 t=open('$D',encoding='utf-8',errors='replace').read()
-# ⚠️ A COMMENT CANNOT BE A DIST MARKER -- the bundler strips comments, so a 'ZZ-ABLATED' marker read
+# A COMMENT CANNOT BE A DIST MARKER -- the bundler strips comments, so a 'ZZ-ABLATED' marker read
 # as 0 in both arms (eighth anchor failure this session, and a new flavour). 'pred.truthTestProps'
 # is no good either: it occurs 3 times, because the COMPILER builds that field. These two helpers
 # are called ONLY from `satisfies`, exactly once each, so the ablation takes both to zero.

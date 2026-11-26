@@ -1,7 +1,7 @@
 // Item 1899 — the DISTINCT far values of a hop, asked three ways over one fixture.
 //
-// ⚠️ ONE SHAPE PER PROCESS (`SHAPE=gql|gremlin|gremvals`), because item 1871 retracted a flag that
-// shared one. ⚠️ AND BOTH GREMLIN SPELLINGS MUST BE MEASURED: item 1899's `byKey` bug (a `By` is a
+// ONE SHAPE PER PROCESS (`SHAPE=gql|gremlin|gremvals`), because item 1871 retracted a flag that
+// shared one. AND BOTH GREMLIN SPELLINGS MUST BE MEASURED: item 1899's `byKey` bug (a `By` is a
 // tagged object, never the bare string the caller writes) left `dedupe().by(k)` on the generic
 // pipeline at 257 ms while `values(k).dedupe()` dropped to 65 on the SAME build. Measuring one
 // spelling would have called that a win.
@@ -22,7 +22,7 @@ for (let i = 0; i < N; i += 1) {
   g.addVertex({ id: String(i + 1), labels: ['P'], properties: { n: POOL[i % POOL.length] } });
 }
 
-// ⚠️ The repeat index `hop` is in the target, not just `e` — [[bench-methodology]]'s functional-graph
+// The repeat index `hop` is in the target, not just `e` — [[bench-methodology]]'s functional-graph
 // trap: `(i * 7 + 3) % N` alone gives every one of a vertex's FANOUT edges the SAME target.
 for (let e = 0; e < N * FANOUT; e += 1) {
   const i = e % N;

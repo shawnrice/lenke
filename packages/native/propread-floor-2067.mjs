@@ -5,7 +5,7 @@
  * 1,400,000 reads — with the keyed-vs-named load worth only 22 and the row object only 23. 154 ns for
  * a cached getter plus a named load is implausible, so this prices the bare read.
  *
- * ⚠️ THE ARMS DIFFER IN ONE TERM EACH:
+ * THE ARMS DIFFER IN ONE TERM EACH:
  *   getter+read  v.properties.k        what the engine does
  *   hoisted      bag.k, bag read once  removes the getter, keeps the load
  *   id only      v.id                  neither: the loop's own floor
@@ -75,7 +75,7 @@ const hoistedBag = () => {
 };
 
 /*
- * ⚠️⚠️ THE ARMS THAT MATCH THE ABLATION'S TWO PUSHES EXACTLY. The four-arm run attributed 215 ms
+ * THE ARMS THAT MATCH THE ABLATION'S TWO PUSHES EXACTLY. The four-arm run attributed 215 ms
  * (154 ns a row) to the difference between pushing `{ k: 0 }` and `{ k: c.properties.k ?? null }`.
  * A bare read is 6.6 ns, so either an object literal with a DYNAMIC value is far dearer than one with
  * a constant, or that 215 ms is not what I think it is. These two arms are the same push, same array
@@ -103,14 +103,14 @@ const pushRead = () => {
 };
 
 /*
- * ⚠️⚠️ THE LOCALITY ARMS — the hypothesis the engine arms forced (item 2067). Inside the two-hop walk
+ * THE LOCALITY ARMS — the hypothesis the engine arms forced (item 2067). Inside the two-hop walk
  * the vertex whose property is read is reached THROUGH AN EDGE, so the reads land in an unpredictable
  * order across 200,000 vertices and their property bags. The floor arms above iterate `g.vertices`
  * sequentially, which is cache-friendly. If a random-order read costs what the walk pays (~160 ns a
  * row) while a sequential one costs 7, the walk's projection cost is CACHE MISSES — and no code
  * specialization can remove a cache miss.
  *
- * ⚠️ THE SHUFFLE IS BUILT ONCE, OUTSIDE THE TIMED REGION, and both arms read the SAME number of
+ * THE SHUFFLE IS BUILT ONCE, OUTSIDE THE TIMED REGION, and both arms read the SAME number of
  * properties from the SAME objects — only the ORDER differs.
  */
 const order = [...g.vertices];
@@ -157,6 +157,6 @@ console.log(
   `\n  the READ alone      = ${(getter - floor).toFixed(2)} ms = ${(((getter - floor) * 1e6) / NODES).toFixed(1)} ns a read` +
     `\n  push read vs const  = ${(pr - pc).toFixed(2)} ms = ${(((pr - pc) * 1e6) / NODES).toFixed(1)} ns a row` +
     `\n  random vs sequential = ${(rd - sq).toFixed(2)} ms = ${(((rd - sq) * 1e6) / NODES).toFixed(1)} ns a row  <- the locality term` +
-    `\n\n  ⚠️ the ablation attributed 154 ns a row to exactly this difference. If the figure here is` +
+    `\n\n  the ablation attributed 154 ns a row to exactly this difference. If the figure here is` +
     `\n     single-digit, that attribution is wrong and the 215 ms is something else.\n`,
 );

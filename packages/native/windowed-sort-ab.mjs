@@ -4,12 +4,12 @@
  * `detectOptionalHopProjection` gates on `plainRowProjection`, which refuses an `orderBy`, so
  * adding an `ORDER BY` to an OPTIONAL hop dropped the whole rung.
  *
- * ⚠️ THE TWO SIBLING CLIFFS ARE CONTROLS, NOT TARGETS, and they are in the table precisely so this
+ * THE TWO SIBLING CLIFFS ARE CONTROLS, NOT TARGETS, and they are in the table precisely so this
  * item cannot be read as having fixed them. An edge VARIABLE and an outer clause `WHERE` each cost
  * ~9.4x on the same rung and are left open; if either moves here, the change is doing something
  * other than what its comment says.
  *
- * ⚠️ ONE SHAPE PER PROCESS; arms asserted by `optionalOrderedProjection` in the built dist.
+ * ONE SHAPE PER PROCESS; arms asserted by `optionalOrderedProjection` in the built dist.
  *
  *     bun optional-ordered-ab.mjs
  */
@@ -30,11 +30,11 @@ const NODES = Number(process.env.NODES ?? 20000);
 const FANOUT = Number(process.env.FANOUT ?? 4);
 
 const SHAPES = {
-  // ⚠️ SMALL LIMIT: the regime `boundedTopRows`' heap is for ((skip+limit)*16 <= rows).
+  // SMALL LIMIT: the regime `boundedTopRows`' heap is for ((skip+limit)*16 <= rows).
   'chain3 topk LIMIT 10':
     'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)-[:E]->(d:T) RETURN d.n AS x ORDER BY x LIMIT 10',
   'chain2 topk LIMIT 10': 'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T) RETURN c.n AS x ORDER BY x LIMIT 10',
-  // ⚠️ LARGE LIMIT: past the heap's crossover, so this is the cell where admitting the window
+  // LARGE LIMIT: past the heap's crossover, so this is the cell where admitting the window
   // could LOSE rather than win — the existing route assertion's stated fear.
   'chain3 topk LIMIT 100000':
     'MATCH (a:T)-[:E]->(b:T)-[:E]->(c:T)-[:E]->(d:T) RETURN d.n AS x ORDER BY x LIMIT 100000',
@@ -51,7 +51,7 @@ const SHAPES = {
 const build = () => execFileSync('bun', ['run', 'build'], { cwd: ROOT, stdio: 'ignore' });
 
 /**
- * ⚠️ THE ARM IS ASSERTED BY ROUTE, NOT BY A DIST GREP, and the first version of this file is why:
+ * THE ARM IS ASSERTED BY ROUTE, NOT BY A DIST GREP, and the first version of this file is why:
  * this change REMOVES a refusal, so there is no new identifier to look for, and the comment I
  * first used as a marker was stripped by the bundler (item 1845's trap, second occurrence). Asking
  * the compiler which rung claims a windowed sort is both robust and exactly the property under
@@ -93,7 +93,7 @@ for (let r = 0; r < ${REPS}; r += 1) {
   const t0 = performance.now();
   const out = query(g, Q);
   s.push(performance.now() - t0);
-  // ⚠️ THE FIRST 200 ROWS IN ORDER, not a sorted set: this rung's whole claim is that it produces
+  // THE FIRST 200 ROWS IN ORDER, not a sorted set: this rung's whole claim is that it produces
   // the SAME ORDER as the general path, so a set digest would miss the bug it could introduce.
   const d = out.length + '|' + out.slice(0, 200).map((x) => Object.values(x).map(String).join('/')).join(',');
   if (digest === null) { digest = d; } else if (digest !== d) { throw new Error('answer moved between reps'); }
@@ -179,6 +179,6 @@ for (const name of Object.keys(SHAPES)) {
   console.log(
     `${name.padEnd(36)} PRE ${pre.toFixed(2).padStart(8)} ms   POST ${post
       .toFixed(2)
-      .padStart(8)} ms   ${(pre / post).toFixed(2)}x${same ? '' : '   ⚠️ ROWS OR ORDER DIFFER'}`,
+      .padStart(8)} ms   ${(pre / post).toFixed(2)}x${same ? '' : '   ROWS OR ORDER DIFFER'}`,
   );
 }

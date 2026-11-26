@@ -7,7 +7,7 @@
  * change removes ONE generator resume PER ROW, so a one-row query sees all of it as a fraction of
  * a tiny total, and a shape whose rows are expensive to produce sees none of it.
  *
- * ⚠️ SO THE ARMS ARE PICKED BY WHICH BRANCH THEY REACH, not by what they look like. Several
+ * SO THE ARMS ARE PICKED BY WHICH BRANCH THEY REACH, not by what they look like. Several
  * ordinary-looking shapes never arrive at `projectedRows` at all — they are caught by a shortcut
  * (`fastPath`) first, which is why `MATCH (n:P) RETURN n.k AS k` did not move.
  *
@@ -46,7 +46,7 @@ const ARMS = {
   widefilt: 'MATCH (n:P) WHERE n.k > 90 RETURN n.k AS k, n.n AS m, n.k + 1 AS p',
   aggrows: 'MATCH (n:P) RETURN n.k AS k, count(*) AS c',
   /**
-   * ⚠️ THE ARM BUILT TO SEE ITEM 1512, and the reason it exists is that `wide` cannot.
+   * THE ARM BUILT TO SEE ITEM 1512, and the reason it exists is that `wide` cannot.
    *
    * The hoist removes ONE `{ binding, params, graph }` allocation per NON-DIRECT column per row. A
    * direct column (`n.k AS k`) is served by `propOf` and never allocates, so `wide` — two direct
@@ -97,7 +97,7 @@ for (const [name, text] of Object.entries(ARMS)) {
     times.push(((performance.now() - t0) * 1e6) / inner);
   }
 
-  // ⚠️ PROFILE WINDOW over the SELECTED arm only, which is why `ARM` is required to use it: a
+  // PROFILE WINDOW over the SELECTED arm only, which is why `ARM` is required to use it: a
   // window over several arms mixes their frames and the ranking becomes meaningless.
   if (process.env.PROF_OUT !== undefined && ONLY !== undefined) {
     // eslint-disable-next-line no-await-in-loop

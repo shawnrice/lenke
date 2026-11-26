@@ -75,7 +75,7 @@ for round in 1 2 3; do
     #                 20,000 distinct   1,000 distinct   97 distinct (the control)
     for shape in distincthi distinctstr distinct; do
       printf '%s ' "$arm"
-      # ⚠️ The probe throws on an empty result, and tail -1 would bank a CRASH's last line as a
+      # The probe throws on an empty result, and tail -1 would bank a CRASH's last line as a
       # measurement (item 1738). Keeping stderr means a failure is visible as a stack, not a number.
       (cd "$ROOT/packages/native" && timeout 900 node runtime-profile-probe.mjs "$shape" 500 2>&1 | tail -1)
     done

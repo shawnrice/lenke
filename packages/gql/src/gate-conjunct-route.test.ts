@@ -19,7 +19,7 @@ import { query } from './index.js';
  *    proj-nofilter scan      224135 226294 226806    225275 231411 232277    flat (NULL CONTROL)
  * ```
  *
- * ⚠️ THE ROUTE IS ANSWER-EQUIVALENT, so the differential tests cannot see a wrong decision — both
+ * THE ROUTE IS ANSWER-EQUIVALENT, so the differential tests cannot see a wrong decision — both
  * arms compute the same predicate. That is why the decision is an exported pure function and this
  * file tests it directly (`perf-gate-needs-its-own-test`). The answer tests below are the other
  * half: they pin that the arm the route selects still answers what `satisfies` answers, including
@@ -57,7 +57,7 @@ describe('which conjuncts take the pre-resolved arm', () => {
 
   test('a CORRELATED conjunct does NOT — the slow arm writes the binding it reads', () => {
     /**
-     * ⚠️ THE ONE MUTANT THAT IS A WRONG ANSWER RATHER THAN A SLOW ONE. `inlineHolds` sets
+     * THE ONE MUTANT THAT IS A WRONG ANSWER RATHER THAN A SLOW ONE. `inlineHolds` sets
      * `binding[bindVar]` before calling `satisfies`; a specialized closure never writes a binding,
      * so admitting a `bindVar`-carrying conjunct would evaluate its value against a name nothing
      * had bound. The `bindVar` here is what `predFor` sets for a non-closed inline constraint.
@@ -90,7 +90,7 @@ describe('which conjuncts take the pre-resolved arm', () => {
     };
 
     /*
-     * ⚠️ THIS ASSERTED `toBeUndefined()` UNTIL ITEM 2370, and its old name said "one closure cannot
+     * THIS ASSERTED `toBeUndefined()` UNTIL ITEM 2370, and its old name said "one closure cannot
      * answer a conjunction". `specializeCmpPair` is that closure: `eqProps` or `props` for the equality
      * plus `cmpProps` for the ordering comparison, emitted in `satisfies`'s own carrier order. The gap it
      * closes was 1.19x of an unindexed scan's per-candidate cost (24.43 ns against a PAIRABLE pair's
@@ -144,7 +144,7 @@ describe('which conjuncts take the pre-resolved arm', () => {
     }
 
     /*
-     * ⚠️ A NON-ZERO, NON-TOTAL match count, so neither closure can pass by answering a constant.
+     * A NON-ZERO, NON-TOTAL match count, so neither closure can pass by answering a constant.
      * `k = i % 5` and `n = i` over 60 vertices: `k = 2` holds for 12 of them (i = 2, 7, … 57) and
      * `n > 20` for the 8 of those above 20 (i = 22, 27, 32, 37, 42, 47, 52, 57).
      */
@@ -250,13 +250,13 @@ describe('the answers the gate feeds are unchanged', () => {
 
   test('the conjuncts run in WRITTEN order, so an inline non-match short-circuits a faulting clause', () => {
     /**
-     * ⚠️ ITEM 1601 FOUND THIS UNTESTED, by mutation. `composeInlineGate` uses `reduceRight` so the
+     * ITEM 1601 FOUND THIS UNTESTED, by mutation. `composeInlineGate` uses `reduceRight` so the
      * conjuncts evaluate inline-before-clause, and the function's own comment says that is what
      * lets an inline filter matching nothing short-circuit a faulting clause `WHERE`. Switching it
      * to `reduce` — reversing the order — left all 4,058 tests green, so the documented claim had
      * no test at all.
      *
-     * ⚠️ AND THE SHAPE HAS TO BE A PROJECTION, not a count. A count takes `countShortcut` ->
+     * AND THE SHAPE HAS TO BE A PROJECTION, not a count. A count takes `countShortcut` ->
      * `buildNodeCount`, which has its OWN `for (const ip of preds)` loop and never reaches this
      * composition — the first version of these two tests was written as counts, both mutants
      * survived again, and that is what said so.
@@ -277,7 +277,7 @@ describe('the answers the gate feeds are unchanged', () => {
 
   test('a conjunct on the SLOW arm still chains to the ones after it', () => {
     /**
-     * ⚠️ ALSO FOUND UNTESTED BY MUTATION (item 1601). Dropping the `rest` call from the SLOW arm —
+     * ALSO FOUND UNTESTED BY MUTATION (item 1601). Dropping the `rest` call from the SLOW arm —
      * so the first conjunct answers for the whole chain — survived the suite, because with item
      * 1600's fast arm in place every tested multi-conjunct gate had its FIRST conjunct specialize.
      * The slow arm's chain is reached only when a conjunct does NOT specialize and another follows

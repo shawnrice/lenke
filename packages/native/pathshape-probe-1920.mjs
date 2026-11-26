@@ -5,7 +5,7 @@
 // gated out and it runs the generic traverser pipeline. Items 1912/1914 established the pattern for
 // riding past that guard: claim the WHOLE plan, so no downstream step can ask for a path.
 //
-// ⚠️ BUT THE SHAPE HAS TO BE READ OFF THE ENGINE, NOT ASSUMED. CLAUDE.md records hand oracles in
+// BUT THE SHAPE HAS TO BE READ OFF THE ENGINE, NOT ASSUMED. CLAUDE.md records hand oracles in
 // this corpus being wrong four times in one stretch, and a fusion built on a guessed path layout
 // would be a wrong answer that no aggregate shows. So this prints the real thing first: how many
 // elements, in what order, and what each one is.
@@ -68,7 +68,7 @@ const CASES = [
   // What a DECLINING spelling must answer identically — the oracle for any fusion.
   ['V().out(E).path().limit(99)', traversal(V(), out('E'), path(), limit(99))],
   ['V().out(E).path().count()', traversal(V(), out('E'), path(), count())],
-  // ⚠️ `path().by(k)` projects EACH element through the modulator — a different answer per element,
+  // `path().by(k)` projects EACH element through the modulator — a different answer per element,
   // and a mutant that let the gate admit it SURVIVED item 1920's first battery because no test
   // asked. Printed so the expected values are read off the engine, not guessed.
   ['V().out(E).path().by(n)', traversal(V(), out('E'), path().by('n'))],
@@ -90,7 +90,7 @@ for (const [name, plan] of CASES) {
 }
 
 console.log(
-  '\n⚠️ READ THE ELEMENT KINDS: a fusion may only claim the spellings whose path it can build\n' +
+  '\nREAD THE ELEMENT KINDS: a fusion may only claim the spellings whose path it can build\n' +
     '   directly. A hop to a VERTEX gives [near, far]; an EDGE step puts the EDGE in the path, and\n' +
     '   `values()` puts a SCALAR there — different layouts, so a single rung cannot serve all three\n' +
     '   without being told which.',

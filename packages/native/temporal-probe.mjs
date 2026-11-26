@@ -7,13 +7,13 @@
  * TIME (an ATS / HRIS model), so dates are not an exotic column — they are the modelling primitive,
  * and a bitemporal fact table filters and orders on them constantly.
  *
- * ⚠️ EVERY PAIR COMPARES LIKE WITH LIKE, with the same row count at each stage, because a temporal
+ * EVERY PAIR COMPARES LIKE WITH LIKE, with the same row count at each stage, because a temporal
  * predicate that selects a different fraction than its numeric twin would make the ratio meaningless.
  * The vertex carries BOTH a `num` and a `d` encoding the same ordinal, so `num > X` and
  * `d > DATE '…'` select the identical set, and the probe asserts the row counts match before
  * printing a ratio.
  *
- * ⚠️ THE TAIL IS A MATERIALIZING ONE. Four tails in this corpus answer without doing the work (chain
+ * THE TAIL IS A MATERIALIZING ONE. Four tails in this corpus answer without doing the work (chain
  * count 1479, values walk 1480/1483, presence count 1485, hop-count 1488), and a bare `count()` here
  * would risk a fifth. `RETURN … ORDER BY … LIMIT` forces the comparison work out.
  *
@@ -82,7 +82,7 @@ const PAIRS = {
   },
 };
 
-// ⚠️ `ARM` exists so a PROFILE covers ONE arm. Profiling both in one window attributes the temporal
+// `ARM` exists so a PROFILE covers ONE arm. Profiling both in one window attributes the temporal
 // frames and the numeric frames to the same capture, which is how a 2.74x gap becomes unreadable.
 const { ARM } = process.env;
 
@@ -113,7 +113,7 @@ console.log(
 
 for (const name of names) {
   const pair = PAIRS[name];
-  // ⚠️ The fixture is built BEFORE any window opens, so a `PROF_OUT` capture never contains the
+  // The fixture is built BEFORE any window opens, so a `PROF_OUT` capture never contains the
   // load — PROBES.md's rule, and item 1464 diluted a profile by ignoring it.
   const timed = (text) =>
     profileWindow(process.env.PROF_OUT, () => {
@@ -127,7 +127,7 @@ for (const name of names) {
 
         reps.push(performance.now() - t0);
         rows = out.length;
-        // ⚠️ THE ROW COUNT IS NOT THE ANSWER, and comparing it was a WEAK GUARD: `count(*)` returns
+        // THE ROW COUNT IS NOT THE ANSWER, and comparing it was a WEAK GUARD: `count(*)` returns
         // one row and `LIMIT 10` returns ten whatever the predicate selected, so two pairs with
         // different selectivity would have passed. The witness is the first row's FIRST COLUMN — the
         // tally for a count pair, the smallest selected value for an ordered pair — which does move
@@ -146,7 +146,7 @@ for (const name of names) {
     continue;
   }
 
-  // ⚠️ THE GUARD. Row counts must match, AND for a count pair the tally itself must — otherwise
+  // THE GUARD. Row counts must match, AND for a count pair the tally itself must — otherwise
   // the two predicates selected different sets and the ratio is between two questions.
   if (a.rows !== b.rows) {
     throw new Error(`PAIR ${name} ROW COUNTS DIFFER — numeric=${a.rows} temporal=${b.rows}.`);
@@ -173,7 +173,7 @@ for (const name of names) {
 // HOST already as values — so that mechanism is structurally absent and there is no literal-vs-param
 // distinction to measure. Confirmed by reading: no `.kind` sniffing anywhere in `gremlin/src`.
 //
-// ⚠️ THAT IS AN ARGUMENT ABOUT ONE MECHANISM, NOT A PRICE. Gremlin could still pay a different
+// THAT IS AN ARGUMENT ABOUT ONE MECHANISM, NOT A PRICE. Gremlin could still pay a different
 // temporal cost — `predicates.ts` routes every comparison through `isTemporal` twice before
 // `temporalRelCmp` — and nothing had measured it, so the surface stays unpriced until it is.
 //
@@ -206,7 +206,7 @@ if (process.env.SKIP_GREMLIN === undefined && ARM === undefined) {
     `${'pair'.padEnd(10)}${'numeric'.padStart(10)}${'temporal'.padStart(11)}${'ratio'.padStart(9)}  rows`,
   );
 
-  // ⚠️ `GARM` is the Gremlin twin of `ARM`, and for the same reason: one profile window over both
+  // `GARM` is the Gremlin twin of `ARM`, and for the same reason: one profile window over both
   // arms attributes the numeric frames and the temporal frames to the same capture. With `GARM`
   // set, only that arm runs and only it is profiled.
   const { GARM } = process.env;
@@ -228,7 +228,7 @@ if (process.env.SKIP_GREMLIN === undefined && ARM === undefined) {
 
         for (let r = 0; r < REPS; r += 1) {
           const t0 = performance.now();
-          // ⚠️ `toArray(plan, graph)` IN THAT ORDER — item 1349 lost a round to the other order.
+          // `toArray(plan, graph)` IN THAT ORDER — item 1349 lost a round to the other order.
           const out = toArray(plan, graph);
 
           reps.push(performance.now() - t0);

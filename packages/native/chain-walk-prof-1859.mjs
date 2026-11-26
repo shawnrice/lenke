@@ -1,17 +1,17 @@
 /**
  * WHAT DOMINATES *INSIDE* THE FUSED CHAIN WALK? (item 1859)
  *
- * ⚠️ A DIFFERENT QUESTION FROM THE LAST FIVE ITEMS. Items 1846-1858 all asked "which shape reaches
+ * A DIFFERENT QUESTION FROM THE LAST FIVE ITEMS. Items 1846-1858 all asked "which shape reaches
  * no rung" — a route question, answered by a route screen because a missing rung has no hot frame
  * to profile. Both surfaces are now mined to ~2x on that axis, so this asks the other question:
  * given that the rung fires, where does its time go?
  *
- * ⚠️ THE SHAPE IS THE WORKLOAD SCREEN'S LARGEST REAL FAMILY. `chain-rows` is 565 ms of the screen
+ * THE SHAPE IS THE WORKLOAD SCREEN'S LARGEST REAL FAMILY. `chain-rows` is 565 ms of the screen
  * and 138 ns a row over 4.1M rows — the biggest producer that is not the genuine O(N^2) product.
  * So this profiles the exact walk that family spends its time in, rather than a shape chosen for
  * being easy to profile.
  *
- * ❌ ITS VERDICT WAS A CEILING, NOT A TARGET, and it is written here so the walk is not re-profiled.
+ * ITS VERDICT WAS A CEILING, NOT A TARGET, and it is written here so the walk is not re-profiled.
  * 80.1% of the samples are ONE fully-inlined frame — the walk loop — and the only decomposable
  * component is `projectRow` at 6.1%, below this repo's ~10% noise floor. The adjacency iteration
  * and the label checks ARE the work, and they are the data layout rather than an addressable call.
@@ -19,7 +19,7 @@
  * out of it. See item 1859 in docs/reviews/CLOSED.md for the figures and the two nominations that
  * came from the broad instruments instead.
  *
- * ⚠️ ENOUGH ITERATIONS THAT STARTUP CANNOT DOMINATE. Item 1843's first profile spent 22% of its
+ * ENOUGH ITERATIONS THAT STARTUP CANNOT DOMINATE. Item 1843's first profile spent 22% of its
  * samples in `toUpperCase` called from `(module)` — the lexer's keyword table, built once at
  * import. Module init is ~17 ms, so the loop here runs for seconds.
  */

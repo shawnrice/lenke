@@ -30,7 +30,7 @@ for (let i = 0; i < NODES; i += 1) {
 /**
  * All four ask "how many of each `k`", over the same 97 groups.
  *
- * ⚠️ They are NOT all the same ROW SHAPE, and that is the point rather than a flaw in the
+ * They are NOT all the same ROW SHAPE, and that is the point rather than a flaw in the
  * comparison: `alias2` projects the key beside the count, which is what the two-item rungs require
  * (`proj.items.length < 2` declines). So the question this probe answers is not only "is one
  * spelling slower" but "is the fast shape REACHABLE at all for a one-column grouped count".
@@ -43,7 +43,7 @@ const ARMS = {
   /**
    * Two columns, two clauses — the shape the tally and the aggregate rung are written for.
    *
-   * ⚠️ `GROUP BY key`, naming the OUTPUT ALIAS, is a syntax error here: `variable \`key\` is not
+   * `GROUP BY key`, naming the OUTPUT ALIAS, is a syntax error here: `variable \`key\` is not
    * defined`. GROUP BY is evaluated before the projection, so it cannot see an alias the
    * projection introduces, and it must repeat the expression. That is correct and it is also why
    * the fast shape is less reachable than it looks.

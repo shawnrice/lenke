@@ -163,13 +163,13 @@ describe('the walk really asks selectiveFirst (item 181)', () => {
   /**
    * Total label reads across every vertex during one query.
    *
-   * ⚠️⚠️ **BOTH ACCESSORS ARE COUNTED, AND ITEM 2085 IS WHY.** This witness watched only `labels`, and
+   * **BOTH ACCESSORS ARE COUNTED, AND ITEM 2085 IS WHY.** This witness watched only `labels`, and
    * when `matchesLabel` started reading `soleLabel` for the single-label case the counts fell from
    * >25 to **2** — the test failed while the behaviour it exists to check was unchanged. The ORDER of
    * the endpoint checks is the subject; which accessor carries the read is not, and a witness pinned
    * to one accessor silently stops witnessing when the implementation picks another.
    *
-   * 🔑 The throw below is the guard that made this loud instead of silent: if either accessor stops
+   * The throw below is the guard that made this loud instead of silent: if either accessor stops
    * being a prototype getter, the witness says so rather than counting zero.
    */
   const labelReads = (q: string): number => {
@@ -220,13 +220,13 @@ describe('the walk really asks selectiveFirst (item 181)', () => {
 
   test('the same-label shape is helped by ITEM 2194, not by the check ORDER', () => {
     /*
-     * ⚠️⚠️ **THIS WAS A CONTROL ASSERTING `> 25` LABEL READS — "the same-label shape cannot be helped" —
+     * **THIS WAS A CONTROL ASSERTING `> 25` LABEL READS — "the same-label shape cannot be helped" —
      * AND ITEM 2194 HELPED IT.** The claim was true of what this file measures: with both ends carrying
      * the SAME label, no CHECK ORDER can reduce the reads, because every edge needs both endpoints
-     * tested. 🔑 Item 2194 removed the per-edge test entirely instead, counting from the label's
+     * tested. Item 2194 removed the per-edge test entirely instead, counting from the label's
      * COMPLEMENT (**30.87 → 2.14 ms, ~12x**), so the reads collapse to a couple per query.
      *
-     * 🔑 Kept rather than deleted, because the ORDER question it controls for is still live for the
+     * Kept rather than deleted, because the ORDER question it controls for is still live for the
      * shapes above — a same-label shape genuinely cannot be helped by reordering, and now it does not
      * need to be.
      */

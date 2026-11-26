@@ -12,7 +12,7 @@
  * the question that finds holes. Item 1612's 214x sat next to a 464 us closed form and no absolute
  * reading would have flagged it.
  *
- * ⚠️ THE RUNG VERDICT IS READ FROM THE ENGINE, NOT INFERRED FROM THE TIMING. Item 1602's note is
+ * THE RUNG VERDICT IS READ FROM THE ENGINE, NOT INFERRED FROM THE TIMING. Item 1602's note is
  * the reason: a 157 ns/traverser row looked like a constant until `countShortcut` was called
  * directly and returned `undefined` for exactly one shape of five. Timing cannot tell "declined"
  * from "more work".
@@ -69,7 +69,7 @@ for (let i = 0; i < NODES; i += 1) {
 }
 
 /**
- * ⚠️ SPLIT THE TARGET ON THE REPEAT INDEX. `to = (a * k + b) % N` is INVARIANT under `k -> k + N`,
+ * SPLIT THE TARGET ON THE REPEAT INDEX. `to = (a * k + b) % N` is INVARIANT under `k -> k + N`,
  * so a loop over `k < NODES * FANOUT` gives every one of a vertex's FANOUT edges the SAME target:
  * degree counts look perfect while the graph is FUNCTIONAL (CLAUDE.md, items 1516/1518).
  */
@@ -116,17 +116,17 @@ console.log(
 /**
  * A shape, and optionally THE HONEST FLOOR FOR IT — ported from the GQL twin (items 2211/2212).
  *
- * ⚠️⚠️ **`vs floor` IS THE VERDICT; the neighbour-pair ratios at the bottom are a HINT.** A `floor` is a
+ * **`vs floor` IS THE VERDICT; the neighbour-pair ratios at the bottom are a HINT.** A `floor` is a
  * hand-rolled arm doing **THE SAME WORK** as the plan, timed the same way. The rules, each paid for:
  *
  *   - a FILTERED shape's floor must apply the filter; a SORTED one must sort (item 698 — an unordered
  *     floor overstates by ~1.9x, and item 2210 withdrew a 3.5x "target" built on one);
  *   - a COUNT's floor must NOT materialize rows the engine's closed form never builds — a floor doing
  *     MORE work than the query understates the gap and hides a real one;
- *   - ⚠️ a floor may not use a cheaper row ORDER than the engine may: the far-driven walk reorders ties
+ *   - a floor may not use a cheaper row ORDER than the engine may: the far-driven walk reorders ties
  *     and tie order is observable between the engines (item 605).
  *
- * 🔑 A shape with no floor prints `-` and is EXPLICITLY UNPRICED, rather than implicitly compared against
+ * A shape with no floor prints `-` and is EXPLICITLY UNPRICED, rather than implicitly compared against
  * whichever neighbour happens to sit beside it — which is how items 2206 and 2208-2210 went wrong.
  */
 type Shape = {
@@ -177,7 +177,7 @@ const hop2Count = (want?: string, mid?: string): number => {
 
 /** Every one-hop far node's `n`, materialized — the work a `values('n')` must do. */
 const hopValues = (want?: string): unknown[] => {
-  /* ⚠️ NOT `out` — that is the imported `out()` STEP, and shadowing it trips `no-shadow`. */
+  /* NOT `out` — that is the imported `out()` STEP, and shadowing it trips `no-shadow`. */
   const vals: unknown[] = [];
 
   for (const a of g.verticesByLabel.get('User') ?? []) {
@@ -245,7 +245,7 @@ const teamTally = (): Map<unknown, number> => {
 /**
  * One hop, counting only paths whose two vertices DIFFER — what `simplePath()` means on a 2-element path.
  *
- * ⚠️ A floor must mean the same thing as the step. On a one-hop traversal `simplePath` can only reject a
+ * A floor must mean the same thing as the step. On a one-hop traversal `simplePath` can only reject a
  * SELF-LOOP, so an `a.id !== e.to.id` test is the whole contract here; on a longer path it would not be.
  */
 const hopSimplePathCount = (): number => {
@@ -446,20 +446,20 @@ console.log(
 
 const timings = new Map<string, number>();
 /*
- * ⚠️⚠️ **THE RUNG VERDICT IS NOW CARRIED INTO THE PAIR TABLE, because a reader (me, item 2206) read the
+ * **THE RUNG VERDICT IS NOW CARRIED INTO THE PAIR TABLE, because a reader (me, item 2206) read the
  * ratios WITHOUT the verdict column and spent a tick on three non-defects.** This probe's own doc already
  * said a ratio is a SUSPECT and not a verdict, and that what makes a cliff is the NEIGHBOUR being `CLOSED`
  * while the shape itself is `pipeline`. Requiring two tables to be cross-referenced is what made that easy
  * to miss, so each pair line now states its own verdict.
  *
- * ✅ BOTH BRANCHES ARE EXERCISED: forcing one shape's verdict to `pipeline` turns its pair line into
+ * BOTH BRANCHES ARE EXERCISED: forcing one shape's verdict to `pipeline` turns its pair line into
  * `<-- CLIFF (pipeline beside a closed neighbour)` at 137.52x while its sibling still reads `both CLOSED`.
  */
 const rungs = new Map<string, string>();
 
 for (const s of picked) {
   /**
-   * ⚠️ THE RUNG VERDICT COMES FROM THE ENGINE, NOT THE CLOCK — and it must be asked of the
+   * THE RUNG VERDICT COMES FROM THE ENGINE, NOT THE CLOCK — and it must be asked of the
    * EFFECTIVE plan, which is what `run` does.
    *
    * The first version of this probe called `countShortcut` on the RAW plan and so reported
@@ -469,7 +469,7 @@ for (const s of picked) {
    * the instrument would have invented a cliff wherever the fixture is single-label, which is most
    * of this repo's.
    *
-   * ⚠️ AND IT MUST ASK EVERY RUNG `run` ASKS, NOT JUST `countShortcut` — the second way this probe
+   * AND IT MUST ASK EVERY RUNG `run` ASKS, NOT JUST `countShortcut` — the second way this probe
    * lied (item 1614). Its first version consulted the count rung alone, so every ROW-returning shape
    * read `pipeline` whatever answered it: `V().out(E).values(k)` has ridden a fused walk since item
    * 170 and was reported as pipeline here. A verdict column that is wrong for a whole family is
@@ -503,7 +503,7 @@ for (const s of picked) {
   rungs.set(`${s.family}/${s.name}`, rung);
 
   const fl = s.floor === undefined ? undefined : floorNs(s.floor.run);
-  /* ⚠️ AND AN ABSOLUTE SIZE (item 2212): a big ratio between two trivial numbers is arithmetic. */
+  /* AND AN ABSOLUTE SIZE (item 2212): a big ratio between two trivial numbers is arithmetic. */
   const over =
     fl === undefined ? '' : `${(ns / fl).toFixed(2)}x${ns / fl > 2 && ns > 50_000 ? ' <--' : ''}`;
 
@@ -514,7 +514,7 @@ for (const s of picked) {
 
 /**
  * NEIGHBOUR PAIRS: each differs by ONE step, so a large ratio is a cliff rather than a workload
- * difference. ⚠️ A ratio is a SUSPECT, not a verdict — the filtered member of a pair can legitimately
+ * difference. A ratio is a SUSPECT, not a verdict — the filtered member of a pair can legitimately
  * do more work (it walks the same traversers and then filters). What makes it a cliff is the
  * neighbour being CLOSED while it is `pipeline`, which the column above states.
  */
@@ -532,7 +532,7 @@ const PAIRS: readonly [string, string][] = [
 /**
  * The pair's verdict, stated rather than left to a cross-reference (item 2207).
  *
- * 🔑 THE THREE CASES, in the order that matters:
+ * THE THREE CASES, in the order that matters:
  *   - the slower shape is `pipeline` beside a `CLOSED` neighbour -> a real CLIFF, whatever the ratio;
  *   - BOTH `CLOSED` -> the ratio is a WORKLOAD difference (a filtered arm walks and then filters). Item
  *     2206 measured one such pair's 149x as the engine beating a HAND-ROLLED WALK by 51x;
@@ -568,7 +568,7 @@ for (const [a, b] of PAIRS) {
   const slowIsClosed = rungs.get(b) === 'CLOSED';
   const fastIsClosed = rungs.get(a) === 'CLOSED';
   /*
-   * 🔑 THE THREE CASES, in the order that matters:
+   * THE THREE CASES, in the order that matters:
    *   - the slower shape is `pipeline` beside a `CLOSED` neighbour -> a real CLIFF, whatever the ratio;
    *   - BOTH `CLOSED` -> the ratio is a WORKLOAD difference (a filtered arm walks and then filters), and
    *     item 2206 measured one such pair's 149x as the engine beating a hand-rolled walk by 51x;

@@ -6,7 +6,7 @@
  * obvious lever is a NUMERIC-SPECIALIZED total order: `compareTotal` handles nulls, temporals,
  * strings, lists and maps, and a column of numbers needs none of it.
  *
- * ⚠️ ONE COMPARATOR PER PROCESS, AND THIS FILE EXISTS BECAUSE THE IN-PROCESS VERSION LIED (item
+ * ONE COMPARATOR PER PROCESS, AND THIS FILE EXISTS BECAUSE THE IN-PROCESS VERSION LIED (item
  * 1513). Timing several comparators in one loop measures the INLINE CACHE, not the comparator. The
  * sort is driven through a wrapper `(a, b) => cmp(a.key, b.key)`, and V8 keeps feedback per SOURCE
  * POSITION — so every iteration of the loop shares one feedback vector at that call site. The first
@@ -35,7 +35,7 @@ const DROP = Number(process.env.DROP ?? 3);
 const WHICH = process.env.CMP ?? 'compareTotal';
 
 /**
- * A numeric-only total order. ⚠️ NaN LAST and NaN EQUAL TO NaN, which is the sort contract both
+ * A numeric-only total order. NaN LAST and NaN EQUAL TO NaN, which is the sort contract both
  * engines share; the naive `a < b ? -1 : a > b ? 1 : 0` returns 0 for every NaN comparison, which
  * says NaN equals everything.
  */
@@ -68,7 +68,7 @@ if (cmp === undefined) {
   throw new Error(`unknown CMP ${WHICH}; have ${Object.keys(CMPS).join(',')}`);
 }
 
-// ⚠️ AGREEMENT FIRST. Run in BOTH arms so neither can report a time for a comparator that does not
+// AGREEMENT FIRST. Run in BOTH arms so neither can report a time for a comparator that does not
 // implement the same order — this is the "assert each arm IS the code it claims" rule applied to
 // semantics rather than to the build.
 const VALS = [0, -0, 1, -1, Number.NaN, Infinity, -Infinity, 1e308, 5.5, -5.5, 2 ** 53];

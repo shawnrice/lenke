@@ -1,12 +1,12 @@
 /**
  * THE PROFILING COMPANION to `gremlin-match-selectivity-floor.ts` (item 1658).
  *
- * ⚠️ WHY A SECOND FILE RATHER THAN A FLAG ON THE FIRST. Item 1657 wanted to profile the selective
+ * WHY A SECOND FILE RATHER THAN A FLAG ON THE FIRST. Item 1657 wanted to profile the selective
  * `match()` shape and could not: `node --cpu-prof` cannot run a `.ts` probe and `bun` has no
  * `--cpu-prof`, so a `PROF=` knob on the TypeScript probe is dead weight (one was added and removed
  * in that tick). Every profilable probe in this directory is `.mjs` for the same reason.
  *
- * ⚠️ AND NOT A SHAPE ON `runtime-profile-gremlin-probe.mjs`, which is the other obvious home: that
+ * AND NOT A SHAPE ON `runtime-profile-gremlin-probe.mjs`, which is the other obvious home: that
  * probe's fixture carries ONE edge type, and a selective second type can only be added by adding
  * edges — which changes the graph every other shape in it is measured against. Its numbers are
  * quoted across a dozen audit items.

@@ -1,7 +1,7 @@
 /*
  * Item 2110 — the profile behind `pathdep: tree`, the Gremlin screen's largest shape.
  *
- * 🔑 WHAT NOMINATED IT, and the denominator check that survived. The workload screen at 200,000 / fanout
+ * WHAT NOMINATED IT, and the denominator check that survived. The workload screen at 200,000 / fanout
  * 5, isolated with `ONLY=` so the shape has a process to itself:
  *
  * ```text
@@ -10,17 +10,17 @@
  *     pathdep: path().by(k)          106.04      800,000     133 ns/path
  * ```
  *
- * ⚠️ `tree()` RETURNS ONE ROW, so the absolute is meaningless on its own — item 2096's headline was 8x
+ * `tree()` RETURNS ONE ROW, so the absolute is meaningless on its own — item 2096's headline was 8x
  * row count. Divided by the 800,000 paths both shapes walk, `tree` costs **852 ns/path against `path`'s
  * 133 — 6.4x for the same traversal**. That is the finding worth profiling.
  *
- * 🔑 THREE CANDIDATES, AND THEY WANT DIFFERENT FIXES:
+ * THREE CANDIDATES, AND THEY WANT DIFFERENT FIXES:
  *   (a) the per-path TREE INSERT — a nested map walked and extended once per path;
  *   (b) the PATH MATERIALIZATION the tree is built from, which `path().by(k)` also pays (so if this
  *       dominates, the two shapes should be closer than 6.4x and the gap is elsewhere);
  *   (c) the final RENDERING of the nested structure into one row.
  *
- * ⚠️ (c) IS THE ONE A PROFILE CAN MISATTRIBUTE, because it runs once and is cheap per path but may walk
+ * (c) IS THE ONE A PROFILE CAN MISATTRIBUTE, because it runs once and is cheap per path but may walk
  * the whole structure. `SHAPE=path` is the control — the same walk WITHOUT the tree — and the difference
  * between the two profiles is what (a) plus (c) costs.
  *
@@ -45,7 +45,7 @@ for (let i = 0; i < NODES; i += 1) {
 }
 
 /*
- * ⚠️ THE TARGET IS SPLIT ON THE REPEAT INDEX, not on `k % NODES`. CLAUDE.md's generator rule: `(a*k+b)
+ * THE TARGET IS SPLIT ON THE REPEAT INDEX, not on `k % NODES`. CLAUDE.md's generator rule: `(a*k+b)
  * % N` is invariant under `k -> k + N`, so a loop over `NODES * FANOUT` sends all of one vertex's edges
  * to the SAME target and the graph is functional — every k-hop count becomes `F^k * N` by construction.
  */
@@ -64,7 +64,7 @@ for (let d = 0; d < FANOUT; d += 1) {
   }
 }
 
-/* ⚠️ Count the DISTINCT endpoints before trusting any number from this fixture — CLAUDE.md item 1516. */
+/* Count the DISTINCT endpoints before trusting any number from this fixture — CLAUDE.md item 1516. */
 const targets = new Set();
 
 for (const edge of g.edgesById.values()) {
@@ -86,7 +86,7 @@ if (build === undefined) {
   throw new Error(`unknown SHAPE ${SHAPE}; one of ${Object.keys(shapes).join(', ')}`);
 }
 
-// ⚠️ The plan is built ONCE, outside the loop — the screen does the same, so compile cost is not timed.
+// The plan is built ONCE, outside the loop — the screen does the same, so compile cost is not timed.
 const plan = build();
 
 console.log(

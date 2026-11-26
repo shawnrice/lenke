@@ -7,7 +7,7 @@
  *
  * Per outer row that is ~478 ns, for a subquery whose whole body is "count this vertex's out-edges".
  *
- * 🔑 **TWO FLOORS, AND THEY ASK DIFFERENT QUESTIONS.** Stating both keeps the second from being
+ * **TWO FLOORS, AND THEY ASK DIFFERENT QUESTIONS.** Stating both keeps the second from being
  * smuggled in as if it were the first:
  *
  *   FAITHFUL  — per vertex, actually count the out-edges, then count the rows. This is the work the
@@ -17,7 +17,7 @@
  *               over an empty group still yields a row). That is dead-column elimination across a
  *               CALL boundary — a real optimisation, but a different and much larger claim.
  *
- * ⚠️ BOTH FLOORS MUST ANSWER `t = |P|`. A floor that answers something else prices a different query.
+ * BOTH FLOORS MUST ANSWER `t = |P|`. A floor that answers something else prices a different query.
  *
  *     bun call-floor-2053.mjs
  *     NODES=200000 REPS=5 bun call-floor-2053.mjs
@@ -35,7 +35,7 @@ for (let i = 0; i < NODES; i += 1) {
 }
 
 /*
- * ⚠️ FANOUT EXISTS TO TEST ONE CLAIM: that `PLAIN` is NOT a floor for the CALL forms. At FANOUT=1 they
+ * FANOUT EXISTS TO TEST ONE CLAIM: that `PLAIN` is NOT a floor for the CALL forms. At FANOUT=1 they
  * agree numerically (each `n` has one out-edge, so "count all (n,x) pairs" equals "count one row per
  * n"), and that coincidence makes the plain count LOOK like a floor. At FANOUT>1 it must diverge —
  * plain goes to n*FANOUT while the CALL forms stay at n. Checked rather than asserted.
@@ -147,6 +147,6 @@ console.log(
   `\n  scoped CALL / HAND faithful    ${(scoped / faithful).toFixed(2)}x   <- engine overhead on the work asked` +
     `\n  scoped CALL / HAND semantic    ${(scoped / semantic).toFixed(2)}x   <- plus the dead-column opportunity` +
     `\n  scoped CALL / inline CALL      ${(scoped / inline).toFixed(2)}x   <- the explicit-scope plumbing` +
-    `\n  scoped CALL vs plain hop count ${(scoped / plain).toFixed(0)}x   ⚠️ NOT A FLOOR — a different` +
+    `\n  scoped CALL vs plain hop count ${(scoped / plain).toFixed(0)}x   NOT A FLOOR — a different` +
     ` query whose answer only coincides at FANOUT=1\n`,
 );

@@ -7,14 +7,14 @@
 //   - a WRITE-EVERY-READ workload never reaches a second ask ON ANY ONE topologyVersion, so it must
 //     also cost exactly what it cost before.
 //
-// ⚠️⚠️ **THOSE ARE THE CLAIMS THAT MAKE ITEM 1695's CRITERION SURVIVABLE, so they are measured
+// **THOSE ARE THE CLAIMS THAT MAKE ITEM 1695's CRITERION SURVIVABLE, so they are measured
 // rather than asserted.** `bench:gremlin` cannot test either one: it runs min-of-5 after 3 warm-up
 // reps in a process where earlier rows have already warmed the same CSR entry, which is the
 // REPEATED case by construction. A regression on the first ask would be invisible there and is
 // exactly what item 1889's own numbers warn about ("hop COLD 0.61x — a 1.64x REGRESSION, first
 // query" before that policy existed).
 //
-// ⚠️ ONE ARM PER PROCESS, because the quantity under test is "the first ask on a fresh graph" and a
+// ONE ARM PER PROCESS, because the quantity under test is "the first ask on a fresh graph" and a
 // second measurement in the same process is no longer a first ask.
 //
 //     MODE=oneshot bun twohop-coldask-1983.mjs    # one ask, one fresh graph
@@ -61,7 +61,7 @@ let answer;
 
 if (MODE === 'repeat') {
   /*
-   * ⚠️ ONE GRAPH, ASKED MANY TIMES — the only mode where the dense route can fire. The FIRST ask is
+   * ONE GRAPH, ASKED MANY TIMES — the only mode where the dense route can fire. The FIRST ask is
    * dropped from the series on purpose: it is the one that arms `seenBefore`, and including it would
    * average the two routes together, which is how a second-ask policy gets mis-measured.
    */

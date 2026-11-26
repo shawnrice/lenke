@@ -6,12 +6,12 @@
  * a batch and look for order-of-magnitude outliers against structural twins. A closed-form count
  * is sub-millisecond; anything that materialises traversers is tens to hundreds.
  *
- * ⚠️ MANY ARMS IN ONE PROCESS ON PURPOSE, which item 762 warns against — but that warning is about
+ * MANY ARMS IN ONE PROCESS ON PURPOSE, which item 762 warns against — but that warning is about
  * attributing a ~10% change, and this screen is looking for 10x. A shape that declines is not
  * 10% slower, it is a different algorithm. Anything this flags gets re-measured one-shape-per-
  * process in `isolated-gremlin-bench.mjs` before a single line is written.
  *
- * ✅ IT EARNED ITS PLACE ON THE FIRST RUN. `V().hasLabel(P, Q).out(E).count()` read 9.268 ms against
+ * IT EARNED ITS PLACE ON THE FIRST RUN. `V().hasLabel(P, Q).out(E).count()` read 9.268 ms against
  * `V().hasLabel(P).out(E).count()`'s 0.005 for the SAME answer — `dropVacuousLabels` required
  * `labels.length === 1`, so a vacuous disjunction stayed in the plan and the plan left the
  * closed-form route. Fixed at item 1547, 908x one-arm-per-process.
@@ -90,14 +90,14 @@ const ARMS = {
   'out(E).dedupe().count': () => traversal(V(), out('E'), dedupe(), count()),
   'out(E).limit(1e9).count': () => traversal(V(), out('E'), limit(1_000_000_000), count()),
   'out(E).values(k).count': () => traversal(V(), out('E'), values('k'), count()),
-  // ⚠️ DIRECTED vs UNDIRECTED two-hop. `bothChainCount` has a documented degree INNER PRODUCT for
+  // DIRECTED vs UNDIRECTED two-hop. `bothChainCount` has a documented degree INNER PRODUCT for
   // `unfiltered && hops.length === 2` (item 590's reason, item 1374's prize: both.both 6241 -> 82
   // ms). Does the directed chain get one?
   'both(E).both(E).count': () => traversal(V(), both('E'), both('E'), count()),
   'both(E).both(E).both(E).count': () => traversal(V(), both('E'), both('E'), both('E'), count()),
   'in(E).in(E).count': () => traversal(V(), out('E'), out('E'), count()),
   'out.out.out.count': () => traversal(V(), out('E'), out('E'), out('E'), count()),
-  // ⚠️ IS IT THE MULTI-LABEL HOP, OR AN UNDROPPED VACUOUS LABEL? `P` is on every vertex, so BOTH
+  // IS IT THE MULTI-LABEL HOP, OR AN UNDROPPED VACUOUS LABEL? `P` is on every vertex, so BOTH
   // `hasLabel(P)` and `hasLabel(P,Q)` are vacuous (ANY match). If `dropVacuousLabels` handles the
   // single-label case and not the multi, the gap is the DROP and not the hop. `Q` is on half and
   // `R` on none, so `hasLabel(Q)` and `hasLabel(Q,R)` are the non-vacuous pair.
@@ -108,7 +108,7 @@ const ARMS = {
   'lbl Q .count': () => traversal(V(), hasLabel('Q'), count()),
   'lbl Q,R .count': () => traversal(V(), hasLabel('Q', 'R'), count()),
 
-  // ⚠️ THE EMPTY-LABEL FAMILY ON THE GREMLIN SIDE (item 1553). Item 1552 took this on the GQL side
+  // THE EMPTY-LABEL FAMILY ON THE GREMLIN SIDE (item 1553). Item 1552 took this on the GQL side
   // for ~146,000x: a label carried by NO vertex makes the whole chain empty, decidable in O(1) from
   // the same bucket read `dropVacuousLabels` already does. `R` is on nobody here.
   'empty: hasLabel(R).count': () => traversal(V(), hasLabel('R'), count()),
@@ -122,7 +122,7 @@ const ARMS = {
   'ctl: Q.out.out.count': () => traversal(V(), hasLabel('Q'), out('E'), out('E'), count()),
   'ctl: out.out.count': () => traversal(V(), out('E'), out('E'), count()),
 
-  // ⚠️ THE LIMIT FAMILY (item 1549). `out(T).limit(n).count()` is `min(n, degree_sum)` — a closed
+  // THE LIMIT FAMILY (item 1549). `out(T).limit(n).count()` is `min(n, degree_sum)` — a closed
   // form — yet it measured 68.681 ms against `out(T).count()`'s 0.005 for the SAME answer. Does the
   // cost track `n` (an early-exit walk) or the row count (full materialisation)?
   'lim 10': () => traversal(V(), out('E'), limit(10), count()),

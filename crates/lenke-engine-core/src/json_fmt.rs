@@ -152,7 +152,7 @@ impl<const N: usize> std::fmt::Write for Scratch<N> {
 /// INDEPENDENT (neither depends on the other), so the fast version could not simply be called
 /// from here. The duplication already existed — this makes both copies fast instead of one.
 ///
-/// ⚠️ The two copies must stay BYTE-IDENTICAL, because they serve different egress formats of
+/// The two copies must stay BYTE-IDENTICAL, because they serve different egress formats of
 /// one engine: this one backs JSON and `CAST`/`to_string`, the codec's backs CSV and pg-text. A
 /// divergence would be a byte-identity bug ACROSS FORMATS, which no single format's test could
 /// see. `js_number_matches_the_codec_formatter` pins that directly.
@@ -461,7 +461,7 @@ mod js_number_tests {
         }
     }
 
-    /// ⚠️ THE CROSS-CRATE INVARIANT, which no single format's test can see.
+    /// THE CROSS-CRATE INVARIANT, which no single format's test can see.
     ///
     /// `lenke-codec` carries its OWN copy of this formatter (both crates are std-only and
     /// independent, so neither can call the other's). This copy backs JSON and

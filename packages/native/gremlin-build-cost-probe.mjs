@@ -9,7 +9,7 @@
  * Item 1577 already took 4.27x out of construction (`appendStep` marked step functions with
  * `Object.defineProperty`, 73% of the cost). This asks what is left.
  *
- * ⚠️ ONE ARM PER PROCESS (`ARM=`). Item 1578 found the 32-shape Gremlin probe builds every plan
+ * ONE ARM PER PROCESS (`ARM=`). Item 1578 found the 32-shape Gremlin probe builds every plan
  * ONCE and reuses it, so it had never measured construction at all — and item 1577's first attempt
  * to measure it reported a NEGATIVE share because arms shared a call site.
  *
@@ -52,7 +52,7 @@ const ARMS = {
   /** Both, which is what a serving call actually does. */
   both: (i) => G.toArray(build(i), g),
   /**
-   * ⚠️ THE ARM THAT MAKES THE COMPARISON HONEST, and its absence made my first reading wrong.
+   * THE ARM THAT MAKES THE COMPARISON HONEST, and its absence made my first reading wrong.
    *
    * `run` reuses a plan whose value is baked in, so it looks up `user0` EVERY time; `both` builds a
    * fresh plan per operation and therefore looks up a DIFFERENT user each time. The pair differs in

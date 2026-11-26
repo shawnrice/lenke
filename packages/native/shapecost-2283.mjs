@@ -1,10 +1,10 @@
 /**
- * ⚠️⚠️ **WHICH SHAPE OWNS THE 42%? (item 2283)** The mixed profile nominated `degreeOfTypes` at 42.24% self
+ * **WHICH SHAPE OWNS THE 42%? (item 2283)** The mixed profile nominated `degreeOfTypes` at 42.24% self
  * time — but that frame is **already-refuted ground** for some shapes (items 1065 and 1546 refuted a
  * single-type fast path, 2171 closed the `out().values().count()` row, 2243 closed `count hop + far has`)
  * and **OPEN** for another (item 2128 priced the FILTERED two-hop count at 20x and did not build it).
  *
- * 🔑 So the nomination means nothing until the time is attributed to a shape. Same workload, one graph, each
+ * So the nomination means nothing until the time is attributed to a shape. Same workload, one graph, each
  * shape timed on its own.
  */
 import { Graph } from '@lenke/core';

@@ -9,12 +9,12 @@ import { describe, expect, test } from 'bun:test';
  * 35.0 ms against the reversed chain's 4.9 and the forward chain's 3.8, **7.1x between two
  * spellings of one question**.
  *
- * ⚠️ **THE REWRITE IS ASSERTED AS A REWRITE, not through a route**, which is item 1844's own
+ * **THE REWRITE IS ASSERTED AS A REWRITE, not through a route**, which is item 1844's own
  * lesson: `countShortcut` fires for both spellings, so "which detector fired" is identical either
  * way and such an assertion passes with the rewrite disabled. What has to be checked is the AST —
  * one pattern, two segments, the first one's direction FLIPPED.
  *
- * ⚠️ **AND THE DIAGONAL IS THE CORRECTNESS QUESTION.** In the comma form the two patterns are
+ * **AND THE DIAGONAL IS THE CORRECTNESS QUESTION.** In the comma form the two patterns are
  * independent, so the two legs may be the SAME EDGE: an `a` with one out-edge matches once, with
  * `b` and `c` both bound to that edge's target. A single path pattern carries `mode: 'trail'`, and
  * had the engine enforced it on fixed-length segments this rewrite would silently drop rows. It
@@ -128,7 +128,7 @@ const rowsOf = (g: Graph, text: string): string =>
 
 describe('the spliced fork answers what the fork answered', () => {
   /**
-   * ⚠️ THE DIAGONAL, at the smallest fixture that shows it. ONE out-edge means the only match uses
+   * THE DIAGONAL, at the smallest fixture that shows it. ONE out-edge means the only match uses
    * the same edge for both legs — so a rewrite that refused a repeated edge would answer 0 here,
    * and every larger fixture would merely under-count rather than obviously break.
    */
@@ -150,7 +150,7 @@ describe('the spliced fork answers what the fork answered', () => {
   });
 
   /**
-   * ⚠️ AND AGAINST THE ROUTE THAT CANNOT TAKE THE REWRITE. A clause `WHERE` is not spliced away —
+   * AND AGAINST THE ROUTE THAT CANNOT TAKE THE REWRITE. A clause `WHERE` is not spliced away —
    * `foldLabelTestsIntoPatterns` can empty one, but `WHERE true` survives — so this is the same
    * question down the general matcher, and it cannot share a mistake with the spliced arm.
    */

@@ -13,7 +13,7 @@
  * profile says it is the generic matcher rather than extra work — `expand` 28.5%, `walkSegments`
  * 11.3%, `evalLabelExpr` 9.3%, `withBinding` 8.5% — where the one-hop shape runs `farDrivenHopWalk`.
  *
- * ⚠️ THE GQL FLOOR IS NOT THE GREMLIN ONE. Item 1617 measured a two-hop nested walk emitting BARE
+ * THE GQL FLOOR IS NOT THE GREMLIN ONE. Item 1617 measured a two-hop nested walk emitting BARE
  * VALUES at ~40 ns/row; GQL must emit ROW OBJECTS keyed by the alias, which is an allocation per
  * row that the Gremlin walk does not pay. So the floor is measured here with the rows actually
  * built, in three forms, to separate the walk from the row construction:
@@ -44,7 +44,7 @@ for (let i = 0; i < NODES; i += 1) {
   });
 }
 
-/** ⚠️ Split on the REPEAT INDEX — items 1516/1518; a linear `(a*k+b)%N` makes the graph functional. */
+/** Split on the REPEAT INDEX — items 1516/1518; a linear `(a*k+b)%N` makes the graph functional. */
 let edges = 0;
 
 for (let k = 0; k < NODES * FANOUT; k += 1) {

@@ -481,7 +481,7 @@ question in its module header — read the header before touching it.
   it TRACKS the bare map (x1.10-1.28) rather than outgrowing it. **`edge_by_ext` does not**: it is
   4.2-4.6x `node_by_ext` at a million elements and grows ~5.7x across the sweep, because it holds an
   `RwLock` and a separate lazily-built index whose FIRST call costs 0.42 ms at 25k and 28 ms at 1M.
-  ⚠️ And its own first version got the floor wrong — a `std` SipHash `HashMap` is hash-bound, so it
+  And its own first version got the floor wrong — a `std` SipHash `HashMap` is hash-bound, so it
   read SLOWER than the native lookup it was supposed to floor (0.71-0.89x, a ratio under 1.0 that
   cannot mean a lookup is cheaper than a lookup). A floor must share the measured path's HASH.
 

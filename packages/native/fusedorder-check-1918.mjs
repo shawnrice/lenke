@@ -9,11 +9,11 @@
 // `values` floor's 64.60** — 2.7x to ADD numbers the floor already materialized — and `mean` 185.36.
 // `min`/`max`, which are fused, sit at 86.44 / 74.70.
 //
-// ⚠️ A "NOT BUILT BECAUSE X" NOTE IS A CLAIM ABOUT X. The premise here is checkable: if the fused
+// A "NOT BUILT BECAUSE X" NOTE IS A CLAIM ABOUT X. The premise here is checkable: if the fused
 // walk emits in the SAME order as the generic pipeline, then summing in the fused order is summing
 // in the contract order, and the ulp argument does not bind.
 //
-// 🔑 AND THERE IS A SECOND, STRONGER REASON TO CHECK: the fused `values` walk's OUTPUT ORDER is
+// AND THERE IS A SECOND, STRONGER REASON TO CHECK: the fused `values` walk's OUTPUT ORDER is
 // already a compared answer. `out(E).values(k)` returns 800,000 values whose order the differential
 // fuzzer compares against Rust element for element. So the fused order either already equals the
 // contract order, or `values` itself is broken.
@@ -36,7 +36,7 @@ for (let i = 0; i < N; i += 1) {
     id: String(i + 1),
     labels: ['P'],
     /**
-     * ⚠️ VALUES THAT MAKE SUMMATION ORDER OBSERVABLE, and the FIRST ATTEMPT DID NOT. Integers add
+     * VALUES THAT MAKE SUMMATION ORDER OBSERVABLE, and the FIRST ATTEMPT DID NOT. Integers add
      * associatively, so a fixture of them could not validate anything — but neither could the first
      * try here (`i % 7 === 0 ? 1e16 : 1 / (i + 3)`): the big term recurs ~N/7 times, dominates, and
      * the sum came out bit-identical FORWARD AND REVERSED. The control below caught that and said
@@ -83,9 +83,9 @@ const sameOrder = sameLen && firstDiff === -1;
 
 console.log(
   sameOrder
-    ? "✅ ELEMENT ORDER IS IDENTICAL — the refusal's premise (\"the fused walk's visit order is not\n" +
+    ? "ELEMENT ORDER IS IDENTICAL — the refusal's premise (\"the fused walk's visit order is not\n" +
         '   the traverser pipeline\'s by construction") does not hold for this shape.'
-    : `❌ ORDER DIFFERS at index ${firstDiff} (lengths ${a.length} vs ${b.length}) — the refusal stands.`,
+    : `ORDER DIFFERS at index ${firstDiff} (lengths ${a.length} vs ${b.length}) — the refusal stands.`,
 );
 
 // And the consequence the refusal is actually about: do the two orders sum to the same f64?
@@ -106,8 +106,8 @@ console.log(`\nsum in fused order   ${sa.toExponential(20)}`);
 console.log(`sum in generic order ${sb.toExponential(20)}`);
 console.log(
   sa === sb
-    ? '✅ bit-identical, as identical orders must be'
-    : '❌ the two orders sum DIFFERENTLY — this is the ulp hazard, and it is real for this fixture',
+    ? 'bit-identical, as identical orders must be'
+    : 'the two orders sum DIFFERENTLY — this is the ulp hazard, and it is real for this fixture',
 );
 
 // A control proving the fixture CAN expose an order difference, so the agreement above is evidence
@@ -117,8 +117,8 @@ const shuffled = [...a].reverse();
 const revSum = add(shuffled);
 const revNote =
   revSum === sa
-    ? '⚠️ equal — this fixture cannot see order, so it proves nothing'
-    : '✅ differs, so this fixture CAN see summation order';
+    ? 'equal — this fixture cannot see order, so it proves nothing'
+    : 'differs, so this fixture CAN see summation order';
 
 console.log(`\nCONTROL sum of the SAME values REVERSED ${revSum.toExponential(20)}  ${revNote}`);
 

@@ -8,13 +8,13 @@ import { describe, expect, test } from 'bun:test';
  * no amount of work justified it. `detectNodeProjection` and `detectHopProjection` had shipped the
  * windowed form at depth 0 and 1 since items 1062 and 701; this is the same behaviour at depth 2+.
  *
- * ⚠️ TIES ARE THE WHOLE RISK, so the fixture is built to produce them. With `k` taking three
+ * TIES ARE THE WHOLE RISK, so the fixture is built to produce them. With `k` taking three
  * values over sixty vertices, `ORDER BY k LIMIT 5` has to choose among many rows that compare
  * equal — and WHICH of them survives is the one thing sort-then-slice could get wrong relative to
  * the general path. A fixture of distinct keys would make every one of these tests pass against
  * any implementation.
  *
- * ⚠️ THE ORACLE IS AN UNREAD EDGE VARIABLE ON THE FIRST SEGMENT. It leaves the columns, the rows
+ * THE ORACLE IS AN UNREAD EDGE VARIABLE ON THE FIRST SEGMENT. It leaves the columns, the rows
  * and the order untouched, and the CHAIN rungs still refuse a named rel outright — item 1850
  * admitted one only on the OPTIONAL rung, so this device still works here. Each case asserts the
  * oracle declines, because an oracle that stopped declining would make every comparison vacuous.
@@ -113,7 +113,7 @@ describe('a windowed sort on the deeper ordered rungs', () => {
   });
 
   /**
-   * ⚠️ THE TIES ARE REAL, asserted rather than assumed. If `k` happened to be unique per row this
+   * THE TIES ARE REAL, asserted rather than assumed. If `k` happened to be unique per row this
    * whole file would be testing nothing, so the fixture's own premise is checked: the first five
    * rows of `ORDER BY x LIMIT 5` must all share the same `x`.
    */
@@ -129,7 +129,7 @@ describe('a windowed sort on the deeper ordered rungs', () => {
   });
 
   /**
-   * ⚠️ `LIMIT 0` DECLINES, and that is pre-existing rather than this item's doing — it declined
+   * `LIMIT 0` DECLINES, and that is pre-existing rather than this item's doing — it declined
    * before the window was admitted too, so it is recorded here rather than changed. The answer is
    * what matters and it is checked.
    */
@@ -142,7 +142,7 @@ describe('a windowed sort on the deeper ordered rungs', () => {
   });
 
   /**
-   * ⚠️ ~~A parameterised window declines~~ — **ADMITTED SINCE ITEM 1867.** "Its value is unknown
+   * ~~A parameterised window declines~~ — **ADMITTED SINCE ITEM 1867.** "Its value is unknown
    * when the route is chosen" is true and was the wrong conclusion: the route here is
    * sort-then-slice either way, and `sortRowsByColumns` chooses heap-vs-sort at RUN time against
    * the real row count, so nothing decided at compile time depends on the bound. Only the number

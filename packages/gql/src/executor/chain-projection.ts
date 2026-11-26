@@ -30,9 +30,9 @@ import { rowLocal } from './shortcuts.js';
  *
  * This is `hop2-projection.ts` at arbitrary depth, and it is that module's shape rule, admission
  * tests and evaluation points verbatim — only the two nested loops become a recursive descent. Read
- * that file's header first; every ⚠️ in it applies here and is not repeated.
+ * that file's header first; every in it applies here and is not repeated.
  *
- * ⚠️ THE GAP IT CLOSES WAS MEASURED BEFORE IT WAS BUILT, and the instructive part is that the TWO
+ * THE GAP IT CLOSES WAS MEASURED BEFORE IT WAS BUILT, and the instructive part is that the TWO
  * hop shape has had a rung since item 1619 while the three-hop twin fell to the general matcher, so
  * the cliff is between two adjacent shapes rather than between a rung and no rung:
  *
@@ -45,21 +45,21 @@ import { rowLocal } from './shortcuts.js';
  * The 18.7x between the last two is one segment of difference, measured on the same fixture at
  * 20,000 vertices (`runtime-profile-probe.mjs` `hop2rows` / `hop3rows`, 3 alternated rounds).
  *
- * ⚠️ IT ADMITS THREE SEGMENTS AND UP, NOT TWO, and that boundary is deliberate rather than tidy.
+ * IT ADMITS THREE SEGMENTS AND UP, NOT TWO, and that boundary is deliberate rather than tidy.
  * `detectHop2Projection` is a shipped, tested rung with its own measured refusals; admitting its
  * shape here would put two detectors on one family and let `runLinear`'s chain order decide which
  * answers it, which is the failure `rung-precedence-decides-speed` records (a WILLING rung starved
  * by a broader one above it, 1.80-6.00x at item 1583). Two hops keep their rung; this one starts
  * where that one stops.
  *
- * ⚠️ WHAT IT DOES *NOT* TAKE, AND THE LARGEST SHAPE IN THE PROBE IS ONE OF THEM. An UNDIRECTED leg
+ * WHAT IT DOES *NOT* TAKE, AND THE LARGEST SHAPE IN THE PROBE IS ONE OF THEM. An UNDIRECTED leg
  * declines, via the same direction test `hopOf` applies in the two-hop module — `both`'s contract
  * visits a self-loop from both ends, and a chain of them is a product of interleaved orders. So
  * `hop3rowsboth` (1816 ms over 10 reps, the biggest row in either engine's probe) stays exactly
  * where it is and serves here as a DECLINED CONTROL. Item 1813's specification named it as a thing
  * to measure a win on; that was wrong, and this is the correction — the win is on `hop3rows`.
  *
- * ⚠️ ROW ORDER. Unspecified without an `ORDER BY` (item 198, `order-is-unspecified`), and this walk
+ * ROW ORDER. Unspecified without an `ORDER BY` (item 198, `order-is-unspecified`), and this walk
  * is start-driven depth-first, which is the order the general matcher already produces — so the two
  * are comparable by eye when a test disagrees. The GQL differential fuzzer was checked rather than
  * assumed before any of this was written: `totallyOrdered` admits a query only when it carries the
@@ -74,7 +74,7 @@ export const detectChainProjection = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
   /*
-   * ⚠️ `RowsFn`, NOT `AlwaysRowsFn` (item 2105): this rung DECLINES AT EXECUTION TIME when the far node
+   * `RowsFn`, NOT `AlwaysRowsFn` (item 2105): this rung DECLINES AT EXECUTION TIME when the far node
    * carries a genuine index seek, because whether one exists is a property of the GRAPH. Same defect and
    * same gate as `hop2Projection` at item 2104 — measured 934x here, the larger of the two.
    */
@@ -103,7 +103,7 @@ export const detectChainProjection = (
   }
 
   /**
-   * ⚠️ THE UNION FORM IS TRIED ONLY WHEN THE SINGLE-TYPE FORM DECLINES (item 1847), so a `[:E]`
+   * THE UNION FORM IS TRIED ONLY WHEN THE SINGLE-TYPE FORM DECLINES (item 1847), so a `[:E]`
    * chain reaches the untouched `descend`/`sweepBlock` exactly as before and no single-type route
    * changes. All segments must agree on a form: a chain mixing `[:E]` and `[:E|F]` takes the union
    * walk for BOTH, since `unionHopOf` accepts a single label as a one-member alternation.
@@ -181,13 +181,13 @@ export const detectChainProjection = (
     return null;
   }
 
-  // ⚠️ THE TWO WALKS ANSWER THE SAME QUERIES; the gate picks the one that CAN. Item 1816 measured
+  // THE TWO WALKS ANSWER THE SAME QUERIES; the gate picks the one that CAN. Item 1816 measured
   // the blocked sweep at 1.49-2.79x of the descent where locality is poor and 0.95-0.97x (ranges
   // overlapping) where it is already good, so it is taken whenever it is applicable rather than
   // behind a topology predictor — the engine has no cheap way to know a graph's locality, and
   // `hasFastPath`-style gating was DECLINED at item 1511.
   /**
-   * ⚠️ FUSED ONLY FOR ONE COLUMN — the wider shape keeps the materialize-then-dedupe path below.
+   * FUSED ONLY FOR ONE COLUMN — the wider shape keeps the materialize-then-dedupe path below.
    * `projection.items.length === 1` is also what makes the emitted object byte-identical to
    * `projectRow`'s, and `!projection.star` is required because a `star` projection ignores `items`
    * entirely (it copies the binding), so its width is the BINDING's, not one.
@@ -204,7 +204,7 @@ export const detectChainProjection = (
       : (farOnly ? sweep : walk)(nodes, hops, projection, gate, distinct);
 
   /**
-   * ⚠️ `RETURN DISTINCT` IS ADMITTED AND DEDUPED HERE — item 1820, and the cost of NOT doing this
+   * `RETURN DISTINCT` IS ADMITTED AND DEDUPED HERE — item 1820, and the cost of NOT doing this
    * was the whole point: `DISTINCT` used to disqualify this rung outright (it is part of
    * `plainRowProjection`), so a three-hop `RETURN DISTINCT d.n` fell to the general matcher and
    * cost **5.8x MORE than emitting every one of the 625,000 rows it dedupes** — 418.6 ms against
@@ -212,7 +212,7 @@ export const detectChainProjection = (
    * because `hop-projection.ts`'s `distinctShape` already serves it, and that detector refuses
    * `segments.length > 1`, which is exactly the hole.
    *
-   * ⚠️ IT CALLS `distinctRows` AND DOES NOT KEY ROWS ITSELF. There is ONE definition of what
+   * IT CALLS `distinctRows` AND DOES NOT KEY ROWS ITSELF. There is ONE definition of what
    * counts as distinct in this engine (`valueKey`, via `rowKeyOf` and the one-column fast path),
    * it is shared with `UNION`/`EXCEPT`/`INTERSECT`, and it is matched byte-for-byte by the Rust
    * engine. A second keying here would be a cross-engine divergence waiting to happen on exactly
@@ -220,13 +220,13 @@ export const detectChainProjection = (
    * object identity, and a string column colliding with an element's key. Items 1561 and 1562 each
    * found a silent answer change in that area; re-deriving it would be the third.
    *
-   * ⚠️ AND DEDUPE COMMUTES WITH THE WALK, which is what makes this sound rather than merely
+   * AND DEDUPE COMMUTES WITH THE WALK, which is what makes this sound rather than merely
    * faster. The rung's walk order is its own, and `order-is-unspecified` means row order is not
    * part of the answer — so keeping one row per key yields the same SET whichever order they
    * arrive in. That argument does NOT extend to `SKIP`/`LIMIT`, which is why those stay refused:
    * there, order decides WHICH rows survive. See `plainRowProjectionIgnoringDistinct`.
    *
-   * ⚠️ ~~THIS MATERIALIZES THE UNDEDUPED ROWS FIRST~~ — TAKEN AT ITEM 1843, for a ONE-COLUMN
+   * ~~THIS MATERIALIZES THE UNDEDUPED ROWS FIRST~~ — TAKEN AT ITEM 1843, for a ONE-COLUMN
    * projection. The dedupe now happens inside both walks (see `emitRow`), so a duplicate never
    * becomes a row object: measured 2.69x here and 2.27x on the two-segment rung, with the
    * undeduped and two-column controls flat. A WIDER projection still materializes and calls
@@ -243,7 +243,7 @@ export const detectChainProjection = (
   const [cPath] = cm.patterns;
 
   /*
-   * ⚠️⚠️ **THE EXECUTION-TIME DECLINE (item 2105), AND IT IS WORTH MORE HERE THAN ANYWHERE.** This rung
+   * **THE EXECUTION-TIME DECLINE (item 2105), AND IT IS WORTH MORE HERE THAN ANYWHERE.** This rung
    * walks from the pattern's WRITTEN start; `matchPattern` calls `orient` and seeds the narrower end.
    * Measured at 200,000 vertices, fanout 3, a far `tag` selective 1 in 2,000, SAME rows out:
    *
@@ -253,11 +253,11 @@ export const detectChainProjection = (
    *     3 hops, RETURN DISTINCT       2145.32  ->   2.50
    * ```
    *
-   * 🔑 **934x, AND A VACUOUS `LIMIT` WAS THE DIAGNOSTIC** — it cannot change an answer smaller than
+   * **934x, AND A VACUOUS `LIMIT` WAS THE DIAGNOSTIC** — it cannot change an answer smaller than
    * itself, but it defeats this rung's length gate. A two-second query that should take two milliseconds,
    * and no correctness test can see it: the answer is identical either way.
    *
-   * ⚠️ The ONE-HOP rung (`hop-projection.ts`) was measured in the same probe at 1.40x and does NOT
+   * The ONE-HOP rung (`hop-projection.ts`) was measured in the same probe at 1.40x and does NOT
    * have this defect — one hop from a seek is one adjacency lookup either way.
    */
   return (graph, params) =>
@@ -271,7 +271,7 @@ export const detectChainProjection = (
  * rules and their reasons are `detectHop2Projection`'s, including the one that is a MEASURED refusal
  * rather than a conservative one:
  *
- * ⚠️ A `WHERE` READING THE START VARIABLE DECLINES. The general matcher rejects a start BEFORE
+ * A `WHERE` READING THE START VARIABLE DECLINES. The general matcher rejects a start BEFORE
  * expanding it, so a start-anchored predicate costs it one test per VERTEX where this walk pays one
  * per ROW — admitted at two hops it measured a 3.7x REGRESSION. At three hops the ratio of rows to
  * start vertices is strictly larger, so the refusal only gets more right with depth.
@@ -333,7 +333,7 @@ const hopOf = (rel: RelPattern): Hop | null => {
  * THE FUSED `DISTINCT` SINK — item 1843, taking the lever item 1820 left with its number as the
  * floor ("this materializes the undeduped rows first… 625,000 rows are built to return 8").
  *
- * ⚠️ ONE COLUMN ONLY, and that is what makes it sound rather than merely faster. For a
+ * ONE COLUMN ONLY, and that is what makes it sound rather than merely faster. For a
  * single-item projection the ROW key IS the value key: `distinctRows`' own one-column fast path
  * keys a row by `oneColumnValue(r)`, which for a one-item `projectRow` is exactly the value this
  * sink already has in hand before it builds anything. Item 1832 made the same argument in this
@@ -361,7 +361,7 @@ type RowSink = {
 };
 
 /**
- * ⚠️ AT MODULE SCOPE, NOT INLINE IN THE WALK. `ts-closure-size-is-load-bearing` (item 1570): a
+ * AT MODULE SCOPE, NOT INLINE IN THE WALK. `ts-closure-size-is-load-bearing` (item 1570): a
  * walk written inline in a returned closure gave UNRELATED queries a new slow mode at 4x. This is
  * also the single row-building point for BOTH walks, so the deduped and undeduped forms cannot
  * drift apart — the defect item 1832 hit when two copies of a rung needed two copies of a test.
@@ -435,7 +435,7 @@ const descend = (level: number, v: Vertex, d: Descent): void => {
     }
 
     /**
-     * ⚠️ `asTruth(...) !== true` is the test rather than a falsy check: a clause `WHERE` keeps only
+     * `asTruth(...) !== true` is the test rather than a falsy check: a clause `WHERE` keeps only
      * rows whose predicate is definitely TRUE, so UNKNOWN (a null comparison) drops like FALSE.
      * `filters.ts`'s rule, and why the comparison is to `true` and not to `false`.
      */
@@ -484,11 +484,11 @@ const SWEEP_BLOCK = 4096;
 /**
  * One block, level by level: expand `cur[0..len)` into `nxt`, swap, and emit at the deepest level.
  *
- * ⚠️ AT MODULE SCOPE ON PURPOSE. `ts-closure-size-is-load-bearing` records a walk written INLINE in
+ * AT MODULE SCOPE ON PURPOSE. `ts-closure-size-is-load-bearing` records a walk written INLINE in
  * a returned closure giving UNRELATED queries a new slow mode at 4x, so this is hoisted exactly as
  * `descend` is.
  *
- * ⚠️ THE ROW ORDER DIFFERS FROM `descend`'S and that is free here, not overlooked: row order is
+ * THE ROW ORDER DIFFERS FROM `descend`'S and that is free here, not overlooked: row order is
  * unspecified (item 198) and `plainRowProjection` declines every pager, so nothing can observe which
  * rows survive. A bare `LIMIT` is the case that would make order observable and it is already
  * refused one level up.
@@ -560,13 +560,13 @@ const sweepBlock = (s: Sweep, len: number): void => {
 /**
  * The blocked sweep, for a chain NOTHING BUT THE FAR END READS.
  *
- * ⚠️ WHY IT NEEDS ITS OWN GATE AND CANNOT REPLACE `descend`. A level-synchronous walk batches a
+ * WHY IT NEEDS ITS OWN GATE AND CANNOT REPLACE `descend`. A level-synchronous walk batches a
  * whole level, which DISCARDS the path that reached each vertex — so the moment a projected item or
  * a carried `WHERE` reads an INTERIOR variable (`RETURN b.k, d.k` over a four-node chain, which the
  * rung admits today), the information needed to answer is already gone. Carrying it back would mean
  * materializing a path per frontier entry, which is the allocation this arm exists to avoid.
  *
- * ⚠️ ITEM 1813 SPECIFIED EXACTLY THIS CONDITION — "a far-end-only projection needs no path
+ * ITEM 1813 SPECIFIED EXACTLY THIS CONDITION — "a far-end-only projection needs no path
  * enumeration" — and item 1814 OVERRODE it, correctly, because the general rung admits interior
  * reads on the same guarantees. It returns here as the gate rather than the shape rule: 1813's
  * insight was about which walks can skip the path, not about which queries the rung should admit.
@@ -579,7 +579,7 @@ const sweepBlock = (s: Sweep, len: number): void => {
  * alternations fell to the general matcher: measured **616-653 ns a row against the single-type
  * chain's 92-94** on the same fixture, for the same walk and the same kind of answer.
  *
- * ⚠️ SEPARATE FUNCTIONS, NOT A TYPES LOOP INSIDE THE EXISTING ONES, and this is the one design
+ * SEPARATE FUNCTIONS, NOT A TYPES LOOP INSIDE THE EXISTING ONES, and this is the one design
  * decision worth defending. Folding the alternation in would add a loop level that EVERY
  * single-type chain pays, and `executor-edits-perturb` records a new walk variant costing unrelated
  * rows up to 16% five separate times (items 1413/1415/1440/1442/1462) — item 1466 declined a 3.3x
@@ -587,7 +587,7 @@ const sweepBlock = (s: Sweep, len: number): void => {
  * single-type controls at 1.04x and 0.98x, i.e. flat. So `descend` and `sweepBlock` are
  * byte-identical to what they were and these are reached only when a hop names more than one type.
  *
- * ⚠️ THE DOUBLE-COUNT GUARD IS `claimedByEarlierType`, SHARED WITH THE TWO-SEGMENT RUNG, and the
+ * THE DOUBLE-COUNT GUARD IS `claimedByEarlierType`, SHARED WITH THE TWO-SEGMENT RUNG, and the
  * `multiLabel` flag is read ONCE per execution from `graph.multiTypeEdgeCount`. See that function's
  * own header for why the decision cannot be made at compile time.
  */
@@ -658,7 +658,7 @@ type SweepUnion = Omit<Sweep, 'hops'> & {
 /**
  * One bucket of one union hop, for one frontier vertex.
  *
- * ⚠️ EXTRACTED BECAUSE OF THE DEPTH GATE, not for reuse: `sweepBlock`'s loop already nests four
+ * EXTRACTED BECAUSE OF THE DEPTH GATE, not for reuse: `sweepBlock`'s loop already nests four
  * deep, and a types loop plus the `!emitting` branch reaches six against a limit of five. It keeps
  * `nxtLen` on the state so the caller's swap still works.
  */
@@ -955,7 +955,7 @@ export const farEndOnly = (
  * The level walk. ONE `Binding` allocated per call and mutated per row — the reuse every walk in
  * `hop-projection.ts` makes, and `projectRow`'s own header states it never retains the binding.
  *
- * ⚠️ THE LABEL TESTS ARE HOISTED PER CALL, and `effectiveLabel` drops a label carried by EVERY
+ * THE LABEL TESTS ARE HOISTED PER CALL, and `effectiveLabel` drops a label carried by EVERY
  * vertex (items 1551/1552/1609). That matters more with depth than anywhere: a three-hop walk tests
  * FOUR labels per row, and item 1609 measured the elision per-ELEMENT costing a control 1.32x — so
  * it is resolved once per execution, not per element and not per compile.
@@ -986,7 +986,7 @@ const walk = (
       projection,
       gate,
       out,
-      // ⚠️ A FRESH KEY SET PER RUN, not per plan: the keys are run state, and sharing them across
+      // A FRESH KEY SET PER RUN, not per plan: the keys are run state, and sharing them across
       // two executions of one compiled plan would silently drop every row the FIRST run emitted.
       dedup: distinct && { ...distinct, keys: newOneColumnKeys() },
     };
@@ -1011,7 +1011,7 @@ const walk = (
 /**
  * The aggregates these rungs may fold — item 1830, widening item 1824's `count(DISTINCT …)`.
  *
- * ⚠️⚠️ **AN ALLOWLIST BY NAME, AND THE REFUSALS ARE THE POINT.** `foldedAggs` carries a ready `fold`
+ * **AN ALLOWLIST BY NAME, AND THE REFUSALS ARE THE POINT.** `foldedAggs` carries a ready `fold`
  * and the compiled `argFn` for EVERY foldable aggregate, so folding any of them over the rung's rows
  * is mechanically identical — and would be a WRONG ANSWER for three of them, because the folds
  * differ in whether ROW ORDER changes their result:
@@ -1030,7 +1030,7 @@ const walk = (
  * question items 419 and 551 settled FOR ONE HOP ONLY. It is not settled for these widths, so the
  * order-sensitive folds wait for someone to settle it rather than riding on the assumption.
  *
- * ⚠️⚠️ **THIS SET IS REDUNDANT TODAY, AND MUTATION SAID SO — it is kept as the guard against a
+ * **THIS SET IS REDUNDANT TODAY, AND MUTATION SAID SO — it is kept as the guard against a
  * change someone is now MOTIVATED to make.** Two mutants SURVIVE: dropping the set entirely, and
  * adding `sum` to it. Both survive because `foldFor` itself only ever returns a fold for
  * `count`, `count(DISTINCT)`, `min` and `max` — verified by calling it: `sum`, `avg`, `collect` and
@@ -1044,7 +1044,7 @@ const walk = (
  * set, silently hand an order-sensitive fold to a walk whose order has never been proved equal to
  * the general path's. That is a wrong answer in the last ulp, invisible to every integer fixture.
  *
- * ⚠️ A NAME, NOT THE FOLD OBJECT: `extremumFold(wantMin)` builds a NEW object per call, so identity
+ * A NAME, NOT THE FOLD OBJECT: `extremumFold(wantMin)` builds a NEW object per call, so identity
  * works for the singleton `distinctCountFold` and silently fails for `min`/`max`. The aggregate's
  * own AST node carries the name, which is the thing actually being allowed.
  */
@@ -1053,18 +1053,18 @@ const ORDER_INVARIANT_AGGREGATES: ReadonlySet<string> = new Set(['min', 'max', '
 /**
  * `MATCH <chain of 3+ segments> RETURN count(DISTINCT <expr over the far end>)` — item 1824.
  *
- * ⚠️ WHY THIS EXISTS, with the number. `rung-gap-screen.mjs` flagged `count(DISTINCT far.k)` at
+ * WHY THIS EXISTS, with the number. `rung-gap-screen.mjs` flagged `count(DISTINCT far.k)` at
  * **4.8x, 6.8x, 10.1x and 10.3x its own undeduped `rows` cell** at depths 2-5, RISING with depth
  * (28.2 -> 56.7 ms) while the `rows` cell stayed flat at ~5 ms. `distinctShape(…, 'count')` serves
  * ONE hop (0.5 ms); every deeper width fell to the general matcher, because this rung and
  * `hop2-projection.ts` both refuse an aggregating projection outright.
  *
- * ⚠️ AND `detectMultiHopAggregate` DOES NOT SERVE THEM, which was established by deletion rather
+ * AND `detectMultiHopAggregate` DOES NOT SERVE THEM, which was established by deletion rather
  * than read off its gate: a `throw` at its ADMISSION point (not its entry — item 1820's lesson)
  * left `count(DISTINCT x.k)` at depths 1, 2 and 3 all answering normally, along with `count(*)` and
  * `sum` at depth 2. So there was no rung to widen, only a hole to fill.
  *
- * ⚠️ IT REUSES `detectChainProjection`'S ENTIRE GATE BY HANDING IT A SYNTHETIC PROJECTION rather
+ * IT REUSES `detectChainProjection`'S ENTIRE GATE BY HANDING IT A SYNTHETIC PROJECTION rather
  * than restating the shape rule. Two copies of one shape rule is how the far endpoint ended up on a
  * per-edge tally once before (`detectDistinctCount`'s own note), and this rung's admission tests —
  * three-plus segments, plain nodes, directed single-type hops, the `WHERE`/gate agreement check,
@@ -1073,7 +1073,7 @@ const ORDER_INVARIANT_AGGREGATES: ReadonlySet<string> = new Set(['min', 'max', '
  * the aggregate's ARGUMENT; the AST side is untouched, which is what keeps `farEndOnly` reading the
  * real item's free variables.
  *
- * ⚠️ THE NULL RULE IS NOT RE-DERIVED EITHER, AND IT IS THE TRAP HERE. `count(DISTINCT x)` EXCLUDES
+ * THE NULL RULE IS NOT RE-DERIVED EITHER, AND IT IS THE TRAP HERE. `count(DISTINCT x)` EXCLUDES
  * nulls while `RETURN DISTINCT x` keeps null as a row — over `1, null, absent, 2, 1` the count is 2
  * and the rows are three. So the obvious implementation, `distinctRows(rows).length`, is a SILENT
  * WRONG ANSWER on any fixture carrying a null or an absent property. This folds through
@@ -1083,7 +1083,7 @@ const ORDER_INVARIANT_AGGREGATES: ReadonlySet<string> = new Set(['min', 'max', '
 export const detectChainFoldedAggregate = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
-  // ⚠️ `RowsFn`: inherits `detectChainProjection`'s execution-time decline (item 2105).
+  // `RowsFn`: inherits `detectChainProjection`'s execution-time decline (item 2105).
 ): RowsFn | null => {
   const twoClause = twoClauseReturn(clauses, compiled);
 
@@ -1096,7 +1096,7 @@ export const detectChainFoldedAggregate = (
   const proj = cret.projection;
   const folded = proj.foldedAggs?.length === 1 ? proj.foldedAggs[0] : undefined;
   /*
-   * ⚠️⚠️ **TWO WAYS IN SINCE ITEM 2411, AND THE SECOND ONE COMPILES ITS OWN ARGUMENT.**
+   * **TWO WAYS IN SINCE ITEM 2411, AND THE SECOND ONE COMPILES ITS OWN ARGUMENT.**
    * `min`/`max`/`count` carry a `foldedAggs` entry that `compileProjection` already lowered;
    * `sum`/`avg` do not, because `foldFor` has no entry for them and item 2159's rule forbids
    * widening it (its result is read by call sites that infer ORDER-INSENSITIVITY from foldability).
@@ -1110,7 +1110,7 @@ export const detectChainFoldedAggregate = (
     proj.items.length !== 1 ||
     agg === undefined ||
     agg === null ||
-    // ⚠️ THE ALLOWLIST STILL GUARDS THE `foldedAggs` PATH, which is where `collect` and the
+    // THE ALLOWLIST STILL GUARDS THE `foldedAggs` PATH, which is where `collect` and the
     // order-sensitive folds would arrive. `sum`/`avg` do not come through it — see `sumAgg` above.
     (folded !== undefined && !ORDER_INVARIANT_AGGREGATES.has(folded.expr.name)) ||
     // `count(*)` has its own closed-form route and never reaches `foldedAggs`; a DISTINCT `min`/
@@ -1118,7 +1118,7 @@ export const detectChainFoldedAggregate = (
     agg.expr.star ||
     ret.projection.items.length !== 1 ||
     /**
-     * ⚠️ THE ITEM MUST *BE* THE AGGREGATE, NOT AN EXPRESSION WRAPPING IT. `count(DISTINCT x) + 1`
+     * THE ITEM MUST *BE* THE AGGREGATE, NOT AN EXPRESSION WRAPPING IT. `count(DISTINCT x) + 1`
      * folds the same aggregate, but the row's value is the arithmetic — answering the fold's result
      * directly would silently drop the `+ 1`. `foldedAggs[].expr` is documented as "the aggregate's
      * own AST node", so identity against the projected item's expression is the exact test.
@@ -1148,7 +1148,7 @@ export const detectChainFoldedAggregate = (
   }
 
   /*
-   * ⚠️ THE REDUCER IS CHOSEN ONCE, AT COMPILE TIME. `path-sum-fold.ts` owns both accumulators so the
+   * THE REDUCER IS CHOSEN ONCE, AT COMPILE TIME. `path-sum-fold.ts` owns both accumulators so the
    * two rungs cannot drift on the empty case or the bail, which are the load-bearing parts.
    */
   const reduce = foldedRowsReducer(folded, sumAgg, column, outName);
@@ -1159,7 +1159,7 @@ export const detectChainFoldedAggregate = (
 
   return (graph, params) => {
     /*
-     * ⚠️ THIS RUNG COMPOSES `detectChainProjection`'s WALK, so it inherits its execution-time decline
+     * THIS RUNG COMPOSES `detectChainProjection`'s WALK, so it inherits its execution-time decline
      * (item 2105): a fold over a handed-back walk has nothing to fold.
      */
     const inner = rows(graph, params);
@@ -1175,20 +1175,20 @@ export const detectChainFoldedAggregate = (
 /**
  * `MATCH <chain> RETURN <items> ORDER BY <output columns>` — item 1827 (three-plus segments).
  *
- * ⚠️ THE LARGEST ROUTE GAP THIS FAMILY HAS PRODUCED, and it was invisible until two engines were
+ * THE LARGEST ROUTE GAP THIS FAMILY HAS PRODUCED, and it was invisible until two engines were
  * compared marginal-for-marginal (item 1826). GQL's `ORDER BY` marginal cost over its own `rows`
  * cell runs **1.3 → 46.5 → 53.2 → 75.3 → 88.6 ms** across depths 1-5, where Gremlin's `order()` is
  * **1.2 → 1.1 → 1.6 → 1.7 → 1.6** — flat. 1.1x at one hop and 42x at two, because
  * `hop-projection.ts` admits a sort (`outputColumnSorts`, item 607) and the deeper rungs refuse one.
  *
- * ⚠️ IT REUSES THE ENGINE'S OWN SORT, NOT A NEW ONE. `outputColumnSorts` decides which sorts are
+ * IT REUSES THE ENGINE'S OWN SORT, NOT A NEW ONE. `outputColumnSorts` decides which sorts are
  * admissible — every key must resolve to a `var` naming a projected OUTPUT COLUMN, which is
  * precisely what makes sorting the rung's rows equivalent to sorting the general path's — and
  * `sortedRows` is the existing wrapper that applies a `SortPlan` and passes a run-time `null`
  * THROUGH. Both already carry the analysis this route needs; re-deriving either would be the
  * "two copies of one shape rule" failure `detectDistinctCount`'s note records.
  *
- * ⚠️ A WINDOW DECLINES, AND THAT IS A SPEED GUARD, NOT A SAFETY ONE — I wrote the opposite first and
+ * A WINDOW DECLINES, AND THAT IS A SPEED GUARD, NOT A SAFETY ONE — I wrote the opposite first and
  * a mutant corrected me. Admitting a `SKIP`/`LIMIT` here is ANSWER-EQUIVALENT: the sort decides the
  * order, so sorting the rung's rows and then slicing gives exactly what the general path gives, and
  * the mutant that drops this check passes every answer test. What it would lose is the BOUNDED TOP-K:
@@ -1216,7 +1216,7 @@ export const detectChainOrderedProjection = (
   // A window declines — see the header. Checked BEFORE `outputColumnSorts`, so none of its
   // window rules are relied on here.
   /**
-   * ⚠️ A WINDOW IS NO LONGER REFUSED HERE (item 1852) — `outputColumnSorts` decides it instead.
+   * A WINDOW IS NO LONGER REFUSED HERE (item 1852) — `outputColumnSorts` decides it instead.
    *
    * The refusal was mine at items 1827/1849 and the reasoning was "with a `SKIP`/`LIMIT` the order
    * decides WHICH rows survive". That is true and it is NOT a reason to refuse here: the sort is by
@@ -1256,18 +1256,18 @@ export const detectChainOrderedProjection = (
 /**
  * `MATCH <chain of 3+ segments> RETURN <expr> AS k SKIP n` — the SKIP-ONLY page at this width (item 1885).
  *
- * ⚠️ THE LARGEST OPEN ABSOLUTE ON `rung-gap-screen.mjs` once items 1830 and 1832 took `maxagg`,
+ * THE LARGEST OPEN ABSOLUTE ON `rung-gap-screen.mjs` once items 1830 and 1832 took `maxagg`,
  * `topk` and `grouped`: `skiponly` reads **26.9 / 36.2 / 49.6 / 59.5 ms at depths 2-5 against a
  * ~6 ms `rows` twin**, 4.6x-9.3x. A bare `SKIP` can only ever be the walk MINUS some rows, so a
  * window that multiplies the cost is a window that disqualified the rung — and `compileLinear` says
  * so outright (`skip-chain-route-1885.mjs`): at depth 1 `hopProjection` carries the page, at depth 2
  * and up EVERY rung drops out and the query goes to the general matcher.
  *
- * ⚠️ DEPTHS 0 AND 1 WERE DONE AT ITEMS 1776/1777/1778, and this is deliberately the same shape of
+ * DEPTHS 0 AND 1 WERE DONE AT ITEMS 1776/1777/1778, and this is deliberately the same shape of
  * fix: `skipOnlyPage` is the gate, `pagedRows` is the existing wrapper, `withoutSortOrWindow` hands
  * the base detector the clause it expects. Nothing about the walk changes.
  *
- * ⚠️ AND THE LICENCE TO SLICE IS ESTABLISHED, NOT ASSUMED, which is the part item 1777 had to earn
+ * AND THE LICENCE TO SLICE IS ESTABLISHED, NOT ASSUMED, which is the part item 1777 had to earn
  * the hard way. A skip INHERITS the walk's visit order, so slicing a walk whose order differs from
  * the general path's returns different ROWS. `skip-only-page-parity.ts` now reads the UNPAGED chain
  * projections at depths 2-5 as positionally IDENTICAL between the TS rung and NATIVE, and each
@@ -1275,7 +1275,7 @@ export const detectChainOrderedProjection = (
  * rung's order already equals native's, and slicing it is answer-equivalent BY CONSTRUCTION rather
  * than by agreement over sampled cases.
  *
- * ⚠️ A `LIMIT` IS NOT ADMITTED. See `skipOnlyPage`: the general path is lazy and `LIMIT 5` can stop
+ * A `LIMIT` IS NOT ADMITTED. See `skipOnlyPage`: the general path is lazy and `LIMIT 5` can stop
  * after five rows, so giving that shape to a materializing rung would be a regression dressed as a
  * win.
  */
@@ -1294,7 +1294,7 @@ export const detectChainPagedProjection = (
   }
 
   /**
-   * ⚠️ `unsortedPageRoute` IS THE RULE, REUSED RATHER THAN RESTATED. Item 1776 extracted it as a
+   * `unsortedPageRoute` IS THE RULE, REUSED RATHER THAN RESTATED. Item 1776 extracted it as a
    * pure function precisely because a route choice is answer-equivalent and every mutant of it
    * survives the behavioural tests, and `skip-only-page.test.ts` tests it directly. My first cut
    * here wrote a second near-identical gate in `ordered-rows.ts` — the "two copies of one shape
@@ -1322,12 +1322,12 @@ export const detectChainPagedProjection = (
 /**
  * `MATCH <chain> RETURN <expr over the far end> AS k, count(*) AS c` — the GROUPED count, item 1832.
  *
- * ⚠️ THE FOURTH WIDTH GAP IN THIS FAMILY, and the only one `rung-gap-screen.mjs` flags in BOTH
+ * THE FOURTH WIDTH GAP IN THIS FAMILY, and the only one `rung-gap-screen.mjs` flags in BOTH
  * engines. `detectGroupedHopCount` requires `segments.length === 1`, so a grouped count past one hop
  * fell to the general matcher: **30.0/38.3/50.9/61.1 ms at depths 2-5 against a ~6 ms `rows` cell**
  * (item 1829). Gremlin's `groupCount` degrades too, 14-22x, which is its own item.
  *
- * ⚠️ IT DOES NOT RE-DERIVE GROUPING SEMANTICS, which is the whole risk in a grouped shape.
+ * IT DOES NOT RE-DERIVE GROUPING SEMANTICS, which is the whole risk in a grouped shape.
  * `buildGroups`' own comment settles the single-key case: "ONE grouping key is the overwhelmingly
  * common shape, and for it the row key IS the value key — `valueKey` is already type-prefixed and
  * injective". So a tally keyed by `valueKey` groups exactly as the general path does, including the
@@ -1335,14 +1335,14 @@ export const detectChainPagedProjection = (
  * element keyed by id). A second keying here would be the third silent answer change in this area
  * (items 1561, 1562).
  *
- * ⚠️ AND THE GROUP ORDER IS INSERTION ORDER OF FIRST OCCURRENCE, which matches the general path only
+ * AND THE GROUP ORDER IS INSERTION ORDER OF FIRST OCCURRENCE, which matches the general path only
  * because item 1831 measured that these rungs emit rows in the general path's order — 25 cases, both
  * internal branches proved live by deletion, identical sequences. Without that measurement this
  * would be an assumption; with it, it is a known property with named residual risk. Group ORDER is
  * unspecified anyway (`order-is-unspecified`), so the fuzzers compare the set — but matching order
  * is what keeps the two engines byte-identical rather than merely both correct.
  *
- * ⚠️ `count(*)` ONLY, via `countedGroups`. That flag means every aggregate in the projection is
+ * `count(*)` ONLY, via `countedGroups`. That flag means every aggregate in the projection is
  * `count(*)`, so a group needs a COUNT and a representative rather than its bindings — which is
  * exactly what a tally produces. A grouped `sum`/`collect` is a different question and declines
  * here for item 1829's reason: those folds are order-sensitive and `foldFor` does not even make
@@ -1351,7 +1351,7 @@ export const detectChainPagedProjection = (
 export const detectChainGroupedCount = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
-  // ⚠️ `RowsFn`: inherits `detectChainProjection`'s execution-time decline (item 2105).
+  // `RowsFn`: inherits `detectChainProjection`'s execution-time decline (item 2105).
 ): RowsFn | null => {
   const twoClause = twoClauseReturn(clauses, compiled);
 
@@ -1404,7 +1404,7 @@ export const detectChainGroupedCount = (
     // order given the row order item 1831 measured. The bucket holds the KEY VALUE as well as the
     // count, because `valueKey` is not reversible — `countedGroups` calls that the representative.
     const groups = new Map<string, { key: unknown; n: number }>();
-    // ⚠️ Inherits the walk's execution-time decline (item 2105) — see the sibling rung above.
+    // Inherits the walk's execution-time decline (item 2105) — see the sibling rung above.
     const inner = rows(graph, params);
 
     if (inner === null) {

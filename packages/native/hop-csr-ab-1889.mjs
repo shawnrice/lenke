@@ -1,7 +1,7 @@
 /**
  * DOES THE ONE-HOP CSR WALK EARN ITS PLACE — WARM AND COLD, SMALL AND LARGE? (item 1889)
  *
- * ⚠️ THIS ARM'S TRADE-OFF IS THE WHOLE QUESTION, and `hop-values.ts` priced it at items 1693/1694
+ * THIS ARM'S TRADE-OFF IS THE WHOLE QUESTION, and `hop-values.ts` priced it at items 1693/1694
  * without settling it: the CSR is keyed on `topologyVersion`, so the FIRST query after any topology
  * write pays the build. Item 1694 measured `handCsrPlusBuild` at **0.83x — a LOSS** on the first
  * query, against 6.00x warm. So a warm-only A/B would be answering a different question than the
@@ -22,7 +22,7 @@ const DIST = `${ROOT}/packages/gremlin/dist/esm/index.mjs`;
 const PRISTINE = `${ROOT}/crates/lenke-engine/target/pristine-1889-dist.mjs`;
 
 const REPS = process.env.REPS ?? '30';
-// ⚠️ `group`/`group2` ARE HERE SINCE ITEM 1892, which routed the grouped count through the shared
+// `group`/`group2` ARE HERE SINCE ITEM 1892, which routed the grouped count through the shared
 // rung chain instead of its own copy — so this kill reaches them too. `optional` has its OWN CSR
 // arm (item 1891) and is therefore the control this kill cannot touch.
 const SHAPES = ['hop', 'group', 'group2', 'hop2', 'optional'];
@@ -112,7 +112,7 @@ for (const shape of SHAPES) {
   const postCold = rows
     .filter(([, w, s]) => w === 'POST' && s === shape)
     .map(([, , , r]) => r.cold);
-  // ⚠️ THE HEADLINE IS THE MEDIAN OF ROUNDS, NOT THE MIN. On one run the min made the CONTROL read
+  // THE HEADLINE IS THE MEDIAN OF ROUNDS, NOT THE MIN. On one run the min made the CONTROL read
   // 0.85x off a single low PRE reading (1.92 against 2.33/2.34) while its medians were 2.33 and
   // 2.29 — flat. CLAUDE.md says this in terms for the TS per-row path; it applies to the
   // round-level summary too.

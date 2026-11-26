@@ -13,7 +13,7 @@ describe('traversal AST', () => {
         { kind: 'has', key: 'age', pred: { op: 'gt', value: 30 } },
         { kind: 'take', n: 5 },
       ],
-      // ⚠️ Carried by construction as of items 1504/1505, and asserted here because both are part
+      // Carried by construction as of items 1504/1505, and asserted here because both are part
       // of the plan's SHAPE now: none of these four steps reads the traverser path, and none of
       // them is a kind that gates a rewrite pass (`out` is not an EDGE step — `outE` is).
       readsPath: false,

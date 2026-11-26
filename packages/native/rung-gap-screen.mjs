@@ -10,7 +10,7 @@
  *     TWO hops    served by NOTHING                       2141.9 ms
  *     three hops  served by `detectChainProjection`         210.8 ms
  *
- * ⚠️ **A GAP BETWEEN TWO RUNGS IS INVISIBLE TO EVERY INSTRUMENT HERE.** Each rung's own tests pass
+ * **A GAP BETWEEN TWO RUNGS IS INVISIBLE TO EVERY INSTRUMENT HERE.** Each rung's own tests pass
  * — each correctly serves its own width. The unpriced-frame screen sees nothing, because the
  * general matcher is not a hot frame: it is the ABSENCE of a rung, and absence has no frame. And a
  * single shape measured alone looks merely slow, not anomalous. The signal only exists in the
@@ -26,14 +26,14 @@
  *     "within 1.3%" was the result rather than the ratio), and `count(*)` can only be cheaper. A
  *     modifier that multiplies the cost is a modifier that disqualified the rung.
  *
- * ⚠️ `FANOUT=1` IS DELIBERATE AND IS WHAT MAKES THE DEPTH AXIS COMPARABLE. With one out-edge per
+ * `FANOUT=1` IS DELIBERATE AND IS WHAT MAKES THE DEPTH AXIS COMPARABLE. With one out-edge per
  * vertex and a functional stride, depth k returns exactly N rows for every k — so a cost difference
  * across depth is about the ROUTE and not about how many rows came back. At a higher fanout the row
  * count is `F^k` and the depth axis measures the fixture instead, which is item 1815's whole
- * finding. ⚠️ The stride still splits on the repeat index, so the graph is not the degenerate
+ * finding. The stride still splits on the repeat index, so the graph is not the degenerate
  * `(a*k+b) % N` one CLAUDE.md warns about, even though at FANOUT=1 it cannot branch.
  *
- * ⚠️ AND THE ROW COUNT IS PRINTED FOR EVERY CELL, because a cell that returns nothing is the
+ * AND THE ROW COUNT IS PRINTED FOR EVERY CELL, because a cell that returns nothing is the
  * "fastest" cell on any screen. A zero-row cell is a broken grid, not a fast route — item 1820's
  * screen learned this the same way.
  *
@@ -72,7 +72,7 @@ const PAIR_FLAG = Number(process.env.PAIR_FLAG ?? 2.5);
 /** Flag non-monotonicity when a shallower depth costs this multiple of a deeper one. */
 const DEPTH_FLAG = Number(process.env.DEPTH_FLAG ?? 1.5);
 /**
- * ⚠️ A NOISE FLOOR, because the first run flagged `count: depth2 1.0 ms costs 2.0x depth3 (0.5)`.
+ * A NOISE FLOOR, because the first run flagged `count: depth2 1.0 ms costs 2.0x depth3 (0.5)`.
  * Both cells are a closed-form count answered without walking, so the "2.0x" is 0.5 ms of timer
  * resolution — a ratio between two numbers that are both essentially zero. CLAUDE.md's rule is that
  * anything under ~10% needs its own isolated harness; the same logic says a RATIO needs an absolute
@@ -80,7 +80,7 @@ const DEPTH_FLAG = Number(process.env.DEPTH_FLAG ?? 1.5);
  */
 const FLOOR_MS = Number(process.env.FLOOR_MS ?? 3);
 /**
- * ⚠️ THE THIRD FLAG, AND IT EXISTS BECAUSE THE FIRST TWO HAD A BLIND SPOT EXACTLY WHERE THE BIGGEST
+ * THE THIRD FLAG, AND IT EXISTS BECAUSE THE FIRST TWO HAD A BLIND SPOT EXACTLY WHERE THE BIGGEST
  * GAP WAS (item 1826). `ORDER BY`'s marginal cost over its own `rows` cell goes **1.3 → 46.5 → 53.2
  * → 75.3 → 88.6 ms** across depths 1-5 in GQL, while Gremlin's `order()` is **1.2 → 1.1 → 1.6 → 1.7
  * → 1.6** — flat. A 36x jump between depth 1 and depth 2, and NEITHER existing flag could see it:
@@ -97,13 +97,13 @@ const FLOOR_MS = Number(process.env.FLOOR_MS ?? 3);
  */
 const JUMP_FLAG = Number(process.env.JUMP_FLAG ?? 5);
 /**
- * ⚠️ FANOUT IS A KNOB AT ITEM 1836, AND RAISING IT SUPPRESSES THE TWO DEPTH-BASED FLAGS rather than
+ * FANOUT IS A KNOB AT ITEM 1836, AND RAISING IT SUPPRESSES THE TWO DEPTH-BASED FLAGS rather than
  * merely changing their numbers. CLAUDE.md: "One edge per node is sparse — per-edge costs scale with
  * the edge:node ratio, per-node costs do not", so every route this grid has pair-tested so far has
  * been measured at ONE out-edge per vertex. The PAIR flag survives a higher fanout untouched,
  * because it compares a modifier against its OWN `rows` cell at the SAME depth.
  *
- * ⚠️ THE DEPTH FLAGS DO NOT SURVIVE IT, and that is why this is a knob with consequences rather than
+ * THE DEPTH FLAGS DO NOT SURVIVE IT, and that is why this is a knob with consequences rather than
  * a free parameter. Above fanout 1 the row count is `F^k`, so a deeper cell legitimately does `F`
  * times the work and both "non-monotonic in depth" and "the marginal grew with depth" become
  * statements about the FIXTURE rather than the route — item 1815's finding exactly, where a
@@ -112,7 +112,7 @@ const JUMP_FLAG = Number(process.env.JUMP_FLAG ?? 5);
 const FANOUT = Number(process.env.FANOUT ?? 1);
 const ENGINE = process.env.ENGINE ?? 'gql';
 /*
- * ⚠️⚠️ THE SEED AXIS (item 1980), and it exists because this screen was STRUCTURALLY BLIND to the
+ * THE SEED AXIS (item 1980), and it exists because this screen was STRUCTURALLY BLIND to the
  * biggest instance of the class it was built to find.
  *
  * Item 1979 found a seeded var-length COUNT costing **897x** its own `DISTINCT` twin — the same
@@ -128,7 +128,7 @@ const ENGINE = process.env.ENGINE ?? 'gql';
  *                 EXACTLY ONE source at every |V|.
  *   SEED=unique-inline   its inline twin.
  *
- * ⚠️⚠️ **`unique` IS THE ONE THAT CAN ACTUALLY CATCH ITEM 1979, and `clause` DEMONSTRABLY CANNOT.**
+ * **`unique` IS THE ONE THAT CAN ACTUALLY CATCH ITEM 1979, and `clause` DEMONSTRABLY CANNOT.**
  * Run against the pre-1979 build, `SEED=clause QUANT=1 NODES=160000` reported **NO FLAGS** while the
  * defect was live and 14-18x in its own cells (`count` 0.3 / 7.1 / 5.8 ms against the fixed build's
  * 0.4 / 0.4 / 0.5). Both flags missed it for the same reason: the PAIR baseline is `rows`, a full
@@ -144,7 +144,7 @@ const ENGINE = process.env.ENGINE ?? 'gql';
  *   QUANT=1       the chain becomes `-[:E]->{1,depth}(b:P)`, so the DEPTH axis becomes the
  *                 quantifier's bound and the var-length rungs are reached at all.
  *
- * ⚠️ DEFAULTS ARE THE OLD BEHAVIOUR ON PURPOSE. Several items quote this screen's numbers, so an
+ * DEFAULTS ARE THE OLD BEHAVIOUR ON PURPOSE. Several items quote this screen's numbers, so an
  * unflagged invocation must still build the same grid it always did.
  */
 const SEED = process.env.SEED ?? 'none';
@@ -164,7 +164,7 @@ const SCALE_DIV = Number(process.env.SCALE_DIV ?? 4);
 /**
  * A cell is flagged when it grows this many times MORE than its column's MEDIAN growth.
  *
- * ⚠️⚠️ **RELATIVE, NOT ABSOLUTE, AND THE FIRST VERSION OF THIS FLAG WAS ABSOLUTE AND WRONG.** At
+ * **RELATIVE, NOT ABSOLUTE, AND THE FIRST VERSION OF THIS FLAG WAS ABSOLUTE AND WRONG.** At
  * `FANOUT=5 NODES=160000` against |V|/4, every cell grows **1.7-2.7x** — uniformly, with matching
  * row counts at both sizes (780 / 97 / 1), so it is not the fixture and not a scan. It is the cache
  * transition CLAUDE.md names ("cache-resident and not are different questions; the transition is
@@ -204,7 +204,7 @@ const build = (nodes = NODES) => {
 
     g.addEdge({
       id: `e${e}`,
-      // ⚠️ Splits on the REPEAT INDEX, CLAUDE.md's fix for the `(a*k+b) % N` degeneracy: without it
+      // Splits on the REPEAT INDEX, CLAUDE.md's fix for the `(a*k+b) % N` degeneracy: without it
       // one vertex's FANOUT edges all land on the SAME target, every k-hop count is `F^k` by
       // construction, and every degree still looks perfect.
       from: g.getVertexById(`v${i}`),
@@ -219,7 +219,7 @@ const build = (nodes = NODES) => {
 
 /** `MATCH (a:P)-[:E]->(x1:P)-[:E]->…` of the given depth, with the far variable's name. */
 const chain = (depth) => {
-  // ⚠️ THE SEED GOES ON THE START NODE for `inline` and into a trailing clause for `clause`, and
+  // THE SEED GOES ON THE START NODE for `inline` and into a trailing clause for `clause`, and
   // both are built here so every modifier in the grid inherits the same seed. A modifier that adds
   // its own `WHERE` (the `where` cell) then carries BOTH, which is the realistic shape: a seeded
   // query with a far-end filter.
@@ -247,7 +247,7 @@ const chain = (depth) => {
  * The trailing clause seed, appended AFTER the modifier has built its projection — because a GQL
  * `WHERE` belongs to the MATCH clause and the modifiers end in `RETURN`.
  *
- * ⚠️ So `clause` is applied by rewriting the query text rather than by composing it, which is ugly
+ * So `clause` is applied by rewriting the query text rather than by composing it, which is ugly
  * and is the only way to keep the modifier table untouched. Asserted below: the rewrite must match
  * exactly once per query or the cell is reported as broken rather than silently unseeded.
  */
@@ -287,7 +287,7 @@ const MODIFIERS = {
   orderby: ({ text, far }) => `${text} RETURN ${far}.k AS k ORDER BY k`,
   // ── Item 1829: six more modifiers, because every widening of this axis has found something ──
   //
-  // ⚠️ `topk` and `skiponly` are the WINDOWS item 1827 deliberately left on the general path, so
+  // `topk` and `skiponly` are the WINDOWS item 1827 deliberately left on the general path, so
   // they are here to watch rather than to fix: a marginal that grows with depth would mean the
   // bounded-top-k route is itself width-limited, which is a different claim from the one 1827 made.
   topk: ({ text, far }) => `${text} RETURN ${far}.k AS k ORDER BY k LIMIT 10`,
@@ -301,7 +301,7 @@ const MODIFIERS = {
 /**
  * The GREMLIN grid — item 1826. Deliberately the SAME QUESTIONS as the GQL `MODIFIERS` above, so a
  * difference between the two tables is a difference between the engines and not between two sets of
- * queries. ⚠️ `values(k)` is the row-producing tail rather than a bare far-end step, because a
+ * queries. `values(k)` is the row-producing tail rather than a bare far-end step, because a
  * traversal ending in an ELEMENT returns vertices and a GQL projection returns a scalar: comparing
  * those would compare egress shapes, not routes.
  */
@@ -326,7 +326,7 @@ const hops = (d) => Array.from({ length: d }, () => out('E'));
 /**
  * The Gremlin START, seeded to match the GQL side (item 1981).
  *
- * ⚠️⚠️ **THE GREMLIN GRID HAD NO SEED AXIS AT ALL, which made the two tables incomparable exactly
+ * **THE GREMLIN GRID HAD NO SEED AXIS AT ALL, which made the two tables incomparable exactly
  * where item 1979's defect lived.** Item 1826 built this grid so that "a difference between the two
  * tables is a difference between the engines and not between two sets of questions" — and that only
  * holds while both sides ask the same question. With `SEED` live the GQL side seeds and this side
@@ -335,7 +335,7 @@ const hops = (d) => Array.from({ length: d }, () => out('E'));
  * `has(key, value)` is the seeded spelling and `@lenke/gremlin` has `index-seed.ts` to serve it, so
  * the question "does Gremlin seek where GQL now does" is answerable rather than assumed.
  *
- * ⚠️ There is no inline-vs-clause distinction in Gremlin — one spelling — so `inline` and `clause`
+ * There is no inline-vs-clause distinction in Gremlin — one spelling — so `inline` and `clause`
  * map to the same traversal here. That is not a gap being papered over: the cliff item 583 guards
  * is a GQL surface property, and a Gremlin table showing one column where GQL shows two would be
  * the honest shape.
@@ -356,7 +356,7 @@ const median = (xs) => {
 let g = build();
 
 /*
- * ⚠️ THE INDEX, WITHOUT WHICH THE SEED AXIS MEASURES NOTHING IT WAS ADDED FOR. Item 1979's defect
+ * THE INDEX, WITHOUT WHICH THE SEED AXIS MEASURES NOTHING IT WAS ADDED FOR. Item 1979's defect
  * is a rung that scans the start label's extent instead of SEEKING — so with no index on the seeded
  * key both the fixed and the fast route scan, and the gap the axis exists to find cannot appear.
  * Created only when a seed is live, so `SEED=none` builds the graph this screen always built.
@@ -379,7 +379,7 @@ console.log(
 );
 
 /*
- * ⚠️⚠️ A RATIO FLOOR IN ABSOLUTE MILLISECONDS HIDES A DEFECT THAT IS LINEAR IN |V|, and item 1980
+ * A RATIO FLOOR IN ABSOLUTE MILLISECONDS HIDES A DEFECT THAT IS LINEAR IN |V|, and item 1980
  * found that the hard way. `FLOOR_MS` exists because a ratio between two sub-millisecond cells is
  * noise (its own note) — but item 1979's seeded count was **0.35 ms at NODES=20,000** while being
  * 160x its twin, and only reached 3.9 ms at NODES=160,000. So at this screen's DEFAULT fixture the
@@ -392,7 +392,7 @@ console.log(
  */
 if (SEED !== 'none' && NODES < 100_000) {
   console.log(
-    `# ⚠️ SEED is live at NODES=${String(NODES)}, where a LINEAR-in-|V| defect may sit under ` +
+    `# SEED is live at NODES=${String(NODES)}, where a LINEAR-in-|V| defect may sit under ` +
       `FLOOR_MS=${String(FLOOR_MS)} ms and be suppressed. Item 1979's needed NODES=160000 to clear it.`,
   );
 }
@@ -400,12 +400,12 @@ if (SEED !== 'none' && NODES < 100_000) {
 console.log(
   FANOUT === 1
     ? '# FANOUT=1 so every depth returns the same row count — a depth difference is ROUTE.\n'
-    : `# ⚠️ FANOUT=${FANOUT}: rows are F^k, so the DEPTH flags are SUPPRESSED — they would measure\n` +
+    : `# FANOUT=${FANOUT}: rows are F^k, so the DEPTH flags are SUPPRESSED — they would measure\n` +
         '#    the fixture rather than the route (item 1815). Only the PAIR flag is reported.\n',
 );
 
 /**
- * ⚠️ ONE TIMED CELL, TWO ENGINES, AND THE PLAN IS BUILT ONCE OUTSIDE THE LOOP on the Gremlin side.
+ * ONE TIMED CELL, TWO ENGINES, AND THE PLAN IS BUILT ONCE OUTSIDE THE LOOP on the Gremlin side.
  * `runtime-profile-gremlin-probe.mjs`'s header records why: every `SHAPES` entry there is built at
  * module level and the plan object reused across reps, because building the traversal per rep would
  * time the BUILDER. The GQL side has the parse+plan caches doing the same job, so the two arms are
@@ -438,7 +438,7 @@ const buildCell = (name, depth) =>
   ENGINE === 'gql' ? withClauseSeed(MODIFIERS[name](chain(depth))) : GREMLIN_MODIFIERS[name](depth);
 
 /*
- * ⚠️ `skiponly` IS DROPPED UNDER A UNIQUE SEED, and the reason is worth stating because dropping a
+ * `skiponly` IS DROPPED UNDER A UNIQUE SEED, and the reason is worth stating because dropping a
  * cell looks like hiding one. One source over a FANOUT=1 fixture yields `depth` rows — ONE of them
  * at depth 1 — so `SKIP 5` returns nothing and the ZERO ROWS guard fires on a cell that is empty BY
  * CONSTRUCTION. Lowering the constant only moves the problem to depth 1; weakening the guard would
@@ -473,14 +473,14 @@ for (const name of names) {
 }
 
 /*
- * ⚠️⚠️ THE SCALING PASS (item 1980) — the grid again on a graph `SCALE_DIV` times smaller.
+ * THE SCALING PASS (item 1980) — the grid again on a graph `SCALE_DIV` times smaller.
  *
  * With a UNIQUE seed exactly one source is admitted at either size, so nothing in the question
  * grows with |V| and any cell that does is scanning. This is the flag that catches item 1979's
  * class, which neither the pair flag nor the depth flag can: both compare a cell to another CELL,
  * and the defect is a cell compared to ITSELF at another size.
  *
- * ⚠️ It reports rather than flags when the seed is not unique, because with |V|/97 sources every
+ * It reports rather than flags when the seed is not unique, because with |V|/97 sources every
  * cell grows legitimately and a growth flag would fire on all of them.
  */
 const small = new Map();
@@ -491,7 +491,7 @@ if (SCALE) {
   g = build(Math.max(1000, Math.floor(NODES / SCALE_DIV)));
   indexIfSeeded(g);
 
-  const caveat = SEED_UNIQUE ? '' : ' — ⚠️ seed is NOT unique, growth is expected and NOT flagged';
+  const caveat = SEED_UNIQUE ? '' : ' — seed is NOT unique, growth is expected and NOT flagged';
 
   console.log(
     `\n# SCALE pass at NODES=${String(g.vertexCount)} (1/${String(SCALE_DIV)}), same grid${caveat}`,
@@ -536,7 +536,7 @@ if (SCALE && SEED_UNIQUE) {
     }
 
     /*
-     * ⚠️ THE ROW COUNTS MUST MATCH, or the two cells answered different questions and their ratio
+     * THE ROW COUNTS MUST MATCH, or the two cells answered different questions and their ratio
      * is about the FIXTURE. A unique seed keeps them equal for almost every modifier, but not all:
      * `where` returned 430 rows at |V| and 435 at |V|/4, because a smaller graph's walk reaches a
      * different far set. Comparing those would have been CLAUDE.md's "match the fixture to the
@@ -648,7 +648,7 @@ for (const [name, row] of grid) {
   const [first] = marginal;
 
   /**
-   * ⚠️ THE DENOMINATOR NEEDS ITS OWN FLOOR, AND A SIZE SWEEP IS WHAT SHOWED IT (item 1835). This
+   * THE DENOMINATOR NEEDS ITS OWN FLOOR, AND A SIZE SWEEP IS WHAT SHOWED IT (item 1835). This
    * flag divides by the depth-1 marginal, and that number is often ~0 — a modifier that costs
    * nothing at one hop. At 200,000 vertices `where`'s depth-1 marginal is 0.7 ms and its depth-2
    * marginal is 26.3, which the flag reported as **40.1x**; the honest reading is "+26 ms on a

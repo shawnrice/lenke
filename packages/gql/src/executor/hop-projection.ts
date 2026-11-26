@@ -136,7 +136,7 @@ const projectedEndsOnly = (
 ): { readsStart: boolean; readsRel: boolean; readsFar: boolean } | null => {
   let readsStart = false;
   let readsRel = false;
-  // ⚠️ REPORTED, NOT INFERRED FROM THE OTHER TWO (item 1525). `readsStart === true` does not imply
+  // REPORTED, NOT INFERRED FROM THE OTHER TWO (item 1525). `readsStart === true` does not imply
   // the far end is unread — `RETURN a.k, x.k` reads both — and a caller that wants "START ONLY"
   // needs the far end answered directly. The `farVar` arm below was previously the silent
   // fall-through that allowed a name without recording it.
@@ -183,7 +183,7 @@ const projectedEndsOnly = (
  * Whether a carried `WHERE` is LOOP-INVARIANT — it reads no pattern variable, so its value is the
  * same for every row the walk would produce (item 1437).
  *
- * ⚠️ EXPORTED AND UNIT-TESTED BECAUSE THE DECISION IS ANSWER-EQUIVALENT. Admitting `WHERE true` to
+ * EXPORTED AND UNIT-TESTED BECAUSE THE DECISION IS ANSWER-EQUIVALENT. Admitting `WHERE true` to
  * hop projection instead of declining it to the general matcher is worth **4.18x** and changes no
  * answer anywhere, so every differential and query test passes either way — the repo's recorded
  * shape for that is to extract the arithmetic as a pure fn and test it directly rather than to
@@ -201,13 +201,13 @@ export const loopInvariantWhere = (where: Expr): boolean =>
   freePredicateVars(where).size === 0 && rowLocal(where);
 
 /**
- * ⚠️ DO THE PROJECTION'S ITEMS READ THE START AND NOTHING ELSE? (item 1525.)
+ * DO THE PROJECTION'S ITEMS READ THE START AND NOTHING ELSE? (item 1525.)
  *
  * This is what lets the start-driven walk project ONCE per start vertex and copy the row — every
  * row that vertex produces is then identical. It is `farDrivenHopWalk`'s template-and-copy with the
  * ends swapped.
  *
- * ⚠️ `readsFar` has to be false as well as `readsRel`, and that is the whole reason
+ * `readsFar` has to be false as well as `readsRel`, and that is the whole reason
  * `projectedEndsOnly` now reports it: `RETURN a.k, x.k` reads BOTH ends, and copying one template
  * for it would repeat the first far vertex's value across the whole group — a wrong answer, not a
  * slow one.
@@ -258,7 +258,7 @@ export const carriedWhere = (
   // it should seed from the index and keep walking. So a start-only predicate is accepted and
   // gets its own closure, which applies it PER START VERTEX instead of per row — the whole point
   // of carrying it, since the general path cannot reject a start before expanding it either.
-  // ⚠️ A PREDICATE WITH NO FREE PATTERN VARIABLES AT ALL is loop-invariant, and declining it cost
+  // A PREDICATE WITH NO FREE PATTERN VARIABLES AT ALL is loop-invariant, and declining it cost
   // **7.46x** (item 1437). `vars` is empty for `WHERE true`, `WHERE 1 = 1` and `WHERE $flag`, so
   // every test below it was false and the whole shape fell off hop projection to the general
   // matcher: `MATCH (a:P)-[:E]->(b:P) WHERE true RETURN b.n` measured **194.63 ms against the
@@ -627,7 +627,7 @@ const liftFarOnlyClause = (where: Expr, farVar: string): CPredicate | undefined 
 /**
  * Concatenate two optional lifted-predicate lists, or `undefined` when neither side has one.
  *
- * ⚠️ ONE MECHANISM FOR NINE FAMILIES (item 1289). Each family used to spell this out as its own
+ * ONE MECHANISM FOR NINE FAMILIES (item 1289). Each family used to spell this out as its own
  * three-line ternary, and adding the ninth took this function over the complexity cap — which is
  * the signal that the repetition was load-bearing in the wrong way. The per-family COMMENTS are
  * what matter here and they stay; only the mechanism is shared.
@@ -805,7 +805,7 @@ const hopEnds = (
   // the multi-type one `evalLabelExpr`/`edgesMatching`/`outSteps`. A routing miss, the same shape
   // as items 1379 and 1382 on the Gremlin count side.
   //
-  // ⚠️ ONLY THE PLAIN WALKS TAKE IT. `typeName` is still `types[0]` and fourteen walks in this
+  // ONLY THE PLAIN WALKS TAKE IT. `typeName` is still `types[0]` and fourteen walks in this
   // file read it as THE type, so `detectHopProjection` declines a disjunction for every route but
   // the two plain ones — see `MULTI_TYPE_PLAIN_ONLY` there. Admitting it here and filtering there
   // keeps the single-type walks byte-for-byte, which item 159 says matters: a branch added to
@@ -890,7 +890,7 @@ const hopOrderPlan = (
   // admitted the shape by the time this runs, so the `null` arm is the no-page case.
   const pageSkip = unsortedPageRoute(proj) ?? 0;
 
-  // 🛑 `sorts !== undefined` FORCING THE START-DRIVEN WALK IS THE SORTED-HOP COST, and it is
+  // `sorts !== undefined` FORCING THE START-DRIVEN WALK IS THE SORTED-HOP COST, and it is
   // REFUTED as a target at item 698 (re-priced at 697) — do not re-derive it. The far-driven walk
   // is cheaper and cannot be used here: it REORDERS rows deliberately, and
   // `Array.prototype.sort` is stable, so tie order would change — which is observable between the
@@ -998,13 +998,13 @@ const deferredHopOrder = (s: {
   const { skip, limit } = proj;
 
   /*
-   * ⚠️ NO WINDOW AT ALL IS ADMITTED (item 1903), the hop twin of item 1902's gate. The
+   * NO WINDOW AT ALL IS ADMITTED (item 1903), the hop twin of item 1902's gate. The
    * `limit === undefined` rule is about a `SKIP` with no `LIMIT`, where the general path projects
    * every row and drops the skipped ones afterwards so a faulting item raises, while a deferred arm
    * would answer rows. With NO window nothing is discarded, so both paths evaluate every key and
    * every item and raise on the same inputs.
    *
-   * ⚠️ AND THIS ARM PAYS MORE FOR IT THAN THE NODE ONE DOES, which is why it was measured before
+   * AND THIS ARM PAYS MORE FOR IT THAN THE NODE ONE DOES, which is why it was measured before
    * shipping: the walk builds a REDUCED row (keys plus carriers) and the wrapper RE-PROJECTS the
    * survivors, so with no window every row is built TWICE rather than once. For a `LIMIT 10` out of
    * 800,000 rows that double build IS the win; unwindowed it is a cost the rung carries while
@@ -1012,19 +1012,19 @@ const deferredHopOrder = (s: {
    */
   const noWindow = skip === undefined && limit === undefined;
   /*
-   * ⚠️⚠️ A `SKIP` WITH NO `LIMIT` IS ADMITTED TOO (item 1905), AND ONLY BECAUSE THE ROWS ARE
+   * A `SKIP` WITH NO `LIMIT` IS ADMITTED TOO (item 1905), AND ONLY BECAUSE THE ROWS ARE
    * PROJECTED BEFORE THE SLICE. The refusal's stated reason is exact and still holds for the
    * ranking form: with no cap the general path sorts, projects EVERY row, and drops the skipped
    * ones afterwards, so an item that faults on a discarded row RAISES there — while an arm that
    * ranks and projects only the survivors would emit fewer rows than it projects and silently not
    * raise. `page-fold-fault.test.ts` caught item 1062's first cut doing exactly that.
    *
-   * ✅ So this arm does what the general path does: `plan.skip` is forced to 0, every ranked row is
+   * So this arm does what the general path does: `plan.skip` is forced to 0, every ranked row is
    * re-projected, and the slice happens AFTER. Fault parity is then identical by construction
    * rather than by argument — the same reasoning that let item 1903 admit the no-window case, which
    * is the degenerate `skip = 0` of this one.
    *
-   * ⚠️ `limit === 0` STILL DECLINES and that is CORRECTNESS, not speed: `applyProjection` returns
+   * `limit === 0` STILL DECLINES and that is CORRECTNESS, not speed: `applyProjection` returns
    * `[]` BEFORE projecting anything, so evaluating keys to emit nothing would raise where the query
    * does not. A parameterized window still declines too — the route is chosen once while the value
    * lives in `params`.
@@ -1085,7 +1085,7 @@ const deferredHopOrder = (s: {
       descending: k.descending,
       nullsFirst: k.nullsFirst,
     })),
-    // ⚠️ ZERO FOR THE SKIP-ONLY CASE, because the slice moves AFTER the re-projection — see the
+    // ZERO FOR THE SKIP-ONLY CASE, because the slice moves AFTER the re-projection — see the
     // gate above. Every other window keeps its skip here, where `sortRowsByColumns` applies it
     // before the survivors are projected, which is what makes a top-k a top-k.
     skip: literalSkip,
@@ -1132,7 +1132,7 @@ const deferredHopOrder = (s: {
  * Which endpoints must the WALK bind? A pure function because the answer is a route decision whose
  * mistakes are ANSWER-visible rather than slow, and item 1903 is what that cost.
  *
- * ⚠️⚠️ **THE FLAGS DESCRIBE THE PROJECTION THE WALK BUILDS, NOT THE QUERY'S OWN ITEMS.** With the
+ * **THE FLAGS DESCRIBE THE PROJECTION THE WALK BUILDS, NOT THE QUERY'S OWN ITEMS.** With the
  * deferred arm active the walk is handed `walkProj` — the sort KEYS plus one carrier per endpoint —
  * and deriving these three from the real items' analysis was a TS-only WRONG ANSWER on four of five
  * end/key combinations: `projStartOnly` ("every row a start vertex produces is identical, so
@@ -1140,13 +1140,13 @@ const deferredHopOrder = (s: {
  * walk never bound the far variable, every key evaluated to NULL, and the rows came back in the
  * walk's arrival order. `hop-deferred-key-parity.test.ts` is the regression cover.
  *
- * ⚠️ CONSERVATIVE RATHER THAN RE-ANALYSED, deliberately. `itemsAreStartOnly` reads an analysis that
+ * CONSERVATIVE RATHER THAN RE-ANALYSED, deliberately. `itemsAreStartOnly` reads an analysis that
  * exists only for the real AST items, and the reduced copy's items are synthetic closures with no
  * AST to analyse — so the walk is told to bind EVERY endpoint a key could name. The cost is a few
  * binding writes on a path that is already deferring its projection; the alternative is a flag that
  * describes rows the walk is not building.
  *
- * ⚠️ AND EACH STAYS GATED ON THE VARIABLE EXISTING: a key cannot read an endpoint the pattern does
+ * AND EACH STAYS GATED ON THE VARIABLE EXISTING: a key cannot read an endpoint the pattern does
  * not name, and `filteredHopWalk` refuses `needsStart` with no `startVar` outright.
  */
 export const walkReadFlags = (s: {
@@ -1177,7 +1177,7 @@ const projectionIsStreamable = (proj: CProjection): boolean =>
   // `LIMIT 5` short-circuits where a materializing rung scans everything (`sortOf` records that
   // as ~280x for the DISTINCT walk). The two clauses are one rule, which is why they are one
   // condition rather than two.
-  // ⚠️ SINCE ITEM 1776 A SKIP-ONLY PAGE IS ADMITTED, and it is the one window with no laziness to
+  // SINCE ITEM 1776 A SKIP-ONLY PAGE IS ADMITTED, and it is the one window with no laziness to
   // lose: the engine emits `N - skip` rows on either route, where a `LIMIT` lets the general path
   // stop. `unsortedPageRoute` is that whole rule and why each half of it is the way it is. The
   // route is only SOUND because `hopOrderPlan` then forces the start-driven walk for it — see
@@ -1233,7 +1233,7 @@ const projectionIsStreamable = (proj: CProjection): boolean =>
  * BOTH ends: the general path produces a row for this vertex if any incident edge — out OR in —
  * would have survived. Asking only the out side would swallow a fault the general path raises.
  *
- * ⚠️ Shared rather than inlined per compile, and that is safe for exactly `anyFarMatches`' reason:
+ * Shared rather than inlined per compile, and that is safe for exactly `anyFarMatches`' reason:
  * it is reached ONLY from a fault path, so it is cold by construction and cannot make a hot call
  * site polymorphic. The GATE's own call stays inside the per-compile closure, where item 159's
  * 1.29x says it belongs.
@@ -1285,7 +1285,7 @@ const undirectedHopWalk = (w: {
   // The admission test lives HERE rather than at the call site, which keeps three conditions
   // out of `detectHopProjection` — it sits one branch under the complexity cap, and the cap is
   // right that the detector is already doing enough.
-  // ⚠️ `needsStart` IS NO LONGER A DECLINE (item 1529). It used to be, and that put every
+  // `needsStart` IS NO LONGER A DECLINE (item 1529). It used to be, and that put every
   // start-projecting undirected hop on the GENERAL MATCHER: `MATCH (a:P)-[:E]-() RETURN a.age`
   // measured **741.3 ns/row against the same hop's 197.7 with a far projection — 3.75x**, with
   // `outSteps`/`inSteps`/`edgesMatching`/`walkSegments` as its top frames.
@@ -1300,7 +1300,7 @@ const undirectedHopWalk = (w: {
   // A far predicate still declines: it has no place to go in a walk that visits each edge from both
   // ends.
   //
-  // ⚠️ A START-ONLY GATE NO LONGER DOES (item 1531). It used to, and that cost **5.47x**:
+  // A START-ONLY GATE NO LONGER DOES (item 1531). It used to, and that cost **5.47x**:
   // `MATCH (a:P)-[:E]-(x) WHERE a.age > 5 RETURN x.age` measured 1083.4 ns/row against the
   // unfiltered 198.2, with `inSteps`/`outSteps`/`edgesMatching` on top — the general matcher.
   // Adding a selective filter made the query five times slower, which is item 1437's class of bug.
@@ -1311,7 +1311,7 @@ const undirectedHopWalk = (w: {
   // `carriedWhere`'s answer and it is false for a far-reading or rel-reading predicate.
   const gateStart = w.gate !== undefined && w.startOnly ? w.startVar : undefined;
 
-  // ⚠️ A FAR PREDICATE IS NOW ADMITTED TOO (item 1533), and it was the last decline left in this
+  // A FAR PREDICATE IS NOW ADMITTED TOO (item 1533), and it was the last decline left in this
   // walk. It cost **5.70x**: `MATCH (a:P)-[:E]-(x) WHERE x.age > 5 RETURN x.age` measured
   // 1130.1 ns/row against the unfiltered 198.2 — a more selective query running nearly six times
   // slower, on the general matcher.
@@ -1368,7 +1368,7 @@ const undirectedHopWalk = (w: {
      * digest rather than by row count alone. `countOnly` (both passes, no rows) cost 116-220 ns a
      * row where the edge pass did the walk AND built the rows in 26-43.
      *
-     * ⚠️ THE GATE IS BOTH LABELS BEING FREE, and it is deliberately the strictest useful one. An
+     * THE GATE IS BOTH LABELS BEING FREE, and it is deliberately the strictest useful one. An
      * edge pass enumerates EDGES, so each one yields a row with `from` as start and another with
      * `to` as start — where the two-pass walk gets its start side free from
      * `candidateVertexSource`. Applying a real start label here means a `matchesLabel` per
@@ -1387,7 +1387,7 @@ const undirectedHopWalk = (w: {
     const startFree = startLabel === undefined || vacuousLabel(graph, startLabel);
     const farFree = farLabel === undefined || vacuousLabel(graph, farLabel);
 
-    // ⚠️ AND THE EDGE PASS CANNOT CARRY THE GATE. It enumerates EDGES, so each one yields two rows
+    // AND THE EDGE PASS CANNOT CARRY THE GATE. It enumerates EDGES, so each one yields two rows
     // with DIFFERENT starts — a gate would have to be evaluated per ROW, which is neither the
     // once-per-vertex contract above nor cheaper than the two-pass walk. Falling back is sound: the
     // edge pass only ever runs when both labels are free, which the two-pass arm handles anyway.
@@ -1398,7 +1398,7 @@ const undirectedHopWalk = (w: {
         return rows;
       }
 
-      // ⚠️ TWO LOOPS, SELECTED ONCE. The start-binding variant needs a `set` per ROW, and item 159
+      // TWO LOOPS, SELECTED ONCE. The start-binding variant needs a `set` per ROW, and item 159
       // measured a branch in this file's hot inner loop at 1.6x on the unfiltered shape — so the
       // shapes that read no start keep a loop that is byte-for-byte what it was.
       if (sv !== undefined) {
@@ -1439,7 +1439,7 @@ const undirectedHopWalk = (w: {
         binding.set(sv, v);
       }
 
-      // ⚠️ THE GATE, PER VERTEX AND BEFORE THE ADJACENCY (item 1531) — the whole reason a start-only
+      // THE GATE, PER VERTEX AND BEFORE THE ADJACENCY (item 1531) — the whole reason a start-only
       // predicate belongs on this walk rather than on the general matcher.
       //
       // `gate` and `gateStart` are both closure-invariant, so the test costs one property read on
@@ -1454,7 +1454,7 @@ const undirectedHopWalk = (w: {
         try {
           held = asTruth(gate({ binding, params, graph })) === true;
         } catch (e) {
-          // ⚠️ RAISE PARITY (items 139, 142, 144, 145), and for THIS walk the question spans BOTH
+          // RAISE PARITY (items 139, 142, 144, 145), and for THIS walk the question spans BOTH
           // directions: the general path reaches an undirected hop's vertex if any incident edge —
           // out or in — would have produced a row. Asking only the out side would swallow a fault
           // that the general path raises. `farPred` is `undefined` here (declined above), so the
@@ -1565,7 +1565,7 @@ const relBoundHopWalk = (spec: {
         continue;
       }
 
-      // ⚠️ REJECTED, WITH ITS NUMBERS (item 1522): skipping the far resolve and the `binding.set`
+      // REJECTED, WITH ITS NUMBERS (item 1522): skipping the far resolve and the `binding.set`
       // when the far end is ANONYMOUS and unlabelled. `farVar` is `node.variable ?? ANON_FAR_VAR`,
       // NUL-prefixed and unspellable by the parser, so for `-[r:E]->()` nothing can read the far
       // binding — item 803's "the binding is never read, so writing it is dead work", which
@@ -1591,7 +1591,7 @@ const relBoundHopWalk = (spec: {
       // `RETURN r.w` that is `propOf` + `get properties` is the reason it is this sensitive, and
       // item 1392 already closed that read as a cold-object dereference with no lever in it.
       //
-      // ⚠️ AND THE OTHER CURE — giving this shape the FAR-DRIVEN route — IS STRUCTURALLY
+      // AND THE OTHER CURE — giving this shape the FAR-DRIVEN route — IS STRUCTURALLY
       // UNREACHABLE (item 1523). The gap is bigger than item 1521 measured: one property per row,
       // far-driven against start-driven, is `RETURN x.k` 132.0 ns/row against `RETURN r.w` 339.2,
       // **2.57x**, so the ROUTE dominates rather than the thing being read. But `farDrivenHopWalk`
@@ -1667,7 +1667,7 @@ const relBoundFilteredHopWalk = (w: {
   const { startLabel, typeName, out, farVar, relVar, farLabel, proj } = w;
   const { farPred, relPred, gate, startVar, startOnly, cfar } = w;
 
-  // ⚠️ A START-ONLY GATE IS NOW ADMITTED, BUT ONLY WITHOUT A REL CONSTRAINT (item 1532).
+  // A START-ONLY GATE IS NOW ADMITTED, BUT ONLY WITHOUT A REL CONSTRAINT (item 1532).
   //
   // The decline cost **3.17x**: `MATCH (a:P)-[r:E]->() WHERE a.age > 5 RETURN r.w` measured
   // 1082.8 ns/row against the unfiltered 341.9, with `expand` 35.2% and `walkSegments` 8.1% — the
@@ -1677,7 +1677,7 @@ const relBoundFilteredHopWalk = (w: {
   // what the note above says the start-only CLOSURE lacks for a rel-reading item. Both are true:
   // that closure cannot serve this shape, and this walk can gate it.
   //
-  // ⚠️ `relPred` MUST BE ABSENT, and that is a correctness bound rather than caution. The raise
+  // `relPred` MUST BE ABSENT, and that is a correctness bound rather than caution. The raise
   // parity asks "would the general path have reached this vertex?", and `anyFarMatches` answers it
   // from the far label and far predicate ONLY — it does not apply a rel constraint. With a
   // `relPred` that rejects every edge the general path produces no row for the vertex, so a fault
@@ -1726,7 +1726,7 @@ const relBoundFilteredHopWalk = (w: {
     const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
 
     for (const v of candidateVertexSource(graph, startLabel)) {
-      // ⚠️ THE GATE BEFORE THE ADJACENCY (item 164's order, 52 ns against 34 a vertex), which is
+      // THE GATE BEFORE THE ADJACENCY (item 164's order, 52 ns against 34 a vertex), which is
       // why this sits above the bucket read. The CALL stays in this per-compile closure: item 159
       // measured a shared module-scope walk at 1.29x from call-site polymorphism, and a compiled
       // gate differs per query.
@@ -2126,17 +2126,17 @@ const relVariableHidden = (
 /**
  * Does the RETURN clause read this name? — item 1850.
  *
- * ⚠️ THE RETURN IS THE ONLY POSSIBLE READER HERE, and that is a property of `optionalHopShape`'s
+ * THE RETURN IS THE ONLY POSSIBLE READER HERE, and that is a property of `optionalHopShape`'s
  * other refusals rather than an assumption: both clauses' `WHERE`s are refused outright
  * (`m.where !== undefined`, `om.where !== undefined`), and `plainRowProjection` refuses a `star`
  * projection, which would bind every name in scope. So nothing but these expressions can mention
  * the edge variable.
  *
- * ⚠️ A SUBQUERY ANYWHERE REFUSES, because `freePredicateVars` does not see inside one — the same
+ * A SUBQUERY ANYWHERE REFUSES, because `freePredicateVars` does not see inside one — the same
  * guard `nameIsUnread` makes in `rewrites.ts`, restated here rather than imported because that
  * module imports THIS one and the cycle is the larger cost.
  *
- * ⚠️ THE SORT KEYS ARE SEARCHED AND THAT IS UNREACHABLE TODAY — a mutant removing them SURVIVES
+ * THE SORT KEYS ARE SEARCHED AND THAT IS UNREACHABLE TODAY — a mutant removing them SURVIVES
  * (item 1850), and the reason is worth stating so the line is not later read as load-bearing or
  * deleted as dead. Two gates get there first: the unordered rung refuses any `orderBy` at all
  * (`plainRowProjection`), and the ordered one (item 1849) refuses a sort key that does not name an
@@ -2180,7 +2180,7 @@ const optionalHopShape = (
     om.kind !== 'match' ||
     !om.optional ||
     /**
-     * ⚠️ THE *OPTIONAL* CLAUSE'S OWN `WHERE` STAYS REFUSED, and it is not the same question as the
+     * THE *OPTIONAL* CLAUSE'S OWN `WHERE` STAYS REFUSED, and it is not the same question as the
      * anchor's. A `WHERE` on the OPTIONAL MATCH filters the HOP, and a hop filtered to nothing must
      * still leave its anchor with a NULL row — so it changes what `matched` means, not merely which
      * starts are considered. The ANCHOR's `WHERE` (item 1851) only narrows the starts, which is
@@ -2199,7 +2199,7 @@ const optionalHopShape = (
     anchor.segments.length !== 0 ||
     anchor.pathVar !== undefined ||
     startVar === undefined
-    // ⚠️ INLINE PROPERTIES AND A NODE `WHERE` ON THE ANCHOR ARE NO LONGER REFUSED (item 1851):
+    // INLINE PROPERTIES AND A NODE `WHERE` ON THE ANCHOR ARE NO LONGER REFUSED (item 1851):
     // both compile into the node's `pred`, which the walk now tests. See the detector.
   ) {
     return null;
@@ -2219,7 +2219,7 @@ const optionalHopShape = (
   if (
     hop.start.variable !== startVar ||
     /**
-     * ⚠️ AN UNREAD EDGE VARIABLE IS ADMITTED SINCE ITEM 1850, where it used to refuse outright.
+     * AN UNREAD EDGE VARIABLE IS ADMITTED SINCE ITEM 1850, where it used to refuse outright.
      * Naming an edge nothing reads cost **9.4x for IDENTICAL rows** — 57.6 ms against 6.1, 80,000
      * rows either way — because the binding alone dropped this rung. `dropUnreadEdgeVar` does not
      * reach it: that pass requires a QUANTIFIED segment and only scans the FIRST clause, and this
@@ -2255,18 +2255,18 @@ const optionalHopShape = (
  * Is this projection exactly ONE property read off the FAR variable — `RETURN b.n AS n` — so the
  * walk can build its row with a direct read instead of the generic `projectRow` (item 1636)?
  *
- * ⚠️ THE AST, NOT THE COMPILED ITEM. `CReturnItem.fn` is an opaque `CompiledExpr`; the AST's
+ * THE AST, NOT THE COMPILED ITEM. `CReturnItem.fn` is an opaque `CompiledExpr`; the AST's
  * `{ kind: 'prop', variable, key }` is inspectable. The ROW KEY still comes from the COMPILED item's
  * `name`, which is where the alias rule already lives — re-deriving "alias ?? the source text" here
  * is how the two spellings drift apart.
  *
- * ⚠️ EXPORTED FOR ITS OWN TEST. A route choice is ANSWER-EQUIVALENT, so a mutant that makes this
+ * EXPORTED FOR ITS OWN TEST. A route choice is ANSWER-EQUIVALENT, so a mutant that makes this
  * decline everything — or admits a shape it should refuse — passes every differential test by
  * construction. Four of ten mutants survived the differential file for exactly that reason; the unit
  * test on this function is the only instrument that can fail on them. Same remedy as items
  * 1630/1631.
  *
- * ⚠️ PRICED AT 41.5% OF THE ROW, and that figure is itself a correction. Item 1447 built this,
+ * PRICED AT 41.5% OF THE ROW, and that figure is itself a correction. Item 1447 built this,
  * reached it, measured ~0% and reverted; its probe recorded 18.9% available. Item 1635 found the
  * whole arc had been measured at `FANOUT=1` — one edge per node — and at `FANOUT=5` the two arms the
  * split rests on swap order: the projection half is 215.1 ns of a 518.7 ns row.
@@ -2312,7 +2312,7 @@ export const detectOptionalHopProjection = (
    * **8.3x for IDENTICAL rows**: 47.4 ms against 5.7, 80,000 rows either way, measured with
    * `WHERE true` so the two spellings ask exactly the same question.
    *
-   * ⚠️ IT IS READ OFF THE COMPILED *NODE*, NOT THE CLAUSE, and the first attempt at this got it
+   * IT IS READ OFF THE COMPILED *NODE*, NOT THE CLAUSE, and the first attempt at this got it
    * wrong: `item 285`'s `pushWhereIntoNode` moves a conjunct reading exactly one of the clause's
    * own pattern variables INTO that node, so the compiled clause's `where` is `undefined` while the
    * AST's is not. Gating on `cm.where` therefore refused every shape it was meant to admit — and
@@ -2322,13 +2322,13 @@ export const detectOptionalHopProjection = (
    * Reading the node also closes the INLINE spelling (`MATCH (a:T {n: 2}) OPTIONAL MATCH …`) with
    * the same code, since `pred` is where both end up.
    *
-   * ⚠️ IT IS SOUND BECAUSE OF *WHERE* IT RUNS. At this point the general path has bound the anchor
+   * IT IS SOUND BECAUSE OF *WHERE* IT RUNS. At this point the general path has bound the anchor
    * variable and nothing else — the far variable is bound by the OPTIONAL clause that follows — so
    * testing the anchor against a binding holding only the anchor is the same evaluation the
    * general path makes, in the same place. No restriction on the predicate's CONTENT is needed.
    */
   /**
-   * ⚠️ NO `start.properties` TEST, AND THAT IS MEASURED RATHER THAN ASSUMED. `liftStartProps` runs
+   * NO `start.properties` TEST, AND THAT IS MEASURED RATHER THAN ASSUMED. `liftStartProps` runs
    * BEFORE the detectors, so `MATCH (a:T {k: 1})` arrives here with `m.where` set and
    * `start.properties` already gone — a props check is unreachable, and a mutant deleting one
    * SURVIVED (item 1851). A node-level `WHERE` (`MATCH (a:T WHERE a.k = 1)`) is NOT lifted and
@@ -2360,7 +2360,7 @@ export const detectOptionalHopProjection = (
     // profile of `MATCH (a:P) OPTIONAL MATCH (a)-[:E]->(b:P) RETURN b.n` put `evalLabelExpr` at
     // 14.0%, `get labels` 7.7% and `matchesLabel` 3.4% — **25.1% on a label that rejects nothing**.
     //
-    // ⚠️ It is also the one place where dropping a vacuous label cannot change `matched`, and so
+    // It is also the one place where dropping a vacuous label cannot change `matched`, and so
     // cannot change which starts get a NULL row — a vacuous label rejects nothing by definition, so
     // every edge that set `matched` still sets it. That is worth stating because this walk's output
     // depends on the far test in a way the others' does not.
@@ -2370,15 +2370,15 @@ export const detectOptionalHopProjection = (
       binding.set(startVar, v);
 
       /**
-       * ⚠️ A REJECTED ANCHOR EMITS NOTHING AT ALL, not a NULL-filled row. The `OPTIONAL` applies to
+       * A REJECTED ANCHOR EMITS NOTHING AT ALL, not a NULL-filled row. The `OPTIONAL` applies to
        * the HOP, not to the anchor: a start the predicate rejects is not a match in the first
        * place, so it gets no row of any kind.
        *
-       * ⚠️ THE LABEL IS PASSED AS `undefined` because `candidateVertexSource` has already filtered
+       * THE LABEL IS PASSED AS `undefined` because `candidateVertexSource` has already filtered
        * by it — `matchNodeLabelled` exists for exactly this, and re-testing would pay for the label
        * twice on every anchor.
        *
-       * ⚠️ AND THE WHOLE CHECK IS BEHIND `anchorFiltered`, settled at COMPILE time, so a query with
+       * AND THE WHOLE CHECK IS BEHIND `anchorFiltered`, settled at COMPILE time, so a query with
        * no anchor predicate runs the loop it ran before: `executor-edits-perturb` records a new
        * branch in a hot walk costing unrelated rows up to 16%.
        */
@@ -2419,25 +2419,25 @@ export const detectOptionalHopProjection = (
 /**
  * `MATCH <anchor> OPTIONAL MATCH <hop> RETURN <items> ORDER BY <output columns>` — item 1849.
  *
- * ⚠️ THE THIRD MODIFIER CLIFF FOUND ON THIS RUNG, and the largest. `detectOptionalHopProjection`
+ * THE THIRD MODIFIER CLIFF FOUND ON THIS RUNG, and the largest. `detectOptionalHopProjection`
  * gates on `plainRowProjection`, which refuses an `orderBy`, so adding an `ORDER BY` to an
  * OPTIONAL hop dropped it to the general matcher: **2081 ns a row against the unordered shape's
  * 111 — 18.7x**, at 20,000 vertices. The two siblings are measured and recorded as still open: an
  * edge VARIABLE (`-[e:E]->` reading `e.w`) costs 1045 ns a row and an outer clause `WHERE` 1028,
  * both ~9.4x, and neither is a sort problem.
  *
- * ⚠️ IT REUSES THE BASE DETECTOR'S WHOLE GATE by handing it the same clauses with the sort
+ * IT REUSES THE BASE DETECTOR'S WHOLE GATE by handing it the same clauses with the sort
  * stripped — item 1827's trick, now at its third call site. Restating the gate here would be a
  * second place for the two to disagree about which shapes are admissible, and that disagreement
  * would be a wrong ROUTE rather than a wrong answer, so nothing would fail loudly.
  *
- * ⚠️ SORTING IS SOUND ON TOP OF THIS WALK and that is not inherited from the chain case. Row order
+ * SORTING IS SOUND ON TOP OF THIS WALK and that is not inherited from the chain case. Row order
  * is unspecified (item 198), so the rung may emit in its own order and be sorted afterwards — but
  * only because `outputColumnSorts` refuses a sort key that does not name an OUTPUT COLUMN, and
  * because the window is refused outright above. With a `SKIP`/`LIMIT` the order would decide WHICH
  * rows survive, and the OPTIONAL walk's NULL-filled rows make that especially visible.
  *
- * ⚠️ TWO MUTANTS SURVIVE HERE AND BOTH ARE DEFENSIVE, recorded so the zeroes are not later read as
+ * TWO MUTANTS SURVIVE HERE AND BOTH ARE DEFENSIVE, recorded so the zeroes are not later read as
  * load-bearing (item 1849's mutation run):
  *
  *   - stripping the sort from the COMPILED clause as well as the AST one. The base detector reads
@@ -2467,7 +2467,7 @@ export const detectOptionalOrderedProjection = (
   const { projection } = ret;
 
   /**
-   * ⚠️ A WINDOW IS NO LONGER REFUSED HERE (item 1852) — `outputColumnSorts` decides it instead.
+   * A WINDOW IS NO LONGER REFUSED HERE (item 1852) — `outputColumnSorts` decides it instead.
    *
    * The refusal was mine at items 1827/1849 and the reasoning was "with a `SKIP`/`LIMIT` the order
    * decides WHICH rows survive". That is true and it is NOT a reason to refuse here: the sort is by
@@ -2688,7 +2688,7 @@ export const detectHopProjection = (
   const walkProj = order.walkProj ?? proj;
 
   /*
-   * ⚠️⚠️ **THESE THREE FLAGS DESCRIBE THE PROJECTION THE WALK BUILDS, WHICH IS `walkProj` — AND
+   * **THESE THREE FLAGS DESCRIBE THE PROJECTION THE WALK BUILDS, WHICH IS `walkProj` — AND
    * DERIVING THEM FROM `projected` WAS A WRONG ANSWER (item 1903).** `projected` analyses the
    * REAL items; the deferred arm hands the walk a REDUCED copy whose items are the SORT KEYS plus
    * one carrier per endpoint. Those read whatever the keys read, which `projected` has never seen.
@@ -2696,7 +2696,7 @@ export const detectHopProjection = (
    * What it cost, on the shipped engine, with a start-only projection and a key reading the other
    * end — `MATCH (n:Q)-[:R]->(m:Q) RETURN n.k AS c ORDER BY m.k LIMIT 3`:
    *
-   *     TS      [{c:1},{c:2},{c:3}]      ⬅ WRONG
+   *     TS      [{c:1},{c:2},{c:3}]      <- WRONG
    *     native  [{c:3},{c:2},{c:1}]          and TS's own general path (`OFFSET 0`) agrees
    *
    * `projStartOnly` says "every row a start vertex produces is IDENTICAL, so project once and
@@ -2705,13 +2705,13 @@ export const detectHopProjection = (
    * arrival order. Four of five end/key combinations diverged from native, `ORDER BY e.w LIMIT 3`
    * among them, which is an ordinary "top 3 by edge weight" query.
    *
-   * ⚠️ CONSERVATIVE RATHER THAN RE-ANALYSED, deliberately: `itemsAreStartOnly` reads a `projected`
+   * CONSERVATIVE RATHER THAN RE-ANALYSED, deliberately: `itemsAreStartOnly` reads a `projected`
    * analysis that only exists for the real AST items, and the reduced copy's items are synthetic
    * closures with no AST to analyse. So when the deferred arm is active the walk is told to bind
    * EVERY endpoint a key could name. The cost is a few binding writes on a path that is already
    * deferring its projection; the alternative is a flag that describes the wrong rows.
    *
-   * ⚠️ AND EACH IS STILL GATED ON THE VARIABLE EXISTING. A key cannot read an endpoint the pattern
+   * AND EACH IS STILL GATED ON THE VARIABLE EXISTING. A key cannot read an endpoint the pattern
    * does not name, and `filteredHopWalk` refuses `needsStart` with no `startVar` outright.
    */
   const { itemsReadStart, projStartOnly, itemsReadRel } = walkReadFlags({
@@ -2937,7 +2937,7 @@ export const detectHopProjection = (
 
     // THE MULTI-TYPE TWIN, its own closure so `startDriven` above stays byte-for-byte (item 1388).
     //
-    // ⚠️ BUILT INSIDE THE `types.length > 1` BRANCH, not beside `startDriven`. Constructed
+    // BUILT INSIDE THE `types.length > 1` BRANCH, not beside `startDriven`. Constructed
     // unconditionally it is a closure the single-type path allocates per compile and never calls,
     // and the first A/B read that control at **-3.6% (33/64, chance)** — unsupported as a sign, but
     // `ts-closure-size-is-load-bearing` is about exactly this and the allocation buys nothing. The
@@ -2949,7 +2949,7 @@ export const detectHopProjection = (
     // replaces did, verified at 20,000 rows for `:E`, `:E|F` and `:F|E` alike before any of this
     // was built.
     //
-    // ⚠️ A HAND WALK, not `edgesOfTypes` (item 1391). Delegating to that generator put
+    // A HAND WALK, not `edgesOfTypes` (item 1391). Delegating to that generator put
     // `edgesOfManyTypes` at **17.8% of a windowed profile** of this row — a frame the single-type
     // arm has no equivalent of, because it iterates one `Set` directly. Same lever item 1389 took
     // on the Gremlin side, where removing two generator-delegation layers was worth **25.1%**, and
@@ -2967,7 +2967,7 @@ export const detectHopProjection = (
         const fl = vacuousLabel(graph, farLabel) ? undefined : farLabel;
         const ts = types as string[];
 
-        // ⚠️ A HAND WALK, not `edgesOfTypes` (item 1391). Delegating to that generator put
+        // A HAND WALK, not `edgesOfTypes` (item 1391). Delegating to that generator put
         // `edgesOfManyTypes` at 17.8% of a windowed profile of this row — a frame the single-type
         // arm has no equivalent of, because it iterates one `Set` directly. The dedupe and the sort
         // are DUPLICATED from `edgesOfManyTypes` rather than called; change the rule in one and
@@ -3019,7 +3019,7 @@ export const detectHopProjection = (
       // THE SAME PER-CALL CHOICE the single-type branch makes below (item 1390). The far-driven
       // walk cannot apply a START label - it iterates the far end - so it runs only where no
       // vertex could fail that label, and an ORDER BY forces the start-driven arm.
-      // ⚠️ BUILT LAZILY, ON FIRST USE. Constructed eagerly it is a closure that every multi-type
+      // BUILT LAZILY, ON FIRST USE. Constructed eagerly it is a closure that every multi-type
       // compile allocates and the DECLINING path never calls — and the A/B read the gate-declines
       // control at **-3.7% (23/64, away from chance in the regression direction)**. That is the same
       // defect item 1388 fixed for `startDrivenMany`, reintroduced one item later, which is why the
@@ -3061,7 +3061,7 @@ export const detectHopProjection = (
     }
 
     const farDriven = farDrivenHopWalk({ types, typeName, out, farVar, farLabel, proj: walkProj });
-    // ⚠️ BUILT LAZILY, ON FIRST USE — the same rule the multi-type arm above states: constructed
+    // BUILT LAZILY, ON FIRST USE — the same rule the multi-type arm above states: constructed
     // eagerly it is a closure every compile allocates and the declining path never calls, which
     // item 1388 measured as a real cost on the control (-3.7%).
     let edgeDriven: ((graph: Graph, params: Params) => Row[]) | undefined;
@@ -3079,7 +3079,7 @@ export const detectHopProjection = (
       }
 
       /*
-       * 🔑 THE MIDDLE GROUND (item 1940). The start label excludes somebody, so the counting walk
+       * THE MIDDLE GROUND (item 1940). The start label excludes somebody, so the counting walk
        * is out — but falling to the start-driven walk costs 245 ns a row against an edge pass's 34.
        * Coverage decides: this arm is O(|E|) whatever the label excludes, while `startDriven`
        * iterates the label BUCKET and is sub-linear when the label is selective, so a BOOLEAN gate
@@ -3105,7 +3105,7 @@ export const detectHopProjection = (
     });
   }
 
-  // ⚠️ `walkProj === proj` IS LOAD-BEARING. The deferred ORDER BY arm hands back a REDUCED copy of
+  // `walkProj === proj` IS LOAD-BEARING. The deferred ORDER BY arm hands back a REDUCED copy of
   // the projection (`order.walkProj`), whose items are not the AST's, so the detector would be
   // reading one projection and the walk building from another. Item 1447 carried this same guard.
   const farProp = walkProj === proj ? farPropRow(ret.projection, proj, farVar) : undefined;
@@ -3160,19 +3160,19 @@ export const detectHopProjection = (
  * The per-call choice between {@link farDrivenPredicatedHopWalk} and the start-driven
  * `filteredHopWalk` it replaces (item 1781).
  *
- * ⚠️ ITS OWN FACTORY, not an inline closure, because inline it put `detectHopProjection` at a
+ * ITS OWN FACTORY, not an inline closure, because inline it put `detectHopProjection` at a
  * complexity of 37 against this file's limit of 35 — and because the file's other walks are
  * factories for the measured reason `filteredHopWalk`'s header gives: a second hot loop built
  * inside the detect function costs the first one (`ts-closure-size-is-load-bearing`), while a
  * SHARED module-scope walk goes polymorphic across compiles. A factory is the arrangement that
  * avoids both.
  *
- * ⚠️ THE FAR-DRIVEN WALK IS BUILT LAZILY, ON FIRST USE. A closure that every compile allocates and
+ * THE FAR-DRIVEN WALK IS BUILT LAZILY, ON FIRST USE. A closure that every compile allocates and
  * the declining path never calls read the gate-declines control at **-3.7%, away from chance**
  * (the defect item 1388 fixed for `startDrivenMany` and item 1390 reintroduced one item later). A
  * route that wins where it applies has to cost nothing where it is refused.
  *
- * ⚠️ AND THE CHOICE IS PER CALL, NOT PER COMPILE, because vacuity is a property of the GRAPH. The
+ * AND THE CHOICE IS PER CALL, NOT PER COMPILE, because vacuity is a property of the GRAPH. The
  * far-driven walk never visits a start vertex, so it cannot apply a START label and runs only when
  * no vertex could fail one; and a sort or a page forces the start-driven arm, because an
  * order-sensitive consumer inherits the walk's order (item 1777).
@@ -3191,7 +3191,7 @@ const predicatedHopRoute = (w: {
 }): RowsFn => {
   const { filtered, applies, farPred, startLabel, startDrivenForOrder } = w;
 
-  // ⚠️ THE DECLINE LIVES HERE, NOT AT THE CALL SITE, and that is a complexity-cap decision rather
+  // THE DECLINE LIVES HERE, NOT AT THE CALL SITE, and that is a complexity-cap decision rather
   // than a stylistic one: an `if` around the call put `detectHopProjection` at 37 against this
   // file's limit of 35, which is the same cap that made `hopPredicates`, `farPredAndGate` and
   // `farDrivenPredicatedApplies` their own functions. Returning the start-driven walk unchanged
@@ -3221,7 +3221,7 @@ const predicatedHopRoute = (w: {
     }
 
     /*
-     * 🔑 THE MIDDLE GROUND (item 1951), and it is item 1940's lever one route over. The start label
+     * THE MIDDLE GROUND (item 1951), and it is item 1940's lever one route over. The start label
      * excludes somebody, so the template-and-copy walk above is out — but falling to `filtered`
      * means the predicate goes from once per FAR VERTEX to once per EDGE, which item 1951 measured
      * as the bulk of a 5.02x. This arm keeps the predicate hoist and the whole-bucket short-circuit
@@ -3297,7 +3297,7 @@ const predicatedHopRoute = (w: {
  * **86.1 ms against the start-driven walk's 69.3** over 200,000 edges. At in-degree ~100 it wins,
  * **17.2 against 69.3**. So the choice is the degree, and the threshold sits between.
  *
- * ⚠️ IT WAS 8, AND 8 WAS CALIBRATED ON A FIXTURE THAT COULD NOT SEE THIS (items 1402-1403). Item
+ * IT WAS 8, AND 8 WAS CALIBRATED ON A FIXTURE THAT COULD NOT SEE THIS (items 1402-1403). Item
  * 1390 swept fan-in 1.33 / 13 / 133 — all at OUT-degree 1, because the GQL bench had no `FANOUT`
  * knob until item 1401 — and picked 8 from three points with a gap of two orders of magnitude in the
  * middle. Sweeping out-degree instead, n=12 per cell, three order-alternated rounds:
@@ -3313,7 +3313,7 @@ const predicatedHopRoute = (w: {
  * 103/144); its first reading was −2.8% at 16/64 and the SIGN FLIPPED at n=24, which is the n=8
  * instability this repo documents rather than a real effect.
  *
- * ⚠️ IT IS 3, AND THE CROSSOVER IS PINNED TO AN INTEGER (items 1404-1406). Three further arms were
+ * IT IS 3, AND THE CROSSOVER IS PINNED TO AN INTEGER (items 1404-1406). Three further arms were
  * run on this one constant, each answering a different question, and the third changed it again:
  *
  * **`min=2`, overlapping types (item 1404)** — 7.2% at 142/144 at est 2.67, and DECLINED. The
@@ -3328,7 +3328,7 @@ const predicatedHopRoute = (w: {
  *   true degree 2   39.99 -> 46.77   **−16.9%**   35/144    far-driven LOSES
  *   true degree 3   67.84 -> 50.80   **+25.1%**  144/144    far-driven WINS
  *
- * ⚠️ AND THE SCALAR DOES NOT CAPTURE IT. At true degree 2 with OVERLAPPING types the route wins
+ * AND THE SCALAR DOES NOT CAPTURE IT. At true degree 2 with OVERLAPPING types the route wins
  * 7.2%; at true degree 2 DISJOINT it loses 16.9%. Same degree, opposite sign — the per-vertex BUCKET
  * STRUCTURE matters as well as the degree, and one number cannot express both. The threshold is
  * therefore a conservative line through a two-dimensional space, not a crossover point.
@@ -3348,7 +3348,7 @@ const predicatedHopRoute = (w: {
  * comparison (the rule `perf-gate-needs-its-own-test` records from an earlier item).
  */
 /**
- * ⚠️ 3 -> 1 AT ITEM 1434, AND EVERY EARLIER READING ON THIS CONSTANT IS NOW STALE.
+ * 3 -> 1 AT ITEM 1434, AND EVERY EARLIER READING ON THIS CONSTANT IS NOW STALE.
  *
  * The threshold existed because the multi-type far-driven walk LOST at low degree: item 1390
  * measured 1.24x against it at degree 1, item 1404 declined `min=2` for that reason, and item 1406
@@ -3369,7 +3369,7 @@ const predicatedHopRoute = (w: {
  * it.** `FANOUT=4` is the control — the estimate is already >= 3 there, so both arms take the same
  * route and agree, which is what says the forced arm is the route and not an artefact.
  *
- * ⚠️ WHY 1 AND NOT 0. `farEndpoints` counts vertices WITH an incident edge of a named type, so
+ * WHY 1 AND NOT 0. `farEndpoints` counts vertices WITH an incident edge of a named type, so
  * `typeEdgeCount >= farEndpoints` holds whenever any such edge exists — `min=1` is therefore
  * "always take it when there is anything to walk", and `min=0` differs only on the empty graph,
  * where `farEndpoints > 0` already declines. 1 states the intent; 0 would imply a degree of zero
@@ -3380,7 +3380,7 @@ const FAR_DRIVEN_MIN_DEGREE = 1;
 /**
  * Should a multi-type plain hop take the FAR-driven walk rather than the start-driven one?
  *
- * ⚠️ THE DENOMINATOR IS VERTICES THAT ACTUALLY RECEIVE EDGES, not label matches, and getting that
+ * THE DENOMINATOR IS VERTICES THAT ACTUALLY RECEIVE EDGES, not label matches, and getting that
  * wrong made the first version of this gate choose BACKWARDS. `candidateCount(graph, farLabel)`
  * counts vertices carrying the label — on a fixture where every vertex is `:P` that is all of them
  * whatever the fan-in is, so the estimated degree read 1.33 at a REAL in-degree of 133 and the gate
@@ -3394,7 +3394,7 @@ const FAR_DRIVEN_MIN_DEGREE = 1;
  * degree slightly high — harmless, because it is compared against a threshold rather than used as
  * a row count, and the error is bounded by the overlap.
  *
- * ⚠️ PURE, and exported for its tests. It must stay independent of `graph` mutation order so the
+ * PURE, and exported for its tests. It must stay independent of `graph` mutation order so the
  * route a query takes is a function of the data and not of when it was asked.
  */
 export const farDrivenPaysForMultiType = (typeEdgeCount: number, farEndpoints: number): boolean =>
@@ -3450,7 +3450,7 @@ const inEarlier = (buckets: readonly ReadonlySet<Edge>[], i: number, e: Edge): b
  *
  * EVERY CONJUNCT IS LOAD-BEARING, so each says what it is for.
  *
- * ⚠️ PURE AND EXPORTED FOR ITS TESTS, and it is a function rather than an inline conjunction for
+ * PURE AND EXPORTED FOR ITS TESTS, and it is a function rather than an inline conjunction for
  * two reasons: a route choice is ANSWER-EQUIVALENT, so it needs its own tests
  * (`perf-gate-needs-its-own-test`), and inline it put `detectHopProjection` at a complexity of 44
  * against this file's limit of 35 — the same cap that made `hopPredicates` and `farPredAndGate`
@@ -3459,10 +3459,10 @@ const inEarlier = (buckets: readonly ReadonlySet<Edge>[], i: number, e: Edge): b
 /**
  * May a far-driven walk carry this INLINE far constraint? (item 2297)
  *
- * ⚠️⚠️ **THIS CONDITION USED TO BE `closedFar === undefined`, AND ITS COMMENT'S LAST CLAIM WAS
+ * **THIS CONDITION USED TO BE `closedFar === undefined`, AND ITS COMMENT'S LAST CLAIM WAS
  * FALSIFIED.** It said an inline constraint *"would contribute families whose expression this detector
  * cannot see, so it declines rather than guessing. Conservative on purpose, and it declines no measured
- * shape."* ✅ The reasoning is sound; the final clause was true only until measured. Item 2296:
+ * shape."* The reasoning is sound; the final clause was true only until measured. Item 2296:
  *
  * ```text
  *     rows        (NO predicate)    5.61 ms   rows=200000   <- the control that made it visible
@@ -3470,24 +3470,24 @@ const inEarlier = (buckets: readonly ReadonlySet<Edge>[], i: number, e: Edge): b
  *     inlineProp  (b {k: 5})      104.28      rows=2223     <- 24x, and 18.6x the UNFILTERED walk
  * ```
  *
- * 🔑 **WHY A PLAIN ANCHOR IS SAFE WHERE THE GENERAL CASE IS NOT.** The detector's AST key reads
+ * **WHY A PLAIN ANCHOR IS SAFE WHERE THE GENERAL CASE IS NOT.** The detector's AST key reads
  * `clauseWhere`, so with an inline constraint it tests only PART of the predicate — that is the real
  * hazard. But `props` is the one family with no expression to miss: an inline anchor is equality against
  * a non-null literal, which can neither raise nor coerce, so there is nothing for the AST key to say
  * about it. Every OTHER family is refused by name, including `nullProps` (`{k: null}` is `IS NULL`,
  * item 260) and `cmpProps`/`memberProps`, whose value sides are exactly what the AST key screens.
  *
- * ⚠️ LISTED EXHAUSTIVELY, NOT BY A HELPER, because the correctness condition is that no family is
+ * LISTED EXHAUSTIVELY, NOT BY A HELPER, because the correctness condition is that no family is
  * forgotten: `CPredicate` has eight, and a ninth added later must fail this test rather than slip
  * through a `where === undefined` shorthand. `predicateCannotRaise` rules out only three of them.
  *
- * ⚠️ A PURE FUNCTION because the route is answer-equivalent, so every mutation of a condition inline in
+ * A PURE FUNCTION because the route is answer-equivalent, so every mutation of a condition inline in
  * the gate survives the differential tests (`perf-gate-needs-its-own-test`, items 1038/1044).
  */
 export const inlineFarIsPlainAnchor = (closedFar: CPredicate | undefined): boolean =>
   closedFar === undefined ||
   /*
-   * ✅ **`eqProps` IS ADMITTED TOO, AND THE EVIDENCE IS THAT THE CLAUSE PATH ALREADY RUNS IT** (item
+   * **`eqProps` IS ADMITTED TOO, AND THE EVIDENCE IS THAT THE CLAUSE PATH ALREADY RUNS IT** (item
    * 2298). Instrumenting the three spellings showed the compiled predicate the walk would run:
    *
    * ```text
@@ -3496,9 +3496,9 @@ export const inlineFarIsPlainAnchor = (closedFar: CPredicate | undefined): boole
    *     clause       closedFar=[undef]              farPred=[props:0,eqProps:1]   <- ADMITTED
    * ```
    *
-   * 🔑 The clause spelling's `farPred` is IDENTICAL to the inline `WHERE`'s. So admitting `eqProps` does
+   * The clause spelling's `farPred` is IDENTICAL to the inline `WHERE`'s. So admitting `eqProps` does
    * not give the walk anything it was not already running — it removes a discrimination between two
-   * spellings of one predicate. ⚠️ And `eqProps` carries only `<ownVar>.<key> = <non-null literal>`
+   * spellings of one predicate. And `eqProps` carries only `<ownVar>.<key> = <non-null literal>`
    * conjuncts read straight off the element, so the `{k: null}`/`IS NULL` hazard (item 260) cannot
    * arise in it; `nullProps` is where that lives, and it stays refused.
    */
@@ -3528,13 +3528,13 @@ export const farDrivenPredicatedApplies = (w: {
   // well, and `declinesDisjunction` has already sent every multi-type shape with a far
   // predicate down the start-driven path, so this is an assertion as much as a condition.
   w.typeCount === 1 &&
-  // ⚠️ NO INLINE FAR CONSTRAINT. With `closedFar === undefined`, `hopPredicates` can only have
+  // NO INLINE FAR CONSTRAINT. With `closedFar === undefined`, `hopPredicates` can only have
   // produced this `farPred` by lifting the clause `WHERE` whole (`liftFarOnlyClause`), which is
   // what makes the AST test on the next line a test of the ENTIRE predicate. An inline
   // constraint would contribute families whose expression this detector cannot see, so it
   // declines rather than guessing. Conservative on purpose, and it declines no measured shape.
   // (the inline-constraint question moved into the branch at the foot of this gate — item 2297)
-  // ⚠️ THE TWO RAISE-FREEDOM TESTS, AND NEITHER SUBSUMES THE OTHER. `truthCannotRaise` is the
+  // THE TWO RAISE-FREEDOM TESTS, AND NEITHER SUBSUMES THE OTHER. `truthCannotRaise` is the
   // AST-level key, shared with the Rust engine, and it is the one that covers the OPERAND side:
   // it answers false for `b.k > b.s / 2`, whose family (`cmpProps`) is non-raising while its
   // value expression is not. `predicateCannotRaise` is the compiled-shape key and rules out
@@ -3545,7 +3545,7 @@ export const farDrivenPredicatedApplies = (w: {
   // keys read for all 20, zero cases of a key-true predicate raising, and the only three
   // raising shapes (`b.k / 2 > 1`, a `CAST`, a bare `b.s`) all key false.
   //
-  // ⚠️ THE TWO KEYS ARE MUTUALLY REDUNDANT TODAY AND BOTH MUTANTS SURVIVE — item 475's rule, and
+  // THE TWO KEYS ARE MUTUALLY REDUNDANT TODAY AND BOTH MUTANTS SURVIVE — item 475's rule, and
   // resolved in the REDUNDANT direction rather than left as an untested guard. Dropping either
   // one alone leaves 4,505 pass / 0 fail, because every shape that fails one also fails the
   // other: `b.flag` keys false both ways, and `b.n > b.m / 1` — a non-raising FAMILY with a
@@ -3560,22 +3560,22 @@ export const farDrivenPredicatedApplies = (w: {
   // `truthCannotRaise` would depend on the compiled families never gaining a raising member.
   // Each is cheap and local; the pair costs one comparison at COMPILE time.
   /*
-   * ⚠⚠ **THE AST KEY NEEDS A CLAUSE `WHERE`, AND A PURE INLINE ANCHOR HAS NONE (item 2297).** This
+   * **THE AST KEY NEEDS A CLAUSE `WHERE`, AND A PURE INLINE ANCHOR HAS NONE (item 2297).** This
    * line used to be `w.clauseWhere !== undefined`, which declined
    * `MATCH (a:P)-[:E]->(b {k: 5})` outright — measured at **24x** the clause spelling of the same
    * question (item 2296: 104.28 ms against 4.31, and 18.6x the UNFILTERED walk).
    *
-   * 🔑 **WHY THE INLINE-ONLY CASE NEEDS NO AST KEY.** The header above argues the pair must both stay
+   * **WHY THE INLINE-ONLY CASE NEEDS NO AST KEY.** The header above argues the pair must both stay
    * because dropping `truthCannotRaise` would make soundness depend on *"no predicate with a raising
    * operand ever lifting into a non-raising family"* — a property of `liftFarOnlyClause` in another
-   * module. ✅ With no clause `WHERE` **there is no lift at all**, so that implication has no premise:
+   * module. With no clause `WHERE` **there is no lift at all**, so that implication has no premise:
    * the predicate is the inline anchor itself. And rather than reason about how `farPred` was
    * assembled, this tests `farPred` DIRECTLY with the same exhaustive family check — so a plain anchor
    * is admitted because the WHOLE compiled predicate is one, not because of where it came from.
    */
   (w.clauseWhere === undefined
     ? /*
-       * ✅ THE INLINE-ONLY CASE (item 2297). No clause `WHERE`, so nothing was lifted and the AST key has
+       * THE INLINE-ONLY CASE (item 2297). No clause `WHERE`, so nothing was lifted and the AST key has
        * no expression to screen — `farPred` IS the inline anchor. Tested DIRECTLY with the exhaustive
        * family check, so admission does not depend on how `farPred` was assembled.
        */
@@ -3583,11 +3583,11 @@ export const farDrivenPredicatedApplies = (w: {
       inlineFarIsPlainAnchor(w.closedFar) &&
       inlineFarIsPlainAnchor(w.farPred)
     : /*
-       * ⚠⚠ **THE MERGED CASE STAYS DECLINED, AND A TEST CAUGHT ME ADMITTING IT.** A first version
+       * **THE MERGED CASE STAYS DECLINED, AND A TEST CAUGHT ME ADMITTING IT.** A first version
        * relaxed the `closedFar === undefined` conjunct ABOVE instead, which let
        * `(b:L {m: 3}) WHERE b.n > -1` through — and the gate's own witness test ("an inline far
        * constraint is declined") failed on ROW ORDER, which is how a route change shows up here.
-       * 🔑 The AST key screens only `clauseWhere`, so with BOTH an inline constraint and a clause
+       * The AST key screens only `clauseWhere`, so with BOTH an inline constraint and a clause
        * `WHERE` it still tests only part of the predicate — the original hazard, undiminished. Only the
        * inline-ONLY case escapes it.
        */
@@ -3597,7 +3597,7 @@ export const farDrivenPredicatedApplies = (w: {
 /**
  * {@link farDrivenHopWalk} with a RAISE-FREE far predicate applied ONCE PER FAR VERTEX (item 1781).
  *
- * ⚠️ **NOT `farDrivenFilteredHopWalk`, WHICH ALREADY EXISTS AND IS A DIFFERENT ROUTE.** That one
+ * **NOT `farDrivenFilteredHopWalk`, WHICH ALREADY EXISTS AND IS A DIFFERENT ROUTE.** That one
  * (item 232) is the mirror of `filteredHopWalk`'s general closure: it enumerates the far candidates
  * but still RESOLVES THE START ENDPOINT PER EDGE, and it is gated on `hopDrivesFar` — a comparison
  * of the two sides' label candidate counts, which fixes a 17.4x asymmetry between two spellings of
@@ -3623,13 +3623,13 @@ export const farDrivenPredicatedApplies = (w: {
  * SELECTIVE filter multiplies that rather than being paid for and discarded — item 1780's
  * `hopfiltfareq` returned 1% of the rows for 75% of the cost on the start-driven route.
  *
- * ⚠️ A SEPARATE FACTORY, NOT A BRANCH IN {@link farDrivenHopWalk}, and this file has paid to learn
+ * A SEPARATE FACTORY, NOT A BRANCH IN {@link farDrivenHopWalk}, and this file has paid to learn
  * it twice: item 159 measured that adding even a branch to that inner loop costs the hot unfiltered
  * shape 1.6x, and a SHARED module-scope walk cost 1.29x by going polymorphic across compiles.
  * Nothing inside the unfiltered walks is edited, which is also what makes this item's cost side
  * readable — an unfiltered row that moves cannot have moved because of code added here.
  *
- * ⚠️ RAISE-FREEDOM IS THE CALLER'S GATE AND IS REQUIRED, NOT PREFERRED. Both routes evaluate the
+ * RAISE-FREEDOM IS THE CALLER'S GATE AND IS REQUIRED, NOT PREFERRED. Both routes evaluate the
  * predicate over the same SET of far vertices (those with a bucket of this type that pass the far
  * label, the start label being vacuous when this is chosen), so no fault can appear or disappear —
  * but they reach that set in different ORDERS, so with two faulting far vertices a different
@@ -3655,22 +3655,22 @@ const farDrivenPredicatedHopWalk = (w: {
       /*
        * ITEM-2133-PREDICATE-FIRST: the predicate runs BEFORE the adjacency lookup.
        *
-       * ⚠️⚠️ **THE BUCKET READ IS THE DEAR HALF AND IT USED TO RUN FOR EVERY FAR VERTEX.** `far.adjTo` is
+       * **THE BUCKET READ IS THE DEAR HALF AND IT USED TO RUN FOR EVERY FAR VERTEX.** `far.adjTo` is
        * a cold pointer chase — a vertex's IN-edges arrive from widely separated writes, so its `adjTo`
        * sets do not sit together, and item 2126 measured the typed-degree read at **16.15 ms against
        * `adjFrom`'s 6.92** over 200,000 vertices. At 4.4% selectivity this walk was paying that for the
        * 95.6% it was about to reject.
        *
-       * 🔑 SOUND BY THE CALLER'S OWN GATE, not by a fresh argument. `predicatedFarRoute` admits this walk
+       * SOUND BY THE CALLER'S OWN GATE, not by a fresh argument. `predicatedFarRoute` admits this walk
        * only when `truthCannotRaise(clauseWhere) && predicateCannotRaise(farPred)` — BOTH raise-freedom
        * keys — and its comment says why: *"A route that reorders which far vertex is evaluated first
-       * needs BOTH."* ⚠️ The displaced comment here kept the old order to hold the EVALUATED SET identical
+       * needs BOTH."* The displaced comment here kept the old order to hold the EVALUATED SET identical
        * to the start-driven walk's, **"even though the caller's gate means neither route can fault"** — so
        * the parity it was protecting was already vacuous. With no fault possible, widening the evaluated
        * set to the vertices that fail the predicate is unobservable; a vertex with no bucket emits no
        * rows either way.
        *
-       * ⚠️ Item 936 declined to reason past fault parity for a DIFFERENT route, one with no such gate.
+       * Item 936 declined to reason past fault parity for a DIFFERENT route, one with no such gate.
        * That decline stands where it was made; this walk's gate is what makes the reorder available here.
        */
       binding.set(farVar, far);
@@ -3683,7 +3683,7 @@ const farDrivenPredicatedHopWalk = (w: {
         continue;
       }
 
-      // 🔑 ONLY NOW the adjacency read. Guarded for the reason the unfiltered twin states: the spread
+      // ONLY NOW the adjacency read. Guarded for the reason the unfiltered twin states: the spread
       // form pushes the template FIRST and would emit one spurious row for an empty bucket.
       const bucket = (out ? far.adjTo : far.adjFrom)?.get(typeName);
 
@@ -3709,14 +3709,14 @@ const farDrivenPredicatedHopWalk = (w: {
  * middle ground that was missing from the PREDICATED route, exactly as item 1940 was the one
  * missing from the unfiltered route.
  *
- * ⚠️⚠️ WHY THIS CLIFF IS WORTH A FOURTH WALK. `predicatedHopRoute`'s gate required a vacuous start
+ * WHY THIS CLIFF IS WORTH A FOURTH WALK. `predicatedHopRoute`'s gate required a vacuous start
  * label, so ONE isolated off-label vertex dropped `MATCH (a:T)-[:E]->(b:T) FILTER b.n > $p0` from
  * the walk above all the way to `filteredHopWalk`'s general per-edge closure — and the collapse is
  * not mainly about label tests. It is about HOW MANY TIMES THE PREDICATE RUNS: 200,000 evaluations
  * become 1,000,000. Item 1949 priced the shape at 368.7 ms and item 1951 profiled it, finding
  * `evalLabelExpr` + `get labels` worth only ~430 ms of a ~2,060 ms gap.
  *
- * 🔑 THE HAND CEILING MIS-RANKS THE ARMS HERE, which is why this is not an edge pass. Three hand
+ * THE HAND CEILING MIS-RANKS THE ARMS HERE, which is why this is not an edge pass. Three hand
  * arms over 200,000 vertices / 1,000,000 edges, `|E|` and the vertex set held fixed while start
  * coverage is swept (median of 9):
  *
@@ -3740,7 +3740,7 @@ const farDrivenPredicatedHopWalk = (w: {
  * matter — the predicate at once per far vertex, and a failing far vertex skipping its WHOLE
  * bucket, which is a short-circuit over edges that no edge pass can have.
  *
- * ⚠️ THE PREDICATE IS HOISTED ABOVE THE EDGE LOOP, which {@link farDrivenFilteredHopWalk}
+ * THE PREDICATE IS HOISTED ABOVE THE EDGE LOOP, which {@link farDrivenFilteredHopWalk}
  * deliberately does NOT do, and the difference is the caller's gate rather than a change of mind.
  * That walk is reachable with a start-reading predicate, so hoisting there would change the
  * evaluated (start, far) pairs. `farDrivenPredicatedApplies` — which this arm shares verbatim —
@@ -3750,7 +3750,7 @@ const farDrivenPredicatedHopWalk = (w: {
  * and that difference is unobservable: no rows, no faults. It is the same argument the walk above
  * makes about ORDER, applied to the evaluated SET.
  *
- * ⚠️ `startVar` IS NEVER BOUND, deliberately. `!needsStart` means neither the projection nor the
+ * `startVar` IS NEVER BOUND, deliberately. `!needsStart` means neither the projection nor the
  * predicate reads it, so the general closure's per-edge `binding.set(startVar, v)` is pure cost
  * here. A later relaxation of `applies` would have to revisit this line, which is why it is called
  * out rather than simply absent.
@@ -3795,7 +3795,7 @@ const farDrivenStartTestedPredicatedHopWalk = (w: {
       }
 
       /*
-       * 🔑 THE ROW IS BUILT ONCE PER FAR VERTEX AND CLONED (item 1952), which is the fold's HOIST
+       * THE ROW IS BUILT ONCE PER FAR VERTEX AND CLONED (item 1952), which is the fold's HOIST
        * kept after its COUNT was given up. Item 1951 shipped this walk with a `projectRow` per
        * surviving edge, reasoning that a start label which can reject an edge makes the row count
        * something other than `bucket.size`. True — and it only rules out taking the count from the
@@ -3809,7 +3809,7 @@ const farDrivenStartTestedPredicatedHopWalk = (w: {
        * `projectRow` calls become 200,000 plus 500,000 spreads — item 1407's clone, which it
        * measured at 16-28% on the unfiltered twin.
        *
-       * ⚠️ EACH ROW MUST BE ITS OWN OBJECT, hence the spread rather than pushing `template` twice.
+       * EACH ROW MUST BE ITS OWN OBJECT, hence the spread rather than pushing `template` twice.
        * The first push can hand over `template` itself because nothing reads it afterwards.
        */
       let template: Row | undefined;
@@ -3836,7 +3836,7 @@ const farDrivenStartTestedPredicatedHopWalk = (w: {
 /**
  * A hop walk that iterates the EDGE bucket and tests BOTH endpoint labels per edge (item 1940).
  *
- * ⚠️⚠️ WHY A THIRD WALK EXISTS AT ALL. {@link farDrivenHopWalk} does not iterate edges — it iterates
+ * WHY A THIRD WALK EXISTS AT ALL. {@link farDrivenHopWalk} does not iterate edges — it iterates
  * far vertices and COUNTS their adjacency (`off[slot + 1] - off[slot]`), emitting `n` identical
  * rows, which is why it costs 25 ns a row. A start label cannot be tested against a count, so that
  * walk runs only where no vertex fails the label (`vacuousLabel`). Item 1937 corrected the opposite
@@ -3852,13 +3852,13 @@ const farDrivenStartTestedPredicatedHopWalk = (w: {
  *   THIS SHAPE, by hand                     3.39       34 ns a row    <- item 1936
  * ```
  *
- * 🔑 IT IS GATED ON COVERAGE, NOT ON NON-VACUITY, and that distinction is load-bearing: this walk is
+ * IT IS GATED ON COVERAGE, NOT ON NON-VACUITY, and that distinction is load-bearing: this walk is
  * O(|E|) whatever the label excludes, while the start-driven walk iterates the label BUCKET and is
  * sub-linear when the label is selective. Gating on non-vacuity alone measured a **25x REGRESSION**
  * at 1% coverage (item 1938). {@link EDGE_DRIVEN_MIN_COVERAGE} is item 1939's swept band plus
  * headroom.
  *
- * ⚠️ ROW ORDER DIFFERS FROM BOTH OTHER ARMS — this emits in edge-bucket order where they emit in
+ * ROW ORDER DIFFERS FROM BOTH OTHER ARMS — this emits in edge-bucket order where they emit in
  * vertex order. That is permitted: row order is unspecified for an unordered result (the repo's own
  * WON'T-FIX, like SQL without `ORDER BY`), and an `ORDER BY` forces `startDrivenForOrder` and never
  * reaches here. Its tests therefore compare answers as MULTISETS.
@@ -3890,7 +3890,7 @@ const edgeDrivenHopWalk = (w: {
         continue;
       }
 
-      // ⚠️ THE TEST THE COUNTING WALK CANNOT DO. Here the edge is in hand, so both endpoints are.
+      // THE TEST THE COUNTING WALK CANNOT DO. Here the edge is in hand, so both endpoints are.
       if (startLabel !== undefined && !matchesLabel(start, startLabel)) {
         continue;
       }
@@ -3919,7 +3919,7 @@ const farDrivenHopWalk = (w: {
   // then sat at 1.94x its single-type twin while item 1389 priced the dedupe itself at only 1.13x,
   // so ~1.7x of that was this missing route rather than any real work.
   //
-  // ⚠️ BUCKET ORDER IS UNOBSERVABLE HERE, unlike in every other walk in this family. Each far
+  // BUCKET ORDER IS UNOBSERVABLE HERE, unlike in every other walk in this family. Each far
   // vertex emits `n` IDENTICAL rows, so the sequence depends on the far-vertex order alone and not
   // on which bucket a given edge was counted in. Largest-bucket-first is therefore a free win
   // rather than the equivalent-spelling fix it had to be at items 1382/1384 — and `-[:F|E]->`
@@ -4002,7 +4002,7 @@ const farDrivenHopWalk = (w: {
     const binding = new Map<string, unknown>();
 
     /**
-     * ⚠️ THE CSR ARM (item 1895), and the hand floors say why it is the whole gap.
+     * THE CSR ARM (item 1895), and the hand floors say why it is the whole gap.
      * `gql-hop-ceiling-1895.mjs`, 200,000 vertices / 1,000,000 edges, one arm per process, median
      * of 9:
      *
@@ -4023,16 +4023,16 @@ const farDrivenHopWalk = (w: {
      * and reading `adjTo.get(type)` for each. `csrFor`'s `order` is those far vertices as an ARRAY
      * and `off[s + 1] - off[s]` is the degree, with no `Map` in the loop.
      *
-     * ⚠️ A FAR LABEL DECLINES — item 1688's lesson: `candidateVertexSource` iterates the label
+     * A FAR LABEL DECLINES — item 1688's lesson: `candidateVertexSource` iterates the label
      * BUCKET, so a selective label makes the existing walk sub-linear where this arm is O(V). An
      * answer that is right while the work is wrong is what that item learned from a test.
      *
-     * ⚠️ AND THE BUILD IS DEFERRED TO THE SECOND ASK (`csrAskedBefore`, item 1890's policy), because
+     * AND THE BUILD IS DEFERRED TO THE SECOND ASK (`csrAskedBefore`, item 1890's policy), because
      * the CSR is keyed on `topologyVersion`: a one-shot query and a write-heavy workload never pay
      * for it. Item 1889 measured that trade at 0.61x COLD without the policy and 1.01x with it.
      */
     /**
-     * ⚠️ VACUITY IS DECIDED PER EXECUTION, NOT FROM THE AST — and the first cut got this wrong and
+     * VACUITY IS DECIDED PER EXECUTION, NOT FROM THE AST — and the first cut got this wrong and
      * measured a flat null because of it. The factory is built at COMPILE time and captures the
      * pattern's label, so `farLabel` is `:P` for `MATCH (a:P)-[:E]->(b:P)` even when every vertex
      * carries `P`; whether a label EXCLUDES anything is a property of the graph (`vacuousLabel`,
@@ -4044,7 +4044,7 @@ const farDrivenHopWalk = (w: {
     if (viaCsr !== undefined) {
       const { order, off } = viaCsr.tables;
       /*
-       * ⚠️ WHETHER THE FAR LABEL STILL HAS TO BE APPLIED (item 1941). The route used to decline any
+       * WHETHER THE FAR LABEL STILL HAS TO BE APPLIED (item 1941). The route used to decline any
        * non-vacuous far label outright; it now admits a BROAD one and says so here, because the
        * `order` array IS the far vertices and testing a label on one is O(1). Admitting it without
        * running this test would be a wrong answer, so the flag is read, not assumed.
@@ -4082,7 +4082,7 @@ const farDrivenHopWalk = (w: {
     for (const far of candidateVertexSource(graph, farLabel)) {
       const bucket = (out ? far.adjTo : far.adjFrom)?.get(typeName);
 
-      // ⚠️ `size === 0` IS GUARDED, and it did not need to be before item 1407. The old loop was
+      // `size === 0` IS GUARDED, and it did not need to be before item 1407. The old loop was
       // `for (let n = bucket.size; n > 0; …)`, which simply did not run for an empty bucket; the
       // spread form pushes the template FIRST and would emit one spurious row.
       //
@@ -4113,7 +4113,7 @@ const farDrivenHopWalk = (w: {
       // own enumerable keys in insertion order, which is the property the `Object.keys` round trip
       // was there to guarantee — so the `keys`/`vals` pair is gone rather than reorganized.
       //
-      // ⚠️ ITEM 159 MEASURED THIS LOOP AS 1.6x-SENSITIVE to an added branch. This removes work
+      // ITEM 159 MEASURED THIS LOOP AS 1.6x-SENSITIVE to an added branch. This removes work
       // rather than adding it, and it is measured on its own row rather than assumed to inherit the
       // multi-type result.
       //
@@ -4365,7 +4365,7 @@ const filteredHopWalk = (w: {
     startVar,
   });
 
-  // ⚠️ A START-ONLY PROJECTION GETS ITS OWN WALK TOO (item 1525), and the reason it is a separate
+  // A START-ONLY PROJECTION GETS ITS OWN WALK TOO (item 1525), and the reason it is a separate
   // closure rather than a branch is this function's own item-159 note below: a branch in the hot
   // inner loop cost the unfiltered shape 1.6x, and a shared module-scope walk cost 1.29x by going
   // polymorphic across compiles. Item 1522 re-learned the same toll from the other side.
@@ -4375,12 +4375,12 @@ const filteredHopWalk = (w: {
   // (item 1407 shipped it there for 16-28%; the start side never had it). Measured 251 ns/row
   // against the far-driven 134 before this.
   //
-  // ⚠️ ANYTHING THAT CAN REJECT AN EDGE MUST DECLINE, or the count is wrong — a wrong ANSWER, not a
+  // ANYTHING THAT CAN REJECT AN EDGE MUST DECLINE, or the count is wrong — a wrong ANSWER, not a
   // slow one. `farPred` is refused outright; a NON-VACUOUS far label is handled per call by the
   // first arm, which walks and tests as before. `gate` is refused because the start-only PREDICATE
   // closure below owns that shape and already carries items 139-145's raise parity.
   //
-  // ⚠️ TWO OF THESE TESTS ARE DEFENCE IN DEPTH RATHER THAN THE GUARD, and mutation says so rather
+  // TWO OF THESE TESTS ARE DEFENCE IN DEPTH RATHER THAN THE GUARD, and mutation says so rather
   // than my reading it (item 1525). Removing `!proj.star` and removing `!p.readsRel` from
   // `itemsAreStartOnly` each change NO answer across all 3,817 tests:
   //
@@ -4460,13 +4460,13 @@ const filteredHopWalk = (w: {
       // 49.6). `hopSeek` hands back a candidate set only when it is strictly narrower than the
       // label bucket, so an unindexed graph walks and pays nothing for asking.
       const seeded = hopSeek(graph, cstart, startLabel, env);
-      // ⚠️ THE FOLD, PER CALL (item 1527) — item 1525's template-and-copy extended to the gated
+      // THE FOLD, PER CALL (item 1527) — item 1525's template-and-copy extended to the gated
       // shape. A start-only PREDICATE gates the START VERTEX, so if the projection also reads only
       // the start, every row that vertex then produces is still identical and the bucket SIZE is
       // still the row count. `MATCH (a:P)-[:E]->() WHERE a.age > 5 RETURN a.age` measured
       // 246.9 ns/row against the ungated fold's 117.0.
       //
-      // ⚠️ IN THIS CLOSURE RATHER THAN A FOURTH ONE, deliberately. The alternative was a sibling
+      // IN THIS CLOSURE RATHER THAN A FOURTH ONE, deliberately. The alternative was a sibling
       // closure like item 1525's, which would mean DUPLICATING the seed, the seeded label re-check
       // and — the one that matters — the try/catch raise-parity block below (items 139, 142, 144,
       // 145). That block decides whether a faulting gate rethrows by asking whether the general
@@ -4556,7 +4556,7 @@ const filteredHopWalk = (w: {
   /**
    * THE SAME WALK WITH THE ROW BUILT INLINE — `RETURN b.n AS n` and nothing else (item 1636).
    *
-   * ⚠️ A SIBLING `return`, NOT A BRANCH, AND THAT IS THE WHOLE POINT. Item 1447 built this
+   * A SIBLING `return`, NOT A BRANCH, AND THAT IS THE WHOLE POINT. Item 1447 built this
    * specialization as a function-valued local chosen per call:
    *
    * ```ts
@@ -4572,17 +4572,17 @@ const filteredHopWalk = (w: {
    * The comment at the general closure's push site says a sibling `return` with the read INLINE is
    * the shape that can work; this is that.
    *
-   * ⚠️ GENERATED FROM THE GENERAL CLOSURE'S SOURCE, not written by hand, and only ONE line differs —
+   * GENERATED FROM THE GENERAL CLOSURE'S SOURCE, not written by hand, and only ONE line differs —
    * the push. Hand-duplicating it got the guards wrong (`startLabel !== undefined` where the
    * original tests `seeded !== undefined`, which changes which vertices are visited), and a
    * text-anchored attempt matched the START-ONLY closure instead. Nothing is removed: the
    * template-and-copy fold lives in that other closure, so there is no dead arm here.
    *
-   * ⚠️ `binding.set(farVar, far)` STAYS. The far predicate reads the far end out of the binding, so
+   * `binding.set(farVar, far)` STAYS. The far predicate reads the far end out of the binding, so
    * a PROJECTION specialization cannot remove it — item 1447's probe arm kept it for the same
    * reason, which is why that arm is the honest model of this change.
    *
-   * ⚠️ `?? null` MATCHES `propOf`. ISO GQL yields NULL for an absent property and the generic path
+   * `?? null` MATCHES `propOf`. ISO GQL yields NULL for an absent property and the generic path
    * coerces in `propOf`; a direct read must do it here or the two spellings disagree on a vertex
    * that lacks the key.
    *
@@ -4717,7 +4717,7 @@ const filteredHopWalk = (w: {
           // size because the locality it gains on the far end it loses on the start. Optimize the
           // ACCESS PATTERN or nothing; the projection is not the cost.
           //
-          // ⚠️ CORRECTED AT ITEM 1445: "~2% of its row" is the LADDER'S SLOPE, not the
+          // CORRECTED AT ITEM 1445: "~2% of its row" is the LADDER'S SLOPE, not the
           // intercept, and the intercept is **92.6 ns/row (~15% of this row)**. A width ladder prices
           // the MARGINAL item (5.6 ns); it cannot price going through the generic machinery for the
           // FIRST one. Measured against a hand floor on the identical walk and access pattern
@@ -4736,7 +4736,7 @@ const filteredHopWalk = (w: {
           // `ts-closure-size-is-load-bearing` records. A specialized row builder would BYPASS `propOf`
           // rather than speed it up, so that term is addressable from here after all.
           //
-          // ⚠️ AND AT ITEM 1446 THE HYPOTHESIS WAS CONFIRMED AND THIS COMMENT'S CONCLUSION IS
+          // AND AT ITEM 1446 THE HYPOTHESIS WAS CONFIRMED AND THIS COMMENT'S CONCLUSION IS
           // REFUTED ON ITS OWN TERMS. Megamorphism adds **104.9 ns/row (38.8% of the gap)** on top of
           // the machinery's 52.1%, so **90.9% is explained** and 24.6 ns/row is left. Every probe arm
           // walks `g.vertices` -> `v.adjFrom.get('E')` -> `edge.to` in the identical order on the
@@ -4745,7 +4745,7 @@ const filteredHopWalk = (w: {
           //
           // A specialized row builder does not make `propOf` cheaper or `item.fn` monomorphic — it
           // BYPASSES both, reading `far.properties[key]` from one site that sees one hidden class.
-          // ⚠️ Target: **18.9%**, not the ~44% first recorded here — corrected at item 1447, which
+          // Target: **18.9%**, not the ~44% first recorded here — corrected at item 1447, which
           // BUILT the specialization and split the two halves. Item 1446's poly arm replaced the
           // predicate AND the projection together; the projection half alone is 120 ns/row (18.9%)
           // and the predicate path carries 178.4. Item 1429 named it, 1444/1445/1446 priced it,
@@ -4888,7 +4888,7 @@ const filteredHopWalk = (w: {
         // size because the locality it gains on the far end it loses on the start. Optimize the
         // ACCESS PATTERN or nothing; the projection is not the cost.
         //
-        // ⚠️ CORRECTED AT ITEM 1445: "~2% of its row" is the LADDER'S SLOPE, not the
+        // CORRECTED AT ITEM 1445: "~2% of its row" is the LADDER'S SLOPE, not the
         // intercept, and the intercept is **92.6 ns/row (~15% of this row)**. A width ladder prices
         // the MARGINAL item (5.6 ns); it cannot price going through the generic machinery for the
         // FIRST one. Measured against a hand floor on the identical walk and access pattern
@@ -4907,7 +4907,7 @@ const filteredHopWalk = (w: {
         // `ts-closure-size-is-load-bearing` records. A specialized row builder would BYPASS `propOf`
         // rather than speed it up, so that term is addressable from here after all.
         //
-        // ⚠️ AND AT ITEM 1446 THE HYPOTHESIS WAS CONFIRMED AND THIS COMMENT'S CONCLUSION IS
+        // AND AT ITEM 1446 THE HYPOTHESIS WAS CONFIRMED AND THIS COMMENT'S CONCLUSION IS
         // REFUTED ON ITS OWN TERMS. Megamorphism adds **104.9 ns/row (38.8% of the gap)** on top of
         // the machinery's 52.1%, so **90.9% is explained** and 24.6 ns/row is left. Every probe arm
         // walks `g.vertices` -> `v.adjFrom.get('E')` -> `edge.to` in the identical order on the
@@ -4916,7 +4916,7 @@ const filteredHopWalk = (w: {
         //
         // A specialized row builder does not make `propOf` cheaper or `item.fn` monomorphic — it
         // BYPASSES both, reading `far.properties[key]` from one site that sees one hidden class.
-        // ⚠️ Target: **18.9%**, not the ~44% first recorded here — corrected at item 1447, which
+        // Target: **18.9%**, not the ~44% first recorded here — corrected at item 1447, which
         // BUILT the specialization and split the two halves. Item 1446's poly arm replaced the
         // predicate AND the projection together; the projection half alone is 120 ns/row (18.9%)
         // and the predicate path carries 178.4. Item 1429 named it, 1444/1445/1446 priced it,
@@ -5549,13 +5549,13 @@ const walkFarSide = (graph: Graph, plan: WalkPlan, take: (el: Vertex) => void): 
   // The MIRROR index of the start-driven walk's: an out-hop's edges arrive at the far vertex,
   // so they are in its IN-adjacency.
 
-  // ⚠️ REJECTED, WITH ITS NUMBERS (item 1587): splitting this into TWO loops, one reading `adjTo`
+  // REJECTED, WITH ITS NUMBERS (item 1587): splitting this into TWO loops, one reading `adjTo`
   // and one `adjFrom`, so the ternary below stops putting two different getters at ONE
   // property-access site and each access stays monomorphic.
   //
   // A micro-ladder nominated it loudly — `bucket` (a bare `adjTo?.get(type)`) at 18.1 ns/vertex
   // against `dirbranch` (the same with the ternary) at 46.7, so ~28 ns/vertex on a loop that runs
-  // once per far vertex. ⚠️ THAT NOMINATION DID NOT SURVIVE REPETITION: four rounds each read
+  // once per far vertex. THAT NOMINATION DID NOT SURVIVE REPETITION: four rounds each read
   // `bucket` 36.0/33.3/34.1/36.7, `dirbranch` 46.7/52.1/**17.2**/50.0 and a hand-written split loop
   // 38.4/**16.9**/20.8/34.9 — all bimodal across a 3x range, so the original 18-vs-47 was one mode
   // read against another. The per-vertex mechanisms are below this instrument's resolution.
@@ -5598,7 +5598,7 @@ const walkFarSide = (graph: Graph, plan: WalkPlan, take: (el: Vertex) => void): 
  *   * (the caller adds the third) **the walk is `walkFarSide`**, the only one of the three that
  *     promises one visit per keyed element. See `countFarSide`.
  *
- * ⚠️ EXPORTED AND PURE because the route choice is ANSWER-EQUIVALENT: declining it returns the same
+ * EXPORTED AND PURE because the route choice is ANSWER-EQUIVALENT: declining it returns the same
  * rows by the slower path, so no correctness test can see a mutant in it. Items 1582, 1583 and 1586
  * all needed this and only 1582 learned it the hard way.
  */
@@ -5608,7 +5608,7 @@ export const countsVisitsDirectly = (source: Expr, keyedVar: string, hasGate: bo
 /**
  * `walkFarSide`, but COUNTING — no dedup set, no `take` closure, no per-element value (item 1590).
  *
- * ⚠️ WHY NO DEDUP IS NEEDED, which is the whole point. `farDrivenFits` requires `!onStart`, so this
+ * WHY NO DEDUP IS NEEDED, which is the whole point. `farDrivenFits` requires `!onStart`, so this
  * walk is ALWAYS keyed on the far end, and it iterates `candidateVertexSource` — each candidate far
  * vertex exactly ONCE. When the dedup value IS that element (a bare variable, not a property), the
  * walk has already guaranteed distinctness and the set can only re-derive what the iteration order
@@ -5635,26 +5635,26 @@ const countFarSide = (graph: Graph, plan: WalkPlan): number => {
   /*
    * ITEM-2134-INDEX-DRIVEN: count from the GRAPH-LEVEL edge index, touching no vertex object.
    *
-   * ⚠️⚠️ **THE ALGORITHM BELOW IS ALREADY RIGHT — O(V), no dedup set — AND IT WAS STILL 5.4x THE GREMLIN
+   * **THE ALGORITHM BELOW IS ALREADY RIGHT — O(V), no dedup set — AND IT WAS STILL 5.4x THE GREMLIN
    * TWIN.** `count(DISTINCT b)` over one hop read 21.3 ms against `V().out(E).dedupe().count()`'s 3.9,
-   * both answering 200,000. 🔑 The difference is the STRUCTURE READ, not the loop: this walk visits every
+   * both answering 200,000. The difference is the STRUCTURE READ, not the loop: this walk visits every
    * candidate vertex and does `far.adjTo?.get(type)` — a pointer chase into the vertex object plus a
    * string-keyed `Map.get` — at ~80 ns each (item 2126 measured the `adjTo` read at 16.15 ms over
    * 200,000), where Gremlin's `distinctHopCount` iterates `graph.edgesToByLabel` and never touches a
    * vertex at all, at ~19 ns.
    *
-   * 🔑 THAT INDEX IS `Map<vertexId, Map<label, Set<Edge>>>` AND IT HOLDS ONLY VERTICES WITH AN EDGE ON
+   * THAT INDEX IS `Map<vertexId, Map<label, Set<Edge>>>` AND IT HOLDS ONLY VERTICES WITH AN EDGE ON
    * THAT SIDE — so iterating its values both skips the zero-degree vertices and stays inside one
    * structure.
    *
-   * ⚠️⚠️ **THE `size > 0` TEST IS UNREACHABLE TODAY AND ITS MUTANT SURVIVES** — recorded rather than left
+   * **THE `size > 0` TEST IS UNREACHABLE TODAY AND ITS MUTANT SURVIVES** — recorded rather than left
    * looking load-bearing. Measured: `removeEdge` DELETES the per-type bucket when its last edge goes
    * (`byLabel.get(type)` returns `undefined`; the outer per-vertex entry persists), so a present bucket
-   * always holds at least one edge. 🔑 It stays because it is the index's invariant rather than this
+   * always holds at least one edge. It stays because it is the index's invariant rather than this
    * walk's assumption: Gremlin's `anyNonEmpty` tests the same thing, and the day a removal leaves an
    * empty bucket, dropping this would over-count silently.
    *
-   * ⚠️ ONLY WHEN THERE IS NO FAR LABEL TO TEST. The index is keyed by id, so honouring a far label would
+   * ONLY WHEN THERE IS NO FAR LABEL TO TEST. The index is keyed by id, so honouring a far label would
    * mean resolving each id back to its vertex — a string-keyed `Map.get` at ~190 ns (item 194), dearer
    * than the walk it replaces. A labelled far end keeps the vertex walk below.
    */
@@ -6005,7 +6005,7 @@ export const detectDistinctCount = (
     const plan = planFor(graph, planParts);
 
     if (farDrivenFits(graph, direct, onStart, startLabel)) {
-      // ⚠️ ONLY `walkFarSide` may skip the set. `walkFarSideResolvingStart` enumerates the far side
+      // ONLY `walkFarSide` may skip the set. `walkFarSideResolvingStart` enumerates the far side
       // and resolves STARTS, so one start is reachable through several far vertices; and
       // `walkStartSide` breaks after the first qualifying edge on its BUCKET path but NOT on its
       // `expand` path, so it cannot promise one visit per element either. Both keep the dedup.
@@ -6286,7 +6286,7 @@ const PERCENTILES: ReadonlySet<string> = new Set(['percentile_cont', 'percentile
 /**
  * `sum()` as a STREAMING fold for the single-aggregate hop walk (item 2159).
  *
- * 🔑 THE SAVING IS THE SECOND ARRAY, NOT THE ROWS. Both arms of `walkRows` call `walk(graph, params)`,
+ * THE SAVING IS THE SECOND ARRAY, NOT THE ROWS. Both arms of `walkRows` call `walk(graph, params)`,
  * which returns a `Row[]` either way — item 2158 corrected item 2157's record on that. What the collecting
  * arm adds is a `values` array plus `aggregateOverValues`' **three further passes** over it
  * (`some(isTemporal)`, `some(Array.isArray)`, `reduce`). Measured on a 300,000-edge hop:
@@ -6297,24 +6297,24 @@ const PERCENTILES: ReadonlySet<string> = new Set(['percentile_cont', 'percentile
  *     sum(b.k)  [collects]        108.4-110.0
  * ```
  *
- * ⚠️⚠️ **ORDER IS PRESERVED BECAUSE `pct.orderSensitive` ALREADY FORCES THE START-DRIVEN WALK**, and that
+ * **ORDER IS PRESERVED BECAUSE `pct.orderSensitive` ALREADY FORCES THE START-DRIVEN WALK**, and that
  * is not incidental: float addition is not associative, so a far-driven walk would REORDER the addends
- * and change the last ulp, breaking byte-identity with the Rust engine. 🔑 This fold is supplied only
+ * and change the last ulp, breaking byte-identity with the Rust engine. This fold is supplied only
  * where `orderSensitive` is already true, so folding adds no reordering freedom.
  *
- * ⚠️ **THE TEMPORAL BRANCH IS WHY `step` BAILS INSTEAD OF COERCING.** `aggregateOverValues` routes a
+ * **THE TEMPORAL BRANCH IS WHY `step` BAILS INSTEAD OF COERCING.** `aggregateOverValues` routes a
  * column containing ANY temporal to `temporalSum`, which needs every value in hand — a look-ahead a
  * stream cannot do. So anything that is not a plain number throws `NOT_PLAIN_NUMBERS`, and the caller
  * re-runs the collecting arm, keeping the temporal path and its error messages exactly as they were.
  *
- * ⚠️ `isNullish` values are skipped by both arms BEFORE the accumulator sees them, so null handling is
+ * `isNullish` values are skipped by both arms BEFORE the accumulator sees them, so null handling is
  * shared and must not be duplicated here. An empty input yields `0`, matching `reduce(…, 0)`.
  */
 class NotPlainNumbers extends Error {}
 
 /*
- * ⚠️ A SINGLETON `Error`, NOT A `Symbol`. Throwing a bare symbol trips `only-throw-error`, and the lint
- * is right: a non-Error thrown value loses its stack and confuses every `catch` that inspects one. 🔑 One
+ * A SINGLETON `Error`, NOT A `Symbol`. Throwing a bare symbol trips `only-throw-error`, and the lint
+ * is right: a non-Error thrown value loses its stack and confuses every `catch` that inspects one. One
  * shared instance, so the bail costs no allocation on the path it is meant to make cheaper.
  */
 const NOT_PLAIN_NUMBERS = new NotPlainNumbers('sum: not plain numbers');
@@ -6322,7 +6322,7 @@ const NOT_PLAIN_NUMBERS = new NotPlainNumbers('sum: not plain numbers');
 /**
  * The walk's fold: the one `compileProjection` already lowered, or {@link SUM_FOLD} for a `sum`.
  *
- * ⚠️ Hoisted, and taking BOTH arguments, purely to keep its caller under the `complexity` cap (35):
+ * Hoisted, and taking BOTH arguments, purely to keep its caller under the `complexity` cap (35):
  * inlining the choice took it to 38, and leaving even `agg?.fold ??` at the call site left it at 36.
  */
 const foldOf = (
@@ -6367,7 +6367,7 @@ const ORDER_SENSITIVE_AGGREGATES: ReadonlySet<string> = new Set([
  * The aggregates whose ORDER is actually observable, and so the only ones that still force the
  * start-driven walk.
  *
- * ⚠️ ITEM 2401 SPLIT THIS OUT OF THE SET ABOVE, which conflated two questions. Item 2159 isolated
+ * ITEM 2401 SPLIT THIS OUT OF THE SET ABOVE, which conflated two questions. Item 2159 isolated
  * the cost exactly — `max` takes the FAR-DRIVEN walk and `sum` was forced start-driven, measured by
  * ablation at `sum(1)` 48.25 ms against `max(1)` 12.88 with no property read at all — and declined
  * it because reassociating an f64 sum moves the last ulp and byte-identity with the Rust engine was
@@ -6383,14 +6383,14 @@ const ORDER_SENSITIVE_AGGREGATES: ReadonlySet<string> = new Set([
  * different object: its order is the WALK's order, which item 2400 made implementation-dependent.
  * Using the first to justify the second conflated them.
  *
- * ⚠️ So these two are order-dependent in exactly the SAME way `sum` is — the fold inherits the
+ * So these two are order-dependent in exactly the SAME way `sum` is — the fold inherits the
  * walk's order — and the difference is only that `collect` shows it as `[10,20,30]` vs `[30,20,10]`
  * where `sum` shows it in the last ulp. By item 2400's rule their element order is free too.
  *
- * ✅ THE OWNER DECISION IS IN (item 2404): *"If we can get gains, then it doesn't matter the order
+ * THE OWNER DECISION IS IN (item 2404): *"If we can get gains, then it doesn't matter the order
  * they're in. It should be deterministic enough, but if someone needs the order, then they can order
  * by earlier in the walk."* So an aggregate-built list's element order is UNSPECIFIED — recorded in
- * `CLAUDE.md`. ⚠️ **And the gain is measured at NOTHING, so these names stay here anyway**: freeing
+ * `CLAUDE.md`. **And the gain is measured at NOTHING, so these names stay here anyway**: freeing
  * them moved the directed hop 150.63 → 150.94 ms and the undirected 362.43 → 364.78, arms alternated,
  * at two output sizes. `sum` gained 4-5x because the far-driven template fold computes a far vertex's
  * value ONCE and folds it in-degree times; `collect` must still append one element per ROW, so the
@@ -6403,7 +6403,7 @@ const ORDER_SENSITIVE_AGGREGATES: ReadonlySet<string> = new Set([
  *      list property — otherwise relaxing one relaxes the other.
  *   2. **the engine currently treats the order as deliberate and tests pin it** —
  *      `values-aggregate-scan.test.ts`'s "collect keeps the scan ORDER, which is the whole
- *      observable part of it". ⚠️ That pins WITHIN-engine behaviour against its own general-path
+ *      observable part of it". That pins WITHIN-engine behaviour against its own general-path
  *      twin, not a cross-engine contract, so it is the same kind of pin item 1968 mistook for one.
  *   3. **the user-facing cost differs in kind.** A precision contract absorbs `sum`'s variation
  *      invisibly; nothing absorbs a reordered list. "Unspecified element order" is a bigger ask than
@@ -6445,13 +6445,13 @@ const hopPercentile = (
  * Build the REVERSED raw + compiled clause pair for a one-hop aggregate, and the direction that goes
  * with them — item 2107.
  *
- * ⚠️⚠️ **EXPORTED SO THE PAIR'S CONSISTENCY CAN BE ASSERTED WITHOUT TIMING.** Reversing only one half
+ * **EXPORTED SO THE PAIR'S CONSISTENCY CAN BE ASSERTED WITHOUT TIMING.** Reversing only one half
  * returns the right answer and costs **1765x** (56.5 ms against 0.032): `hopAggregateWalks` builds a
  * valid walk from a mismatched description instead of refusing it, so the walk visits the wrong
  * adjacency and the predicate filters afterwards. Two mutants did exactly that and SURVIVED 14 answer
  * tests — which is why the construction is one function rather than three expressions at a call site.
  *
- * 🔑 THE DIRECTION IS READ FROM THE REVERSED PATTERN, not computed. `reverseRawPath` already flips each
+ * THE DIRECTION IS READ FROM THE REVERSED PATTERN, not computed. `reverseRawPath` already flips each
  * segment's direction, so a separately-flipped `hopDir` is a second source of truth for one fact — and
  * measured, the mutant that passed the UNflipped `hopDir` read identically (0.032), proving the argument
  * was dead weight that could silently disagree with the pattern it describes.
@@ -6463,7 +6463,7 @@ const matchPatternOf = (cm: CClause): CPath | undefined =>
 /**
  * The REVERSED walk set for a one-hop aggregate, or `null` when the shape has none — item 2107.
  *
- * ⚠️ HOISTED OUT OF `detectHopAggregate`, which the inline version carried to complexity 43 against a
+ * HOISTED OUT OF `detectHopAggregate`, which the inline version carried to complexity 43 against a
  * cap of 35. It also puts the whole construction — narrowing, pairing, and the walk build — in one place
  * next to `reversedHopClauses`, whose consistency is what the unit tests assert.
  */
@@ -6654,10 +6654,10 @@ export const detectHopAggregate = (
     return null;
   }
 
-  // ⚠️ `walks` is NOT destructured here: the seed-side pick below reads `side.walks` (item 2107).
+  // `walks` is NOT destructured here: the seed-side pick below reads `side.walks` (item 2107).
   const { noSelfLoops, looped } = turned;
   /*
-   * ⚠️⚠️ **THE SAME WALKS, SEEDED FROM THE OTHER END — item 2107, measured 5.73x.** This rung folds over
+   * **THE SAME WALKS, SEEDED FROM THE OTHER END — item 2107, measured 5.73x.** This rung folds over
    * a START-DRIVEN walk. When the selective predicate sits on the FAR node, that start is the whole label
    * bucket; written the other way round the identical rung seeds the index. Isolated, one shape per
    * process, 24 reps with 4 dropped, medians, alternated:
@@ -6669,27 +6669,27 @@ export const detectHopAggregate = (
    *     RETURN size(collect(a.n))  (control)    0.177               0.194    0.91x
    * ```
    *
-   * 🔑 **AND DECLINING WOULD HAVE BEEN A NET LOSS, WHICH AN ORACLE SETTLED BEFORE THIS WAS BUILT.** Items
+   * **AND DECLINING WOULD HAVE BEEN A NET LOSS, WHICH AN ORACLE SETTLED BEFORE THIS WAS BUILT.** Items
    * 2104/2105 fixed their rungs by handing the query back; forcing THIS rung to decline measured 0.285 as
    * written and 0.281 reversed — the general path does not seed a one-hop aggregate either, so handing
    * back costs the reversed spelling **6.4x** (0.044 -> 0.281) to gain nothing on the written one. The
    * fast arm is this rung's OWN walk; it only needed the better end.
    *
-   * ⚠️ BOTH SETS ARE BUILT AT COMPILE TIME AND PICKED AT RUN TIME, because whether an index exists is a
+   * BOTH SETS ARE BUILT AT COMPILE TIME AND PICKED AT RUN TIME, because whether an index exists is a
    * property of the GRAPH. `hopAggregateWalks` inspects the pattern only, so the second build does no
    * graph work; a pattern it refuses reversed simply keeps the written walks.
    *
-   * ⚠️ REVERSING RENAMES NOTHING — `min(a.n)` still reads `a`, and `reversePath`'s contract is that the
+   * REVERSING RENAMES NOTHING — `min(a.n)` still reads `a`, and `reversePath`'s contract is that the
    * bindings are identical and only the seed side changes. That is what makes this safe for an aggregate
    * whose argument names a variable, where item 2106's `count(*)` had no column to worry about.
    */
   /*
-   * ⚠️ `cMatch` IS NARROWED BEFORE THE SPREAD, not after. `{ ...cm, patterns: [...] }` widens `cm` back
+   * `cMatch` IS NARROWED BEFORE THE SPREAD, not after. `{ ...cm, patterns: [...] }` widens `cm` back
    * to the whole clause union — whose `INSERT` arm carries `CInsertPath` — so the reversed clause has to
    * be built from the match variant itself.
    */
   /*
-   * ⚠️ HOISTED (item 2107): inline, this construction took the function to complexity 43 against a cap
+   * HOISTED (item 2107): inline, this construction took the function to complexity 43 against a cap
    * of 35 — the seventh time that cap has bitten. `bun run lint` is a gate, so the branch moves rather
    * than the cap.
    */
@@ -6701,13 +6701,13 @@ export const detectHopAggregate = (
   /*
    * ITEM-2159-SUM-FOLD: `sum` streams here, where it used to collect.
    *
-   * 🔑 `agg` is `proj.foldedAggs[0]`, and `foldFor` carries only `count`/`min`/`max` — so `sum` arrives
-   * with `fold === undefined` and takes the collecting arm below. ⚠️ Supplying the fold HERE rather than
+   * `agg` is `proj.foldedAggs[0]`, and `foldFor` carries only `count`/`min`/`max` — so `sum` arrives
+   * with `fold === undefined` and takes the collecting arm below. Supplying the fold HERE rather than
    * in `foldFor` is deliberate: that shared function's result is read by call sites which infer
    * ORDER-INSENSITIVITY from foldability, and `sum` is order-sensitive. At this site `orderSensitive`
    * comes from `pct` independently and is already `true`, so folding adds no reordering freedom.
    *
-   * ⚠️ Proven by throw before being written (item 2158's lesson): this site is reached by `sum` and `avg`
+   * Proven by throw before being written (item 2158's lesson): this site is reached by `sum` and `avg`
    * over a hop, and NOT by `max` (which folds elsewhere) or by `sum` over a plain scan.
    */
   const fold = foldOf(agg, pct);
@@ -6723,7 +6723,7 @@ export const detectHopAggregate = (
     }
 
     /*
-     * ⚠️ THE SEED-SIDE PICK (item 2107) SITS HERE, not around the whole rung, so everything else — the
+     * THE SEED-SIDE PICK (item 2107) SITS HERE, not around the whole rung, so everything else — the
      * self-loop choice above, the two fold loops below, and `withPrimedEndpointExtremum`'s wrapper
      * outside — is untouched by it. Only WHICH walks are folded changes.
      */
@@ -6747,9 +6747,9 @@ export const detectHopAggregate = (
     // The split stays because one loop per path is clearer, not because it was measured faster
     // (item 533).
     /*
-     * ⚠️ HOISTED so the fold arm can FALL BACK to it (item 2159). `SUM_FOLD` bails on anything that is
+     * HOISTED so the fold arm can FALL BACK to it (item 2159). `SUM_FOLD` bails on anything that is
      * not a plain number, because `aggregateOverValues` routes a temporal column to `temporalSum` and
-     * that needs every value in hand. 🔑 Re-running this arm keeps the temporal result and the error
+     * that needs every value in hand. Re-running this arm keeps the temporal result and the error
      * messages identical to before the fold existed — at the cost of one extra walk, on a shape that
      * previously took this arm anyway.
      */
@@ -6799,12 +6799,12 @@ export const detectHopAggregate = (
             acc = fold.step(acc, v);
           } catch (err) {
             /*
-             * ⚠️ ONLY the private sentinel is caught — any other throw is a real error and must
+             * ONLY the private sentinel is caught — any other throw is a real error and must
              * propagate exactly as it did before this fold existed.
              *
-             * ⚠️ **CURRENTLY UNREACHABLE DEFENCE IN DEPTH, and mutation says so**: a mutant replacing
+             * **CURRENTLY UNREACHABLE DEFENCE IN DEPTH, and mutation says so**: a mutant replacing
              * this test with `false` survives, because `SUM_FOLD.step` is the only fold reaching this
-             * site that throws at all, and the sentinel is all it throws. 🔑 Kept for the same reason
+             * site that throws at all, and the sentinel is all it throws. Kept for the same reason
              * item 2151 kept its `max === null`: the next fold wired here may throw something real, and
              * a `catch` that swallows everything would turn that into a silently wrong answer rather
              * than an error.
@@ -6822,7 +6822,7 @@ export const detectHopAggregate = (
     return [{ [outName]: fold.finish(acc) }];
   };
 
-  // ⚠️ ITEM 1247 EXISTS BECAUSE ITEM 1246 CREATED AN EQUIVALENT-SPELLING INVERSION. That item
+  // ITEM 1247 EXISTS BECAUSE ITEM 1246 CREATED AN EQUIVALENT-SPELLING INVERSION. That item
   // wired the per-endpoint extremum fold into `detectMultiHopAggregate` only, and this rung runs
   // EARLIER in the ladder and claims every ONE-item projection — so asking for one aggregate cost
   // MORE than asking for two. Measured at 200,000 nodes / 1,000,000 edges, one shape per process,
@@ -7154,7 +7154,7 @@ export const detectMultiHopAggregate = (
 
   // Item 1246's per-ENDPOINT fold, consulted before the per-ROW walk above.
   //
-  // ⚠️ A SHAPE THAT DECLINES GETS `walkRows` ITSELF, not a wrapper around it, and that is
+  // A SHAPE THAT DECLINES GETS `walkRows` ITSELF, not a wrapper around it, and that is
   // load-bearing rather than tidy. The first version always returned the wrapper and tested
   // `primed !== null` inside it — one closure-captured null check per QUERY, which cannot cost
   // anything. It cost 1.06x with DISJOINT ranges on `min(a.name), max(a.name)`, a shape this fold
@@ -7179,32 +7179,32 @@ export const detectMultiHopAggregate = (
 /**
  * `MATCH (a)-[:T]->(b) RETURN DISTINCT <several columns>` — item 1825.
  *
- * ⚠️ WHY A SECOND ONE-HOP DISTINCT RUNG WHEN `distinctShape` EXISTS. `distinctShape` is built around
+ * WHY A SECOND ONE-HOP DISTINCT RUNG WHEN `distinctShape` EXISTS. `distinctShape` is built around
  * a single `source` reading exactly one end, so it serves ONE COLUMN and declines the rest. Items
  * 1821/1822/1824 then gave the two-hop and chain widths multi-column `DISTINCT`, which left ONE hop
  * as the only width without it — and `rung-gap-screen.mjs` reported that as an INVERSION: two-column
  * `DISTINCT` cost **32.8 ms at one hop against 9.8 at two**, 3.4x the deeper cell and **14.3x its own
  * undeduped `rows` twin (2.3 ms)**. A shorter query costing more than a longer one.
  *
- * ⚠️ IT DOES NOT TOUCH `detectHopProjection`'S GATE, AND THAT IS DELIBERATE. `projectionIsStreamable`
+ * IT DOES NOT TOUCH `detectHopProjection`'S GATE, AND THAT IS DELIBERATE. `projectionIsStreamable`
  * refuses `distinct`, and relaxing it would put `DISTINCT` into the streaming/order-plan arms that
  * module is built around — where its own comments record **~280x** for a materializing route against
  * a lazy one under a `LIMIT`. So this asks the existing rung for the SAME rows with a synthetic
  * non-distinct projection and dedupes the result, which is item 1824's trick and leaves every
  * streaming decision exactly as it was.
  *
- * ⚠️ NARROWED TO NO SORT AND NO WINDOW, which is what makes the dedupe sound. Dedupe keeps one row
+ * NARROWED TO NO SORT AND NO WINDOW, which is what makes the dedupe sound. Dedupe keeps one row
  * per key whatever order the rows arrive in, so it COMMUTES with the walk and the answer is the same
  * SET (`order-is-unspecified`). A `SKIP`/`LIMIT` does NOT commute — row order decides WHICH rows
  * survive — and `projectionIsStreamable` admits a skip-only page, so without this narrowing the
  * rung would have inherited one.
  *
- * ⚠️ TWO COLUMNS OR MORE, WHICH MAKES IT DISJOINT FROM `distinctProjection` RATHER THAN MERELY
+ * TWO COLUMNS OR MORE, WHICH MAKES IT DISJOINT FROM `distinctProjection` RATHER THAN MERELY
  * ORDERED AFTER IT. The first cut accepted the single-column shape as well — the rung it delegates
  * to does not care how many items there are — and relied on sitting BELOW `distinctProjection` in
  * `runLinear`'s chain, because `distinctShape`'s walk dedupes WHILE walking (breaking out of a
  * vertex's bucket at the first qualifying edge when the dedup is keyed on the start) and this cannot.
- * ⚠️ That ordering is exactly the dependency `rung-precedence-decides-speed` records as a repeated
+ * That ordering is exactly the dependency `rung-precedence-decides-speed` records as a repeated
  * bug source, AND IT IS NOT TESTABLE: `routes-fired.test.ts`'s helper reports which detectors FIRED,
  * not which branch won, and both routes return the same answer, so a reordering would starve the
  * specialized rung with the whole suite green. Requiring `items.length > 1` removes the dependency
@@ -7214,7 +7214,7 @@ export const detectMultiHopAggregate = (
  * `distinctShape` declines stays on the general matcher, exactly as it does today. That is a win
  * not taken, not a regression.
  *
- * ⚠️ THE RUNTIME DECLINE IS PRESERVED. `detectHopProjection` returns a `RowsFn`, whose `null` means
+ * THE RUNTIME DECLINE IS PRESERVED. `detectHopProjection` returns a `RowsFn`, whose `null` means
  * "at execution time the general loop has a better plan (an index seek on the end it does not
  * drive)". Swallowing that with `?? []` would be a WRONG ANSWER — an empty result where the query
  * has rows — so the null is passed straight through and this is a `RowsFn`, not an `AlwaysRowsFn`.

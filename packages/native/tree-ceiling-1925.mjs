@@ -10,16 +10,16 @@
 //     iterLabeled                       5.6%   the adjacency generator chain
 //     sort                              2.8%   toJSON() sorting property keys
 //
-// ❌ ONE GUESS ALREADY REFUTED: replacing the `forEach` with an indexed loop — removing a per-ROW
+// ONE GUESS ALREADY REFUTED: replacing the `forEach` with an indexed loop — removing a per-ROW
 // closure and 1,200,000 callback invocations — measured 535-538 against 546, ~2% and inside the
 // spread. V8 inlines the callback, so that 27% is the WORK inside it, not the dispatch.
 //
-// 🔑 SO THE QUESTION IS WHAT A WHOLE-PLAN CLAIM WOULD RECOVER. It removes `generatorResume` and
+// SO THE QUESTION IS WHAT A WHOLE-PLAN CLAIM WOULD RECOVER. It removes `generatorResume` and
 // `iterLabeled` (the traverser pipeline and the adjacency chain, ~21% together) and the per-row path
 // array — but NOT the key (contractual, item 1922) and NOT the nested insert. This measures that
 // directly instead of subtracting percentages.
 //
-// ⚠️⚠️ THE HAND ARM USES THE **CSR** WALK, WHICH IS ITEM 1920'S MISTAKE NOT REPEATED. That item
+// THE HAND ARM USES THE **CSR** WALK, WHICH IS ITEM 1920'S MISTAKE NOT REPEATED. That item
 // priced its fusion against a hand walk over the adjacency `Set`s — the BUCKET arm — while the
 // engine takes the CSR arm on the second ask, so its "ceiling" was 3x BELOW what the engine
 // achieved. A ceiling measured on the slower arm is a floor for the faster one.
@@ -51,7 +51,7 @@ for (let e = 0; e < N * FANOUT; e += 1) {
 }
 
 /**
- * ⚠️ THE CSR THE ENGINE WOULD WALK, built here the way `chainCsrFor` does: a dense neighbour-slot
+ * THE CSR THE ENGINE WOULD WALK, built here the way `chainCsrFor` does: a dense neighbour-slot
  * array with per-vertex offsets. Built ONCE outside the timed loop, because the engine memoizes it
  * per (graph, topology, shape) and amortizes it across calls (item 1889's second-ask policy).
  */
@@ -134,7 +134,7 @@ const ARMS = {
 
     return n;
   },
-  // ⚠️ THE CEILING: the whole tree built in one loop — the most a fused `tree()` could achieve.
+  // THE CEILING: the whole tree built in one loop — the most a fused `tree()` could achieve.
   tree: () => {
     const memo = new Map();
     const root = Object.create(null);
@@ -210,7 +210,7 @@ console.log(
 );
 console.log(`the nested INSERT adds ${(results.tree - results.keys).toFixed(2)} ms on top of that`);
 console.log(
-  '⚠️ CEILING, NOT A PREDICTION — a real rung also pays its gate and its walk wrapper.\n' +
+  'CEILING, NOT A PREDICTION — a real rung also pays its gate and its walk wrapper.\n' +
     `   Against the engine's ${ENGINE} ms, the hand tree is ${(ENGINE / results.tree).toFixed(2)}x, so at most ` +
     `${(ENGINE - results.tree).toFixed(2)} ms is available.`,
 );

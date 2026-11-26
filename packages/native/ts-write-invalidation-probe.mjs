@@ -16,7 +16,7 @@
  *   afterone ~= reads        a write costs only the write; caches re-arm
  *   afterone ~= interleaved  ONE write demotes everything after it — the Rust engine's bug
  *
- * ⚠️ ONE ARM PER PROCESS (`ARM=<name>`). Items 1578 and 1579 each produced an IMPOSSIBLE in-process
+ * ONE ARM PER PROCESS (`ARM=<name>`). Items 1578 and 1579 each produced an IMPOSSIBLE in-process
  * reading — a negative build share, then a fixed lookup slower than a random one — because several
  * arms shared a call site and whichever ran first paid. Position beat effect both times.
  *
@@ -76,7 +76,7 @@ const write = () => {
   });
 };
 
-// ⚠️ A SECOND READ THAT CANNOT SHORTCUT. `V().out(T).count()` is answered in CLOSED FORM off degree
+// A SECOND READ THAT CANNOT SHORTCUT. `V().out(T).count()` is answered in CLOSED FORM off degree
 // sums — the first run of this probe showed 200 reads in 0.1 ms, which is not a walk — so it tests
 // the count rung and says nothing about the walking path the Rust CSR penalty lives on. This one
 // materializes a value per edge and has to walk.

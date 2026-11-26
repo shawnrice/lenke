@@ -9,7 +9,7 @@
  * alone has no such brake — the engine still emits `N - k` rows either way — so the rung now takes
  * it and slices.
  *
- * ⚠️ THE ORACLE IS THE PARAMETERIZED SPELLING, and that is what makes this a real equivalence test
+ * THE ORACLE IS THE PARAMETERIZED SPELLING, and that is what makes this a real equivalence test
  * rather than a tautology. `OFFSET $s` declines the rung on purpose (the route is chosen at compile
  * time while the value lives in `params`, which the plan cache is shared across), so
  * `OFFSET 2` and `OFFSET $s` with `s = 2` are the same query down TWO DIFFERENT ROUTES. Comparing
@@ -49,7 +49,7 @@ describe('unsortedPageRoute — the admission rule, tested as a function', () =>
   });
 
   /**
-   * ⚠️ REVERSED AT ITEM 1778, and the reason is worth stating because the sibling rules go the
+   * REVERSED AT ITEM 1778, and the reason is worth stating because the sibling rules go the
    * other way. `deferredRoute` and `outputColumnSorts` decline a parameterized window because a
    * `LIMIT $n` decides between a heap and a sort-and-slice — the ROUTE depends on the value, while
    * the plan cache is shared across params. A skip-only page has no such dependence: every
@@ -116,7 +116,7 @@ const build = (): Graph => {
 /**
  * THE SAME GRAPH WITH NO SECOND LABEL, and it is load-bearing for every hop row below.
  *
- * ⚠️ MUTATION IS WHY THIS EXISTS RATHER THAN MY READING IT. The hop rung picks the far-driven walk
+ * MUTATION IS WHY THIS EXISTS RATHER THAN MY READING IT. The hop rung picks the far-driven walk
  * only where no vertex could fail the START label — `vacuousLabel` — so on `build()`, whose stray
  * `:M` vertex makes `:L` non-vacuous, the walk is start-driven ANYWAY and the forced-walk guard is
  * never reached. Removing the force left all 35 tests green against that fixture: item 1064's
@@ -148,7 +148,7 @@ describe('a skip-only page on the node-projection rung', () => {
     ['an inline property', 'MATCH (n:L {k: 2}) RETURN n.n AS t OFFSET ', 'labelled'],
     // --- the hop rung (item 1776's second half) ---------------------------------------------
     //
-    // ⚠️ THE FAR-READ HOP IS THE ONE THAT NEEDED THE WALK FORCED. Its rung chooses between a
+    // THE FAR-READ HOP IS THE ONE THAT NEEDED THE WALK FORCED. Its rung chooses between a
     // start-driven and a far-driven walk PER CALL, from the start label's vacuity and the fan-in,
     // and the far-driven walk reorders rows deliberately — so slicing whichever walk happened to
     // be chosen would have returned different ROWS, graph-dependently. `hopOrderPlan` forces the
@@ -169,7 +169,7 @@ describe('a skip-only page on the node-projection rung', () => {
   ];
 
   /**
-   * ⚠️ THE ORACLE IS AN ABSOLUTE ROW LIST, NOT ANOTHER ROUTE, AND ITEM 1778 IS WHY.
+   * THE ORACLE IS AN ABSOLUTE ROW LIST, NOT ANOTHER ROUTE, AND ITEM 1778 IS WHY.
    *
    * Items 1776/1777 compared the rung's rows against the general path's by reaching the general
    * path through the parameterized `OFFSET $s` spelling, which declined the rung on purpose. Item
@@ -215,7 +215,7 @@ describe('a skip-only page on the node-projection rung', () => {
       const g = fixture === 'vacuous' ? buildVacuous() : build();
       const unpaged = query(g, prefix.replace(/ OFFSET $/, ''));
 
-      // ⚠️ THE HOP's UNPAGED SHAPE IS NOT START-DRIVEN, so only its MULTISET is pinned here — the
+      // THE HOP's UNPAGED SHAPE IS NOT START-DRIVEN, so only its MULTISET is pinned here — the
       // paged rows below are what pin the forced order. `order-is-unspecified` is exactly this:
       // the unpaged walk choice is the engine's, and it is the PAGE that must be sliceable.
       if (fixture === 'vacuous') {
@@ -232,7 +232,7 @@ describe('a skip-only page on the node-projection rung', () => {
         const g = fixture === 'vacuous' ? buildVacuous() : build();
 
         expect(query(g, `${prefix}${skip}`)).toEqual(want.slice(skip));
-        // ⚠️ AND THE TWO SPELLINGS MUST AGREE, which is the invariant item 1778 exists to restore:
+        // AND THE TWO SPELLINGS MUST AGREE, which is the invariant item 1778 exists to restore:
         // a literal and a parameterized bound are one query, so they take one route and cost the
         // same. Before 1778 the parameterized one was 7.3x slower by construction.
         expect(query(g, `${prefix}$s`, { s: skip })).toEqual(want.slice(skip));
@@ -248,7 +248,7 @@ describe('a skip-only page on the node-projection rung', () => {
   });
 
   /**
-   * ⚠️ A PARAMETERIZED BOUND IS VALIDATED BEFORE ANY ROW IS PRODUCED, and that check is what makes
+   * A PARAMETERIZED BOUND IS VALIDATED BEFORE ANY ROW IS PRODUCED, and that check is what makes
    * item 1778's route safe rather than merely faster: `rows.slice(-2)` would silently return the
    * LAST two rows, which is the wrong-answer shape this engine is least able to detect.
    * `noteCountParam` registers the bound's param at compile time and `compile.ts` validates it

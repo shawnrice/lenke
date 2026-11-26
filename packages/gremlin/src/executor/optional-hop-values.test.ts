@@ -22,17 +22,17 @@ import { optionalHopValues } from './optional-hop-values.js';
 /**
  * The `optional(<one hop>)` values rung (item 1884).
  *
- * ⚠️ THE ORACLE IS HAND-COMPUTED. A route test that asserts the fused walk agrees with itself proves
+ * THE ORACLE IS HAND-COMPUTED. A route test that asserts the fused walk agrees with itself proves
  * nothing, and CLAUDE.md records wrong answers that passed suites whose fixture could not tell right
  * from wrong.
  *
- * ⚠️ AND THE FIXTURE EXISTS TO PIN ONE SUBTLE RULE. `optionalHopStep` sets its `any` flag per EDGE,
+ * AND THE FIXTURE EXISTS TO PIN ONE SUBTLE RULE. `optionalHopStep` sets its `any` flag per EDGE,
  * BEFORE the projection — so a vertex that HAS edges whose far ends all lack the projected key emits
  * **nothing**, not itself. `h` below is exactly that vertex: it has an `E` edge to `g`, and `g` has
  * no `n`. An implementation that decided emptiness from "did any VALUE survive" would emit `h`'s own
  * `n` and pass every other test in this file.
  *
- * ⚠️⚠️ **EVERY SEQUENCE IS `toStrictEqual`, NOT `toEqual`, AND THAT IS NOT STYLE.** A mutant that
+ * **EVERY SEQUENCE IS `toStrictEqual`, NOT `toEqual`, AND THAT IS NOT STYLE.** A mutant that
  * removed the drop on the self-emit branch — so a vertex with no edges AND no `n` yields
  * `undefined` — SURVIVED the first version of this file. `toEqual` ignores `undefined` entries, so
  * `[2, 3, 2, 3, 4, 5, undefined]` compared EQUAL to `[2, 3, 2, 3, 4, 5]`. The engine emits `null`
@@ -93,7 +93,7 @@ describe('optionalHopValues — the answer', () => {
   });
 
   /**
-   * ⚠️ THE RULE THIS FILE EXISTS FOR. `h` HAS an edge, so `optional` is satisfied and the empty
+   * THE RULE THIS FILE EXISTS FOR. `h` HAS an edge, so `optional` is satisfied and the empty
    * branch must not fire — even though the projection then drops the only row it produced.
    */
   it('does NOT emit a vertex whose edges exist but whose far values all drop', () => {
@@ -135,7 +135,7 @@ describe('optionalHopValues — the answer', () => {
   });
 
   /**
-   * ⚠️ `in('E')` IS HERE BECAUSE ITS ABSENCE LET A MUTANT LIVE. `soleTypeBucket` returns a
+   * `in('E')` IS HERE BECAUSE ITS ABSENCE LET A MUTANT LIVE. `soleTypeBucket` returns a
    * `forward` flag and the walk reads `forward ? e.to : e.from`; with only `out` and `both` tested,
    * hard-coding `forward = true` broke nothing — `out` is forward and `both` takes the other arm.
    * The direction is only observable through `in`.
@@ -165,7 +165,7 @@ describe('optionalHopValues — the answer', () => {
  * THE MULTI-STEP CHAIN (item 1887). The sub-plan is two or more vertex steps, and the rule that
  * changes is WHERE `any` is set: at one hop every adjacent edge produces a row, at two it does not.
  *
- * ⚠️ THE FIXTURE'S `d` IS THE DISCRIMINATOR. `d` has an `F` out-edge and no `E` one, so in a
+ * THE FIXTURE'S `d` IS THE DISCRIMINATOR. `d` has an `F` out-edge and no `E` one, so in a
  * two-hop `E` chain the vertex BEFORE it (none here) and `d` itself produce nothing. The vertex that
  * matters is `a`: it HAS `E` edges (to `b` and `c`), and `b` has none — so the path through `b` dies
  * while the path through `c` survives via the self-loop. An implementation setting `any` on the
@@ -174,7 +174,7 @@ describe('optionalHopValues — the answer', () => {
  * emit ITSELF, where a first-hop `any` would emit nothing for it.
  */
 /**
- * ⚠️ THE SINGLE-HOP CSR ARM IS ONLY REACHED ON A REPEAT CALL (item 1891), and this block exists
+ * THE SINGLE-HOP CSR ARM IS ONLY REACHED ON A REPEAT CALL (item 1891), and this block exists
  * because FIVE mutants aimed at it survived without it. `seenBefore` declines the first ask on any
  * topology version — the amortization policy item 1889 built — so every assertion in this file that
  * calls `toArray` ONCE measures the bucket walk and says nothing about the CSR arm.
@@ -215,7 +215,7 @@ describe('optionalHopValues — the single-hop CSR arm, on the repeat call', () 
   });
 
   /**
-   * ⚠️ `both` AND A MULTI-TYPE HOP MUST KEEP THE BUCKET WALK — the CSR appends one named bucket at a
+   * `both` AND A MULTI-TYPE HOP MUST KEEP THE BUCKET WALK — the CSR appends one named bucket at a
    * time, so a two-type edge would be appended twice. `e5` carries only `E` here, so the
    * discriminating case is the `both` one: its answer differs from the directed walk's.
    */
@@ -248,7 +248,7 @@ describe('optionalHopValues — the multi-step chain', () => {
   });
 
   /**
-   * ⚠️ A SEPARATE, PURELY LINEAR FIXTURE, because the shared one cannot tell the depths apart. On
+   * A SEPARATE, PURELY LINEAR FIXTURE, because the shared one cannot tell the depths apart. On
    * `fixture()` only `c`'s self-loop extends a path, so the two-hop and three-hop answers are the
    * SAME list — and a mutant making the recursion stop one hop short (`hops.length - 2`) survived
    * the three-hop test for exactly that reason. Here depth 2 from `p0` is `p2` and depth 3 is `p3`,
@@ -285,7 +285,7 @@ describe('optionalHopValues — the multi-step chain', () => {
   });
 
   /**
-   * ⚠️ THE CHAIN WALK IS ALSO WRITTEN TWICE SINCE ITEM 1894 — a lazy iterator and an eager `drain` —
+   * THE CHAIN WALK IS ALSO WRITTEN TWICE SINCE ITEM 1894 — a lazy iterator and an eager `drain` —
    * and `toArray` reads only the second. Without this, half of it has no test; item 1893 lost a
    * mutant to exactly that on the edge rung and item 1891 lost five on the single-hop one.
    */
@@ -304,7 +304,7 @@ describe('optionalHopValues — the multi-step chain', () => {
   });
 
   /**
-   * ⚠️ A CHAIN WHOSE FAR END LACKS THE KEY, on its own fixture — the shared one has none, and a
+   * A CHAIN WHOSE FAR END LACKS THE KEY, on its own fixture — the shared one has none, and a
    * mutant removing the chain drain's drop therefore SURVIVED. The row still COUNTS as a row (so the
    * start does not emit itself), which is the pairing the `any`-at-the-end rule and the drop rule
    * make together.
@@ -350,7 +350,7 @@ describe('optionalHopValues — the multi-step chain', () => {
   });
 
   /**
-   * ⚠️ THESE THREE ORACLES WERE WRONG IN THE FIRST DRAFT AND WERE RE-DERIVED BY HAND, not copied
+   * THESE THREE ORACLES WERE WRONG IN THE FIRST DRAFT AND WERE RE-DERIVED BY HAND, not copied
    * from the engine — which is the only way a test like this is worth anything. The walk's answers
    * were then confirmed to match the hand derivation exactly, vertex by vertex. Two details are
    * what I had wrong, and both are properties of `bothEdgesOf`/`inEdgesOf` rather than of this
@@ -385,7 +385,7 @@ describe('optionalHopValues — the multi-step chain', () => {
   });
 
   /**
-   * ⚠️ AN EDGE CARRYING TWO OF THE NAMED TYPES, which is the one case the CSR arm must REFUSE. The
+   * AN EDGE CARRYING TWO OF THE NAMED TYPES, which is the one case the CSR arm must REFUSE. The
    * CSR appends one named bucket at a time (`buildChainCsr`, sound only "because the multi-type
    * guard has already cleared"), so such an edge would be appended TWICE where `iterLabeled`
    * dedupes it. No other fixture in this file or in `optional-oracle-1884.mjs` has one, so without
@@ -399,7 +399,7 @@ describe('optionalHopValues — the multi-step chain', () => {
       vs.push(g.addVertex({ id: `m${String(i)}`, labels: ['T'], properties: { n: i } }));
     }
 
-    // ⚠️ m0 -> m1 carries BOTH types and m1 -> m2 carries ONLY `F`, which is what makes the test
+    // m0 -> m1 carries BOTH types and m1 -> m2 carries ONLY `F`, which is what makes the test
     // discriminating in both directions: an arm that double-appends the two-type edge yields `2`
     // TWICE for m0, and an arm that reads only the FIRST named type never reaches m2 at all.
     g.addEdge({ id: 'me0', from: vs[0], to: vs[1], labels: ['E', 'F'] });
@@ -413,7 +413,7 @@ describe('optionalHopValues — the multi-step chain', () => {
   });
 
   /**
-   * ⚠️ TWO SHAPES THAT KEEP THE GENERATOR ARM, added because the CSR arm took over every single-type
+   * TWO SHAPES THAT KEEP THE GENERATOR ARM, added because the CSR arm took over every single-type
    * chain and left three mutants aimed at the generator arm surviving vacuously. `both` in ANY
    * position sends the whole chain to the generator walk, so these exercise its unrolled pair and
    * its recursion with a hop whose direction still matters.
@@ -479,7 +479,7 @@ describe('optionalHopValues — the route', () => {
   });
 
   /**
-   * ⚠️ THE MULTI-STEP SUB-PLAN MOVED FROM THIS LIST TO THE CLAIMED LIST AT ITEM 1887, deliberately.
+   * THE MULTI-STEP SUB-PLAN MOVED FROM THIS LIST TO THE CLAIMED LIST AT ITEM 1887, deliberately.
    * Item 1884 declined it because `optionalSingleHop` is the gate; the chain arm now serves it at
    * 1.46x. The row is kept here as a comment rather than deleted so the flip is visible to whoever
    * reads this file next.
@@ -499,7 +499,7 @@ describe('optionalHopValues — the route', () => {
 
 describe('a residual count() rides the walk (item 2027)', () => {
   /*
-   * ⚠️⚠️ **`count()` USED TO DECLINE THE ENTIRE PLAN**, so `V().optional(out(E)).count()` ran the
+   * **`count()` USED TO DECLINE THE ENTIRE PLAN**, so `V().optional(out(E)).count()` ran the
    * generic traverser pipeline — the route census read `opt: optional count` generic with all four of
    * its siblings fused — while its `values(n)` sibling, which does strictly MORE work (80,000 rows
    * against one number), was fused:
@@ -510,7 +510,7 @@ describe('a residual count() rides the walk (item 2027)', () => {
    * The same decision item 1956 made for the EDGE-FILTER rung: the terminal is NOT consumed, so it
    * stays in `rest` and runs over this walk's stream instead of over the generic chain.
    *
-   * 🔑 **AND THAT IS WHY THE GATE NEED NOT CHECK `count`'s SCOPE, where item 2020's fused count
+   * **AND THAT IS WHY THE GATE NEED NOT CHECK `count`'s SCOPE, where item 2020's fused count
    * MUST.** An UNCONSUMED terminal is still executed by its own step, so `Scope.local` is honoured
    * by `countStep` itself; item 2020 REPLACES the count with a drain, so there the scope has to be
    * refused at the gate. Both scope cases are asserted below, against the seeded (pipeline) route.
@@ -542,11 +542,11 @@ describe('a residual count() rides the walk (item 2027)', () => {
 
   test('THE ROUTE: the rung CLAIMS the count shape, and reports it as a residual', () => {
     /*
-     * ⚠️⚠️ **ANSWER-EQUIVALENT, SO NOTHING ELSE HERE CAN SEE THE RUNG DECLINING.** The mutation round
+     * **ANSWER-EQUIVALENT, SO NOTHING ELSE HERE CAN SEE THE RUNG DECLINING.** The mutation round
      * proved it: making `count` decline again survived this file AND the whole @lenke/gremlin suite,
      * because the pipeline returns the same number. [[perf-gate-needs-its-own-test]].
      *
-     * ⚠️ AND THE RESIDUAL'S CONTENT IS ASSERTED, NOT ITS PRESENCE — item 2021's lesson: a wrong
+     * AND THE RESIDUAL'S CONTENT IS ASSERTED, NOT ITS PRESENCE — item 2021's lesson: a wrong
      * `rest` still returns a non-`undefined` object, then declines downstream and falls through to
      * the pipeline with the same answer.
      */
@@ -582,7 +582,7 @@ describe('a residual count() rides the walk (item 2027)', () => {
 
   test('`count(Scope.local)` matches the SEEDED pipeline, which this rung declines', () => {
     /*
-     * ⚠️ THE ORACLE IS `V('a','b','c')` — naming every vertex is the same question, and the rung
+     * THE ORACLE IS `V('a','b','c')` — naming every vertex is the same question, and the rung
      * refuses a narrowed source, so the twin runs the pipeline. Local counts each traverser's own
      * value: every value here is a vertex, so each is 1.
      */

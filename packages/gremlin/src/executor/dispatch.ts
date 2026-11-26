@@ -158,7 +158,7 @@ export const applyStep = (
       return edgeToVertex(stream, step);
 
     case 'has': {
-      // ⚠️ HOISTED OUT OF THE PER-ELEMENT CLOSURE (item 1492), the same change as `propertyCount`'s
+      // HOISTED OUT OF THE PER-ELEMENT CLOSURE (item 1492), the same change as `propertyCount`'s
       // and for the same reason: `matches` is one megamorphic site shared by ~20 callers, and a
       // specialized closure is monomorphic here. This is the GENERAL has filter, so it is on the
       // row path of every traversal carrying a `has`. `undefined` keeps the original call.
@@ -223,7 +223,7 @@ export const applyStep = (
 
     case 'dedupe': {
       /**
-       * ⚠️ THE VALUE-KEYED HALF LIVES IN `dedupe-filter.ts` SINCE ITEM 1869, so the fused
+       * THE VALUE-KEYED HALF LIVES IN `dedupe-filter.ts` SINCE ITEM 1869, so the fused
        * `V().values(k).dedupe()` walk can reuse it instead of re-deriving five key spaces. Every
        * measured decision that was here moved WITH the code — read it there before touching a key
        * space. The multi-label form stays below because it reads `t.tags`, not a value.
@@ -552,7 +552,7 @@ export const applyStep = (
     case 'label':
       return mapTraverser(stream, (v) => {
         if (isVertex(v) || isEdge(v)) {
-          // ⚠️ `labelOf` PREFERS THE CACHED SOLE LABEL (item 2085) and falls back to iterating
+          // `labelOf` PREFERS THE CACHED SOLE LABEL (item 2085) and falls back to iterating
           // the set, which keeps insertion order for a multi-label element.
           return labelOf(v) ?? null;
         }

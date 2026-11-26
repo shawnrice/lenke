@@ -6,7 +6,7 @@
  * then makes three `this.properties` reads against a FROZEN object, and a microbench that freezes and
  * discards never pays for those."
  *
- * ⚠️ THAT IS A MECHANISM CLAIM AND IT WAS ASSERTED, NOT MEASURED. It is now written into a comment in
+ * THAT IS A MECHANISM CLAIM AND IT WAS ASSERTED, NOT MEASURED. It is now written into a comment in
  * `Vertex.ts` and into `CLOSED.md`, and the lazy-freeze design rests on it: if reads are penalized,
  * deferring the freeze helps the READ paths too (GQL and Gremlin both read properties through the
  * same getter); if they are not, the ~35 ns is the freeze CALL alone and the explanation is wrong.

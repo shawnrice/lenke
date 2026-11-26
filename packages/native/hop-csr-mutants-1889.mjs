@@ -1,12 +1,12 @@
 /**
  * DOES `hop-values-csr.test.ts` HAVE TEETH? (item 1889)
  *
- * ⚠️ TWO WALKS AND A POLICY, so the anchors that appear twice declare it: the lazy iterator and the
+ * TWO WALKS AND A POLICY, so the anchors that appear twice declare it: the lazy iterator and the
  * eager `drain` are the same loop written twice (item 169's rule), and a mutant must be able to hit
  * EACH. `which` selects the occurrence — a facility item 1888 added after three mutants landed in
  * the wrong walk.
  *
- * ⚠️ AND THE POLICY IS MUTATED SEPARATELY, because it is a route CHOICE: answer-equivalent, so only
+ * AND THE POLICY IS MUTATED SEPARATELY, because it is a route CHOICE: answer-equivalent, so only
  * its own unit tests can catch it.
  *
  *     bun hop-csr-mutants-1889.mjs
@@ -112,7 +112,7 @@ const MUTANTS = [
 const EXPECTED_SURVIVORS = new Set();
 
 /**
- * ⚠️ BOTH STREAMS, ALWAYS, AND THAT IS WHY THIS IS `spawnSync`. `execFileSync` returns STDOUT on
+ * BOTH STREAMS, ALWAYS, AND THAT IS WHY THIS IS `spawnSync`. `execFileSync` returns STDOUT on
  * success and only exposes stderr on a throw — and `bun test` writes `N pass` to **stderr**, so the
  * first cut of this file read an empty result on the passing baseline and declared it broken. Item
  * 767 made the same mistake in the other direction.
@@ -120,10 +120,10 @@ const EXPECTED_SURVIVORS = new Set();
 /** The three outcomes as a label; a nested ternary is what the linter objects to. */
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
 const run = () => {
@@ -185,7 +185,7 @@ try {
     const ran = /\d+ pass/.test(r.text);
 
     if (!ran && r.code !== 124) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-400)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -213,6 +213,6 @@ try {
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

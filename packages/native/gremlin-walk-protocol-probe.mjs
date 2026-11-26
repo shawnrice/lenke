@@ -14,7 +14,7 @@
  * priced the generator protocol at 1.9-2.2x and `drain` at 53.8% of `V().out(E)`, so this is a known
  * shape rather than a guess.
  *
- * ⚠️ THIS PROBE PRICES THE LEVER BEFORE THE ROUTE IS BUILT, which is the whole point: item 1678's
+ * THIS PROBE PRICES THE LEVER BEFORE THE ROUTE IS BUILT, which is the whole point: item 1678's
  * chain CSR already exists and would replace those `.next()` calls with `Int32Array` indexing, but a
  * new values route is a large change to a hot file where `executor-edits-perturb` is measured, and
  * `check-the-blocker-still-holds` cuts both ways. Three arms over the SAME adjacency:
@@ -172,7 +172,7 @@ const csrIndexed = () => {
 };
 
 /**
- * ⚠️ THE SINK IS THE REAL BOUND, AND WITHOUT THIS ARM THE CEILING IS A FANTASY. `csrIndexed` sums
+ * THE SINK IS THE REAL BOUND, AND WITHOUT THIS ARM THE CEILING IS A FANTASY. `csrIndexed` sums
  * into a scalar, but `values(k)` must MATERIALIZE every row — the bench row's 6813 ms includes
  * building a 25,000,000-element array. So the achievable win is bounded by what it costs to push
  * that many values however fast the walk gets, and these two arms bracket it.
@@ -247,7 +247,7 @@ const ARMS = { setProtocol, setForOf, csrIndexed, setProtocolToArray, csrToArray
 
 const ROWCOUNT = new Set(['setProtocolToArray', 'csrToArray']);
 
-// ⚠️ EVERY ARM MUST AGREE, or a fast reading is just an arm doing less work.
+// EVERY ARM MUST AGREE, or a fast reading is just an arm doing less work.
 const expected = setProtocol();
 const expectedRows = setProtocolToArray();
 

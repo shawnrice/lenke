@@ -1,7 +1,7 @@
 /**
  * WHICH `grouped` BODY CARRIES THE FAMILY'S COST? (item 2011)
  *
- * ⚠️ THE BODY SPLIT FIRST, BEFORE ANY PROFILE. Items 2007 and 2009 both found a family average
+ * THE BODY SPLIT FIRST, BEFORE ANY PROFILE. Items 2007 and 2009 both found a family average
  * dominated by ONE body — in 2007's case a bound 600x the others, in 2009's a fold resting on a
  * byte-identity refusal — and item 2008 showed what the split is worth: one item aimed at the right
  * body moved `var-length` 25.8x where four aimed elsewhere moved it by nothing.
@@ -9,7 +9,7 @@
  * `grouped` reads **10.52 ms/query for 6.6 rows** — the worst per-row of any family in item 2009's
  * re-screen. It draws seven bodies, so the average says nothing about where the time is.
  *
- * ⚠️ AND IT PRINTS GROUP COUNTS, because a grouped query's cost is O(input) while its OUTPUT is
+ * AND IT PRINTS GROUP COUNTS, because a grouped query's cost is O(input) while its OUTPUT is
  * O(groups): a body returning 31 groups from 5,000 vertices and one returning 97 from 25,000 edges
  * are different questions, and ns/row would flatter whichever has fewer groups.
  *
@@ -87,5 +87,5 @@ rows.sort((a, b) => b[1] - a[1]);
 console.log(
   `\n# dominant: ${rows[0][0]} at ${rows[0][1].toFixed(2)} ms, ` +
     `${(rows[0][1] / rows[rows.length - 1][1]).toFixed(0)}x the cheapest\n` +
-    `# ⚠️ A body far above the others IS the family's cost; optimizing any other cannot move it.`,
+    `# A body far above the others IS the family's cost; optimizing any other cannot move it.`,
 );

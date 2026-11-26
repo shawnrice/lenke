@@ -11,7 +11,7 @@
 //! match the `Aggregate` beneath a `Project` and never see the wrapper. If that holds, every
 //! wrapped row costs its bare twin plus one scalar evaluation on ONE row, and there is nothing here.
 //!
-//! ⚠️ THE FLOOR IS THE BARE SPELLING, for the reason items 1187/1189/1195 each paid for: it is the
+//! THE FLOOR IS THE BARE SPELLING, for the reason items 1187/1189/1195 each paid for: it is the
 //! same question through the route the fast path already serves. `count(*)` would flatter the
 //! comparison (its own O(1) shortcut) and `size(collect(x))` would distort it (item 1195: `size`
 //! borrows the column and reads `len()` without a pass, which overstated a gap 3.5x).
@@ -126,7 +126,7 @@ fn main() {
         println!("  {label:<34} {w:>10.1} {:>8.2}x   {short}", w / b);
     }
 
-    // ⚠️ THE ONE ROW THAT IS NOT 1.00x NEEDS ITS OWN TABLE. `coalesce(collect(a.num), 1)` came
+    // THE ONE ROW THAT IS NOT 1.00x NEEDS ITS OWN TABLE. `coalesce(collect(a.num), 1)` came
     // back at 4.33x the bare `collect` while `size(collect(a.num))` came back at 0.45x, and the
     // difference between those two is named in `evaluator.rs:2130`: `size`/`cardinality` BORROW
     // the column, while the generic path materializes each argument with `Col::value_at`, and

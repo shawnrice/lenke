@@ -2,7 +2,7 @@
  * WHERE DOES A REUSED `union(out(T), in_(T)).count()` CALL SPEND ITS ~530 ns? One purpose per
  * process, built for item 1647.
  *
- * ⚠️ WHY IT EXISTS. Item 1647 cached `effectivePlan`'s graph-free prefix and measured the chain
+ * WHY IT EXISTS. Item 1647 cached `effectivePlan`'s graph-free prefix and measured the chain
  * itself going **167 -> 24 ns** on exactly this plan (`plan-memo-trade-probe.ts`). The Gremlin
  * spelling probe, whose `union(out, in)` arm reuses its plan and should therefore collect that
  * 140 ns, did NOT move: 524-547 ns POST against 505-601 PRE. Both readings cannot be right about
@@ -75,7 +75,7 @@ const bothPlan: Plan = traversal(V(), both('T'), count());
 const rewrittenPlan: Plan = effectivePlan(unionPlan, g, false);
 
 /**
- * ⚠️ THE OTHER ARM OF ITEM 1648'S TRADE. Gremlin has no parameter binding (item 1577), so a
+ * THE OTHER ARM OF ITEM 1648'S TRADE. Gremlin has no parameter binding (item 1577), so a
  * caller whose value varies REBUILDS the plan every call and never collects a per-plan memo — it
  * pays the static checks every time plus one slot write. `build-only` is the control the change
  * cannot reach at all: construction with no `run`.

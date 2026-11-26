@@ -10,7 +10,7 @@ import { query } from '@lenke/gql';
 //
 // 187.15 ms for EIGHT ROWS over 800,000 edge visits.
 //
-// 🔑 THE CEILING IS A SET INSERT PER ROW, nothing more: walk the edges, test both labels, add the
+// THE CEILING IS A SET INSERT PER ROW, nothing more: walk the edges, test both labels, add the
 // property to a `Set`. There is no ordering, no projection to build for rows that collapse, and the
 // answer is 8 values. So this prices the engine against that, at both coverages, with the ROUTE
 // read off `compileLinear` rather than inferred — because timing cannot tell "declined" from "more
@@ -72,13 +72,13 @@ const handDedupe = (g) => () => {
 };
 
 /*
- * ⚠️ EVERY FUNCTION-VALUED FIELD, not a hand-kept name list. My first version listed nine rung names
+ * EVERY FUNCTION-VALUED FIELD, not a hand-kept name list. My first version listed nine rung names
  * and reported `NONE`, which is indistinguishable from "took the general path" — the list was simply
  * missing this shape's rung. `routes-fired.test.ts`'s helper filters on `typeof === 'function'`
  * precisely so it cannot go stale as `CLinear` grows.
  */
 /*
- * 🔑 THE RIGHT CEILING FOR A *DISTINCT*, and my first one was the wrong algorithm. `handDedupe`
+ * THE RIGHT CEILING FOR A *DISTINCT*, and my first one was the wrong algorithm. `handDedupe`
  * walks all 1,000,000 edges; the engine's vacuous arm does it in 31.7 ms where that hand loop needs
  * 59.3 — because for `DISTINCT b.n` you only need the distinct FAR VERTICES, and there are 200,000
  * of them, not a million edges.
@@ -106,7 +106,7 @@ const handDedupeFarFirst = (g) => () => {
     for (const edge of bucket) {
       if (edge.from.labels.has('T')) {
         seen.add(far.properties.n);
-        break; // ⬅ EXISTENCE, not a count
+        break; // <- EXISTENCE, not a count
       }
     }
   }
@@ -177,6 +177,4 @@ for (const mixed of [false, true]) {
   await new Promise((resolve) => setTimeout(resolve, 0));
 }
 
-console.log(
-  '\n⚠️ ns/row is per EDGE VISIT, not per output row — the answer is 8 values either way.',
-);
+console.log('\nns/row is per EDGE VISIT, not per output row — the answer is 8 values either way.');

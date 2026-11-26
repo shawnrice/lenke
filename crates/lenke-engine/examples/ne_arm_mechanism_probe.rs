@@ -15,7 +15,7 @@
 //! gave it a two-pass trick (a range count minus the excluded value's count), so it runs NO branchy
 //! predicate AND does no gather. It is flat for two reasons at once.
 //!
-//! ⚠️ THE DISCRIMINATOR IS A COUNT WITH **TWO** EXCLUSIONS. Item 1213's trick handles exactly one,
+//! THE DISCRIMINATOR IS A COUNT WITH **TWO** EXCLUSIONS. Item 1213's trick handles exactly one,
 //! so `<> a AND <> b` falls to the general branchy arm — a branchy predicate with NO gather and no
 //! materialization. Then:
 //!

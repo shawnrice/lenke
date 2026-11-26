@@ -1,7 +1,7 @@
 /**
  * DOES THE MIN/MAX DRAIN HAVE TEETH? (item 1919)
  *
- * 🔑 THE QUESTION THIS BATTERY EXISTS TO ANSWER is whether the drain is a ROUTE-ONLY change.
+ * THE QUESTION THIS BATTERY EXISTS TO ANSWER is whether the drain is a ROUTE-ONLY change.
  * Taking a walk's `drain` yields the same elements in the same order, so no answer test can see it
  * — and item 1909 hit exactly that, declared "the drain is never used" an expected survivor, and
  * then REMOVED the entry because a unit test on the helper made the choice observable. This item
@@ -9,11 +9,11 @@
  * `drain` and iterator DISAGREE. If that works, mutant #1 below is CAUGHT and this item has no
  * route-only survivor at all.
  *
- * ⚠️⚠️ WRITTEN DIRECTLY, not templated from the previous item's battery (item 1907's lesson), and
+ * WRITTEN DIRECTLY, not templated from the previous item's battery (item 1907's lesson), and
  * every test path was listed from the directory rather than recalled (item 1915 found a
  * non-existent path in its own first draft).
  *
- * ⚠️ UNDER BOTH A TIMEOUT AND A CGROUP CAP; 124 and 137 ARE the mutant being caught. The net was
+ * UNDER BOTH A TIMEOUT AND A CGROUP CAP; 124 and 137 ARE the mutant being caught. The net was
  * proved at item 1915 — a 2G cap kills an allocator bomb by signal in 7.3 s where 16G lets bun exit
  * 1 after 49.1 s, so the cap and not the runtime's own ceiling is doing it.
  *
@@ -85,10 +85,10 @@ const EXPECTED_SURVIVORS = new Set([]);
 
 const verdictLabel = (caught, expected) => {
   if (caught !== false) {
-    return '✅ caught   ';
+    return 'caught   ';
   }
 
-  return expected ? '➖ survived (expected)' : '❌ SURVIVED';
+  return expected ? '➖ survived (expected)' : 'SURVIVED';
 };
 
 /** 124 is the timeout firing and 137 the cgroup killing; both are the mutant being caught. */
@@ -109,7 +109,7 @@ const verdictOf = (code) => {
   return code !== 0;
 };
 
-/** ⚠️ BOTH STREAMS CONCATENATED, THEN the exit code: `bun test` reports to STDERR (item 767). */
+/** BOTH STREAMS CONCATENATED, THEN the exit code: `bun test` reports to STDERR (item 767). */
 const runTests = () => {
   const r = spawnSync(
     'timeout',
@@ -173,7 +173,7 @@ try {
     const ran = /\d+ pass/.test(r.text) || /\d+ fail/.test(r.text);
 
     if (!ran && r.code !== 124 && r.code !== 137) {
-      console.log(`  ⚠️ DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-500)}`);
+      console.log(`  DID-NOT-RUN  ${name}  (exit ${String(r.code)})\n${r.text.slice(-500)}`);
       survivors.push(`${name} (no result line)`);
       continue;
     }
@@ -197,12 +197,12 @@ try {
 
 if (anchorProblems.length > 0) {
   console.log(
-    `\n⚠️ ${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
+    `\n${String(anchorProblems.length)} ANCHOR(S) DRIFTED — these mutants did not run:\n  ${anchorProblems.join('\n  ')}`,
   );
   process.exitCode = 1;
 }
 
 if (survivors.length > 0) {
-  console.log(`\n⚠️ ${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
+  console.log(`\n${String(survivors.length)} SURVIVOR(S): ${survivors.join(', ')}`);
   process.exitCode = 1;
 }

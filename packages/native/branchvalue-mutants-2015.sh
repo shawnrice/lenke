@@ -1,7 +1,7 @@
 #!/bin/zsh
 # Item 2015 — mutation round on the `branch(values(k)).option(m, <arm>)….none(<arm>)` rung.
 #
-# ⚠️ ANSWER-EQUIVALENT ROUTE, so the whole gremlin suite passes with every mutant below. The filter
+# ANSWER-EQUIVALENT ROUTE, so the whole gremlin suite passes with every mutant below. The filter
 # is the route's OWN test file ([[perf-gate-needs-its-own-test]]).
 #
 # Harness rules, all earned at items 1998-2014 and kept verbatim:
@@ -57,10 +57,10 @@ MUTANTS=(
   "refused-option-arm-accepted@@    if (arm === null) {@@s/    if (arm === null) {/    if (false) {/"
   "duplicate-key-last-wins@@    if (!byValue.has(opt.match)) {@@s/    if (!byValue.has(opt.match)) {/    if (true) {/"
   "multikey-projection-accepted@@proj.keys.length === 1@@s/proj\.keys\.length === 1/proj.keys.length >= 1/"
-  # THE DRAIN — the second copy of the loop, and the one `toArray` actually reaches. ⚠️ EVERY WALK
+  # THE DRAIN — the second copy of the loop, and the one `toArray` actually reaches. EVERY WALK
   # MUTANT ABOVE HITS THE GENERATOR ONLY, so without these the eager fill is untested: they are
   # caught by the generator-vs-drain agreement test, which is the only assertion that sees both.
-  # ⚠️ TEN SPACES vs EIGHT is what makes each anchor unique — the identity arm's push is nested one
+  # TEN SPACES vs EIGHT is what makes each anchor unique — the identity arm's push is nested one
   # level deeper than the hop arm's. `grep -F` counts LINES CONTAINING the pattern, so the 8-space
   # line does not contain the 10-space one and the counts are honest.
   "drain-identity-arm-emits-nothing@@          out.push(own);@@s@          out.push(own);@          void own;@"
