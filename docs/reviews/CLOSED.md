@@ -122455,7 +122455,7 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run typecheck` 0; `bun run check`
 consecutive sweeps with `aggregate=1071/1071` non-empty; item 2410's 945-cell cross-route sweep still
 945/0; the A/B above and the 19-mutant battery.
 
-## Item 2414 — **THE RUNG-GAP SCREEN'S DEFAULT FIXTURE WAS TOO SMALL AND 10 OF ITS 14 FLAGS WERE NOISE.** At 20,000 vertices its whole aggregate band answers in 0.0-3.1 ms, so a 2.6 ms GC wobble reads as a 5.9x depth inversion. Default raised to 400,000, where **4 flags survive and every one is at DEPTH 1** — a real family rather than an artifact
+## Item 2414 — **THE RUNG-GAP SCREEN'S DEFAULT FIXTURE WAS TOO SMALL AND 10 OF ITS 14 FLAGS WERE NOISE.** At 20,000 vertices its whole aggregate band answers in 0.0-3.1 ms, so a 2.6 ms GC wobble reads as a 5.9x depth inversion. Default raised to 400,000, where **4 flags survive and every one is at DEPTH 1** — ~~a real family rather than an artifact~~ **AND ALL FOUR ARE AN ARTIFACT TOO, of a different parameter: item 2415 shows they are the LABEL-VACUITY arm, and under `MIXED=1` every one of them drops below the threshold while six DIFFERENT flags appear**
 
 Found while chasing the screen's loudest flag. `maxagg depth1 3.1 ms costs 5.9x depth2 (0.5)` is the
 item-1822 signature — a shorter chain costing more means that depth fell between two rungs — so it was
@@ -122481,7 +122481,9 @@ which is how the default survived 590 items.
 **THE COST IS MEASURED, NOT HYPOTHETICAL: each false flag costs a reader the measurement that
 disproves it.** Item 2413 spent one probe and one 12-cell grid disproving the `maxagg` one.
 
-### WHAT SURVIVES IS A FAMILY, AND IT IS WORTH PRICING
+### ~~WHAT SURVIVES IS A FAMILY, AND IT IS WORTH PRICING~~ — PRICED AT ITEM 2415 AND REFUTED
+
+**The four below are the `rows` baseline standing on the far-driven hop walk, which one off-label vertex removes.** A one-throw ablation of all three far-driven dispatch sites: under a vacuous label `rows` TAKES that arm and none of the four modifiers does; under `MIXED=1` NOBODY takes it and the ratios fall to 1.20-1.35x. Read the rest of this section as the measurement that nominated item 2415, not as open work.
 
 All four remaining flags are ONE HOP, each a modifier costing ~3x its own `rows` cell at depth 1
 while the same modifier at depth 2-5 sits at or below it:
@@ -122503,3 +122505,113 @@ ratio is a nomination, and the one-hop rung they share (`hopAggregate`/`hopProje
 own measured ceilings before.
 
 GATES. `bun run fmt` 0; `bun run lint` 0. No engine change: one default and the reason for it.
+
+## Item 2415 — **ITEM 2414's FOUR SURVIVING FLAGS ARE AN ARTIFACT TOO, and of the one parameter the screen still did not have: LABEL VACUITY.** All four are the `rows` baseline standing on the far-driven hop walk that ONE off-label vertex removes — proven by ablating all three far-driven dispatch sites, not inferred. Under `MIXED=1` every one drops below the threshold and **six DIFFERENT flags appear, four of them a DEPTH-1 INVERSION that the homogeneous grid cannot show at all**
+
+Item 2414 raised the screen's default from 20,000 to 400,000, killed 10 noise flags and called the
+four survivors _"a real family rather than an artifact"_. They were asked to be priced. They are an
+artifact — of the next parameter down.
+
+### THE TWO READINGS A PAIR RATIO HAS, and the screen cannot tell them apart
+
+`rung-gap-screen.mjs`'s PAIR flag compares a modifier against its own `rows` cell. At depth 1 all
+four flagged modifiers already HAVE a willing rung (`onehop-routes-2415.ts`), and two of them ride
+the very rung their baseline rides:
+
+```text
+    rows      hopProjection          topk      hopProjection   <- the SAME rung as rows
+    skiponly  hopProjection          grouped   groupHopShortcut, groupedHopAggregate
+    collect   hopAggregate           count     countShortcut
+```
+
+So this was never the between-rungs class the screen exists to find. What differs is the WALK down
+that one rung: `hopOrderPlan` ends `startDriven: forceStartDriven || sorts !== undefined ||
+pageSkip !== 0`, so an `ORDER BY` or a non-zero `SKIP` forces the start-driven walk — a correctness
+constraint, since the far-driven walk reorders rows and a stable sort would move ties away from
+native. And the far-driven arm runs only where
+`startLabel === undefined || vacuousLabel(graph, startLabel)`.
+
+### THE ABLATION, because reading this file has been wrong twice in a row
+
+Item 2402's own entry: _"Two items in a row located this blocker by argument; both were wrong, and
+an ablation costs one build"_, and its closing instruction was to instrument whether that walk is
+reached. `onehop-walkarm-2415.ts` throws from all **three** far-driven dispatch sites (counted
+first — one anchor, three occurrences, which is [[ambiguous-anchor-strings]] exactly):
+
+```text
+    HOMOGENEOUS   rows  THREW -- took the far-driven arm
+                  topk / skiponly / grouped / collect / orderby   answered, did NOT
+                  sum / maxagg  THREW        distinct / countdist  answered, did NOT
+    MIXED         NOBODY took it -- `rows` falls off the arm too
+```
+
+**At depth 1 the baseline is the SOLE beneficiary of an arm that one off-label vertex removes**,
+while every flagged modifier is forced off it anyway. The ratio is a property of the FIXTURE.
+
+### THE NUMBERS, against the HONEST floor as well as the baseline
+
+`onehopfam-2415.mjs`: 400,000 vertices, FANOUT=1 bijective stride (out-degree AND in-degree exactly
+1), 14 reps with 3 dropped, median, ONE SHAPE PER PROCESS, two order-alternated rounds. A `*-floor`
+arm runs the `rows` query and then does the modifier's own work in JS over the engine's own rows —
+items 659/660's floor rule, which item 698 applied to this very shape.
+
+```text
+                  vs its HONEST floor        vs the `rows` cell (what the screen flags)
+                  MIXED=0    MIXED=1          MIXED=0      MIXED=1
+    topk          1.56x      0.84 / 0.95x     3.0x         1.35x
+    skiponly      2.58x      1.34 / 1.19x     2.8x         1.32x
+    grouped       1.61x      1.10 / 0.91x     3.4x         1.20x
+    collect       2.14x      1.17 / 1.20x     2.9x         1.30x
+                                              ^ 4 FLAGS    ^ NONE -- all under 2.5x
+```
+
+The whole grid, same build: **4 flags homogeneous, 0 of those 4 under `MIXED=1`.** And `topk` lands
+**FASTER than materialize-then-sort in both realistic rounds** (0.84x / 0.95x), independently
+reproducing item 698's 0.86x at degree 1 on a different fixture — the engine sorts more cheaply than
+doing it separately, which is why comparing against the unordered row alone overstates by ~1.9x.
+
+**AND THE BASELINE ROW IS THE NOISY ONE.** `rows` read 43.32 and 28.77 in two rounds (series
+18-47), while every modifier cell is tight (`topk` 66-78). The four rows-equivalent arms cluster
+28.8-37.3, so ~32 is the real baseline — the screen's depth-1 ratios carry a 1.5x-spread cell in the
+denominator.
+
+### WHAT `MIXED=1` NOMINATES INSTEAD, and it is the better target
+
+Six flags appear that the homogeneous grid cannot show. Four are the item-1822 signature — a
+SHORTER chain costing more, at identical row counts — and they are **only** visible with a realistic
+label. Isolated, two order-alternated rounds:
+
+```text
+                depth1 / depth2   MIXED=1        MIXED=0 control      the depth-1 CLIFF
+    sum         63.47/32.94  1.93x   64.05/33.60  18.08/32.05  0.56x   18.08 -> 63.47   3.51x
+    maxagg      65.35/33.01  1.98x   64.55/34.87  34.06/32.45  1.05x   34.06 -> 65.35   1.92x
+    distinct    83.50/45.55  1.83x   87.43/45.78  40.39/45.89  0.88x   40.39 -> 83.50   2.07x
+    countdist   79.65/44.83  1.78x   88.20/46.31  42.90/46.13  0.93x   42.90 -> 79.65   1.86x
+```
+
+**THE DEPTH-2 CELL IS LABEL-INDIFFERENT AND THE DEPTH-1 CELL IS NOT** — `sum` at two hops reads
+32.05 vacuous against 32.94/33.60 realistic, and the same holds for all four. One line says why:
+
+```text
+    hop-projection.ts   (the ONE-hop rungs)   22 vacuousLabel sites
+    hop2-projection.ts  (the TWO-hop rungs)    0
+```
+
+The 2+-hop rungs built at items 1830/1832/1852/1885/2409/2411/2413 are label-indifferent by
+construction. So **on any real schema the engine answers the one-hop aggregate ~1.9x slower than the
+two-hop one**, and `sum` pays 3.51x for one off-label vertex. `sum`/`maxagg` lose the far-driven arm
+(ablation above); `distinct`/`countdist` take that arm in NEITHER mode yet still move 1.86-2.07x, so
+they lose a different one of the 22 — two sub-cases, not one.
+
+[[label-vacuity-gates-fast-paths]]'s standing rule applies: **quote the MIXED number when pricing.**
+Not taken here — this item is the instrument and the refutation.
+
+### WHAT SHIPPED
+
+`MIXED=1` on `rung-gap-screen.mjs` (item 1943's design: one ISOLATED off-label vertex, no edges, a
+label nothing matches, so every ANSWER is unchanged and only `vertexCount` moves), with the table
+above in its header. The screen was the last read screen without the knob, which is how four
+vacuity-arm ratios were advertised as a family to price. No engine change.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Working tree byte-identical to `HEAD`
+for `hop-projection.ts` after the ablation, verified with `git status`.

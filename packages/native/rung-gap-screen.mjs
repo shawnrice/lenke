@@ -38,6 +38,7 @@
  * screen learned this the same way.
  *
  *     bun rung-gap-screen.mjs
+ *     MIXED=1 bun rung-gap-screen.mjs      # the REALISTIC label mode — read this one when pricing
  *     DEPTHS=1,2,3,4,5 REPS=20 bun rung-gap-screen.mjs
  *     ENGINE=gremlin bun rung-gap-screen.mjs
  */
@@ -198,6 +199,42 @@ const SCALE_FLAG = Number(process.env.SCALE_FLAG ?? 2.5);
 const QUANT = process.env.QUANT === '1';
 /** The seeded key's value — `k` spans 100 values, so this selects ~1% of the graph. */
 const SEED_VALUE = Number(process.env.SEED_VALUE ?? 7);
+/**
+ * ONE ISOLATED OFF-LABEL VERTEX, WHICH IS THE REALISTIC-SCHEMA MODE (item 1943's design, added to
+ * THIS screen at item 2415). No edges and a label nothing matches, so EVERY ANSWER IS UNCHANGED and
+ * only `vertexCount` moves - the minimal perturbation that makes `vacuousLabel` false.
+ *
+ * **WITHOUT IT THIS SCREEN'S DEPTH-1 PAIR RATIOS MEASURE AN ARM NO REAL SCHEMA CAN REACH, and that
+ * is what item 2414's four surviving flags turned out to be.** `vacuousLabel(graph, startLabel)`
+ * gates the far-driven hop walk, and a one-throw ablation of all three far-driven dispatch sites
+ * (`onehop-walkarm-2415.ts`) showed the split exactly:
+ *
+ *     HOMOGENEOUS   rows  TOOK the far-driven arm; topk/skiponly/grouped/collect/orderby did NOT
+ *     MIXED         NOBODY took it - `rows` falls off it too
+ *
+ * So at depth 1 the `rows` baseline is the SOLE beneficiary of an arm that one off-label vertex
+ * removes, while every modifier is forced off it anyway - an `ORDER BY` or a non-zero `SKIP` by
+ * `hopOrderPlan`'s correctness constraint, the aggregates by taking a different rung. The baseline
+ * is therefore faster than its own row for a reason unrelated to the modifier, and the ratio is a
+ * property of the FIXTURE. Measured at 400,000, medians of 14 reps with 3 dropped, one shape per
+ * process, two order-alternated rounds (`onehopfam-2415.mjs`):
+ *
+ *     against the HONEST floor (the rows query PLUS the modifier's own work in JS over the
+ *     engine's own rows - items 659/660's rule, which item 698 applied to this very shape)
+ *
+ *                   MIXED=0           MIXED=1
+ *       topk        1.56x             0.84x / 0.95x   <- FASTER than materialize-then-sort
+ *       skiponly    2.58x             1.34x / 1.19x
+ *       grouped     1.61x             1.10x / 0.91x
+ *       collect     2.14x             1.17x / 1.20x
+ *
+ *     against the `rows` cell, which is what this screen's PAIR flag compares
+ *       all four      2.7-3.4x        1.20-1.35x      <- under 2.5x: NO FLAG FIRES
+ *
+ * [[label-vacuity-gates-fast-paths]]'s standing rule, and it applies to this screen as of here:
+ * **quote the MIXED number when pricing.**
+ */
+const MIXED = process.env.MIXED === '1';
 
 if (ENGINE !== 'gql' && ENGINE !== 'gremlin') {
   throw new Error(`ENGINE must be gql|gremlin, got ${ENGINE}`);
@@ -228,6 +265,11 @@ const build = (nodes = NODES) => {
       labels: ['E'],
       properties: { w: e % 13 },
     });
+  }
+
+  if (MIXED) {
+    // Added AFTER the edges, so no edge can reference it and the answers cannot move.
+    g.addVertex({ id: 'off-label', labels: ['Z'], properties: {} });
   }
 
   return g;
@@ -388,7 +430,9 @@ indexIfSeeded(g);
 console.log(
   `# rung-gap-screen ENGINE=${ENGINE} NODES=${NODES} FANOUT=${FANOUT} reps=${REPS} drop=${WARMUP}`,
 );
-console.log(`# vertices=${g.vertexCount} edges=${g.edgeCount}`);
+console.log(
+  `# vertices=${g.vertexCount} edges=${g.edgeCount} LABELS=${MIXED ? 'MIXED (one isolated off-label vertex — the realistic mode)' : 'homogeneous (VACUOUS — the fast arm a real schema cannot reach)'}`,
+);
 console.log(
   `# SEED=${SEED}${SEED === 'none' ? '' : ` (a.${SEED_KEY} = ${String(SEED_VALUE)}, INDEXED` + `${SEED_UNIQUE ? ', ONE source at every |V|' : `, |V|/97 sources`})`} ` +
     `PATTERN=${QUANT ? '-[:E]->{1,depth}(b:P)  [QUANTIFIED]' : 'fixed chain of depth hops'}`,
