@@ -812,6 +812,7 @@ instead: it escapes (really allocated) and is overwritten (really garbage).
 | ---------------------- | ------------------------------------------------------------------------------- |
 | `allocprof-2416.mjs`   | `MECH=churn` bytes/query, `MECH=retained` per-frame survivors, `MECH=gcshare`   |
 | `alloccount-2418.mjs`  | allocation COUNT **per call site** — the Rust `GlobalAlloc` equivalent          |
+| `peakmem-2419.mjs`     | PEAK LIVE memory and whether it GROWS with the walk — the OOM question          |
 | `gcobs-check-2416.mjs` | five-line calibration: does a `gc` PerformanceObserver deliver in this runtime? |
 
 **`MECH=churn` ACCOUNTS ACROSS COLLECTIONS RATHER THAN AVOIDING THEM.** `heapUsed` after minus
@@ -893,6 +894,45 @@ never builds a row — so item 467's prescribed fix is implemented in this engin
 missing at one. The one-hop aggregate also allocates MORE than the shape returning all 20,000 rows
 (5.13 against 4.18) while returning one. **No time prize: the aggregate is already 0.59-0.90x its
 row form in wall clock, so the prize is the GC share, not the 27x.**
+
+### Item 2419: PEAK LIVE memory — the quantity that decides what the system can answer AT ALL
+
+Churn can be enormous and harmless, retained says nothing about the middle, and an allocation count
+says nothing about how many are alive SIMULTANEOUSLY. A shape whose peak is CONSTANT in the walk can
+answer any size; one whose peak grows has an OOM size, and that size is a property of the SHAPE.
+
+**THE OBVIOUS INSTRUMENT IS REFUTED BY ITS OWN CONTROLS.** Differencing
+`process.resourceUsage().maxRSS` between a graph-only child and a graph-plus-query child gave
+`count(*)` — whose peak must be flat and near zero — readings of 2.9 / 0.9 / 4.0 / **-11.0** MiB. A
+negative peak is impossible. The cause is structural: **the graph BUILD peaks at 164-532 MiB while
+the query peaks at a few, so the query never moves the process high-water mark**, and subtracting
+two ~500 MiB readings recovers their noise. **A high-water mark can only measure the phase that IS
+the process's peak** — for a phase underneath an earlier larger one, scope the mark to the window or
+measure a THRESHOLD instead (a threshold is immune: it is not a difference of two measurements).
+
+Two mechanisms that do work:
+
+- `MECH=highwater` — max `usedHeapSize` inside the window from `v8.GCProfiler`. A LOWER BOUND
+  (accurate to one nursery), acceptable because a shape that HOLDS memory holds it across
+  collections. Read the END-TO-END exponent, not the pairwise one: the linear control swings
+  n^1.01 / n^-0.49 / n^1.96 pairwise and reads n^1.35 end to end.
+- `MECH=cap` — the smallest `--max-old-space-size` the shape completes in, by bisection, differenced
+  against a graph-only arm. Resolution 8 MiB, so a `0 MiB` row means "below 8".
+
+```text
+    shape                      peak live 25k -> 200k    growth     extra heap, 50k -> 200k
+    hop1count  CONSTANT ctl       0.07 -> 0.07 MiB      n^0.00
+    hop1       LINEAR ctl         2.20 -> 36.57 MiB     n^1.35
+    hop1sum    ONE value out      5.64 -> 28.41 MiB     n^0.78     8 -> 16 MiB
+    hop2sum    ONE value out      1.25 ->  0.83 MiB     n^-0.20    8 ->  0 MiB
+    hop1collect                   9.15 -> 15.51 MiB     n^0.25     (legitimate: it IS a list)
+```
+
+**The one-hop aggregate has an OOM size and the same query one hop deeper does not.** Three
+instruments now agree on that split from three different quantities (5.16 vs 0.15 allocs/element,
+n^0.78 vs n^-0.20 peak growth, 16 vs 0 MiB of required heap) — so item 2418's target buys a
+CAPABILITY rather than the GC share it was bounded at, and a capability limit is not bounded by a
+GC percentage.
 
 ## The ISOLATED ROW BENCHES — for a sub-10% question on ONE row
 

@@ -123004,3 +123004,123 @@ exists to stop anyone quoting.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. Item 2416's and
 item 2417's "no allocation hook" claims are struck in this commit, and item 2417's cross-engine table
 gains the measured TS rows.
+
+## Item 2419 — **PEAK LIVE MEMORY, the quantity that decides what the system can answer at all, and the one none of items 2416-2418 measured.** Two mechanisms, cross-checked: **the ONE-hop aggregate's memory requirement GROWS with the walk (n^0.78, and +8 to +16 MiB of required heap over 4x) while the TWO-hop aggregate's is CONSTANT (n^-0.20, under 1.3 MiB at every size, 0 MiB of extra heap).** So the one-hop aggregate has an OOM size and the same query one hop deeper does not — **which re-justifies item 2418's target: the prize is a SCALING CEILING, not the GC share I bounded it at.** And the obvious instrument for this is refuted by its own controls
+
+Three allocation instruments already existed and none of them answers this:
+
+```text
+    churn (2416)      total bytes allocated. Can be enormous and harmless - a nursery recycles
+                      it, and `hop2generic` churns 218 MiB at 5.7% GC.
+    retained (2416)   what SURVIVES the window. Says nothing about the middle.
+    count/site (2418) how many allocations and where. Says nothing about how many are alive
+                      SIMULTANEOUSLY.
+    PEAK (this)       the HIGH-WATER MARK of live memory during the query. A shape whose peak is
+                      CONSTANT in the walk can answer any size; one whose peak grows has an OOM
+                      size, and that size is a property of the SHAPE, not of the machine.
+```
+
+A query can be excellent on all three others and still be the thing that kills the process:
+materialising 10,000,000 rows to fold them allocates once per row (fine locality, nothing retained)
+and holds all of them at once.
+
+### THE OBVIOUS INSTRUMENT IS REFUTED BY ITS OWN CONTROLS
+
+The first mechanism differenced `process.resourceUsage().maxRSS` between a graph-only child and a
+graph-plus-query child. `count(*)`, whose peak must be constant and near zero, read:
+
+```text
+    N=25,000  2.9 MiB    N=50,000  0.9 MiB    N=100,000  4.0 MiB    N=200,000  -11.0 MiB
+```
+
+**A NEGATIVE PEAK IS IMPOSSIBLE**, and the linear control was no better (6.4 / 22.8 / 4.4 / 16.5,
+pairwise exponents from -2.39 to +1.96). The cause is structural rather than noise: **the graph
+BUILD peaks at 164-532 MiB while the query peaks at a few, so the query never moves the process
+high-water mark at all** — `maxRSS` is a maximum over the whole process lifetime and it had already
+been set. Subtracting two ~500 MiB readings to recover a ~5 MiB signal recovers their noise.
+
+**THE RULE THIS GIVES: a high-water mark can only measure the phase that IS the process's peak.**
+For a phase underneath an earlier, larger one, either scope the mark to the window or measure the
+requirement as a THRESHOLD. A threshold is immune, because it is not a difference of two
+measurements — it is the point at which behaviour changes.
+
+### THE TWO MECHANISMS THAT WORK
+
+- **`MECH=highwater`** — the max `usedHeapSize` observed INSIDE the query window, from
+  `v8.GCProfiler`'s per-collection statistics. A collection fires when the nursery fills, so the
+  maximum of those readings is the live heap at its fullest observed moment, accurate to within one
+  nursery rather than to within the whole process history. It is a LOWER BOUND (a peak reached and
+  released between two collections is unseen) and that is acceptable here by construction: a shape
+  that HOLDS memory holds it across collections, which is what holding means.
+- **`MECH=cap`** — the smallest `--max-old-space-size` at which the shape still completes, by
+  bisection in child processes, differenced against a graph-only arm. This is the OOM question asked
+  directly. Resolution is 8 MiB (the bisection's stop condition), so a `0 MiB` row means "below 8",
+  not "exactly none".
+
+### THE CONTROLS PASS, which is what makes the rest readable
+
+```text
+    shape                      peak live 25k -> 200k      growth      verdict
+    hop1count  CONSTANT ctl        0.07 -> 0.07 MiB        n^0.00     flat, exactly
+    hop1       LINEAR ctl          2.20 -> 36.57 MiB       n^1.35     grows, as it must
+```
+
+`count(*)` reads **0.07 MiB at every size** — the constant control is exact. The linear control's
+PAIRWISE exponents swing (n^1.01, n^-0.49, n^1.96 in one sweep) because a GC-point maximum is a
+lower bound and an unlucky collection makes one cell understate; over the whole 8x range they
+cancel, which is why the END-TO-END exponent is the one to read.
+
+### THE FINDING
+
+```text
+    shape                      peak live 25k -> 200k      growth      verdict
+    hop1sum   ONE value out      5.64 -> 28.41 MiB        n^0.78     GROWS — has an OOM size
+                                 5.97 -> 36.49 MiB        n^0.87     (a second run)
+    hop2sum   ONE value out      1.25 ->  0.83 MiB        n^-0.20    under 2 MiB at EVERY size
+                                 0.93 ->  1.74 MiB        n^0.30     (a second run)
+    hop1collect                  9.15 -> 15.51 MiB        n^0.25     grows, legitimately (it IS a list)
+```
+
+**`hop2sum`'s EXPONENT IS NOT A VERDICT AND I NEARLY SHIPPED IT AS ONE.** Two runs of the same arm
+read n^-0.20 ("CONSTANT") and n^0.30 ("GROWS") — because its peak is at the instrument's resolution,
+where a GC-point maximum is a lower bound and one unlucky collection moves a sub-2 MiB reading by 2x.
+What both runs DO say, and say consistently, is the useful part: **it never exceeds ~2 MiB while
+`hop1sum` reaches 28-36.** The arm now declines to rule below a 4 MiB floor and points at
+`MECH=cap`, which is a threshold and has no such failure mode. The ruling below is the cap's.
+
+And `MECH=cap`, a different quantity measured a different way, agrees:
+
+```text
+                        N=50,000                       N=200,000
+    hop1sum     graph 103, +query 111  => +8 MiB     graph 390, +query 406  => +16 MiB
+    hop2sum     graph 103, +query 111  => +8 MiB     graph 390, +query 390  =>   0 MiB
+```
+
+**THE ONE-HOP AGGREGATE'S MEMORY REQUIREMENT DOUBLES WITH 4x THE WALK; THE TWO-HOP AGGREGATE'S
+DISAPPEARS BELOW THE RESOLUTION.** Same aggregate, one hop apart, and both return a single number.
+
+### THIS RE-JUSTIFIES ITEM 2418's TARGET ON DIFFERENT GROUNDS
+
+Item 2416's correction bounded the streaming-fold prize at the GC share (24.8-26.3%) and recorded
+"no demonstrated time prize", because the one-hop aggregate is already 0.59-0.90x of its row form in
+wall clock. **That is still true and it is no longer the whole case.** The one-hop aggregate cannot
+answer a walk larger than memory, and the two-hop aggregate can — so the fix buys a CAPABILITY, not
+a speed-up, and a capability limit is not bounded by a GC percentage.
+
+Three instruments now agree on the same split from three different quantities, which is why this is
+worth stating as a structural property rather than as a measurement:
+
+```text
+                      allocations/element   peak growth   extra heap at 4x the walk
+    hop1sum (1 hop)        5.16              n^0.78        8 -> 16 MiB
+    hop2sum (2 hops)       0.15              n^-0.20       8 ->  0 MiB
+```
+
+The cure remains the one item 467 named and `chainFoldLevels` already implements one width over.
+
+### WIRED
+
+`bun run alloc:peak`, alongside `alloc` / `alloc:calibrate` / `alloc:count` / `alloc:gcobs` /
+`alloc:rust`. `--expose-gc` is baked in: the window needs a settled baseline.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
