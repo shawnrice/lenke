@@ -122506,7 +122506,7 @@ own measured ceilings before.
 
 GATES. `bun run fmt` 0; `bun run lint` 0. No engine change: one default and the reason for it.
 
-## Item 2415 — **ITEM 2414's FOUR SURVIVING FLAGS ARE AN ARTIFACT TOO, and of the one parameter the screen still did not have: LABEL VACUITY.** All four are the `rows` baseline standing on the far-driven hop walk that ONE off-label vertex removes — proven by ablating all three far-driven dispatch sites, not inferred. Under `MIXED=1` every one drops below the threshold and **six DIFFERENT flags appear, four of them a DEPTH-1 INVERSION that the homogeneous grid cannot show at all**
+## Item 2415 — **ITEM 2414's FOUR SURVIVING FLAGS ARE AN ARTIFACT TOO, and of the one parameter the screen still did not have: LABEL VACUITY.** All four are the `rows` baseline standing on the far-driven hop walk that ONE off-label vertex removes — proven by ablating all three far-driven dispatch sites, not inferred. Under `MIXED=1` every one drops below the threshold and **six DIFFERENT flags appear, four of them a DEPTH-1 INVERSION that the homogeneous grid cannot show at all** — **TWO OF THOSE FOUR ARE CLOSED BY ITEM 2421 and re-measured at item 2422** (`sum` and `maxagg` are now the right way round and label-indifferent); `distinct` remains live at 1.80x and is the open target at this width, `countdist` improved for a reason item 2422 could not isolate, and **the depth-1 vacuity cliff itself has collapsed to ONE shape — `rows` at 2.14x — so pricing the "22 vacuity gates" as a lever is mispriced work**
 
 Item 2414 raised the screen's default from 20,000 to 400,000, killed 10 noise flags and called the
 four survivors _"a real family rather than an artifact"_. They were asked to be priced. They are an
@@ -123225,7 +123225,7 @@ files verified byte-identical to their pristine copies after each arm, and the d
 restore ([[fuzzers-read-built-dists]] — the peak and count probes read dist, so an unbuilt restore
 would have measured the previous arm).
 
-## Item 2421 — **BUILT: the one-hop foldable aggregates now ride the LEVEL FOLD, and the allocation count goes from 2.00 PER ELEMENT to a CONSTANT ~3,100 for the whole query.** Peak memory 32-67 MiB to under 2 MiB at every size and fanout measured, so the shape no longer has an OOM size. **The owner took the 1.3x fanout-1 time cost deliberately, having asked the two right questions first — is it relevant, and does it scale.** And the first attempt broke THREE unrelated detectors because the gate I moved was SHARED
+## Item 2421 — **BUILT: the one-hop foldable aggregates now ride the LEVEL FOLD, and the allocation count goes from 2.00 PER ELEMENT to a CONSTANT ~3,100 for the whole query.** Peak memory 32-67 MiB to under 2 MiB at every size and fanout measured, so the shape no longer has an OOM size. ~~**The owner took the 1.3x fanout-1 time cost deliberately, having asked the two right questions first — is it relevant, and does it scale.**~~ **THE 1.3x DOES NOT EXIST ON A REALISTIC SCHEMA — item 2422 measured this change at 2.6-2.8x FASTER under one off-label vertex, and label-INDIFFERENT. Every timing below was taken on a VACUOUS fixture, against my own standing rule to quote the MIXED number. The owner accepted a cost that was not there.** And the first attempt broke THREE unrelated detectors because the gate I moved was SHARED
 
 Item 2420 priced this and left it open on two counts: the threshold needed a sweep, and the
 fanout-1 trade needed a decision. The owner's answer settled both at once — _"26x less memory sounds
@@ -123355,3 +123355,95 @@ one level up: the anchor was unique and the FUNCTION was shared.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; `bun run test` 0;
 `bun run fuzz` 57/0.
+
+## Item 2422 — **ITEM 2421's "ACCEPTED 1.3x TIME COST" DOES NOT EXIST ON A REALISTIC SCHEMA: it is 2.6-2.8x FASTER there.** The 1.3x is an artifact of the VACUOUS fixture, which is the one configuration no production graph has — and my own standing note says "quote the MIXED number when pricing", which I then did not do. **And the one-hop VACUITY CLIFF has collapsed from four shapes to ONE: only `rows` still pays it (2.14x); every aggregate is now 0.96-1.26x**
+
+Item 2421 shipped the one-hop foldable aggregates onto the level fold and recorded a trade: 34x
+fewer allocations and 26x less peak memory, **"at an accepted 1.3x time cost at fanout 1"**. The
+owner accepted that cost explicitly. **It is not there.** Every timing in item 2420 and 2421 was
+taken on a LABEL-HOMOGENEOUS fixture, and [[label-vacuity-gates-fast-paths]]'s standing rule — in my
+own memory, written four items earlier — is that the fast arm of a homogeneous screen row is
+unreachable for a real schema and the MIXED number is the one to quote.
+
+### THE A/B, both arms rebuilt, one shape per process, both label modes
+
+```text
+    sum, depth 1, N=400,000        MIXED=0 (vacuous)    MIXED=1 (ONE off-label vertex)
+      PRE-2421  (hopAggregate)      30.15 / 18.46 ms     64.45 / 69.50 ms      ~3.5x CLIFF
+      POST-2421 (level fold)        24.48 / 24.45        24.51 / 24.43         NO cliff
+```
+
+**On the realistic arm item 2421 is 2.6-2.8x FASTER** (64.45-69.50 down to 24.4-24.5), and it is
+label-INDIFFERENT: four readings across both modes land inside 24.43-24.51.
+
+THE MECHANISM, and it is why the level fold was always going to behave this way: `levelWalk`
+initialises its multiplicity array with a PER-VERTEX label test —
+`u[i] = startLabel === undefined || first.order[i].labels.has(startLabel) ? 1 : 0` — so a
+non-vacuous label FILTERS rather than DISQUALIFIES. `hopAggregate` sits behind
+`hop-projection.ts`'s 22 vacuity gates and loses its arm entirely. That is the same asymmetry item
+2415 measured as "22 gates against zero", seen from the other side.
+
+**AND THE CHECK WAS WORTH RUNNING FOR A SECOND REASON.** `chainLabelsAllVacuous` lives in
+`chain-fold-levels.ts` and takes a `graph`, so it is a RUNTIME test — which raised a real hazard:
+if the level fold declined at runtime, `hopAggregate` is already stood down at compile time and the
+shape would fall to the GENERAL PATH, a regression on exactly the realistic case. It does not: that
+function is used by `detectChainStarCount`, not by the fold. Confirmed by measurement rather than by
+reading the call site, which is this file's own rule.
+
+### THE VACUITY CLIFF AT DEPTH 1 HAS COLLAPSED TO ONE SHAPE
+
+Item 2415 found four depth-1 shapes paying the cliff. Re-measured post-2421 at N=400,000, depth 1,
+vacuous against one isolated off-label vertex:
+
+```text
+    shape        MIXED=0      MIXED=1      ratio
+      rows        31.68        67.95        2.14x    <- THE ONLY REAL CLIFF LEFT
+      grouped     63.60        79.86        1.26x
+      collect     80.16        86.19        1.08x
+      maxagg      24.31        25.85        1.06x
+      sum         23.03        23.99        1.04x
+      skiponly    85.28        83.08        0.97x
+      topk        89.73        85.74        0.96x
+```
+
+**`rows` is the sole survivor, and it is exactly the arm item 2415 identified** by ablating all three
+far-driven dispatch sites: under a vacuous label `rows` was the only one of six shapes to reach the
+far-driven walk, and one off-label vertex removes it. Nothing else now benefits enough from the
+vacuous arm to miss it.
+
+So the "22 vacuity gates against zero" framing OVERSTATES what is reachable today: most of those
+gates guard arms that no longer serve a shape anybody measures. **Pricing the 22 gates as a lever is
+mispriced work; `rows` at 2.14x is the whole remaining prize at this width.**
+
+### AND THE DEPTH-1 INVERSIONS ITEM 2415 FLAGGED ARE MOSTLY GONE
+
+Its MIXED grid raised four "a SHORTER chain costs more" flags. Re-measured, MIXED=1, N=400,000:
+
+```text
+                  item 2415 (d1 / d2)        now (d1 / d2)
+      sum          63.47 / 32.94  1.93x      24.77 / 32.12   right way round
+      maxagg       65.35 / 33.01  1.98x      24.89 / 31.91   right way round
+      distinct     83.50 / 45.55  1.83x      84.28 / 46.85   1.80x  STILL LIVE
+      countdist    79.65 / 44.83  1.78x      37.36 / 45.89   right way round, UNEXPLAINED
+```
+
+`sum` and `maxagg` are fixed by item 2421 — they left the gated rung. **`distinct` is the live
+residual at 1.80x**, and it is the next target at this width: it routes to `distinctProjection`,
+which item 2421 did not touch.
+
+**`countdist` IMPROVED AND I HAVE NOT ISOLATED WHY, so it is recorded rather than claimed.** It
+routes to `distinctCount` both before and after item 2421 (`distinctCount` is tested at
+`clauses.ts`:1927, before `chainFoldLevels` at 2151, so item 1583's rung still wins), so there is no
+mechanism in this item that should have moved it. Several builds separate the two readings. Do not
+attribute it to item 2421 without an isolated A/B.
+
+### WHAT THIS CHANGES ABOUT THE DECISION
+
+The owner was asked to accept a 1.3x regression and accepted it on capability grounds. **The
+question should not have been asked in that form**: on a realistic schema there is no regression to
+trade, and the 1.3x survives only on a fixture where every vertex carries the queried label. The
+decision stands, the reasoning behind it was incomplete, and the correction belongs next to it.
+
+GATES. No engine change in this item: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. The
+toggle file was verified byte-identical to its pristine copy after the A/B, with the dist rebuilt on
+the restore.
