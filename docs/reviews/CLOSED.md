@@ -123448,7 +123448,7 @@ GATES. No engine change in this item: `bun run fmt` 0; `bun run lint` 0; `bun ru
 toggle file was verified byte-identical to its pristine copy after the A/B, with the dist rebuilt on
 the restore.
 
-## Item 2423 — **SHIPPED: the one-hop `RETURN DISTINCT` now rides the LEVEL PASS, and unlike item 2421 there is NO arm where it loses — 2.42x on a realistic schema, 1.09x on a vacuous one, label-indifferent, and item 2415's last depth-1 INVERSION is gone.** The multi-column case had NO correctness coverage in reach and its mutant is caught ONLY by the checker written here — the aggregate oracle reports 4,848/0 while the shape is broken. **And the memory axis found the NEXT target in the same breath: this pass still allocates one `valueKey` string PER ELEMENT**
+## Item 2423 — **SHIPPED: the one-hop `RETURN DISTINCT` now rides the LEVEL PASS, and unlike item 2421 there is NO arm where it loses — 2.42x on a realistic schema, 1.09x on a vacuous one, label-indifferent, and item 2415's last depth-1 INVERSION is gone.** The multi-column case had NO correctness coverage in reach and its mutant is caught ONLY by the checker written here — the aggregate oracle reports 4,848/0 while the shape is broken. ~~**And the memory axis found the NEXT target in the same breath: this pass still allocates one `valueKey` string PER ELEMENT**~~ **TAKEN AT ITEM 2424: the primitive arm dedupes on the RAW value — 1.01 allocations per element to 0.01, O(n) to O(1), 1.40-1.44x in time, with the object case bailing at a 2% cost**
 
 Item 2422 left `distinct` as the one live residual of item 2415's six MIXED flags: a **1.80x depth-1
 inversion**, where one hop cost more than two. Same structural story as `sum`/`maxagg` before item
@@ -123543,3 +123543,108 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check`
 flipped, including `bounded-reach-answers.test.ts`'s `{1,1}` row — a one-to-one quantifier collapses
 to a plain hop via `dropVacuousQuantifier`, so it arrives at the same shape, and that row's real
 point (it must NOT take `reachShortcut`) is now asserted separately from its route list.
+
+## Item 2424 — **SHIPPED: the one-hop DISTINCT's primitive arm dedupes on the RAW value, so the per-element `valueKey` string is gone — 1.01 allocations per element to 0.01, O(n) to O(1), and 1.40-1.44x in time.** The object case bails and costs it **2%**. **AND THE TRY THAT FOUND THIS ALSO FOUND A HOLE IN MY OWN ORACLE: it counted every engine EXCEPTION as a pass, so a `throw` placed at the new code path's bail reported 4,848 pass / 0 fail**
+
+Item 2423 left this as the next target: the DISTINCT level pass allocated **200,000 `valueKey` strings
+for 200,000 elements** (`index.mjs:4549`), 1.01 per element, with peak memory growing n^1.78. It was
+recorded rather than taken because `valueKey` is the engine's ONE definition of distinctness, shared
+with `UNION`/`EXCEPT`/`INTERSECT` and matched byte-for-byte by the Rust engine.
+
+### THE EQUIVALENCE IS EXACT FOR EVERY PRIMITIVE, and the two cases its comments warn about agree most
+
+```text
+    -0 and 0       `valueKey` keys both `n0` (String(-0) is "0"); a Set uses SameValueZero, where
+                   -0 and +0 are ALREADY one entry.                                        SAME
+    NaN            `#NaN`, and SameValueZero makes NaN equal to itself.                    SAME
+    Infinity       `#Infinity` / `#-Infinity`, distinct in a Set too.                      SAME
+    string/boolean `s…` / `bT`/`bF`.                                                        SAME
+    null           `N`, one Set entry.                                                      SAME
+    cross-type     `valueKey` prefixes by type (`n1` vs `s1`); `1 !== '1'` in a Set.        SAME
+    OBJECT         element by `@id`, list and record by RECURSION, temporal by its fields —
+                   where a Set keys by IDENTITY.                              **DIFFERENT** -> bail
+```
+
+So the primitive arm dedupes on the raw value and returns `null` on the first object; the keyed arm
+then runs the whole pass again. **It restarts rather than converting mid-loop**, for two stated
+reasons: this file measures a per-row branch ahead of a hot body at 1.6x (item 159, quoted in
+`distinctLevelOne`'s own note), and `rows` stores `cell ?? null`, so a conversion could not recover
+the raw values — a column holding `undefined` would re-key as `N` and silently merge two groups.
+
+### THE NUMBERS, both arms rebuilt, one shape per process
+
+```text
+    one-hop DISTINCT, N=400,000       MIXED=0      MIXED=1
+      keyed (item 2423)                37.36 ms     37.23 ms
+      primitive arm (this item)        26.60        25.77      1.40x / 1.44x
+
+    allocations at N=200,000           202,326 (1.01 per element)  ->  2,655 (0.01)
+    peak live, 100k -> 200k            1.62 -> 5.57 MiB            ->  0.27 -> 0.93 MiB
+```
+
+**AND THE BAIL COSTS THE OBJECT COLUMN 2%**, which is the cost side and was measured rather than
+assumed (`distinct-bailcost-2424.ts`, keyed-only against shipped, same build sequence):
+
+```text
+                      keyed only     raw arm + bail
+      numeric          19.22 ms        10.88 ms       1.77x FASTER
+      temporal         20.23 ms        20.71 ms       1.02x — the double pass
+```
+
+The restart is cheap because the bail fires on the FIRST reached vertex, so the wasted work is one
+`levelWalk` and one `fn(env)` — not a deduped pass.
+
+### THE ORACLE COUNTED ENGINE EXCEPTIONS AS PASSES, and that is the bigger finding
+
+Before trusting the new arm I put a `throw` at its bail to confirm the path was REACHED — the
+throw-first rule. **`onehopagg-oracle-2416.mjs` reported 4,848 pass / 0 fail with the throw in
+place.** A direct probe shows a temporal, a list and an element column all reaching that bail, so the
+cells existed and their exceptions were being banked:
+
+```js
+} catch (err) {
+  perMode[mode] = `THREW:…`;
+  pass += 1;          // <- every engine fault, counted as a pass
+}
+```
+
+I wrote that handler at item 2416 with the comment _"a THROW is a legitimate answer for some cells"_,
+which is true — `sum` over a string faults and the row form does not, so symmetry with the row form
+cannot be required. What can be: **the fault COUNT is now printed (192 cells at baseline), so a
+change in how many cells fault is visible, and a `DISTINCT proj` cell that faults is a FAILURE**,
+because a projection has no type contract to violate — it returns the values it is given.
+
+With that fix the same ablation reports **8 fails naming `DISTINCT proj(x1.t) THREW — a projection
+must not fault`**, and the fault count moves 192 to 200. The hole existed for 8 items.
+
+### A NEW CHECKER, and the mutation run says exactly why it was needed
+
+`distinct-hardvalues-2424.ts` (18 cells, both label modes) pins the equivalence table above against
+the engine's OTHER keyer rather than against a JS re-derivation: `count(DISTINCT <expr>)` counts
+groups through `valueKey`, so the row count of `RETURN DISTINCT <expr>` must match it. Re-implementing
+`valueKey` here would have tested this file's idea of distinctness, which is the mistake item 2416's
+oracle made with `new Set(objects)` and 96 false failures.
+
+```text
+    mutant: the primitive arm keys on String(cell), merging 1 and '1'
+      onehopagg-oracle          4,848 pass / 0 fail    <- BLIND
+      distinct2-check              10 pass / 0 fail    <- BLIND
+      distinct-hardvalues          14 pass / 4 fail    <- CAUGHT
+```
+
+The battery now runs all THREE checkers for every mutant: **13 mutants, 8 CAUGHT / 5 SURVIVED, every
+survivor `[EQUIV]`** including the NO-OP control and the three route-revert mutants.
+
+### AND THE CHECKER CORRECTED MY OWN EXPECTATION on its first run
+
+I predicted `null` and an ABSENT property would be TWO groups, from `valueKey` keying `null` as `N`
+and `undefined` as `jundefined`. The engine answers **ONE** row, with a null value: **reading an
+absent property yields `null`, not `undefined`** ([[numeric-model-f64]] normalizes undefined to
+null), so a property read can never produce `undefined` and that branch of `valueKey` is unreachable
+from this direction. Four cells failed, the engine was right, and the fixture now states the fact
+with its reason. That makes the `undefined` row of the table above moot rather than wrong — the two
+keyers agree on it anyway, and nothing can hand either of them one.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; `bun run test` 0;
+`bun run fuzz` 0. Oracle 4,848/0 with 192 faults and route invariance 2,424/0; `distinct2-check`
+10/0; `distinct-hardvalues` 18/0.

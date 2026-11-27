@@ -95,6 +95,19 @@ const MUTANTS = [
     '   * and the accepted 1.3x fanout-1 trade.\n   */\n  const shape = chainShapeOf(m, 1);',
     '   */\n  const shape = chainShapeOf(m, 2);',
   ],
+  // --- the PRIMITIVE arm of the DISTINCT level pass (item 2424) ---
+  [
+    'the primitive arm does NOT bail on an object, so a temporal/list groups by IDENTITY',
+    'levels',
+    "    if (typeof cell === 'object' && cell !== null) {\n      return null;\n    }",
+    '    if (false) {\n      return null;\n    }',
+  ],
+  [
+    'the primitive arm keys on String(cell), which merges the number 1 and the string "1"',
+    'levels',
+    '    if (seen.has(cell)) {\n      continue;\n    }\n\n    seen.add(cell);',
+    '    if (seen.has(String(cell))) {\n      continue;\n    }\n\n    seen.add(String(cell));',
+  ],
   // --- the DISTINCT level pass, which serves one hop since item 2423 ---
   [
     'the MULTI-COLUMN distinct key uses only the FIRST column (two columns dedupe as one)',
@@ -166,7 +179,11 @@ for (const [label, fileKey, find, replace] of MUTANTS) {
    * mismatched cardinalities and checks for duplicate rows, which is the only way that defect
    * shows. A failure in EITHER is the mutant being caught.
    */
-  const CHECKERS = ['onehopagg-oracle-2416.mjs', 'distinct2-check-2423.ts'];
+  const CHECKERS = [
+    'onehopagg-oracle-2416.mjs',
+    'distinct2-check-2423.ts',
+    'distinct-hardvalues-2424.ts',
+  ];
   let out = '';
   let code = 0;
 
@@ -196,7 +213,10 @@ for (const [label, fileKey, find, replace] of MUTANTS) {
     }
   }
 
-  const ran = out.includes('agg-vs-rows:') && out.includes('one-hop DISTINCT:');
+  const ran =
+    out.includes('agg-vs-rows:') &&
+    out.includes('one-hop DISTINCT:') &&
+    out.includes('DISTINCT hard values:');
   const timedOut = code === 124 || code === 137;
   const hit = timedOut || (ran && code !== 0);
   let detail;
@@ -206,8 +226,9 @@ for (const [label, fileKey, find, replace] of MUTANTS) {
   } else if (ran) {
     const agg = (out.match(/# agg-vs-rows:.*/)?.[0] ?? '').trim();
     const d2 = (out.match(/# multi-column one-hop DISTINCT:.*/)?.[0] ?? '').trim();
+    const hv = (out.match(/# DISTINCT hard values:.*/)?.[0] ?? '').trim();
 
-    detail = `${agg} | ${d2}`;
+    detail = `${agg} | ${d2} | ${hv}`;
   } else {
     detail = `DID NOT RUN (code ${String(code)}) — a compile error counts as caught only if the oracle is what failed`;
   }

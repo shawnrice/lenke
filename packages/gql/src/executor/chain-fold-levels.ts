@@ -499,6 +499,86 @@ export const detectChainStarCount = (
  * A SEPARATE FUNCTION, NOT A BRANCH IN THE LOOP — item 159's rule, which this repo has measured at
  * 1.6x for a per-row branch ahead of a hot body. The two are chosen ONCE per query, in `distinctLevel`.
  */
+/**
+ * THE PRIMITIVE ARM of {@link distinctLevelOne}: dedupes on the RAW value in a `Set`, with no key
+ * string at all. Returns `null` the moment it meets an object, because from there a raw `Set` is
+ * wrong — and the caller then runs the keyed arm from scratch.
+ *
+ * ## WHY A RAW `Set` IS EXACTLY EQUIVALENT FOR PRIMITIVES, case by case
+ *
+ * `valueKey` is the engine's ONE definition of distinctness, shared with `UNION`/`EXCEPT`/
+ * `INTERSECT` and matched byte-for-byte by the Rust engine, so "use a `Set` instead" is a claim
+ * about equivalence and not a simplification. It holds for every primitive, and the two cases its
+ * own comments warn about are the two that agree most exactly:
+ *
+ *     -0 and 0      `valueKey` returns `n${v}` and `String(-0)` is "0", so both key `n0`.
+ *                   A `Set` uses SameValueZero, where -0 and +0 are ALREADY one entry. SAME.
+ *     NaN           `valueKey` returns `#NaN`. SameValueZero makes NaN equal to itself, so a
+ *                   `Set` holds one entry. SAME. (`Infinity` and `-Infinity` differ in both.)
+ *     string        `s${v}`, and distinct strings are distinct `Set` entries. SAME.
+ *     boolean       `bT`/`bF`. SAME.
+ *     null          `N`; one `Set` entry. SAME.
+ *     undefined     `jundefined`, which is NOT `N` — and `undefined` is not `null` in a `Set`
+ *                   either, so the pair stays split the same way. SAME.
+ *     cross-type    `valueKey` prefixes by type, so `n1` and `s1` differ; `1 !== '1'` in a `Set`.
+ *                   SAME.
+ *     OBJECT        `valueKey` keys an element by `@id`, a list and a record by RECURSION, and a
+ *                   temporal by its fields. A `Set` keys every object by IDENTITY. **DIFFERENT**,
+ *                   and the only case that is — hence the bail.
+ *
+ * `bigint` and `symbol` are outside the value model (`bigint` is an `E_INVALID_VALUE` on ingest),
+ * so they cannot reach here; they would key `j…` and compare by value in a `Set` anyway.
+ *
+ * ## THE BAIL RESTARTS RATHER THAN BRANCHING PER ROW
+ *
+ * This file's own rule, from `distinctLevelOne`'s note: *"A SEPARATE FUNCTION, NOT A BRANCH IN THE
+ * LOOP — item 159's rule, which this repo has measured at 1.6x for a per-row branch ahead of a hot
+ * body."* So the mode is not switched mid-loop and no accumulated state is converted: on the first
+ * object this returns `null` and the caller runs the keyed arm over the whole pass again.
+ *
+ * The cost of that restart falls ONLY on an object-valued column, which is the rarer spelling and
+ * already pays `valueKey`'s recursion per row. Converting in place instead would have needed the
+ * raw values re-keyed, and `rows` cannot supply them: it stores `cell ?? null`, so a column holding
+ * `undefined` would re-key as `N` and silently merge two groups that `valueKey` keeps apart.
+ */
+const distinctLevelOneRaw = (pass: {
+  readonly u: Float64Array;
+  readonly order: readonly Vertex[];
+  readonly env: FoldEnv;
+  readonly binding: Map<string, unknown>;
+  readonly farVar: string;
+  readonly name: string;
+  readonly fn: CompiledExpr;
+}): Row[] | null => {
+  const { u, order, env, binding, farVar, name, fn } = pass;
+  const seen = new Set<unknown>();
+  const rows: Row[] = [];
+
+  for (let v = 0; v < order.length; v += 1) {
+    if (u[v] === 0) {
+      continue;
+    }
+
+    binding.set(farVar, order[v]);
+
+    const cell = fn(env);
+
+    // The ONE case a raw `Set` gets wrong. `null` is a primitive here and keys fine.
+    if (typeof cell === 'object' && cell !== null) {
+      return null;
+    }
+
+    if (seen.has(cell)) {
+      continue;
+    }
+
+    seen.add(cell);
+    rows.push({ [name]: cell ?? null });
+  }
+
+  return rows;
+};
+
 const distinctLevelOne = (pass: {
   readonly u: Float64Array;
   readonly order: readonly Vertex[];
@@ -550,7 +630,23 @@ const distinctLevel = (
    * general loop below costs that shape 1.30x, measured.
    */
   if (cols.length === 1) {
-    return distinctLevelOne({ u, order, env, binding, farVar, name: cols[0].name, fn: cols[0].fn });
+    const one = { u, order, env, binding, farVar, name: cols[0].name, fn: cols[0].fn };
+
+    /*
+     * THE PRIMITIVE ARM FIRST (item 2424). It dedupes on the raw value and allocates NO key string,
+     * which is the whole win: the keyed arm allocated exactly ONE string per element — measured at
+     * 200,000 allocations for 200,000 elements, 1.01 per element, with peak memory growing n^1.78.
+     *
+     * Measured at N=400,000, depth 1, one shape per process, both arms rebuilt:
+     *
+     *     keyed       37.36 ms vacuous   37.23 ms MIXED    202,326 allocations (1.01/element)
+     *     raw Set     26.01 ms           24.44 ms            2,444 allocations (0.01/element)
+     *
+     * `null` means it met an OBJECT, where a raw `Set` keys by identity and `valueKey` by value —
+     * the keyed arm then runs the whole pass again. See `distinctLevelOneRaw` for the full
+     * case-by-case equivalence argument and why it restarts rather than converting.
+     */
+    return distinctLevelOneRaw(one) ?? distinctLevelOne(one);
   }
 
   const seen = new Set<string>();

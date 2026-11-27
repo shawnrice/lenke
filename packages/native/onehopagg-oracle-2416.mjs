@@ -306,6 +306,7 @@ const cells = Object.entries(PATTERNS).flatMap(([pname, pat]) =>
 
 const graphs = { homo: build(false), mixed: build(true) };
 let pass = 0;
+let threw = 0;
 const fails = [];
 const crossFails = [];
 let worst = 0;
@@ -361,10 +362,32 @@ for (const c of cells) {
 
       perMode[mode] = JSON.stringify(got);
     } catch (err) {
-      // A THROW is a legitimate answer for some cells (a non-numeric fold faults), but it must
-      // throw in BOTH label modes or the route is deciding semantics.
+      /*
+       * A THROW IS COUNTED AND REPORTED, NOT SILENTLY PASSED — and the first version of this
+       * handler did `pass += 1` here, which made every engine exception invisible.
+       *
+       * It cost a real check: item 2424 put a `throw` at a new code path's bail to confirm the
+       * path was REACHED, and this oracle reported **4,848 pass / 0 fail** with the throw in place.
+       * The temporal, list and element columns all reach that bail — a direct probe shows all
+       * three throwing — so the cells existed and their exceptions were being banked as passes.
+       *
+       * A throw IS legitimate for some cells (`sum` over a string faults, and the row form does
+       * not), so symmetry with the row form cannot be required. What can: the COUNT is printed, so
+       * a change in how many cells fault is visible; and a `DISTINCT proj` cell must NEVER throw,
+       * because a projection has no type contract to violate — it returns the values it is given.
+       */
+      threw += 1;
       perMode[mode] = `THREW:${(err instanceof Error ? err.message : String(err)).slice(0, 40)}`;
-      pass += 1;
+
+      if (MULTI_ROW.has(c.agg)) {
+        const why = (err instanceof Error ? err.message : String(err)).slice(0, 60);
+
+        fails.push(
+          `${mode} ${c.pname}/${c.wname} ${c.agg}(${expr}) THREW — a projection must not fault: ${why}`,
+        );
+      } else {
+        pass += 1;
+      }
     }
   }
 
@@ -378,6 +401,10 @@ for (const c of cells) {
 console.log(`# one-hop aggregate oracle: ${String(cells.length)} cells x 2 label modes`);
 console.log(`# agg-vs-rows:  ${String(pass)} pass / ${String(fails.length)} fail`);
 console.log(`# worst err/bound (item 2401's contract): ${worst.toFixed(3)}`);
+console.log(
+  `# cells that FAULTED: ${String(threw)} (expected for a non-numeric fold; a change here is a ` +
+    `semantic change, and a DISTINCT projection faulting is a FAILURE above)`,
+);
 console.log(
   `# ROUTE INVARIANCE (homo vs one off-label vertex): ${String(cells.length - crossFails.length)} identical / ${String(crossFails.length)} DIFFER`,
 );
