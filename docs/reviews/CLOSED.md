@@ -122616,7 +122616,7 @@ vacuity-arm ratios were advertised as a family to price. No engine change.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Working tree byte-identical to `HEAD`
 for `hop-projection.ts` after the ablation, verified with `git status`.
 
-## Item 2416 — **THE ALLOCATION PROFILER THIS REPO DID NOT HAVE: 37 probes drive the CPU profiler and ZERO drove the HEAP profiler, so every allocation question had been answered indirectly.** Three calibrated mechanisms, and item 1361's "wholly unfit" verdict is QUALIFIED TWICE. **The finding they produce: the aggregate rungs MATERIALIZE A ROW PER ELEMENT to return one scalar — 124 B/element, linear in |V|, 1.5x the churn of materializing every row, at the highest GC share measured (24.8-26.3%).** And the loudest byte count in the sweep is a NEGATIVE result
+## Item 2416 — **THE ALLOCATION PROFILER THIS REPO DID NOT HAVE: 37 probes drive the CPU profiler and ZERO drove the HEAP profiler, so every allocation question had been answered indirectly.** Three calibrated mechanisms, and item 1361's "wholly unfit" verdict is QUALIFIED TWICE. **The finding they produce: the aggregate rungs MATERIALIZE A ROW PER ELEMENT to return one scalar — 124 B/element, linear in |V|, 1.5x the churn of materializing every row, at the highest GC share measured (24.8-26.3%)** — though a CORRECTION below removes its apparent TIME prize: the aggregate is already FASTER than materializing the rows it folds, and two biases in my own `gcshare` arm are why I first read it the other way. And the loudest byte count in the sweep is a NEGATIVE result
 
 Every allocation question here had been answered by a GC percentage (`gc-cost-probe.mjs`) or by a
 CPU frame that happens to be an allocation site. [[binding-allocation-is-closed]] priced the
@@ -122714,15 +122714,48 @@ Linear in walked elements, and MORE than materializing every row:
     100,000     7.99 MiB   84 B/row     11.82 MiB
 ```
 
-**And in TIME it is the highest GC share in the sweep** — the fold pays more than the shape that
-actually produces all the rows:
+**In TIME it carries the highest GC share in the sweep** — within each shape, the fraction of
+runtime spent collecting:
 
 ```text
-    shape          median      GC share    churn
-    hop1           5.13 ms     19.8%        81 B/row   (200k rows OUT)
-    hop1sum        9.31 ms     24.8%       124 B/elem  (1 row OUT)
-    hop1countk    11.78 ms     26.3%       124 B/elem  (1 row OUT)
+    shape          GC share    churn
+    hop1           19.8%        81 B/row   (200k rows OUT)
+    hop1sum        24.8%       124 B/elem  (1 row OUT)
+    hop1countk     26.3%       124 B/elem  (1 row OUT)
 ```
+
+### CORRECTION TO MY OWN FIRST READING, and it costs this target most of its prize
+
+The first version of this entry also quoted `gcshare`'s ABSOLUTE medians — hop1 5.13 ms against
+hop1sum 9.31 — and concluded "the fold pays more than the shape that actually produces all the
+rows". **That comparison is invalid and the conclusion is REFUTED.** On the per-shape instrument
+(`onehopfam-2415.mjs`: one shape per process, 14 reps less 3, median, arms alternated) `sum` is
+FASTER than `rows` at both sizes:
+
+```text
+    N=200,000   rows 12.91 / 13.09    sum 11.57 / 12.09    0.90x
+    N=400,000   rows 30.61 / 29.61    sum 17.04 / 18.60    0.59x
+```
+
+Two instrument biases, both mine, and both in `gcshare`'s absolutes rather than in its shares:
+
+- **THE SERIES IS BIMODAL AND I GREPPED THE MEDIAN LINE.** At 200,000 hop1 reads
+  `6.3 6.3 4.6 8.7 4.7 12.4 4.6 12.7 5.3 11.0 4.7 11.7 4.7` — two modes, ~4.6 and ~12 — so the
+  median lands in whichever dominated. The arm PRINTS the series and my sweep filtered it out. This
+  is item 2413's lesson (_"the per-rep SERIES is the only thing that shows it"_), quoted in this
+  item's own commit message while being walked into one screen over.
+- **THE SOUNDNESS CHECK CHANGES WHAT IT MEASURES.** `gcshare` forces a `global.gc()` to prove the
+  observer alive, which COMPACTS the heap before the window; at 400,000 the same query then reads
+  15.32 ms against the per-shape instrument's 30.61. A compacted heap is better locality.
+
+**So `MECH=gcshare`'s GC SHARE is a within-shape ratio and usable; its ABSOLUTE times are not
+comparable across shapes or against any other probe.** That is now in the probe's header.
+
+**WHAT THAT LEAVES OF THE TARGET.** The churn finding stands on the calibrated meter: the fold really
+does allocate ~124 B per walked element, linearly, to return one value. But there is **no
+demonstrated time prize** — the aggregate is already faster than materializing the rows it folds, so
+removing the row objects is worth at most the GC share, not the 1.8x the invalid comparison implied.
+Anyone pricing this should start from the 0.59-0.90x above, not from the bytes.
 
 PRIOR ART NAMES THE CURE AND ITS LIMIT. **Item 467**: `sum` is inherently TWO-PASS —
 `values.some(isTemporal)` and `values.some(Array.isArray)` mean the operation is not known until the

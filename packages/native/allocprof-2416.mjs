@@ -50,6 +50,24 @@
  * rep loop buffers every one and `disconnect()` fires first. That cost item 1361 a reported "0
  * pauses, 0.0% GC" on a run that was really at 18.6%, and it is why the await below is not optional.
  *
+ * ## `MECH=gcshare`'s SHARE IS USABLE; ITS ABSOLUTE TIMES ARE NOT COMPARABLE
+ *
+ * Two biases, both found by checking this arm against the per-shape instrument
+ * (`onehopfam-2415.mjs`) rather than trusting it:
+ *
+ *   - **THE SERIES IS BIMODAL.** At 200,000 the one-hop row shape reads
+ *     `6.3 6.3 4.6 8.7 4.7 12.4 4.6 12.7 5.3 11.0 4.7 11.7 4.7` - two modes, ~4.6 and ~12 - so the
+ *     median lands in whichever dominated the run. READ THE SERIES THIS ARM PRINTS; a sweep that
+ *     greps the median line walks straight into item 2413's bimodal trap.
+ *   - **THE SOUNDNESS CHECK CHANGES WHAT IT MEASURES.** The forced `global.gc()` that proves the
+ *     observer alive also COMPACTS the heap before the window, and better locality makes the query
+ *     faster: at 400,000 the same shape reads 15.32 ms here against 30.61 on the per-shape
+ *     instrument.
+ *
+ * So compare GC SHARES across shapes, never these milliseconds. A cross-shape time comparison from
+ * this arm had the one-hop `sum` looking 1.8x SLOWER than the row form when it is in fact 0.59-0.90x
+ * of it.
+ *
  *     node --expose-gc allocprof-2416.mjs                          # calibrate churn (linearity)
  *     MECH=retained node --expose-gc allocprof-2416.mjs            # calibrate retention (2 arms)
  *     SHAPE=hop2generic node --expose-gc allocprof-2416.mjs        # bytes per row, per query
