@@ -73,13 +73,26 @@ for (let i = 0; i < NODES; i += 1) {
   g.addVertex({ id: `v${i}`, labels: ['P'], properties: { k: i % 97, s: `s${i % 1000}`, n: i } });
 }
 
-for (let e = 0; e < NODES; e += 1) {
+/**
+ * FANOUT, added at item 2420 because it is the axis that decides a memory-vs-time trade.
+ *
+ * At FANOUT=1 a one-hop walk returns |V| rows, so a rung that is O(paths) and one that is O(|V|)
+ * look alike - which is the LEVEL FOLD's worst case and the default this probe has always used.
+ * Above 1 the row count is |V|*F while a level fold stays O(|V|), so the comparison only becomes
+ * informative here. The stride splits on the REPEAT INDEX, CLAUDE.md's fix for the `(a*k+b) % N`
+ * degeneracy - without it one vertex's F edges all land on the SAME target and every count is
+ * `F^k` by construction while every degree still looks perfect.
+ */
+const FANOUT = Number(process.env.FANOUT ?? 1);
+
+for (let e = 0; e < NODES * FANOUT; e += 1) {
+  const i = e % NODES;
+  const hop = Math.floor(e / NODES);
+
   g.addEdge({
     id: `e${e}`,
-    from: g.getVertexById(`v${e}`),
-    // FANOUT=1 and a bijective stride, so every vertex has out-degree AND in-degree exactly 1 and
-    // the depth axis is about the route rather than the row count. This is the screen's fixture.
-    to: g.getVertexById(`v${(e * 7 + 3) % NODES}`),
+    from: g.getVertexById(`v${i}`),
+    to: g.getVertexById(`v${(i * 7 + 3 + hop * 2_654_435_761) % NODES}`),
     labels: ['E'],
     properties: { w: e % 13 },
   });
@@ -232,6 +245,6 @@ const mid = kept.length >> 1;
 const med = kept.length % 2 === 1 ? kept[mid] : (kept[mid - 1] + kept[mid]) / 2;
 
 console.log(
-  `${SHAPE.padEnd(16)} d${DEPTH} MIXED=${MIXED ? 1 : 0} NODES=${NODES} median=${med.toFixed(2)} ms answer=${answer}`,
+  `${SHAPE.padEnd(16)} d${DEPTH} F=${FANOUT} MIXED=${MIXED ? 1 : 0} NODES=${NODES} median=${med.toFixed(2)} ms answer=${answer}`,
 );
 console.log(`  series ${series.map((x) => x.toFixed(1)).join(' ')}`);

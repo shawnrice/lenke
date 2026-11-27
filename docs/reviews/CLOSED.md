@@ -123005,7 +123005,7 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check`
 item 2417's "no allocation hook" claims are struck in this commit, and item 2417's cross-engine table
 gains the measured TS rows.
 
-## Item 2419 — **PEAK LIVE MEMORY, the quantity that decides what the system can answer at all, and the one none of items 2416-2418 measured.** Two mechanisms, cross-checked: **the ONE-hop aggregate's memory requirement GROWS with the walk (n^0.78, and +8 to +16 MiB of required heap over 4x) while the TWO-hop aggregate's is CONSTANT (n^-0.20, under 1.3 MiB at every size, 0 MiB of extra heap).** So the one-hop aggregate has an OOM size and the same query one hop deeper does not — **which re-justifies item 2418's target: the prize is a SCALING CEILING, not the GC share I bounded it at.** And the obvious instrument for this is refuted by its own controls
+## Item 2419 — **PEAK LIVE MEMORY, the quantity that decides what the system can answer at all, and the one none of items 2416-2418 measured.** Two mechanisms, cross-checked: **the ONE-hop aggregate's memory requirement GROWS with the walk (n^0.78, and +8 to +16 MiB of required heap over 4x) while the TWO-hop aggregate's is CONSTANT (n^-0.20, under 1.3 MiB at every size, 0 MiB of extra heap).** So the one-hop aggregate has an OOM size and the same query one hop deeper does not — **which re-justifies item 2418's target: the prize is a SCALING CEILING, not the GC share I bounded it at.** **PRICED AT ITEM 2420 and the prize is BIGGER than that: letting `chainFoldLevels` serve depth 1 is 34x fewer allocations, 26x less peak AND 3.5-3.8x FASTER at fanout 4 — though it LOSES 1.3x at fanout 1, so it needs a cost gate.** And the obvious instrument for this is refuted by its own controls
 
 Three allocation instruments already existed and none of them answers this:
 
@@ -123124,3 +123124,103 @@ The cure remains the one item 467 named and `chainFoldLevels` already implements
 `alloc:rust`. `--expose-gc` is baked in: the window needs a settled baseline.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
+
+## Item 2420 — **THE ONE-HOP AGGREGATE'S FIX IS ALREADY WRITTEN: let `chainFoldLevels` serve DEPTH 1.** Measured on four axes with both arms rebuilt: **0.15 allocations per element against 5.16, peak 1.41 MiB against 36.49, half the required heap — and 3.5-3.8x FASTER at fanout 4.** But the route is **SIGNED** — it loses **1.3x at fanout 1 and 400,000 vertices** — so it needs item 1390's cost gate rather than an unconditional admission. **PRICED, NOT BUILT: the gate's threshold needs its own sweep and the fanout-1 trade needs a decision**
+
+Items 2416-2419 localized the one-hop aggregate's cost on three quantities (5.16 allocations per
+element against the two-hop path's 0.15; peak memory n^0.87 against flat-under-2-MiB; 16 MiB of
+required heap against 0) and named the cure as item 467's "stream the argument VALUES, no per-row
+object". **The cure needs no new code at all.**
+
+### WHY NO NEW WALK IS NEEDED, which is where this item started and did not end
+
+`detectHopAggregate`'s fold is ALREADY streaming — it is `for (const row of rows)` over an array.
+The array is the problem: `walk(graph, params)` returns `Row[]`. Making it yield values instead would
+mean a streaming variant of every hop-walk builder (far-driven, start-driven, edge-driven, the two
+turned walks), on the hottest path in the file, and [[executor-edits-perturb]] prices a new walk
+variant at up to 16% on UNRELATED rows.
+
+**The two-hop path does not stream either — it uses a different ALGORITHM.** `chainFoldLevels`
+computes the level recurrence `u_k(v)` (the number of length-k walks ending at `v`) and then
+`SUM u_v * x_v`, which is O(|V|) in a NUMERIC array rather than O(paths) in row objects. That is
+where its flat memory comes from, and at one hop the recurrence degenerates to `u_1(v) = in-degree(v)`
+— trivially correct, and the fold is the same weighted fold item 2410 already bounded.
+
+It declines one hop on `pattern.segments.length < 2`, and the comment above that gate explains the
+PATH MODE rather than the depth floor. Changing it to `< 1` is the whole change.
+
+### PRECEDENCE DECIDES WHETHER IT DOES ANYTHING, and it had to be checked first
+
+`clauses.ts` tests `linear.hopAggregate` at line 1865 and `linear.chainFoldLevels` at 2151, so
+**`hopAggregate` wins and admitting the level fold alone changes nothing** —
+[[rung-precedence-decides-speed]] exactly. The A/B therefore stands `hopAggregate` down as well,
+which is what makes the level fold reachable and is why this is a route TOGGLE and not a one-line
+experiment.
+
+### CORRECTNESS FIRST: 4,176 cells, 0 fail
+
+`onehopagg-oracle-2416.mjs` reads SOURCE, so it tests the arm directly: **4,176 pass / 0 fail**,
+worst err/bound 0.014 against item 2401's contract. The level fold answers one hop correctly across
+8 patterns x 3 `WHERE` forms x 2 variables x 7 columns x 8 aggregates.
+
+Route invariance reported 16 DIFFER, all `collect`'s element ORDER on the `nostartlabel` pattern.
+That is the crude toggle, not the change: standing `hopAggregate` down drops `collect` to the general
+path, whose order follows the walk and therefore the label mode. A real implementation keeps
+`collect` where it is — the level fold refuses it anyway, because a multiplicity-weighted fold cannot
+emit `u_v` copies of a value without materializing the list it exists to avoid.
+
+**AND IT EXPOSED A LIMIT OF MY OWN ORACLE:** its route-invariance check compares `collect`
+POSITIONALLY while item 2404 rules an aggregate-built list's element order UNSPECIFIED. So that
+check is an IMPLEMENTATION pin, not a contract check — `CLAUDE.md` says as much about the tests that
+pin this order, and the oracle should say so too.
+
+### THE NUMBERS, both arms rebuilt, one shape per process, 14 reps less 3, median
+
+```text
+    MEMORY (at N=200,000, FANOUT=1)        LIVE        LEVEL FOLD
+      allocations per element              5.16          0.15        34x fewer
+      peak live memory                    36.49 MiB      1.41 MiB    26x less
+      extra heap required (MECH=cap)      +16 MiB       +8 MiB       half
+      top allocation site                 projectRow    foldLevel
+
+    TIME                                   LIVE                LEVEL FOLD        verdict
+      N=200,000  F=1                     10.72 / 13.20       11.29 / 11.37      flat
+      N=200,000  F=4                     44.02 / 47.22       11.62 / 13.66      3.5x FASTER
+      N=400,000  F=1                     18.44 / 17.34       23.65 / 23.05      1.3x SLOWER
+      N=400,000  F=4                    107.28 / 100.03      26.72 / 26.70      3.8x FASTER
+```
+
+**THE LEVEL FOLD IS ALMOST FLAT IN FANOUT** (11.29 -> 11.62 at 200,000; 23.65 -> 26.72 at 400,000)
+because it is O(|V| + |E|) with an O(|V|) array, while the baseline materializes `|V| * F` rows and
+goes 10.72 -> 44.02 and 18.44 -> 107.28 — almost exactly `F`.
+
+**FANOUT=1 IS THE LEVEL FOLD'S WORST CASE AND IT IS THE DEFAULT EVERY SCREEN HERE USES.** At F=1 a
+one-hop walk returns exactly |V| rows, so O(paths) and O(|V|) coincide and only the constant factor
+separates them. The probe gained a `FANOUT` knob in this item for that reason; a trade measured at
+F=1 alone would have been read as a 1.3x regression and the 3.8x never seen.
+
+### THE ROUTE IS SIGNED, so it needs a GATE and not an admission
+
+This is item 1390's shape verbatim — _"the route is SIGNED: it LOSES at fan-in 1"_ — and that item's
+answer was a swept cost gate, later re-swept at item 1403 when its threshold turned out to be
+calibrated at one degree only. The same discipline applies here, and two things remain before this
+can ship:
+
+1. **The gate's threshold needs its own sweep** across fanout and |V|, the way item 1390 swept
+   1.33 / 13 / 133 and item 1403 corrected it. The crossover here is somewhere between F=1 and F=4
+   and it moves with |V| (flat at 200,000, 1.3x adverse at 400,000).
+2. **The FANOUT=1 trade needs a decision: 1.3x slower for 26x less peak memory.** The memory win is
+   real at F=1 even though the time is adverse, and a scaling ceiling is not a speed question. But
+   [[closed-perf-targets]] records item 2192 reverting a 1.3x win that cost 26% on a common shape,
+   and a 1.3x regression on a one-hop aggregate is the same shape of bad trade — so this is an owner
+   call, not a measurement.
+
+**Also required by any real implementation**: `hopAggregate` must KEEP the shapes the level fold
+cannot serve — `collect`/`collect_list` (refused outright), the near-argument shapes item 2410's
+free-variable test excludes (`foldLevel` binds `farVar` and nothing else, so `sum(a.k)` is out), and
+anything the gate declines. So this is a precedence change with a residual, not a replacement.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. Both toggle
+files verified byte-identical to their pristine copies after each arm, and the dist REBUILT on every
+restore ([[fuzzers-read-built-dists]] — the peak and count probes read dist, so an unbuilt restore
+would have measured the previous arm).
