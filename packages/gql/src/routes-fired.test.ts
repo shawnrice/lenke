@@ -396,14 +396,37 @@ describe('every fast-path detector fires for its own shape', () => {
      * case would report BOTH names and fail here — whereas a runtime precedence bug between them
      * would be invisible, since both routes return the same answer.
      */
+    /*
+     * ~~`['hopDistinctProjection']`~~ and ~~`['distinctProjection']`~~ — ITEM 2423 ADMITTED ONE HOP
+     * TO THE LEVEL PASS, which dispatches at `clauses.ts`:1790, ahead of `distinctProjection` at
+     * 1899 and `hopDistinctProjection` at 1916, so it answers both widths now. Both old owners stay
+     * WILLING and are listed: the second name in each row is the rung that would answer if the pass
+     * declined, which is what makes a silent precedence change visible here.
+     *
+     * Why: `distinctProjection` dedupes WHILE WALKING and sits behind `hop-projection.ts`'s vacuity
+     * gates, so ONE off-label vertex costs it its arm (41.12 -> 90.88 ms at 400,000); the level pass
+     * tests the label per vertex and reads 37.88 / 37.52 across the same two modes. 2.42x on a
+     * realistic schema, 1.09x on a vacuous one — no arm where it loses.
+     */
     [
       'one-hop multi-column DISTINCT',
       'MATCH (a:L)-[:R]->(b:L) RETURN DISTINCT b.k AS k, b.s AS s',
-      ['hopDistinctProjection'],
+      ['chainDistinctLevels', 'hopDistinctProjection'],
     ],
     [
-      'one-hop SINGLE-column DISTINCT stays with the while-walking rung',
+      'one-hop SINGLE-column DISTINCT',
       'MATCH (a:L)-[:R]->(b:L) RETURN DISTINCT b.k AS k',
+      ['chainDistinctLevels', 'distinctProjection'],
+    ],
+    /*
+     * A column reading the START variable KEEPS the old rung, and this row is the residual that
+     * makes item 2423 a precedence change rather than a replacement: the level pass binds only the
+     * far variable, so `freePredicateVars` declines a start-reading column outright (item 2120's
+     * widening, and item 2410's defect is what happens when that test is missing).
+     */
+    [
+      'one-hop DISTINCT reading the START variable STAYS',
+      'MATCH (a:L)-[:R]->(b:L) RETURN DISTINCT a.k AS k',
       ['distinctProjection'],
     ],
     /**

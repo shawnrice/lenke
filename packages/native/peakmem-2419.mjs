@@ -93,6 +93,9 @@ const SHAPES = {
   hop1sum: 'MATCH (a:P)-[:E]->(x1:P) RETURN sum(x1.k) AS s',
   hop2sum: 'MATCH (a:P)-[:E]->(x1:P)-[:E]->(x2:P) RETURN sum(x2.k) AS s',
   hop1collect: 'MATCH (a:P)-[:E]->(x1:P) RETURN collect(x1.k) AS ks',
+  // A PROJECTION, not an aggregate: it walks every element and returns one row per DISTINCT value
+  // (97 here), so its memory question is real and different from a fold's (item 2423).
+  hop1distinct: 'MATCH (a:P)-[:E]->(x1:P) RETURN DISTINCT x1.k AS k',
   hop2: 'MATCH (a:P)-[:E]->(x1:P)-[:E]->(x2:P) RETURN x2.k AS k',
   hop2generic: 'MATCH (a:P)-[:E]->(x1:P)-[:E]->(x2:P) WHERE a.k >= 0 RETURN x2.k AS k',
 };

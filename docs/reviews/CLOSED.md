@@ -122506,7 +122506,7 @@ own measured ceilings before.
 
 GATES. `bun run fmt` 0; `bun run lint` 0. No engine change: one default and the reason for it.
 
-## Item 2415 — **ITEM 2414's FOUR SURVIVING FLAGS ARE AN ARTIFACT TOO, and of the one parameter the screen still did not have: LABEL VACUITY.** All four are the `rows` baseline standing on the far-driven hop walk that ONE off-label vertex removes — proven by ablating all three far-driven dispatch sites, not inferred. Under `MIXED=1` every one drops below the threshold and **six DIFFERENT flags appear, four of them a DEPTH-1 INVERSION that the homogeneous grid cannot show at all** — **TWO OF THOSE FOUR ARE CLOSED BY ITEM 2421 and re-measured at item 2422** (`sum` and `maxagg` are now the right way round and label-indifferent); `distinct` remains live at 1.80x and is the open target at this width, `countdist` improved for a reason item 2422 could not isolate, and **the depth-1 vacuity cliff itself has collapsed to ONE shape — `rows` at 2.14x — so pricing the "22 vacuity gates" as a lever is mispriced work**
+## Item 2415 — **ITEM 2414's FOUR SURVIVING FLAGS ARE AN ARTIFACT TOO, and of the one parameter the screen still did not have: LABEL VACUITY.** All four are the `rows` baseline standing on the far-driven hop walk that ONE off-label vertex removes — proven by ablating all three far-driven dispatch sites, not inferred. Under `MIXED=1` every one drops below the threshold and **six DIFFERENT flags appear, four of them a DEPTH-1 INVERSION that the homogeneous grid cannot show at all** — **TWO OF THOSE FOUR ARE CLOSED BY ITEM 2421 and re-measured at item 2422** (`sum` and `maxagg` are now the right way round and label-indifferent); ~~`distinct` remains live at 1.80x and is the open target at this width~~ **CLOSED AT ITEM 2423 — the one-hop DISTINCT now rides the level pass: 2.42x realistic, 1.09x vacuous, no inversion, and no arm where it loses**, `countdist` improved for a reason item 2422 could not isolate, and **the depth-1 vacuity cliff itself has collapsed to ONE shape — `rows` at 2.14x — so pricing the "22 vacuity gates" as a lever is mispriced work**
 
 Item 2414 raised the screen's default from 20,000 to 400,000, killed 10 noise flags and called the
 four survivors _"a real family rather than an artifact"_. They were asked to be priced. They are an
@@ -123447,3 +123447,99 @@ decision stands, the reasoning behind it was incomplete, and the correction belo
 GATES. No engine change in this item: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. The
 toggle file was verified byte-identical to its pristine copy after the A/B, with the dist rebuilt on
 the restore.
+
+## Item 2423 — **SHIPPED: the one-hop `RETURN DISTINCT` now rides the LEVEL PASS, and unlike item 2421 there is NO arm where it loses — 2.42x on a realistic schema, 1.09x on a vacuous one, label-indifferent, and item 2415's last depth-1 INVERSION is gone.** The multi-column case had NO correctness coverage in reach and its mutant is caught ONLY by the checker written here — the aggregate oracle reports 4,848/0 while the shape is broken. **And the memory axis found the NEXT target in the same breath: this pass still allocates one `valueKey` string PER ELEMENT**
+
+Item 2422 left `distinct` as the one live residual of item 2415's six MIXED flags: a **1.80x depth-1
+inversion**, where one hop cost more than two. Same structural story as `sum`/`maxagg` before item
+2421 — `distinctProjection` dedupes WHILE WALKING and sits behind `hop-projection.ts`'s vacuity
+gates, so one off-label vertex costs it its arm, while the level pass tests the label PER VERTEX in
+`levelWalk` and is indifferent to it.
+
+### THE NUMBERS, both arms rebuilt, one shape per process, 14 reps less 3, median
+
+```text
+    distinct, N=400,000           MIXED=0 (vacuous)      MIXED=1 (ONE off-label vertex)
+      LIVE  distinctProjection     d1 41.12  d2 45.71     d1 90.88  d2 46.39   2.21x cliff, 1.96x inverted
+      NEW   chainDistinctLevels    d1 37.88  d2 46.22     d1 37.52  d2 46.42   no cliff, no inversion
+```
+
+**2.42x on the realistic arm and 1.09x on the vacuous one.** Item 2421's trade — faster under MIXED,
+1.3x slower on the homogeneous fixture — does NOT recur here: this wins in both modes, so there was
+nothing to decide. Shipped at d1 37.36 / 37.23 across the two modes, against d2's 45.7 / 44.9: one
+hop is now cheaper than two, which is the order the depth axis says it should be.
+
+### NO PRECEDENCE GATE WAS NEEDED, and that was checked rather than assumed
+
+Item 2421 needed a compile-time gate because `hopAggregate` is tested at `clauses.ts`:1865 and
+`chainFoldLevels` at 2151. Here the order already favours the new owner: `chainDistinctLevels` is
+tested at **1790**, ahead of `distinctProjection` at 1899 and `hopDistinctProjection` at 1916. So the
+change is one argument — `chainShapeOf(m, 1)` at that one call site, using the `minSegments`
+parameter item 2421 introduced precisely because the floor had been shared.
+
+**AND THE SHARED-FUNCTION LESSON HELD**: the floor is a parameter, so admitting one hop here left
+`detectChainStarCount` and `detectChainGroupedLevels` untouched. Item 2421's first attempt broke
+three detectors by changing the floor inside `chainShapeOf`; this item changed nothing shared.
+
+### THE MULTI-COLUMN CASE HAD NO COVERAGE IN REACH, AND THAT IS THE FINDING UNDER THE FINDING
+
+Admitting one hop moved the TWO-column DISTINCT as well, because the gate refuses only
+`proj.items.length === 0` — item 2120 widened it to every column, and the comment above it still says
+_"ONE COLUMN ... the multi-column case is separately open"_, which is stale prose from item 2119.
+
+`onehopagg-oracle-2416.mjs` projects exactly one column (`AS v`), so **a defect in the joint key is
+invisible to it**, and the suite's only complaint was a ROUTE row — answer-equivalent by
+construction. So `distinct2-check-2423.ts` was written: two and three columns with deliberately
+MISMATCHED cardinalities (`k` has 97 values, `s` has 13, so the tuple has more distinct values than
+either column), a DUPLICATE-row check that a set comparison alone would hide, and both label modes.
+**10 pass / 0 fail.**
+
+**ITS TEETH ARE THE POINT**, and the mutation run quantifies them exactly. Mutating the joint key to
+dedupe on the first column only:
+
+```text
+    the MULTI-COLUMN distinct key uses only the FIRST column
+      onehopagg-oracle        4,848 pass / 0 fail      <- COMPLETELY BLIND
+      distinct2-check             4 pass / 6 fail      <- CAUGHT
+```
+
+A single-column oracle cannot see a joint-key defect, and nothing else in reach projects two columns
+over one hop.
+
+### THE BATTERY NOW RUNS BOTH CHECKERS, and its anchor guard fired twice doing it
+
+`onehopagg-mutants-2416.mjs` runs both for every mutant and treats a failure in either as a catch:
+**11 mutants, 6 CAUGHT / 5 SURVIVED, every survivor `[EQUIV]` with a reason**, including the NO-OP
+control and both route-revert mutants (a pure routing change is invisible to any correctness oracle —
+[[perf-gate-needs-its-own-test]], which is what `routes-fired.test.ts` is for).
+
+**AND IT REFUSED TWO MUTANTS RATHER THAN MUTATING THE WRONG THING.** `const shape =
+chainShapeOf(m, 1);` occurs TWICE now, so the battery reported `ANCHOR 2x — SKIPPED (not unique)` for
+item 2421's revert mutant. That is [[ambiguous-anchor-strings]]'s guard working on the harness that
+guard was written for; both anchors now carry the unique comment line above the call.
+
+### THE NEXT TARGET, found by the memory axis in the same breath
+
+```text
+    shipped one-hop DISTINCT, N=200,000
+      202,326 allocations => 1.01 per ELEMENT, of which 200,000 are `valueKey` (index.mjs:4549)
+      peak live 1.62 -> 5.57 MiB over 2x the walk => n^1.78, GROWS
+```
+
+**Unlike item 2421's fold, this pass did NOT become O(1)** — it allocates one key STRING per element,
+because it must key each value to dedupe it. So the route win is real and the allocation profile is
+not fixed.
+
+**AND IT IS NOT A FREE WIN, which is why it is recorded rather than taken here.** `valueKey` is
+described in its own comment as _"THE ONE DEFINITION OF DISTINCTNESS in this engine — shared with
+`UNION`/`EXCEPT`/`INTERSECT` and matched byte-for-byte by the Rust engine"_, and the values that make
+a raw `Set` differ from it are exactly the hard ones (`-0` against `0`, `NaN`, an element keyed by
+id). A single-column numeric arm could plausibly dedupe on the value itself, but it would need those
+cases pinned first, and `chain-distinct-levels.test.ts` exists because items 1561 and 1562 each
+shipped a silent answer change in this area.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; `bun run test` 0
+(5,498 pass in `packages/gql`); `bun run fuzz` 0. Three route locks updated with reasons rather than
+flipped, including `bounded-reach-answers.test.ts`'s `{1,1}` row — a one-to-one quantifier collapses
+to a plain hop via `dropVacuousQuantifier`, so it arrives at the same shape, and that row's real
+point (it must NOT take `reachShortcut`) is now asserted separately from its route list.

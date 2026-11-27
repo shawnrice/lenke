@@ -92,8 +92,22 @@ const MUTANTS = [
   [
     '[EQUIV] the one-hop admission is reverted, so the shape falls back to hopAggregate - a pure ROUTE change, which this oracle cannot and should not see (perf-gate-needs-its-own-test)',
     'levels',
-    '  const shape = chainShapeOf(m, 1);',
-    '  const shape = chainShapeOf(m, 2);',
+    '   * and the accepted 1.3x fanout-1 trade.\n   */\n  const shape = chainShapeOf(m, 1);',
+    '   */\n  const shape = chainShapeOf(m, 2);',
+  ],
+  // --- the DISTINCT level pass, which serves one hop since item 2423 ---
+  [
+    'the MULTI-COLUMN distinct key uses only the FIRST column (two columns dedupe as one)',
+    'levels',
+    // eslint-disable-next-line no-template-curly-in-string -- DELIBERATE: this is SOURCE TEXT to match, not a template; the `${...}` must stay literal or the anchor misses.
+    '      key = i === 0 ? valueKey(cell) : `${key}\\u0001${valueKey(cell)}`;',
+    '      key = i === 0 ? valueKey(cell) : key;',
+  ],
+  [
+    '[EQUIV] the one-hop DISTINCT admission is reverted, so the shape falls back to distinctProjection - a pure ROUTE change',
+    'levels',
+    '   * line 1790 and `distinctProjection` at 1899, so this pass already wins when it is willing.\n   */\n  const shape = chainShapeOf(m, 1);',
+    '   */\n  const shape = chainShapeOf(m, 2);',
   ],
   [
     '[EQUIV] renaming the synthetic value column - ONE const serves both the write and the read-back, so a rename cannot break the pairing. Mislabelled as a real mutant on the first run.',
@@ -145,34 +159,44 @@ for (const [label, fileKey, find, replace] of MUTANTS) {
     throw new Error(`mutant did not apply: ${label}`);
   }
 
+  /*
+   * BOTH CHECKERS RUN FOR EVERY MUTANT, because neither covers the other's shapes. The aggregate
+   * oracle projects exactly one column (`AS v`), so a defect in the MULTI-COLUMN distinct key is
+   * invisible to it; `distinct2-check-2423.ts` projects two and three columns with deliberately
+   * mismatched cardinalities and checks for duplicate rows, which is the only way that defect
+   * shows. A failure in EITHER is the mutant being caught.
+   */
+  const CHECKERS = ['onehopagg-oracle-2416.mjs', 'distinct2-check-2423.ts'];
   let out = '';
   let code = 0;
 
-  try {
-    out = execFileSync(
-      'timeout',
-      [
-        '600',
-        'systemd-run',
-        '--user',
-        '--scope',
-        '-q',
-        '-p',
-        'MemoryMax=16G',
-        '-p',
-        'MemorySwapMax=0',
-        'bun',
-        'onehopagg-oracle-2416.mjs',
-      ],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-    );
-  } catch (err) {
-    // BOTH streams, then the code — never one stream.
-    out = `${err.stdout ?? ''}${err.stderr ?? ''}`;
-    code = err.status ?? -1;
+  for (const checker of CHECKERS) {
+    try {
+      out += execFileSync(
+        'timeout',
+        [
+          '600',
+          'systemd-run',
+          '--user',
+          '--scope',
+          '-q',
+          '-p',
+          'MemoryMax=16G',
+          '-p',
+          'MemorySwapMax=0',
+          'bun',
+          checker,
+        ],
+        { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+      );
+    } catch (err) {
+      // BOTH streams, then the code — never one stream.
+      out += `${err.stdout ?? ''}${err.stderr ?? ''}`;
+      code = err.status ?? -1;
+    }
   }
 
-  const ran = out.includes('agg-vs-rows:');
+  const ran = out.includes('agg-vs-rows:') && out.includes('one-hop DISTINCT:');
   const timedOut = code === 124 || code === 137;
   const hit = timedOut || (ran && code !== 0);
   let detail;
@@ -181,9 +205,9 @@ for (const [label, fileKey, find, replace] of MUTANTS) {
     detail = `exit ${String(code)} (timeout/OOM IS the catch)`;
   } else if (ran) {
     const agg = (out.match(/# agg-vs-rows:.*/)?.[0] ?? '').trim();
-    const route = (out.match(/# ROUTE INVARIANCE.*/)?.[0] ?? '').trim();
+    const d2 = (out.match(/# multi-column one-hop DISTINCT:.*/)?.[0] ?? '').trim();
 
-    detail = `${agg} | ${route}`;
+    detail = `${agg} | ${d2}`;
   } else {
     detail = `DID NOT RUN (code ${String(code)}) — a compile error counts as caught only if the oracle is what failed`;
   }

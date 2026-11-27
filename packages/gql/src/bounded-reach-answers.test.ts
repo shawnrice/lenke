@@ -290,7 +290,17 @@ describe('the bounded rung refuses what it must', () => {
       );
     }
 
+    /*
+     * ~~`['distinctProjection']`~~ — ITEM 2423 moved the one-hop single-column DISTINCT to the
+     * level pass, and `{1,1}` collapses to exactly that shape, so it arrives here too. THIS ROW'S
+     * POINT IS UNCHANGED and is the first assertion below: a one-to-one quantifier must NOT take
+     * `reachShortcut`, because `dropVacuousQuantifier` has already made it a plain hop.
+     */
+    expect(routes('MATCH (a:T)-[:E]->{1,1}(b:T) RETURN DISTINCT b.n AS x')).not.toContain(
+      'reachShortcut',
+    );
     expect(routes('MATCH (a:T)-[:E]->{1,1}(b:T) RETURN DISTINCT b.n AS x')).toEqual([
+      'chainDistinctLevels',
       'distinctProjection',
     ]);
   });

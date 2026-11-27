@@ -162,6 +162,25 @@ const REFERENCE = {
   },
   collect: (rows) => vals(rows),
   'count(DISTINCT)': (rows) => new Set(vals(rows).map(valueKey)).size,
+  /*
+   * The DISTINCT values of the row form, as a multiset for `sameMultiset`. NULL IS KEPT here and
+   * excluded everywhere else on this sheet, because a projection returns a null row where an
+   * aggregate skips the value — `RETURN DISTINCT x1.nl` must yield a null row for the layer whose
+   * `nl` is null, and dropping it would make the oracle demand the wrong answer.
+   */
+  'DISTINCT proj': (rows) => {
+    const seen = new Map();
+
+    for (const r of rows) {
+      const k = valueKey(r.v);
+
+      if (!seen.has(k)) {
+        seen.set(k, r.v);
+      }
+    }
+
+    return [...seen.values()];
+  },
 };
 
 /** The aggregate's GQL spelling over `<v>.<col>`. */
@@ -174,7 +193,19 @@ const SPELL = {
   max: (e) => `max(${e})`,
   collect: (e) => `collect(${e})`,
   'count(DISTINCT)': (e) => `count(DISTINCT ${e})`,
+  /*
+   * NOT AN AGGREGATE, and it is here because item 2423 moved it and this file was the only
+   * cross-route oracle in reach. `RETURN DISTINCT <expr>` is a PROJECTION: it returns one row per
+   * distinct value rather than one row overall, so its reference is the row form's distinct SET and
+   * its result is compared as a MULTISET (an unordered result's row order is unspecified —
+   * [[order-is-unspecified]]). Everything else on the sheet — the patterns, the columns, the
+   * null and absent-key cells, the label-vacuity route axis — applies to it unchanged.
+   */
+  'DISTINCT proj': (e) => `DISTINCT ${e}`,
 };
+
+/** The aggregates that answer ONE row; `DISTINCT proj` answers one row per distinct value. */
+const MULTI_ROW = new Set(['DISTINCT proj']);
 
 /**
  * The one-hop PATTERNS. Each is a modifier that admits or disqualifies a different rung, which is
@@ -213,7 +244,14 @@ const COLS = ['n', 'f', 'g', 'z', 'nl', 's', 't'];
  * BECAUSE it must FAULT - which is the thing the fixture gained these columns to observe.
  */
 const NON_NUMERIC = new Set(['s', 't']);
-const NON_NUMERIC_AGGS = new Set(['count(*)', 'count', 'count(DISTINCT)', 'collect', 'sum']);
+const NON_NUMERIC_AGGS = new Set([
+  'count(*)',
+  'count',
+  'count(DISTINCT)',
+  'collect',
+  'sum',
+  'DISTINCT proj',
+]);
 
 const sameMultiset = (a, b) => {
   if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) {
@@ -285,7 +323,16 @@ for (const c of cells) {
     try {
       const aggRows = query(g, aggText, {});
 
-      got = aggRows.length === 1 ? aggRows[0].v : `ROWS:${String(aggRows.length)}`;
+      if (MULTI_ROW.has(c.agg)) {
+        // A projection answers one row per distinct value, so every row is part of the answer.
+        got = aggRows.map((r) => r.v);
+      } else if (aggRows.length === 1) {
+        got = aggRows[0].v;
+      } else {
+        // An aggregate answering anything but ONE row is itself the defect, so it is reported as
+        // the value rather than indexed into.
+        got = `ROWS:${String(aggRows.length)}`;
+      }
 
       const rows = query(g, rowText, {});
 
@@ -294,7 +341,7 @@ for (const c of cells) {
       const v = vals(rows);
       const absSum = v.reduce((t, x) => t + Math.abs(typeof x === 'number' ? x : 0), 0);
       const ok =
-        c.agg === 'collect'
+        c.agg === 'collect' || MULTI_ROW.has(c.agg)
           ? sameMultiset(got, want)
           : closeEnough(got, want, Math.max(v.length, 1), absSum);
 

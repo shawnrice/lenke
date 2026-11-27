@@ -652,7 +652,23 @@ export const detectChainDistinctLevels = (
 
   const { first: m, ret, cret } = twoClause;
 
-  const shape = chainShapeOf(m);
+  /*
+   * ONE HOP IS ADMITTED HERE TOO (item 2423), for the reason item 2421 admitted it to the fold next
+   * door: `distinctProjection` dedupes WHILE WALKING and sits behind `hop-projection.ts`'s vacuity
+   * gates, so one off-label vertex costs it its arm; this pass tests the label PER VERTEX in
+   * `levelWalk` and is indifferent to it. Measured at N=400,000, depth 1, both arms rebuilt:
+   *
+   *     distinctProjection    41.12 ms vacuous   90.88 ms with ONE off-label vertex   2.21x cliff
+   *     this pass             37.88 ms vacuous   37.52 ms                             no cliff
+   *
+   * **2.42x on a realistic schema and 1.09x on a vacuous one, so unlike item 2421 there is no arm
+   * where this loses.** It also removes the 1.80x depth-1 INVERSION item 2415 flagged under MIXED:
+   * one hop now reads 37.5 against two hops' 46.4, the right way round.
+   *
+   * NO PRECEDENCE GATE IS NEEDED, unlike item 2421's: `clauses.ts` tests `chainDistinctLevels` at
+   * line 1790 and `distinctProjection` at 1899, so this pass already wins when it is willing.
+   */
+  const shape = chainShapeOf(m, 1);
 
   if (shape === null) {
     return null;
