@@ -122615,3 +122615,173 @@ vacuity-arm ratios were advertised as a family to price. No engine change.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Working tree byte-identical to `HEAD`
 for `hop-projection.ts` after the ablation, verified with `git status`.
+
+## Item 2416 — **THE ALLOCATION PROFILER THIS REPO DID NOT HAVE: 37 probes drive the CPU profiler and ZERO drove the HEAP profiler, so every allocation question had been answered indirectly.** Three calibrated mechanisms, and item 1361's "wholly unfit" verdict is QUALIFIED TWICE. **The finding they produce: the aggregate rungs MATERIALIZE A ROW PER ELEMENT to return one scalar — 124 B/element, linear in |V|, 1.5x the churn of materializing every row, at the highest GC share measured (24.8-26.3%).** And the loudest byte count in the sweep is a NEGATIVE result
+
+Every allocation question here had been answered by a GC percentage (`gc-cost-probe.mjs`) or by a
+CPU frame that happens to be an allocation site. [[binding-allocation-is-closed]] priced the
+matcher's per-row `Map` at 28.5% self plus 24% GC from exactly that indirect reading. Neither
+instrument can say which frame's bytes those were, or how many bytes one query costs.
+
+### THE INSTRUMENTS, each calibrated before any engine number was read from it
+
+```text
+  MECH=churn      bytes allocated per query, accounted ACROSS collections
+  MECH=retained   per-frame SURVIVING bytes — the repo's only frame-level retention profiler
+  MECH=gcshare    what those bytes cost in TIME, which is what stops a byte count becoming a prize
+  gcobs-check-2416.mjs   five lines: does a `gc` PerformanceObserver deliver in this runtime?
+```
+
+### ITEM 1361's VERDICT IS QUALIFIED TWICE, and the instrument becomes usable
+
+`PROBES.md` recorded `node --heap-prof` as _"the only instrument in this directory found wholly
+unfit rather than subtly biased"_ — 0.7 MiB reported for 128 MiB allocated, the allocating function
+never named, identically in both arms. Driven as the INSPECTOR DOMAIN around a bounded in-process
+window rather than through the CLI wrapper (which dumps at process exit, after collections), the
+arms SPLIT:
+
+```text
+    2,097,152 small objects through one named site    reported     heapUsed
+      RETAINED in an array                            183.3 MiB    203.3 MiB   frame NAMED
+      dropped immediately                               0.0 MiB    188.3 MiB
+```
+
+**It measures LIVE bytes** — the diagnosis `PROBES.md` itself anticipated ("if `retained` shows up
+and `garbage` does not, the profiler is reporting LIVE bytes"). So it is sound for a question nothing
+here could ask: WHICH FRAME'S ALLOCATIONS SURVIVE.
+
+**AND ITS GARBAGE ARM WAS PARTLY RIGHT TO REPORT ~0.** Item 1361's arm is
+`const obj = {...}; sink += obj.a;` — the object never escapes, so once TurboFan optimizes the loop
+V8's ESCAPE ANALYSIS deletes the allocation. Measured: churn per object falls **51.3 to 66.8 to 46.4
+to 29.7 B** as the count grows 1x to 8x, two independent accounting routes agreeing throughout. A
+meter cannot be calibrated against an allocation the compiler removed.
+
+### THREE INSTRUMENT DEFECTS, each of which produced a confident wrong number first
+
+- **A `heapUsed` delta cannot measure churn here.** `new_space` starts at **1 MiB** and V8 grows it
+  adaptively, so `--max-semi-space-size` does not prevent scavenges (GC counts were IDENTICAL —
+  1/4/13 — at 16, 64 and 256 MiB) and the delta under-reports 4-5x. `v8.GCProfiler` gives
+  `usedHeapSize` before and after every collection, and between two collections the heap grows only
+  by what was allocated. Calibrated by LINEARITY, since absolute MiB is not a known quantity (item
+  1361's assumed 64 B/object measures 67.3, so its "128 MiB" was ~134.6), **one multiplier per
+  PROCESS** because arms in sequence grow each other's heap:
+
+  ```text
+      MULT   1      2      4      8      16
+      B/obj  81.6   81.2   80.6   80.3   80.1     flat to +-1% over 16x; cross-check agrees 2-5%
+  ```
+
+  Run as three arms in one process the same calibration reported **1.00 / 2.62 / 9.00** — this
+  repo's own "one shape per PROCESS" rule, turned on the instrument itself.
+
+- **THE FIRST `gc` PerformanceObserver IN A PROCESS IS DEAD, and `PROBES.md`'s drain rule is
+  necessary but NOT sufficient.** The first observer delivers **0 collections** across 14 reps while
+  a second and third in the same process deliver 5 and 2; with one `await` between `observe()` and
+  the window the first delivers 3. Entries emitted before the hook installs are dropped silently.
+  This is a better explanation of item 1361's _"0 pauses and 0.0% GC for a run really at 18.6%"_ than
+  the drain alone, and a standalone five-line script delivers 93 collections with no arming at all,
+  so it is not the API. **NOT the GC profiler**: an immediate `GCProfiler` start/stop does not arm
+  the entries, and neither does one with a real collection inside it — both were tried and the
+  self-check still fired.
+
+- **A forced collection must be subtracted from the window.** `global.gc()` over a 200,000-vertex
+  graph is a full mark-compact: charging it to the window read **112.5 ms of pause inside a ~75 ms
+  window, 67% of a time it exceeds** — the arithmetic saying so out loud. It is awaited (it is what
+  proves the observer alive), counted, and then discounted. The arm THROWS if it cannot see even
+  that forced collection, rather than printing a 0.0% share.
+
+### THE FINDING: an aggregate rung materializes a ROW PER ELEMENT to return one scalar
+
+`detectHopAggregate` builds a SYNTHETIC one-column projection (`' hopagg'`) and runs the
+row-producing walk with it, then folds the array it gets back. Item 2411's `foldedRowsReducer` takes
+`inner: readonly Row[]`, so the chain rungs do the same. The bisection is exact — three aggregates
+land on the same byte:
+
+```text
+    count(*)          0.00 MiB     closed form, never walks        <- the null control works
+    count(x1.k)       5.79 MiB
+    max(x1.k)         5.79 MiB     identical to the byte  => the bytes are the per-element READ,
+    sum(x1.k)         5.79 MiB                               not the fold arithmetic
+    sum(a.k)          7.78 MiB     reading the START variable costs 2 MiB more
+```
+
+Linear in walked elements, and MORE than materializing every row:
+
+```text
+    N          hop1 (50k rows OUT)      hop1sum (1 row OUT)
+    25,000      2.14 MiB   90 B/row      3.11 MiB
+    50,000      3.87 MiB   81 B/row      5.79 MiB   ~124 B per element
+    100,000     7.99 MiB   84 B/row     11.82 MiB
+```
+
+**And in TIME it is the highest GC share in the sweep** — the fold pays more than the shape that
+actually produces all the rows:
+
+```text
+    shape          median      GC share    churn
+    hop1           5.13 ms     19.8%        81 B/row   (200k rows OUT)
+    hop1sum        9.31 ms     24.8%       124 B/elem  (1 row OUT)
+    hop1countk    11.78 ms     26.3%       124 B/elem  (1 row OUT)
+```
+
+PRIOR ART NAMES THE CURE AND ITS LIMIT. **Item 467**: `sum` is inherently TWO-PASS —
+`values.some(isTemporal)` and `values.some(Array.isArray)` mean the operation is not known until the
+last value is seen — and its stated fix is _"stream the argument VALUES into an array (one number a
+row, no `Map`) and hand it to the SAME collection-wide `sum`"_. That was written for the general
+path; these are the fast rungs, and they still materialize ROWS. So the target splits by aggregate:
+`count`/`min`/`max` could be O(1) allocation, while `sum`/`avg` need every value and can only drop
+the ROW (~124 B) for a VALUE (~8 B), not the array. **Not built here** — this item is the instrument.
+
+### THE LOUDEST BYTE COUNT IN THE SWEEP IS A NEGATIVE RESULT, which is why `gcshare` exists
+
+```text
+    hop2         14.03 MiB    294 B/row    85.09 ms    3.4% GC
+    hop2generic 218.61 MiB   4585 B/row   389.12 ms    5.7% GC     <- 15.6x the BYTES
+```
+
+`hop2generic` (a clause `WHERE` disqualifies every chain rung, so the general matcher runs) churns
+**15.6x** what the rung churns for the same 50,000 rows — and spends **5.7%** of its runtime in GC.
+**The allocation is not why it is 4.6x slower.** A churn figure is not a prize, and an allocation
+profiler that shipped without this arm would have handed someone a 15.6x to chase.
+
+### THE TEST GAP, CLOSED: the ONE-HOP rungs had no cross-route oracle
+
+Item 2410 found TWO SILENT WRONG ANSWERS by asking every (pattern x variable x aggregate) for both
+its aggregate form and its row form and reducing the rows in JS — `count(a.n)` answered 0 over
+1,280,000 paths, live for 400 items under 5,439 green tests. Its 945-cell sweep covered the CHAIN
+rungs; the one-hop rungs are the same class of code and were never swept, which `CLOSED.md` listed as
+surfaced and not taken.
+
+`onehopagg-oracle-2416.ts`: 8 patterns x 3 `WHERE` forms x 2 variables x 7 columns x 8 aggregates =
+**2,088 cells, 4,176 pass / 0 fail**, worst err/bound 0.014 against item 2401's contract.
+
+**IT CARRIES AN AXIS NO ORACLE HERE HAD: LABEL VACUITY.** Item 2415 measured that one isolated
+off-label vertex changes WHICH ARM ANSWERS a one-hop query. A route change is answer-equivalent when
+every route is correct, so the axis is free when all is well and is the only way to see a rung that
+is wrong on ONE of its two arms. **2,088 identical / 0 DIFFER.**
+
+### MUTATION: 3 of 3 real mutants CAUGHT, all 3 survivors PREDICTED — and it found a hole in the oracle
+
+```text
+    sum fold starts at 1 instead of 0                      CAUGHT   440 fail
+    sum fold ignores the value                             CAUGHT   352 fail
+    sum fold drops its non-number guard                    CAUGHT   176 fail + 6 ROUTE-DIFF
+    [EQUIV] renaming the synthetic value column            SURVIVED
+    [EQUIV] sum loses its fold, falls to the other arm     SURVIVED
+    [EQUIV] the NO-OP control                              SURVIVED
+```
+
+**The guard mutant SURVIVED the oracle's first version**, because every column was numeric or absent
+and nothing could reach the guard — a fold's type fault is unobservable without a value that faults.
+A string and a stored temporal were added and it is now caught, with the new vacuity axis catching it
+INDEPENDENTLY on 6 cells. **And "renaming the value column" was mislabelled by me as a real mutant:
+one const serves both the write and the read-back, so a rename cannot break the pairing.**
+
+**THE ORACLE ALSO CAUGHT A DEFECT IN ITS OWN REFERENCE.** Adding the temporal column produced 96
+failures — `count(DISTINCT x1.t)` got 1, wanted 4 — and the ENGINE was right: every vertex stores the
+same date, so there is one distinct value, and `new Set(values)` had counted four object IDENTITIES.
+A reference that keys objects by identity manufactures failures at exactly the cells a real bug hides
+in. Fixed with a value key, shared with the multiset check.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; the gql suite
+green; `hop-projection.ts` verified byte-identical to the pristine copy after the mutation run.

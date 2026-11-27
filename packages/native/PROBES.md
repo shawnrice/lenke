@@ -782,7 +782,63 @@ unpriced engine frame" at 3.2%, does not appear in ANY of the six windowed profi
 **`node --heap-prof` REPORTED 0.7 MiB FOR 128 MiB ALLOCATED** and never named the allocating
 function, identically in both arms (item 1361). The analyzer is kept because its format reading is
 correct and the defect is upstream — but conclude NOTHING from it until `heap-prof-calibrate.mjs`
-passes. This is the only instrument in this directory found wholly unfit rather than subtly biased.
+passes. ~~This is the only instrument in this directory found wholly unfit rather than subtly
+biased.~~ **QUALIFIED TWICE AT ITEM 2416, and the instrument is USABLE for a question nobody could
+ask before — see `allocprof-2416.mjs` below.**
+
+### Item 2416: the heap profiler is sound for RETAINED bytes and blind to CHURN
+
+Driven as the INSPECTOR DOMAIN around a bounded in-process window instead of through the CLI
+wrapper (which dumps at process exit, after collections), the two arms SPLIT:
+
+```text
+    2,097,152 small objects through one named site     reported      heapUsed
+      RETAINED in an array                             183.3 MiB     203.3 MiB   frame NAMED
+      dropped immediately                                0.0 MiB     188.3 MiB
+```
+
+So it measures LIVE bytes, which is the diagnosis this file already anticipated two paragraphs
+below ("if `retained` shows up and `garbage` does not..."). That makes it the repo's only **per-frame
+RETENTION** profiler — which frame's allocations SURVIVE — and not a churn instrument.
+
+**AND ITS GARBAGE ARM WAS PARTLY RIGHT TO REPORT ~0.** Item 1361's arm is
+`const obj = {...}; sink += obj.a;` — the object never escapes, so once TurboFan optimizes the loop
+V8's ESCAPE ANALYSIS removes the allocation entirely. Measured: churn per object falls
+**51.3 → 66.8 → 46.4 → 29.7 B** as the count grows 1x to 8x. A meter cannot be calibrated against an
+allocation the compiler deleted, so `allocprof-2416.mjs` stores each object into a module-level slot
+instead: it escapes (really allocated) and is overwritten (really garbage).
+
+| file                   | what it does                                                                    |
+| ---------------------- | ------------------------------------------------------------------------------- |
+| `allocprof-2416.mjs`   | `MECH=churn` bytes/query, `MECH=retained` per-frame survivors, `MECH=gcshare`   |
+| `gcobs-check-2416.mjs` | five-line calibration: does a `gc` PerformanceObserver deliver in this runtime? |
+
+**`MECH=churn` ACCOUNTS ACROSS COLLECTIONS RATHER THAN AVOIDING THEM.** `heapUsed` after minus
+before is the allocated bytes only while nothing collects in the window, and here something always
+does: `new_space` starts at **1 MiB** and V8 grows it adaptively, so `--max-semi-space-size` does not
+prevent scavenges and the delta under-reports 4-5x. `v8.GCProfiler` reports `usedHeapSize` before and
+after every collection, and between two collections the heap grows only by what was allocated:
+
+    churn = SUM over collections of (usedBefore_i - usedAfter_{i-1}) + (usedEnd - usedAfter_n)
+
+Calibrated by LINEARITY (absolute MiB is not a known quantity — item 1361's "64 B per object" is
+really 67.3, so its "128 MiB" was ~134.6), **one multiplier per PROCESS** because arms in sequence
+grow each other's heap and resize the nursery:
+
+```text
+    MULT   1      2      4      8      16
+    B/obj  81.6   81.2   80.6   80.3   80.1      flat to +-1% over 16x
+    cross-check via nursery events agrees within 2-5%
+```
+
+**AND THE FIRST `gc` PerformanceObserver IN A PROCESS IS DEAD — the drain rule below is necessary
+and NOT sufficient.** Measured: the first observer delivers **0 collections** across 14 reps while a
+second and third in the same process deliver 5 and 2; with one `await` placed between `observe()` and
+the window, the first delivers 3. Entries emitted before the hook installs are dropped silently. So
+`MECH=gcshare` awaits a macrotask after observing, FORCES a collection it then subtracts (a
+`global.gc()` over a 200,000-vertex graph is a full mark-compact and charging it to the window read
+**112.5 ms of pause inside a ~75 ms window — 67% of a time it exceeds**), and THROWS if it cannot see
+even that forced collection rather than printing a 0.0% share.
 
 `gc-cost-probe.mjs` is the one that works: it put the write path at **17.6% GC** against the CPU
 profile's 18.6% for the same shape — two instruments agreeing within a point, which is what makes
