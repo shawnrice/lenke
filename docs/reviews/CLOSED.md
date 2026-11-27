@@ -122844,7 +122844,9 @@ proves its observer alive):
 
 `examples/alloc_count_probe.rs` has had a counting `#[global_allocator]` since items 294/317,
 indexed in `examples/README.md`, reporting allocation **COUNT and a SIZE HISTOGRAM** — strictly more
-than item 2416's byte total, since JS exposes no allocation hook and a count has no noise floor.
+than item 2416's byte total, ~~since JS exposes no allocation hook~~ **and that reason is WRONG --
+item 2418 counts allocations per call site in Node to 2.00/element exactly.** A count still has no
+noise floor, which is the part that holds.
 Item 2416's claim of "ZERO heap profilers" was scoped to `packages/native` and is true as written,
 but CLAUDE.md's rule is to read the bench index before writing a new instrument, and the index
 answers this question on its first screen. **The cost was not duplicated work — the two instruments
@@ -122878,6 +122880,10 @@ synthetic one-column row per element and folds the array.
                           allocation COUNT        bytes per element    vs its own row form
     Rust aggregate        O(log n), 30 -> 32      ~19 B                0.14x
     TS aggregate          O(n) objects            ~124 B               1.5x
+
+    MEASURED EXACTLY AT ITEM 2418, which found the Node hook this item claimed did not exist:
+    TS 1-hop sum          5.13 allocs/ELEMENT     375.6 B              1.23x
+    TS 2-hop sum          0.19 allocs/element       7.8 B              it STREAMS -- 27x better
 ```
 
 **SO THE RUST ENGINE IS ALREADY DOING WHAT ITEM 467 PRESCRIBED** — _"stream the argument VALUES into
@@ -122898,3 +122904,103 @@ GATES. `cargo fmt` 0 and `cargo fmt -- --check` 0 per-crate with `--manifest-pat
 workspace root); `cargo clippy --all-targets -- -D warnings` 0; both read UNPIPED, after a first
 attempt read `tail`'s exit code instead of `cargo`'s — the exact trap CLAUDE.md's gate rule names.
 `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
+
+## Item 2418 — **"JS EXPOSES NO ALLOCATION HOOK" WAS WRONG, AND IT WAS MY OWN UNVERIFIED ASSERTION.** Node counts allocations PER CALL SITE, calibrated here to **2.00 per element exactly** over a 4x range. The counter immediately sharpens item 2416's finding from a byte ratio into a structural one: **the ONE-hop aggregate allocates 5.13 allocations per element and the TWO-hop aggregate allocates 0.19 — 27x, for the same aggregate one hop apart — because the 2-hop path already streams and the 1-hop path materialises a row per element.** So the fix has a reference implementation inside the TS engine itself, not just in Rust
+
+Item 2416 asserted that JS has no allocation hook, which is why its churn meter reports BYTES and no
+count; item 2417 recorded the resulting asymmetry against the Rust `GlobalAlloc` probe and repeated
+the reason. **Neither item verified it.** The assertion was based on having tried two of the three
+`HeapProfiler` APIs.
+
+### THE THIRD API, which is the one that answers the question
+
+```text
+    HeapProfiler.startSampling              sound for RETAINED bytes, blind to churn   (item 2416)
+    node --heap-prof (the CLI wrapper)      dumps at exit, after collections           (item 1361)
+    HeapProfiler.startTrackingHeapObjects   with `trackAllocations: true` V8 records every
+      { trackAllocations: true }            allocation against its CALL SITE, and the snapshot
+                                            taken afterwards carries a `trace_tree` whose nodes
+                                            hold a COUNT and a SIZE per site
+```
+
+That is DevTools' "allocation instrumentation on timeline", and it is the same two numbers the Rust
+counting allocator reports. `trace_function_infos` and `trace_tree` are flat records whose widths
+come from `snapshot.meta`, so both are decoded from the meta rather than from assumed offsets.
+
+### CALIBRATED FIRST, which is item 2416's own rule and the reason three of its mechanisms were caught lying
+
+```text
+    COUNT       allocations at `burn`     per element     B/element at that site
+    250,000       500,986                   2.00            80.2
+    1,000,000   2,000,952                   2.00            80.2
+```
+
+**2.00 allocations per iteration is EXACTLY right** — the object plus the template-literal string
+`s${i & 1023}` — and the site is NAMED with its file and line. The 80.2 B/element independently
+matches item 2416's churn meter at 80.1-81.6 B/object: **two unrelated mechanisms agreeing, which is
+this directory's standard for trusting either** (`gc-cost-probe.mjs` is trusted because it landed
+within a point of a CPU profile).
+
+Objects are stored into a module-level slot so they ESCAPE. A naive `const o = {...}` is deleted by
+escape analysis and allocates nothing (item 2416 measured churn/object falling 51.3 to 29.7 B as the
+count grew), so it cannot calibrate a counter either.
+
+### TWO INSTRUMENT DEFECTS, both caught by the calibration rather than by inspection
+
+- **`stopTrackingHeapObjects` EMITS A SECOND SNAPSHOT** on top of the one `takeHeapSnapshot` asks
+  for, so a chunk listener left armed across both concatenates two JSON documents and `JSON.parse`
+  fails with _"Unexpected non-whitespace character after JSON at position 6705966"_ — which reads
+  like a corrupt snapshot rather than two good ones. Chunks are now collected for exactly one.
+- **THE INSTRUMENT'S OWN TRANSPORT WAS IN THE TOTALS.** The snapshot arrives as
+  `addHeapSnapshotChunk` events, so the inspector channel allocates chunk strings INSIDE the
+  measured window: `#onMessage node:inspector` showed **44.01 MiB against the engine's 1.96**,
+  turning a real ~103 B/element into a reported **"4949.0 B/element"**. The COUNTS were never
+  affected (215 allocations against the engine's 34,634) — only the byte totals, and only because a
+  few allocations are enormous. Excluded by SOURCE now. The first exclusion was too broad
+  (`(native):0`), which dropped the engine's own `next`/`values` iterator frames and under-counted
+  by ~47,000 while leaving them visible in the per-site table — a total that disagreed with its own
+  breakdown.
+
+### THE FINDING, now structural rather than a byte ratio. 20,000 elements walked
+
+```text
+    shape                     allocs/element   B/element    top sites
+    hop1    20k rows OUT           4.18           336.3     next, projectRow, values
+    hop1sum  ONE row out           5.13           375.6     next, projectRow, values
+    hop2    20k rows OUT           5.21           277.7     next, projectRow, values
+    hop2sum  ONE row out           0.19             7.8     levelWalk, foldLevel -- NO projectRow
+    hop1count  CONTROL             0.07             4.5     the closed form; proves a ~0 reading
+```
+
+**`projectRow` (`index.mjs:4602`) appears ~34,600 times for 20,000 elements in the one-hop aggregate
+and is ABSENT from the two-hop one.** That is the row-per-element materialisation named by file and
+line rather than inferred from a byte total — which is precisely what item 2416's meter could not do.
+
+**AND THE ONE-HOP AGGREGATE ALLOCATES MORE THAN THE SHAPE THAT RETURNS ALL 20,000 ROWS** (5.13
+against 4.18 per element), while returning one. The extra is ~+1 `next` per element on top of the row.
+
+### THE CURE IS ALREADY IN THIS ENGINE, ONE WIDTH OVER
+
+The 2-hop aggregate rides `chainFoldLevels` (`levelWalk` + `foldLevel`, items 2010/2410) and never
+builds a row: **0.19 allocations per element, 27x better than the 1-hop path.** So item 467's
+prescription (_"stream the argument VALUES into an array, one number a row, no per-row object"_) is
+implemented in the TS engine at 2+ hops and missing at one hop — a stronger result than item 2417's
+cross-engine version, because the reference is the same engine and the same surface.
+
+This is the same shape as item 2415's finding from the other direction: **the ONE-hop rungs are the
+weak ones.** There the one-hop rungs carry 22 vacuity gates where the two-hop rungs carry none; here
+the one-hop aggregate materialises where the two-hop aggregate streams.
+
+**STILL NO TIME PRIZE MEASURED, and item 2416's correction stands.** The TS aggregate is already
+0.59-0.90x of its row form in wall clock, so the prize is bounded by the GC share (24.8-26.3%) and
+not by 27x. A 27x allocation ratio with no measured time behind it is exactly what `MECH=gcshare`
+exists to stop anyone quoting.
+
+### WIRED
+
+`bun run alloc:count`, alongside item 2417's `alloc` / `alloc:calibrate` / `alloc:gcobs` /
+`alloc:rust`.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. Item 2416's and
+item 2417's "no allocation hook" claims are struck in this commit, and item 2417's cross-engine table
+gains the measured TS rows.

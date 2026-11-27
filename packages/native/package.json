@@ -63,7 +63,8 @@
     "alloc:gcobs": "node gcobs-check-2416.mjs",
     "alloc:rust": "cargo run --release --manifest-path ../../crates/lenke-engine/Cargo.toml --example alloc_count_probe",
     "oracle:onehopagg": "bun onehopagg-oracle-2416.mjs",
-    "oracle:onehopagg:mutants": "node onehopagg-mutants-2416.mjs"
+    "oracle:onehopagg:mutants": "node onehopagg-mutants-2416.mjs",
+    "alloc:count": "node alloccount-2418.mjs"
   },
   "dependencies": {
     "@lenke/core": "workspace:*",

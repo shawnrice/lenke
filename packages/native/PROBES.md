@@ -811,6 +811,7 @@ instead: it escapes (really allocated) and is overwritten (really garbage).
 | file                   | what it does                                                                    |
 | ---------------------- | ------------------------------------------------------------------------------- |
 | `allocprof-2416.mjs`   | `MECH=churn` bytes/query, `MECH=retained` per-frame survivors, `MECH=gcshare`   |
+| `alloccount-2418.mjs`  | allocation COUNT **per call site** — the Rust `GlobalAlloc` equivalent          |
 | `gcobs-check-2416.mjs` | five-line calibration: does a `gc` PerformanceObserver deliver in this runtime? |
 
 **`MECH=churn` ACCOUNTS ACROSS COLLECTIONS RATHER THAN AVOIDING THEM.** `heapUsed` after minus
@@ -855,6 +856,43 @@ version reported **0 pauses and 0.0% GC** for a run profiling at 18.6% (item 136
 synchronous loop building many graphs retains all of them: heap 148 / 614 / 1242 MiB at 10 / 45 / 90
 reps, and a 256 MiB cap OOM-crashes. Not a leak — one macrotask drains it — but a benchmark that
 builds graphs in a tight loop is measuring a different heap than it thinks.
+
+### Item 2418: NODE DOES EXPOSE AN ALLOCATION HOOK, and item 2416's claim that it does not was never verified
+
+`HeapProfiler.startTrackingHeapObjects({ trackAllocations: true })` — DevTools' "allocation
+instrumentation on timeline" — makes V8 record every allocation against its CALL SITE, and the
+snapshot taken afterwards carries a `trace_tree` whose nodes hold a COUNT and a SIZE per site. That
+is the same two numbers the Rust counting allocator reports, and it is a THIRD API, distinct from
+the `startSampling` one item 2416 tried and the `--heap-prof` wrapper item 1361 condemned.
+
+Calibrated to **2.00 allocations per element exactly** at 250,000 and 1,000,000 iterations, site
+named by file and line, and its 80.2 B/element independently matches the churn meter's 80.1-81.6 —
+two unrelated mechanisms agreeing, which is this directory's standard for trusting either.
+
+Two defects it was caught on, both by the calibration rather than by inspection:
+`stopTrackingHeapObjects` emits a SECOND snapshot (two concatenated JSON documents, `JSON.parse`
+fails at position 6705966, which reads as corruption rather than as two good snapshots), and the
+inspector's own chunk transport allocates INSIDE the window (`#onMessage` 44.01 MiB against the
+engine's 1.96, turning ~103 B/element into a reported 4949.0). Counts were never affected; byte
+totals were.
+
+**What it found at once, which a byte total cannot say:** `projectRow` appears ~34,600 times for
+20,000 elements in the ONE-hop aggregate and is ABSENT from the TWO-hop one.
+
+```text
+    shape                     allocs/element   B/element    top sites
+    hop1    20k rows OUT           4.18           336.3     next, projectRow, values
+    hop1sum  ONE row out           5.13           375.6     next, projectRow, values
+    hop2    20k rows OUT           5.21           277.7     next, projectRow, values
+    hop2sum  ONE row out           0.19             7.8     levelWalk, foldLevel -- NO projectRow
+    hop1count  CONTROL             0.07             4.5     the closed form; proves a ~0 reading
+```
+
+**27x for the same aggregate one hop apart**, because the 2-hop path rides `chainFoldLevels` and
+never builds a row — so item 467's prescribed fix is implemented in this engine at 2+ hops and
+missing at one. The one-hop aggregate also allocates MORE than the shape returning all 20,000 rows
+(5.13 against 4.18) while returning one. **No time prize: the aggregate is already 0.59-0.90x its
+row form in wall clock, so the prize is the GC share, not the 27x.**
 
 ## The ISOLATED ROW BENCHES — for a sub-10% question on ONE row
 
