@@ -57,7 +57,13 @@
     "probe:arity": "bun cross-surface-arity-probe.ts",
     "probe:elemread": "bun elemread-probe.ts",
     "probe:adjlayout": "bun adjlayout-probe.ts",
-    "spelling:gremlin": "bun gremlin-spelling-probe.ts"
+    "spelling:gremlin": "bun gremlin-spelling-probe.ts",
+    "alloc": "node --expose-gc allocprof-2416.mjs",
+    "alloc:calibrate": "for m in 1 2 4 8 16; do MULT=$m node --expose-gc allocprof-2416.mjs; done",
+    "alloc:gcobs": "node gcobs-check-2416.mjs",
+    "alloc:rust": "cargo run --release --manifest-path ../../crates/lenke-engine/Cargo.toml --example alloc_count_probe",
+    "oracle:onehopagg": "bun onehopagg-oracle-2416.mjs",
+    "oracle:onehopagg:mutants": "node onehopagg-mutants-2416.mjs"
   },
   "dependencies": {
     "@lenke/core": "workspace:*",

@@ -122616,7 +122616,7 @@ vacuity-arm ratios were advertised as a family to price. No engine change.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Working tree byte-identical to `HEAD`
 for `hop-projection.ts` after the ablation, verified with `git status`.
 
-## Item 2416 — **THE ALLOCATION PROFILER THIS REPO DID NOT HAVE: 37 probes drive the CPU profiler and ZERO drove the HEAP profiler, so every allocation question had been answered indirectly.** Three calibrated mechanisms, and item 1361's "wholly unfit" verdict is QUALIFIED TWICE. **The finding they produce: the aggregate rungs MATERIALIZE A ROW PER ELEMENT to return one scalar — 124 B/element, linear in |V|, 1.5x the churn of materializing every row, at the highest GC share measured (24.8-26.3%)** — though a CORRECTION below removes its apparent TIME prize: the aggregate is already FASTER than materializing the rows it folds, and two biases in my own `gcshare` arm are why I first read it the other way. And the loudest byte count in the sweep is a NEGATIVE result
+## Item 2416 — **THE ALLOCATION PROFILER THIS REPO DID NOT HAVE: 37 probes drive the CPU profiler and ZERO drove the HEAP profiler, so every allocation question had been answered indirectly.** ~~(repo-wide)~~ **SCOPED TO `packages/native` — item 2417 found that the RUST side has had a counting global allocator since item 294, indexed in the bench README, reporting allocation COUNT and a SIZE HISTOGRAM. I did not read the index before building this.** Three calibrated mechanisms, and item 1361's "wholly unfit" verdict is QUALIFIED TWICE. **The finding they produce: the aggregate rungs MATERIALIZE A ROW PER ELEMENT to return one scalar — 124 B/element, linear in |V|, 1.5x the churn of materializing every row, at the highest GC share measured (24.8-26.3%)** — though a CORRECTION below removes its apparent TIME prize: the aggregate is already FASTER than materializing the rows it folds, and two biases in my own `gcshare` arm are why I first read it the other way. And the loudest byte count in the sweep is a NEGATIVE result
 
 Every allocation question here had been answered by a GC percentage (`gc-cost-probe.mjs`) or by a
 CPU frame that happens to be an allocation site. [[binding-allocation-is-closed]] priced the
@@ -122818,3 +122818,83 @@ in. Fixed with a value key, shared with the multiset check.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; the gql suite
 green; `hop-projection.ts` verified byte-identical to the pristine copy after the mutation run.
+
+## Item 2417 — **THE RUST SIDE HAD A COUNTING GLOBAL ALLOCATOR ALL ALONG, and item 2416 should have found it before building the TS one.** It covered parse and decode and never EXECUTION — extended here, and the cross-engine answer is decisive: **the Rust aggregate does NOT allocate per element (4x the walk costs +2 allocations) while the TS rung allocates ~124 B/element linearly.** So item 2416's target has a working reference implementation in this repo. Plus the allocation probes are now wired into `bun run`, which they were not
+
+Three questions, three answers, and two of them are corrections to item 2416.
+
+### 1. The probes were NOT in the standard tooling
+
+Item 2416 documented its three mechanisms in `PROBES.md` and left them invokable only as
+`node --expose-gc allocprof-2416.mjs`, while every other standing probe here has a named script
+(`bench`, `bench:usage`, `fuzz`, `spelling`, `probe:*`). Wired now, with `--expose-gc` baked in
+because both arms need it (`churn` for a settled baseline, `gcshare` for the forced collection that
+proves its observer alive):
+
+```text
+    bun run alloc                     the churn/retained/gcshare probe
+    bun run alloc:calibrate           the linearity sweep, ONE multiplier per process
+    bun run alloc:gcobs               the five-line gc-observer calibration
+    bun run alloc:rust                the Rust counting allocator
+    bun run oracle:onehopagg          the 2,088-cell one-hop aggregate oracle
+    bun run oracle:onehopagg:mutants  its mutation battery
+```
+
+### 2. RUST WAS AHEAD OF TS HERE, and item 2416 did not look
+
+`examples/alloc_count_probe.rs` has had a counting `#[global_allocator]` since items 294/317,
+indexed in `examples/README.md`, reporting allocation **COUNT and a SIZE HISTOGRAM** — strictly more
+than item 2416's byte total, since JS exposes no allocation hook and a count has no noise floor.
+Item 2416's claim of "ZERO heap profilers" was scoped to `packages/native` and is true as written,
+but CLAUDE.md's rule is to read the bench index before writing a new instrument, and the index
+answers this question on its first screen. **The cost was not duplicated work — the two instruments
+answer different questions — but it was a day of not knowing the better instrument existed.**
+
+### 3. THE EXECUTION PATH WAS UNASKED ON BOTH SIDES, and the answer is a cross-engine split
+
+The Rust probe covered `gql::parse`, `gremlin::parse` and NDJSON decode, never `exec::try_run`.
+Extended with six execution cases, `parse` and `optimize` held OUTSIDE the counter so only execution
+is measured, swept over walk size with `ALLOC_NODES`:
+
+```text
+                            20,000 walked          80,000 walked
+    1 hop RETURN b.age      67 allocs  2.71 MB     73 allocs  10.84 MB
+    1 hop sum(b.age)        30 allocs  0.38 MB     32 allocs   1.53 MB
+    1 hop max(b.age)        30 allocs  0.38 MB     32 allocs   1.53 MB
+    1 hop count(*)  CTRL    36 allocs  0.38 MB     38 allocs   1.53 MB
+    2 hops RETURN c.age    120 allocs  4.54 MB
+    2 hops sum(c.age)      126 allocs  3.82 MB
+```
+
+**4x THE WALK COSTS +2 ALLOCATIONS.** The count is logarithmic in elements — geometric growth of ONE
+value buffer, visible as the `>1k` bucket going 10 to 12 — while bytes scale linearly with that
+buffer at ~19 B/element. And the Rust aggregate allocates **7x LESS** than its own row form.
+
+The TS rung does the opposite on both counts: ~124 B per element, LINEAR (3.11 / 5.79 / 11.82 MiB at
+25k / 50k / 100k), and **1.5x MORE** than its own row form, because `detectHopAggregate` builds a
+synthetic one-column row per element and folds the array.
+
+```text
+                          allocation COUNT        bytes per element    vs its own row form
+    Rust aggregate        O(log n), 30 -> 32      ~19 B                0.14x
+    TS aggregate          O(n) objects            ~124 B               1.5x
+```
+
+**SO THE RUST ENGINE IS ALREADY DOING WHAT ITEM 467 PRESCRIBED** — _"stream the argument VALUES into
+an array (one number a row, no `Map`) and hand it to the SAME collection-wide `sum`"_ — and the TS
+target is therefore de-risked rather than speculative: there is a working reference implementation of
+it in this repo, in the other engine, for the same surface. This is the twin-implementation hazard
+this file records over and over (items 333, 335, 349 were node/edge twins; item 360 was the two
+SURFACE LANGUAGES in this very probe), one layer up: the fix landed on the Rust engine and not the
+TS one.
+
+**STILL NO TIME PRIZE MEASURED, and item 2416's correction stands.** The TS aggregate is already
+0.59-0.90x of its row form in wall clock, so the prize is bounded by the GC share (24.8-26.3%) and
+not by the byte ratio. The two-hop rows/sum pair above is also worth noting before anyone
+generalizes: at two hops the Rust aggregate allocates MORE than its row form (126 against 120
+allocations), so the one-hop result is not automatically the chain result.
+
+GATES. `cargo fmt` 0 and `cargo fmt -- --check` 0 per-crate with `--manifest-path` (there is no
+workspace root); `cargo clippy --all-targets -- -D warnings` 0; both read UNPIPED, after a first
+attempt read `tail`'s exit code instead of `cargo`'s — the exact trap CLAUDE.md's gate rule names.
+`bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.

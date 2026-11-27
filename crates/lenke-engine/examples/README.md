@@ -46,41 +46,42 @@ enumeration's is flat.
 
 ## By question
 
-| If you are asking…                                                               | Run                                  |
-| -------------------------------------------------------------------------------- | ------------------------------------ |
-| Where does NDJSON decode time go?                                                | `ingest_bench -- phases`             |
-| How close is decode to the raw-scan ceiling?                                     | `ingest_bench -- ceiling`            |
-| What does parallel decode / encode buy?                                          | `ingest_bench -- threads` / `encode` |
-| What does each ENCODE format cost, per byte? (incl. the FFI `binary` snapshot)   | `ingest_bench -- codecs`             |
-| How many resident bytes does an element cost?                                    | `ingest_bench -- mem`                |
-| What does a GQL / Gremlin query shape cost?                                      | `query_bench -- gql` / `gremlin`     |
-| What does ONE `ANY SHORTEST` shape cost, isolated in its own process, by phase?  | `shortpath_2393` (`SHAPE=…`)         |
-| Is by-id access O(1) as the graph grows, and what does it cost vs a bare map?    | `byid_2397`                          |
-| Which counts still enumerate vs shortcut?                                        | `query_bench -- counts`              |
-| What does a row cost, by what is returned?                                       | `query_bench -- perrow`              |
-| What does turning query text into a plan cost?                                   | `query_bench -- plan`                |
-| How many allocations does a parse or a DECODE make, and of what sizes?           | `alloc_count_probe`                  |
-| Would a parse CACHE change any plan? (prepared vs direct)                        | `prepared_parity_probe`              |
-| Where does a lookup table stop being cheaper than a slice scan?                  | `bind_probe`                         |
-| Does an indexed key seek beat a scan?                                            | `query_bench -- seeded`              |
-| What does a bulk write (SET) pay?                                                | `storage_bench -- write`             |
-| What does a second label on every edge cost?                                     | `storage_bench -- multilabel`        |
-| What do the graph algorithms cost, and how do they parallelize?                  | `algo_bench -- run` / `parallel`     |
-| What does neighborAggregate cost? a CALL's dispatch vs its projection?           | `algo_bench -- neighboragg` / `call` |
-| What does a map/record property cost vs flat scalars (stored, codec)?            | `value_bench -- maps` / `codec`      |
-| How do shapes scale across the cache transition?                                 | `scale_bench -- sweep`               |
-| What does content-derived CDC scope extraction cost per write?                   | `scale_bench -- cdc`                 |
-| What does a scalar min/max cost by COLUMN TYPE and ENCODING?                     | `strag_421`                          |
-| What does a PAGED query pay, and does the page's depth matter?                   | `skippage_428`                       |
-| What does a filter's EXPRESSION cost, at equal selectivity?                      | `exprpred_437`                       |
-| What does ONE scalar function call cost, and is its name vectorized?             | `scalarfn_bench`                     |
-| Why is DETACH DELETE the slow write, and in WHAT does it scale?                  | `detach_442`                         |
-| What does `RETURN DISTINCT <temporal>` cost PER KIND, and which reach the keyer? | `temporal_distinct_1015`             |
-| And what does a statement-position `ORDER BY <temporal> LIMIT k` pay?            | `temporal_distinct_1015` (topk)      |
-| What does a LABEL NAME's length cost an element render, per row?                 | `labelhoist_1068`                    |
-| And an EDGE element, by edge-type COUNT and name length?                         | `edgelabel_1069`                     |
-| What would `Value::Map(Arc<[_]>)` save over `Arc<Vec<_>>` at render sizes?       | `mapalloc_1070`                      |
-| What does ONE property CELL cost an element render, by properties per node?      | `propcells_1071`                     |
+| If you are asking…                                                                | Run                                  |
+| --------------------------------------------------------------------------------- | ------------------------------------ |
+| Where does NDJSON decode time go?                                                 | `ingest_bench -- phases`             |
+| How close is decode to the raw-scan ceiling?                                      | `ingest_bench -- ceiling`            |
+| What does parallel decode / encode buy?                                           | `ingest_bench -- threads` / `encode` |
+| What does each ENCODE format cost, per byte? (incl. the FFI `binary` snapshot)    | `ingest_bench -- codecs`             |
+| How many resident bytes does an element cost?                                     | `ingest_bench -- mem`                |
+| What does a GQL / Gremlin query shape cost?                                       | `query_bench -- gql` / `gremlin`     |
+| What does ONE `ANY SHORTEST` shape cost, isolated in its own process, by phase?   | `shortpath_2393` (`SHAPE=…`)         |
+| Is by-id access O(1) as the graph grows, and what does it cost vs a bare map?     | `byid_2397`                          |
+| Which counts still enumerate vs shortcut?                                         | `query_bench -- counts`              |
+| What does a row cost, by what is returned?                                        | `query_bench -- perrow`              |
+| What does turning query text into a plan cost?                                    | `query_bench -- plan`                |
+| How many allocations does a parse or a DECODE make, and of what sizes?            | `alloc_count_probe`                  |
+| Does an AGGREGATE allocate per ELEMENT during EXECUTION? (TS does, Rust does not) | `alloc_count_probe`                  |
+| Would a parse CACHE change any plan? (prepared vs direct)                         | `prepared_parity_probe`              |
+| Where does a lookup table stop being cheaper than a slice scan?                   | `bind_probe`                         |
+| Does an indexed key seek beat a scan?                                             | `query_bench -- seeded`              |
+| What does a bulk write (SET) pay?                                                 | `storage_bench -- write`             |
+| What does a second label on every edge cost?                                      | `storage_bench -- multilabel`        |
+| What do the graph algorithms cost, and how do they parallelize?                   | `algo_bench -- run` / `parallel`     |
+| What does neighborAggregate cost? a CALL's dispatch vs its projection?            | `algo_bench -- neighboragg` / `call` |
+| What does a map/record property cost vs flat scalars (stored, codec)?             | `value_bench -- maps` / `codec`      |
+| How do shapes scale across the cache transition?                                  | `scale_bench -- sweep`               |
+| What does content-derived CDC scope extraction cost per write?                    | `scale_bench -- cdc`                 |
+| What does a scalar min/max cost by COLUMN TYPE and ENCODING?                      | `strag_421`                          |
+| What does a PAGED query pay, and does the page's depth matter?                    | `skippage_428`                       |
+| What does a filter's EXPRESSION cost, at equal selectivity?                       | `exprpred_437`                       |
+| What does ONE scalar function call cost, and is its name vectorized?              | `scalarfn_bench`                     |
+| Why is DETACH DELETE the slow write, and in WHAT does it scale?                   | `detach_442`                         |
+| What does `RETURN DISTINCT <temporal>` cost PER KIND, and which reach the keyer?  | `temporal_distinct_1015`             |
+| And what does a statement-position `ORDER BY <temporal> LIMIT k` pay?             | `temporal_distinct_1015` (topk)      |
+| What does a LABEL NAME's length cost an element render, per row?                  | `labelhoist_1068`                    |
+| And an EDGE element, by edge-type COUNT and name length?                          | `edgelabel_1069`                     |
+| What would `Value::Map(Arc<[_]>)` save over `Arc<Vec<_>>` at render sizes?        | `mapalloc_1070`                      |
+| What does ONE property CELL cost an element render, by properties per node?       | `propcells_1071`                     |
 
 **Deferred** (need crate-private access or a large bespoke fixture, so not in a
 group binary yet): the eval-vs-columnar floor (`eval_vec` is crate-private — it
@@ -241,7 +242,27 @@ question in its module header — read the header before touching it.
   answer to give it away — **a parameterized INSERT plans as `InsertFrom`/`InsertNodeExpr` instead
   of the literal `Insert` path**, so a cache would silently cost it performance. Re-run it before
   widening what the cache admits.
-- `alloc_count_probe` — how many heap allocations `gql::parse` makes, and of what SIZES. A
+- `alloc_count_probe` — **also covers the QUERY EXECUTION path as of item 2417**, which is where
+  the engine's hottest allocation question lives and which this binary did not ask for 2000 items.
+  Item 2416 built the TS counterpart (`packages/native/allocprof-2416.mjs`) and found the TS one-hop
+  aggregate rung materialising a synthetic one-column ROW PER ELEMENT to return one scalar. The same
+  question here, at 20,000 then 80,000 elements walked (`ALLOC_NODES`):
+
+  ```text
+                              20,000 walked        80,000 walked
+      1 hop RETURN b.age      67 allocs  2.7 MB    73 allocs  10.8 MB
+      1 hop sum(b.age)        30 allocs  0.38 MB   32 allocs   1.5 MB
+      1 hop max(b.age)        30 allocs  0.38 MB   32 allocs   1.5 MB
+  ```
+
+  **The Rust aggregate does NOT allocate per element: 4x the walk costs +2 allocations** (geometric
+  growth of ONE value buffer, visible as the `>1k` bucket going 10 → 12) while bytes scale with the
+  buffer at ~19 B/element. It allocates **7x LESS** than its own row form. The TS rung allocates
+  ~124 B/element, linearly, and **1.5x MORE** than its row form — so this is a genuine cross-engine
+  asymmetry, and the Rust side is the working reference implementation for item 467's prescribed fix
+  ("stream the argument VALUES into an array, one number a row, no per-row object").
+
+  How many heap allocations `gql::parse` makes, and of what SIZES. A
   counting global allocator, which is why it is its own binary: it would perturb every other case
   in a shared process. Written at item 317 to settle a target that had been recorded as
   "structural rather than allocational" — it is 50 allocations and 4187 bytes for a 57-byte query,

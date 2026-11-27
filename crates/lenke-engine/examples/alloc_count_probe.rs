@@ -243,6 +243,77 @@ fn main() {
     // rows. So the small buckets ARE the borrow target, and their total times the measured
     // per-pair cost is the win -- no micro in the loop.
     let n = 50_000;
+    // --- the QUERY EXECUTION path (item 2417) ---
+    //
+    // THIS FILE ANSWERED PARSE AND DECODE AND NEVER EXECUTION, which left the engine's hottest
+    // allocation question unasked on this side of the fence. Item 2416 built the TS counterpart
+    // (`packages/native/allocprof-2416.mjs`) and found that the TS one-hop aggregate rung
+    // MATERIALISES A SYNTHETIC ONE-COLUMN ROW PER ELEMENT and folds the array: ~124 B per walked
+    // element, linear in |V|, to return ONE scalar, and 1.5x the churn of materialising every row.
+    //
+    // The two engines are separate implementations of one surface, and this repo's recurring
+    // failure is a fix or a defect living on one of two parallel implementations (items 333, 335,
+    // 349 were node/edge twins; 360 was the two SURFACE LANGUAGES in this very file). So the
+    // question is whether the Rust engine does the same thing, and it is asked with the instrument
+    // that can actually answer it: a COUNT, not a byte total. A count has no noise floor, and
+    // "N allocations for N elements" is a different claim from "N bytes".
+    //
+    // `parse` and `optimize` run OUTSIDE the counter — they are already priced above and would
+    // otherwise swamp a per-element reading. Only `exec::try_run` is counted.
+    println!("\n=== allocations per EXECUTION, one-hop and two-hop (item 2417) ===");
+    println!("  does an AGGREGATE allocate per ELEMENT, as the TS rung does (item 2416)?\n");
+
+    // SWEPT, because "30 allocations" only means "not per element" if it STAYS 30 when the walk
+    // grows. `ALLOC_NODES` lets the count be read at two sizes in one run.
+    let exec_nodes: u32 = std::env::var("ALLOC_NODES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(20_000);
+    let exec_store = harness::social_store(exec_nodes, 1);
+
+    let exec_cases: [(&str, &str); 6] = [
+        // The row form is the reference: it MUST allocate per row, because it returns them all.
+        (
+            "1 hop: RETURN b.age (rows out)",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN b.age AS v",
+        ),
+        // These three return ONE value. Per-element allocation here is the thing being looked for.
+        (
+            "1 hop: sum(b.age) (ONE row out)",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN sum(b.age) AS v",
+        ),
+        (
+            "1 hop: max(b.age) (ONE row out)",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN max(b.age) AS v",
+        ),
+        // The null control: `count(*)` reads no column, so a closed form can answer it without
+        // walking at all. If this allocates per element, the per-element cost is the WALK.
+        (
+            "1 hop: count(*) (CONTROL, reads nothing)",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN count(*) AS v",
+        ),
+        (
+            "2 hops: RETURN c.age (rows out)",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN c.age AS v",
+        ),
+        (
+            "2 hops: sum(c.age) (ONE row out)",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN sum(c.age) AS v",
+        ),
+    ];
+
+    for (label, q) in exec_cases {
+        let raw = lenke_engine::gql::parse(q).expect("parses");
+        let plan = lenke_engine::opt::optimize_indexed(raw, &exec_store);
+
+        count(label, || {
+            lenke_engine::exec::try_run(&plan, &exec_store).expect("runs")
+        });
+    }
+
+    println!("\n  {exec_nodes} nodes, degree 1. Divide the count by the rows the shape WALKS:");
+    println!("  a per-element allocator shows a count that tracks the walk, not the output.\n");
+
     println!("\n=== allocations per NDJSON decode (items 329/330) ===");
     println!("  {n} nodes x2 props, with and without 5 edges/node\n");
 
