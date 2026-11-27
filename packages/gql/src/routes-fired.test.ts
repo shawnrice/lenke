@@ -551,7 +551,15 @@ describe('every fast-path detector fires for its own shape', () => {
       'MATCH (n:L) RETURN min(n.k) AS a, max(n.k) AS b',
       ['multiNodeAggregate'],
     ],
-    ['hop aggregate', 'MATCH (a:L)-[:R]->(b:L) RETURN max(b.k) AS m', ['hopAggregate']],
+    /*
+     * ~~`['hopAggregate']`~~ — ITEM 2420 MOVED THE ONE-HOP FOLDABLE AGGREGATES TO THE LEVEL FOLD.
+     * `hopAggregate` ran the row-producing walk with a synthetic one-column projection and folded
+     * the `Row[]`, so it allocated 2.00 per element and held 32-67 MiB; `chainFoldLevels` computes
+     * `u_1(v) = in-degree(v)` and folds `SUM u_v * x_v` with a CONSTANT allocation count and under
+     * 2.2 MiB. `rewrites.ts` takes the precedence decision at compile time and carries the numbers
+     * and the accepted 1.3x fanout-1 trade.
+     */
+    ['hop aggregate', 'MATCH (a:L)-[:R]->(b:L) RETURN max(b.k) AS m', ['chainFoldLevels']],
     /*
      * `sum`, NOT just `max`, since item 2401. `sum` reaches this rung too, and before 2401 it
      * reached it only on a FORCED start-driven walk (`ORDER_SENSITIVE_AGGREGATES` conflated "this
@@ -563,7 +571,33 @@ describe('every fast-path detector fires for its own shape', () => {
      * closed-form fan-in oracles in `hop-sum-fold.test.ts`, which is where a dropped multiplicity
      * would show up as a wrong answer.
      */
-    ['hop aggregate, sum', 'MATCH (a:L)-[:R]->(b:L) RETURN sum(b.k) AS s', ['hopAggregate']],
+    ['hop aggregate, sum', 'MATCH (a:L)-[:R]->(b:L) RETURN sum(b.k) AS s', ['chainFoldLevels']],
+    /*
+     * THE THREE SHAPES THE LEVEL FOLD REFUSES, so `hopAggregate` KEEPS them — this is the residual
+     * that makes item 2420 a precedence change rather than a replacement, and each row is a
+     * different reason:
+     */
+    // `collect` needs the LIST; a multiplicity-weighted fold cannot emit `u_v` copies of a value
+    // without materializing the thing it exists to avoid.
+    [
+      'hop aggregate, collect STAYS',
+      'MATCH (a:L)-[:R]->(b:L) RETURN collect(b.k) AS ks',
+      ['hopAggregate'],
+    ],
+    // A NEAR-argument aggregate: `foldLevel` binds only the far variable, which is item 2410's
+    // free-variable test and the defect it fixed (`count(a.n)` answered 0 over 1,280,000 paths).
+    [
+      'hop aggregate, NEAR argument STAYS',
+      'MATCH (a:L)-[:R]->(b:L) RETURN sum(a.k) AS s',
+      ['hopAggregate'],
+    ],
+    // A percentile has no streaming fold at all — `hopPercentile` admits it to the values
+    // accumulator, and the level fold has no equivalent.
+    [
+      'hop aggregate, percentile STAYS',
+      'MATCH (a:L)-[:R]->(b:L) RETURN percentile_cont(b.k, 0.5) AS p',
+      ['hopAggregate'],
+    ],
     [
       'MULTI node aggregate (two items)',
       'MATCH (n:L) RETURN max(n.k) AS a, min(n.k) AS b',

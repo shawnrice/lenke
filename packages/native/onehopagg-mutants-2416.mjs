@@ -29,59 +29,107 @@
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 
-const TARGET = '../gql/src/executor/hop-projection.ts';
-const PRISTINE = '../../target/mutants-2416/hop-projection.ts';
+/*
+ * TWO TARGET FILES SINCE ITEM 2420, because the one-hop foldable aggregates MOVED. They used to
+ * ride `hopAggregate` in `hop-projection.ts`; they now ride `chainFoldLevels` in
+ * `chain-fold-levels.ts`, and a battery pointed only at the old file would keep reporting teeth
+ * while the code actually serving the shape had none. `hop-projection.ts` stays targeted because it
+ * KEEPS what the level fold refuses: `collect`, a near-argument aggregate, and the percentiles.
+ */
+const FILES = {
+  hop: '../gql/src/executor/hop-projection.ts',
+  levels: '../gql/src/executor/chain-fold-levels.ts',
+};
 
 mkdirSync('../../target/mutants-2416', { recursive: true });
-copyFileSync(TARGET, PRISTINE);
 
-/** `[label, find, replace]`, each `find` asserted to occur EXACTLY ONCE before it is used. */
+const PRISTINE = Object.fromEntries(
+  Object.entries(FILES).map(([key, file]) => {
+    const dst = `../../target/mutants-2416/${key}.ts`;
+
+    copyFileSync(file, dst);
+
+    return [key, dst];
+  }),
+);
+
+const NOT_NUMBER_GUARD =
+  "    if (typeof v !== 'number') {\n      throw NOT_PLAIN_NUMBERS;\n    }\n\n    return (acc as number) + v;";
+
+/** `[label, fileKey, find, replace]` — each `find` asserted to occur EXACTLY ONCE before use. */
 const MUTANTS = [
   [
     'sum fold starts at 1 instead of 0 (an off-by-one in every sum)',
+    'hop',
     '  init: () => 0,',
     '  init: () => 1,',
   ],
   [
     'sum fold ignores the value, so every sum answers its init',
+    'hop',
     '    return (acc as number) + v;',
     '    return acc as number;',
   ],
   [
     'sum fold drops its non-number guard, so a null concatenates instead of faulting',
-    '    if (typeof v !== '.concat(
-      "'number') {\n      throw NOT_PLAIN_NUMBERS;\n    }\n\n    return (acc as number) + v;",
-    ),
+    'hop',
+    NOT_NUMBER_GUARD,
     '    return (acc as number) + (v as number);',
   ],
+  // --- the LEVEL FOLD, which serves the one-hop foldable aggregates since item 2420 ---
   [
-    '[EQUIV] renaming the synthetic value column — ONE const serves both the write and the read-back, ' +
-      'so a rename cannot break the pairing. Mislabelled as a real mutant on the first run.',
+    'the level fold ignores MULTIPLICITY, so a vertex reached u times contributes once',
+    'levels',
+    '    const mult = u[v];',
+    '    const mult = 1;',
+  ],
+  [
+    'the level fold treats an UNREACHED vertex as reached, folding the whole label extent',
+    'levels',
+    '    if (mult === 0) {\n      continue;\n    }',
+    '    if (false) {\n      continue;\n    }',
+  ],
+  [
+    '[EQUIV] the one-hop admission is reverted, so the shape falls back to hopAggregate - a pure ROUTE change, which this oracle cannot and should not see (perf-gate-needs-its-own-test)',
+    'levels',
+    '  const shape = chainShapeOf(m, 1);',
+    '  const shape = chainShapeOf(m, 2);',
+  ],
+  [
+    '[EQUIV] renaming the synthetic value column - ONE const serves both the write and the read-back, so a rename cannot break the pairing. Mislabelled as a real mutant on the first run.',
+    'hop',
     "  const VALUE_COL = ' hopagg';",
     "  const VALUE_COL = ' hopagg2';",
   ],
   [
-    '[EQUIV] sum loses its fold and falls to the collecting arm — a ROUTE change, same answer',
+    '[EQUIV] sum loses its fold and falls to the collecting arm - a ROUTE change, same answer',
+    'hop',
     "  return pct?.name === 'sum' ? SUM_FOLD : undefined;",
     '  return undefined;',
   ],
   [
-    '[EQUIV] the NO-OP control — if this one is reported CAUGHT the harness is broken',
+    '[EQUIV] the NO-OP control - if this one is reported CAUGHT the harness is broken',
+    'hop',
     'const SUM_FOLD: AggFold = {',
     'const SUM_FOLD: AggFold = {\n  // no-op control\n',
   ],
 ];
 
-const restore = () => copyFileSync(PRISTINE, TARGET);
+const restore = () => {
+  for (const [key, file] of Object.entries(FILES)) {
+    copyFileSync(PRISTINE[key], file);
+  }
+};
 
 let caught = 0;
 let survived = 0;
 const lines = [];
 
-for (const [label, find, replace] of MUTANTS) {
+for (const [label, fileKey, find, replace] of MUTANTS) {
   restore();
 
-  const src = readFileSync(TARGET, 'utf8');
+  const target = FILES[fileKey];
+  const src = readFileSync(target, 'utf8');
   const n = src.split(find).length - 1;
 
   if (n !== 1) {
@@ -89,11 +137,11 @@ for (const [label, find, replace] of MUTANTS) {
     continue;
   }
 
-  writeFileSync(TARGET, src.replace(find, replace));
+  writeFileSync(target, src.replace(find, replace));
 
   // The mutant must actually be in the tree: a failed write would run the PRISTINE code and report
   // every mutant as surviving, which reads like a toothless oracle rather than a broken harness.
-  if (!readFileSync(TARGET, 'utf8').includes(replace.trim().split('\n')[0])) {
+  if (!readFileSync(target, 'utf8').includes(replace.trim().split('\n')[0])) {
     throw new Error(`mutant did not apply: ${label}`);
   }
 
@@ -151,8 +199,10 @@ for (const [label, find, replace] of MUTANTS) {
 
 restore();
 
-if (readFileSync(TARGET, 'utf8') !== readFileSync(PRISTINE, 'utf8')) {
-  throw new Error('RESTORE FAILED — the tree still holds a mutant');
+for (const [key, file] of Object.entries(FILES)) {
+  if (readFileSync(file, 'utf8') !== readFileSync(PRISTINE[key], 'utf8')) {
+    throw new Error(`RESTORE FAILED — ${file} still holds a mutant`);
+  }
 }
 
 console.log(

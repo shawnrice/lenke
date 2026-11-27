@@ -136,11 +136,23 @@ if (ARM === 'child') {
     g.addVertex({ id: `v${i}`, labels: ['P'], properties: { k: i % 97, n: i } });
   }
 
-  for (let e = 0; e < nodes; e += 1) {
+  /*
+   * FANOUT (item 2420), and it is the axis that separates a CONSTANT-FACTOR memory win from a
+   * COMPLEXITY one. A rung that materialises rows is O(|V| * F); one that keeps a per-vertex
+   * numeric array is O(|V|). At F=1 those coincide and only the constant separates them, so a
+   * sweep over |V| at F=1 cannot tell the two apart - the sweep has to be over F.
+   */
+  const fanout = Number(process.env.CHILD_FANOUT ?? 1);
+
+  for (let e = 0; e < nodes * fanout; e += 1) {
+    const i = e % nodes;
+    const hop = Math.floor(e / nodes);
+
     g.addEdge({
       id: `e${e}`,
-      from: g.getVertexById(`v${e}`),
-      to: g.getVertexById(`v${(e * 7 + 3) % nodes}`),
+      from: g.getVertexById(`v${i}`),
+      // Splits on the REPEAT INDEX - CLAUDE.md's fix for the `(a*k+b) % N` degeneracy.
+      to: g.getVertexById(`v${(i * 7 + 3 + hop * 2_654_435_761) % nodes}`),
       labels: ['E'],
       properties: {},
     });
@@ -207,6 +219,8 @@ if (ARM === 'child') {
 // ── the PARENT ──────────────────────────────────────────────────────────────────────────────────
 
 /** Runs one child and returns its reported high-water mark, or `null` if it died. */
+const FANOUT = process.env.FANOUT ?? '1';
+
 const child = (env, heapCapMiB) => {
   const args = [];
 
@@ -219,7 +233,7 @@ const child = (env, heapCapMiB) => {
   try {
     const out = execFileSync('node', args, {
       encoding: 'utf8',
-      env: { ...process.env, ARM: 'child', ...env },
+      env: { ...process.env, ARM: 'child', CHILD_FANOUT: FANOUT, ...env },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -267,7 +281,7 @@ if (text === undefined) {
   throw new Error(`unknown SHAPE ${SHAPE}; have ${Object.keys(SHAPES).join('|')}`);
 }
 
-console.log(`# SHAPE=${SHAPE} MECH=${MECH} REPS=${REPS}`);
+console.log(`# SHAPE=${SHAPE} MECH=${MECH} FANOUT=${FANOUT} REPS=${REPS}`);
 console.log(`# ${text}`);
 
 if (MECH === 'cap') {

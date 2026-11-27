@@ -54,6 +54,11 @@ const MODIFIERS: Record<string, (c: { text: string; far: string }) => string> = 
   sum: ({ text, far }) => `${text} RETURN sum(${far}.k) AS s`,
   maxagg: ({ text, far }) => `${text} RETURN max(${far}.k) AS m`,
   distinct: ({ text, far }) => `${text} RETURN DISTINCT ${far}.k AS k`,
+  countk: ({ text, far }) => `${text} RETURN count(${far}.k) AS c`,
+  minagg: ({ text, far }) => `${text} RETURN min(${far}.k) AS m`,
+  avgagg: ({ text, far }) => `${text} RETURN avg(${far}.k) AS a`,
+  nearsum: ({ text }) => `${text} RETURN sum(a.k) AS s`,
+  pct: ({ text, far }) => `${text} RETURN percentile_cont(${far}.k, 0.5) AS p`,
   countdist: ({ text, far }) => `${text} RETURN count(DISTINCT ${far}.k) AS c`,
 };
 

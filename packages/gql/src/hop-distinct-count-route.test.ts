@@ -60,7 +60,7 @@ describe('hop count(DISTINCT …) reaches the dedup-while-walking rung', () => {
   }
 });
 
-describe('the gate leaves every other hop aggregate exactly where it was', () => {
+describe('the DISTINCT gate is a no-op on every other hop aggregate', () => {
   const HOP_AGG = [
     'MATCH (a:P)-[:E]->(b) RETURN max(b.k) AS m',
     'MATCH (a:P)-[:E]->(b) RETURN min(b.k) AS m',
@@ -69,12 +69,20 @@ describe('the gate leaves every other hop aggregate exactly where it was', () =>
   ];
 
   for (const q of HOP_AGG) {
-    test(`hopAggregate still claims it: ${q}`, () => {
+    test(`the DISTINCT gate does not claim it: ${q}`, () => {
       const rungs = rungsOf(q);
 
-      expect(rungs).toContain('hopAggregate');
-      // And the narrower rung is not even willing, which is why the gate is a no-op here.
+      /*
+       * THIS BLOCK'S POINT IS THE LINE BELOW, and it is unchanged: the `count(DISTINCT …)` gate
+       * must not steal a PLAIN aggregate. ~~It also asserted `toContain('hopAggregate')`~~, which
+       * item 2420 retired — these four now ride `chainFoldLevels`, because `hopAggregate`
+       * materialized a row per element to return one scalar. That is a DIFFERENT gate, taken in the
+       * same place in `rewrites.ts` and for the same reason, and asserting the old owner here would
+       * pin one item's routing inside another item's test.
+       */
       expect(rungs).not.toContain('distinctCount');
+      // The new owner, so this block still fails if the shape falls to the general path entirely.
+      expect(rungs).toContain('chainFoldLevels');
     });
   }
 

@@ -2870,11 +2870,54 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
   // asks. Two copies of one shape rule is how the far endpoint ended up on a per-edge tally once
   // before (`detectDistinctCount`'s own note).
   const distinctCount = detectDistinctCount(fast, clauses);
+  /*
+   * THE SECOND PRECEDENCE DECISION TAKEN HERE (item 2420), in the same place and for the same
+   * reason as `distinctCount`'s above: when the LEVEL FOLD can serve a one-hop aggregate it WINS,
+   * because `hopAggregate` materialises a row per element to return one scalar and the level fold
+   * does not.
+   *
+   * `detectHopAggregate` runs the row-producing walk with a synthetic one-column projection and
+   * folds the `Row[]` it gets back, so its memory is O(paths) in row objects. `detectChainFoldLevels`
+   * computes the level recurrence `u_k(v)` and then `SUM u_v * x_v`, which is O(|V|) in a numeric
+   * array. At one hop that recurrence degenerates to `u_1(v) = in-degree(v)`, so the two compute the
+   * same number by different means. Measured both arms, rebuilt, one shape per process:
+   *
+   *     at N=200,000                     hopAggregate     level fold
+   *       allocations per element           2.00 marginal   CONSTANT (~3,300 for the whole query)
+   *       peak live memory, FANOUT=1       32.17 MiB         2.13 MiB
+   *       peak live memory, FANOUT=4       67.16 MiB         1.81 MiB
+   *       time, FANOUT=1                  10.72-13.20 ms   11.29-11.37 ms
+   *       time, FANOUT=4                  44.02-47.22 ms   11.62-13.66 ms
+   *
+   * The allocation count is the structural part: `hopAggregate` allocates exactly 2.00 per added
+   * element (162,997 -> 263,132 -> 463,231 at 50k/100k/200k) while the level fold's total does not
+   * move with the walk at all (3,277 -> 3,741 -> 3,255). So this is O(n) -> O(1), not a constant
+   * factor, and the gap widens without bound.
+   *
+   * IT IS A REAL TRADE AND THE OWNER TOOK IT: the level fold reads **1.3x SLOWER at FANOUT 1 and
+   * 400,000 vertices** (18.44/17.34 against 23.65/23.05) and 3.5-3.8x faster at fanout 4. The slow
+   * case was accepted deliberately, because a scaling ceiling is not a speed question — a shape that
+   * holds 67 MiB per query cannot answer a walk larger than memory, and this one holds under 2.2 MiB
+   * at every size and fanout measured.
+   *
+   * ASKING RATHER THAN RE-DERIVING, which is the rule `distinctCount`'s note above states: a
+   * non-null `chainFoldLevels` IS the level fold saying it accepts this shape, so nothing here
+   * duplicates its admission rules. Everything it refuses — `collect`/`collect_list`, a
+   * near-argument aggregate (`foldLevel` binds only the far variable, item 2410), a non-vacuous
+   * chain label — leaves it null and `hopAggregate` keeps the shape exactly as before.
+   *
+   * WHY HERE AND NOT BY REORDERING `runLinear`'s CHAIN: `chainFoldLevels` is tested at
+   * `clauses.ts`'s line 2151 and `hopAggregate` at 1865, so the chain already prefers
+   * `hopAggregate`. Moving that branch would put it ahead of a hot dispatch, which is the 1.12x
+   * item 418 measured and the reason the decision above is taken at compile time too.
+   */
+  const chainFoldLevels = detectChainFoldLevels(fast, clauses);
   // A cross-end `WHERE` already declines `distinctCount` at compile time — `distinctShape` requires
   // `whereReadsOnly(where, keyedVar)` — so the shapes where `hopAggregate`'s EXECUTION-TIME decline
   // could hand the query to an index seek on the end it does not drive are exactly the shapes where
   // `distinctCount` is null and this gate does nothing.
-  const hopAggregate = distinctCount === null ? detectHopAggregate(fast, clauses) : null;
+  const hopAggregate =
+    distinctCount === null && chainFoldLevels === null ? detectHopAggregate(fast, clauses) : null;
 
   return {
     clauses,
@@ -2902,7 +2945,7 @@ export const compileLinear = (linear: LinearQuery): CLinear => {
      * below, which the row spelling was paying 27x to do without.
      */
     chainDistinctLevels: detectChainDistinctLevels(fast, clauses),
-    chainFoldLevels: detectChainFoldLevels(fast, clauses),
+    chainFoldLevels,
     // `count(*)` over the same chain, off the same recurrence (item 2087). Its neighbour REFUSES the
     // star, so the two partition cleanly and neither can shadow the other.
     chainStarCount: detectChainStarCount(fast, clauses),

@@ -207,7 +207,21 @@ type ChainShape = {
   readonly pattern: PathPattern;
 };
 
-const chainShapeOf = (m: Clause): ChainShape | null => {
+/**
+ * THE DEPTH FLOOR IS THE CALLER'S, NOT THE SHAPE'S (item 2420), and it is a parameter because
+ * making it `< 1` here broke THREE other detectors at once.
+ *
+ * `chainShapeOf` has four callers — `detectChainStarCount`, `detectChainDistinctLevels`,
+ * `detectChainFoldLevels` and `detectChainGroupedLevels` — and admitting one hop in the shared
+ * function handed one-hop shapes to all four. Measured as 14 test failures: `count(*)` moved onto
+ * `chainStarCount` (breaking items 179/181/2194's seeding and selectivity locks) and a one-hop
+ * `DISTINCT` moved onto `chainDistinctLevels` (breaking two route rows). Only the FOLD was priced
+ * for one hop, so only the fold asks for it.
+ *
+ * Depth is a POLICY about which rung should serve a width, not a fact about whether the pattern is
+ * a plain chain — which is what this function is for.
+ */
+const chainShapeOf = (m: Clause, minSegments = 2): ChainShape | null => {
   if (
     m.kind !== 'match' ||
     m.optional ||
@@ -231,7 +245,7 @@ const chainShapeOf = (m: Clause): ChainShape | null => {
    * (`mode: trail`) 3-hop chain reads **625000 = 5000 × 5³ exactly**, the WALK count.
    */
   if (
-    pattern.segments.length < 2 ||
+    pattern.segments.length < minSegments ||
     pattern.pathVar !== undefined ||
     (pattern.selector ?? 'walk') !== 'walk' ||
     !plainNode(pattern.start)
@@ -739,7 +753,16 @@ export const detectChainFoldLevels = (
 
   const { first: m, ret, cret } = twoClause;
 
-  const shape = chainShapeOf(m);
+  /*
+   * ONE HOP IS ADMITTED HERE AND NOWHERE ELSE (item 2420). At one hop the recurrence degenerates to
+   * `u_1(v) = in-degree(v)`, which is exactly the multiplicity a one-hop aggregate needs, and the
+   * fold is the same weighted fold item 2410 bounded — so the `< 2` floor was never justified for
+   * THIS detector. What it buys is `hopAggregate`'s row-per-element materialisation: allocations
+   * from 2.00 per element to a CONSTANT ~3,300 for the whole query, and peak memory from 32-67 MiB
+   * to under 2.2 MiB. `rewrites.ts` takes the precedence decision and carries the full measurement
+   * and the accepted 1.3x fanout-1 trade.
+   */
+  const shape = chainShapeOf(m, 1);
 
   if (shape === null) {
     return null;

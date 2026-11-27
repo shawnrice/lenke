@@ -123125,7 +123125,7 @@ The cure remains the one item 467 named and `chainFoldLevels` already implements
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
 
-## Item 2420 — **THE ONE-HOP AGGREGATE'S FIX IS ALREADY WRITTEN: let `chainFoldLevels` serve DEPTH 1.** Measured on four axes with both arms rebuilt: **0.15 allocations per element against 5.16, peak 1.41 MiB against 36.49, half the required heap — and 3.5-3.8x FASTER at fanout 4.** But the route is **SIGNED** — it loses **1.3x at fanout 1 and 400,000 vertices** — so it needs item 1390's cost gate rather than an unconditional admission. **PRICED, NOT BUILT: the gate's threshold needs its own sweep and the fanout-1 trade needs a decision**
+## Item 2420 — **THE ONE-HOP AGGREGATE'S FIX IS ALREADY WRITTEN: let `chainFoldLevels` serve DEPTH 1.** Measured on four axes with both arms rebuilt: **0.15 allocations per element against 5.16, peak 1.41 MiB against 36.49, half the required heap — and 3.5-3.8x FASTER at fanout 4.** But the route is **SIGNED** — it loses **1.3x at fanout 1 and 400,000 vertices** — so it needs item 1390's cost gate rather than an unconditional admission. ~~**PRICED, NOT BUILT: the gate's threshold needs its own sweep and the fanout-1 trade needs a decision**~~ **BUILT AT ITEM 2421** — the owner took the fanout-1 cost rather than gating it, because a gate leaves that case on the arm with an OOM size, and the exact allocation counter showed the win is O(n) -> O(1) rather than the 26x constant this entry priced
 
 Items 2416-2419 localized the one-hop aggregate's cost on three quantities (5.16 allocations per
 element against the two-hop path's 0.15; peak memory n^0.87 against flat-under-2-MiB; 16 MiB of
@@ -123224,3 +123224,134 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check`
 files verified byte-identical to their pristine copies after each arm, and the dist REBUILT on every
 restore ([[fuzzers-read-built-dists]] — the peak and count probes read dist, so an unbuilt restore
 would have measured the previous arm).
+
+## Item 2421 — **BUILT: the one-hop foldable aggregates now ride the LEVEL FOLD, and the allocation count goes from 2.00 PER ELEMENT to a CONSTANT ~3,100 for the whole query.** Peak memory 32-67 MiB to under 2 MiB at every size and fanout measured, so the shape no longer has an OOM size. **The owner took the 1.3x fanout-1 time cost deliberately, having asked the two right questions first — is it relevant, and does it scale.** And the first attempt broke THREE unrelated detectors because the gate I moved was SHARED
+
+Item 2420 priced this and left it open on two counts: the threshold needed a sweep, and the
+fanout-1 trade needed a decision. The owner's answer settled both at once — _"26x less memory sounds
+good, but is it relevant, and does it scale linearly? If so, take it and lose the 1.3x speed"_ — and
+the two questions are better than the sweep, because they ask whether the win is a CONSTANT FACTOR
+or a COMPLEXITY difference.
+
+### IT IS A COMPLEXITY DIFFERENCE, which is what made the trade acceptable
+
+The exact instrument (item 2418's per-call-site counter) answers "does it scale" without a noise
+floor:
+
+```text
+    allocations for the WHOLE query      hopAggregate       level fold
+      N=50,000                            162,997            3,665
+      N=100,000                           263,132            3,251
+      N=200,000                           463,231            3,078
+```
+
+**`hopAggregate` allocates exactly +2.00 per ADDED element** (263,132 - 162,997 = 100,135 for
++50,000; 463,231 - 263,132 = 200,099 for +100,000) — linear and unbounded. **The level fold's total
+does not move with the walk at all.** So this is O(n) -> O(1), not a 26x constant, and the gap widens
+without bound: 142x at 200,000 and ~1,400x at 2,000,000.
+
+And "is it relevant" is answered by the peak, which is what OOMs:
+
+```text
+    peak live memory              hopAggregate              level fold
+      FANOUT=1  N=100,000          30.82 MiB                 0.93 MiB
+      FANOUT=1  N=200,000          32.17 MiB                 1.55 MiB
+      FANOUT=4  N=100,000          40.27 MiB                 1.69 MiB
+      FANOUT=4  N=200,000          67.16 MiB                 1.92 MiB
+```
+
+**32-67 MiB held per query at only 200,000 vertices, against under 2 MiB in every cell.** The old
+arm grows with |V| AND with fanout; the new one is flat in both.
+
+### THE COST, TAKEN WITH OPEN EYES
+
+```text
+    time                      hopAggregate          level fold         verdict
+      N=200,000  F=1          10.72 / 13.20 ms      11.29 / 11.37 ms   flat
+      N=200,000  F=4          44.02 / 47.22 ms      11.62 / 13.66 ms   3.5x FASTER
+      N=400,000  F=1          18.44 / 17.34 ms      23.65 / 23.05 ms   1.3x SLOWER
+      N=400,000  F=4         107.28 / 100.03 ms     26.72 / 26.70 ms   3.8x FASTER
+```
+
+The 1.3x at fanout 1 and 400,000 vertices is real and is NOT gated away. A cost gate was the
+obvious alternative and was declined for a stated reason: a gate leaves the fanout-1 case on the arm
+that has an OOM size, which is the thing this item exists to remove. **FANOUT=1 is also the
+least realistic cell on the sheet** — it is every screen's default and it is the only configuration
+where O(paths) and O(|V|) coincide.
+
+### WHERE THE DECISION LIVES, and the precedent for putting it there
+
+`clauses.ts` tests `linear.hopAggregate` at line 1865 and `linear.chainFoldLevels` at 2151, so the
+runtime chain prefers `hopAggregate` and admitting the level fold alone would have changed nothing
+([[rung-precedence-decides-speed]]). The decision is therefore taken ONCE PER QUERY at compile time
+in `compileLinear`:
+
+```ts
+const chainFoldLevels = detectChainFoldLevels(fast, clauses);
+const hopAggregate =
+  distinctCount === null && chainFoldLevels === null ? detectHopAggregate(fast, clauses) : null;
+```
+
+**This is the second precedence decision in that spot and the first one's note explains why:**
+moving a branch above `hopAggregate` in the runtime chain costs the shape it does not claim 1.12x
+(item 418), so `distinctCount`'s gate was taken at compile time for exactly this reason. And nothing
+re-derives what the level fold accepts — **a non-null `chainFoldLevels` IS the level fold saying it
+accepts the shape**, which is the rule `distinctCount`'s note states ("it just asks").
+
+### THE RESIDUAL, which makes this a precedence change and not a replacement
+
+`hopAggregate` keeps everything the level fold refuses, each for a different reason, and each now has
+a route row:
+
+```text
+    collect / collect_list   a multiplicity-weighted fold cannot emit `u_v` copies of a value
+                             without materializing the list it exists to avoid
+    sum(a.k)  NEAR argument  `foldLevel` binds only the FAR variable - item 2410's free-variable
+                             test, and the defect it fixed answered 0 over 1,280,000 paths
+    percentile_cont          no streaming fold at all; `hopPercentile` admits it to the values
+                             accumulator and the level fold has no equivalent
+    count(DISTINCT x.k)      the level fold is WILLING but `distinctCount` is tested at 1927,
+                             BEFORE 2151, so item 1583's dedup-while-walking rung still wins
+```
+
+### THE FIRST ATTEMPT BROKE THREE UNRELATED DETECTORS, because the gate was SHARED
+
+`pattern.segments.length < 2` lives in `chainShapeOf`, which has **FOUR callers** —
+`detectChainStarCount`, `detectChainDistinctLevels`, `detectChainFoldLevels` and
+`detectChainGroupedLevels`. Changing it to `< 1` handed one-hop shapes to all four, and the suite
+said so: **14 failures**, of which `count(*)` moving onto `chainStarCount` broke items 179/181/2194's
+seeding and selectivity locks and a one-hop `DISTINCT` moving onto `chainDistinctLevels` broke two
+route rows. Only the FOLD was priced for one hop.
+
+**The fix is that the depth floor is the CALLER'S, not the shape's**: `chainShapeOf(m, minSegments = 2)`
+and only the fold passes `1`. Depth is a policy about which rung should serve a width, not a fact
+about whether the pattern is a plain chain — which is what that function is for. [[ambiguous-anchor-strings]]
+one level up: the anchor was unique and the FUNCTION was shared.
+
+### EVIDENCE
+
+- `onehopagg-oracle-2416.mjs`: **4,176 pass / 0 fail**, worst err/bound 0.014 against item 2401's
+  contract, and **2,088 identical / 0 DIFFER** on the label-vacuity route-invariance axis.
+- **MUTATION, extended to BOTH files in this item** — a battery pointed only at `hop-projection.ts`
+  would have kept reporting teeth while the code actually serving the shape had none:
+
+  ```text
+      sum fold starts at 1 / ignores the value / drops its guard   3 CAUGHT (hop-projection)
+      the level fold ignores MULTIPLICITY                          CAUGHT  140 fail
+      the level fold treats an UNREACHED vertex as reached         CAUGHT   44 fail
+      [EQUIV] the one-hop admission reverted (a pure ROUTE change) SURVIVED - as it must
+      [EQUIV] x3 incl. the NO-OP control                           SURVIVED
+  ```
+
+  The route-revert survivor is the point of `routes-fired.test.ts`: an answer-equivalent routing
+  change is invisible to any correctness oracle ([[perf-gate-needs-its-own-test]]).
+
+- `bun run test` 0 (5,497 pass in `packages/gql`); `bun run fuzz` 57 pass / 0 fail.
+- Two route locks updated with reasons rather than flipped: `routes-fired.test.ts` gains the three
+  STAYS rows above, and `hop-distinct-count-route.test.ts`'s block is renamed from "leaves every
+  other hop aggregate exactly where it was" to "the DISTINCT gate is a no-op on every other hop
+  aggregate" — its real assertion (`not.toContain('distinctCount')`) is unchanged, and asserting the
+  old owner there would have pinned one item's routing inside another item's test.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; `bun run test` 0;
+`bun run fuzz` 57/0.
