@@ -119768,6 +119768,8 @@ unchanged and the only variable is whether the label is vacuous.
 ```text
     shape alone          LABELS=1          LABELS=2          ratio
     grouped count        53.23 52.96       53.15 53.44       1.00x   FLAT — not a driver at all
+    (SCOPED at item 2428: this is `detectGroupedNodeCount`, the NODE grouped count. The HOP
+     grouped count is a different rung and pays 1.20-1.34x at every depth.)
     hop count             4.96  5.00       25.46 25.35       5.09x   <- the entire effect
 ```
 
@@ -123915,3 +123917,69 @@ artifact rebuilt afterwards, and **the restored build re-measured at 30.88 MiB �
 figure exactly**, which is what makes the A/B above a comparison and not two readings.
 
 No engine change: one forced constant, measured, and reverted.
+
+## Item 2428 — **THE GROUPED HOP'S VACUITY CLIFF IS AT EVERY DEPTH (1.20-1.34x at one, two and three hops), so the borrow that closed `sum` and `DISTINCT` CANNOT apply: there is no label-indifferent sibling to borrow from.** The last open shape in the one-hop family, closed as a negative result. **And item 2385's "the grouped count does not depend on label vacuity" is about `detectGroupedNodeCount` — the HOP grouped count does**
+
+Items 2421 and 2423 closed `sum`/`min`/`max`/`avg`/`count(x.k)` and `RETURN DISTINCT` at one hop by
+the same move: the 2+-hop rung tested labels PER VERTEX and was label-indifferent, the one-hop rung
+sat behind `hop-projection.ts`'s vacuity gates, so admitting one hop to the deeper pass removed the
+cliff. `grouped` was the one shape left, at 1.26x under MIXED.
+
+### THE SHAPE OF THE CLIFF REFUTES THE PLAN, and one sweep was enough to see it
+
+N=400,000, depth 1-3, vacuous against ONE isolated off-label vertex, one shape per process:
+
+```text
+    grouped          MIXED=0            MIXED=1            ratio
+      depth 1         64.93 / 57.97      83.61 / 81.05      1.34x
+      depth 2        211.90             253.57              1.20x
+      depth 3        283.23             369.88              1.31x
+```
+
+**Every depth pays it.** For `sum` and `DISTINCT` the deeper rung was FLAT across the label axis
+(`sum` d2 32.05 vacuous against 32.94 realistic) and that is exactly what made the borrow work —
+there was an immune implementation to route to. Here there is none: `hop2GroupedCount` and the
+deeper grouped rungs are as vacuity-sensitive as the one-hop pair, so admitting one hop to a deeper
+pass would move the shape from one gated arm to another.
+
+**AND THERE IS NO DEPTH INVERSION**, which is the other half of the refutation: depth 1 reads ~61-82
+ms against depth 2's 212-254, the right way round. The item-1822 signature that nominated `sum`,
+`maxagg`, `distinct` and `countdist` is absent here, so this was never a between-rungs gap — it is a
+uniform ~25% that the whole family pays for testing a label it cannot elide.
+
+`chainGroupedLevels` was the obvious candidate and it is not reachable for this shape anyway: at
+depth 2 `grouped` routes to `hop2GroupedCount`, not to the levels pass.
+
+### SCOPING PRIOR ART RATHER THAN CONTRADICTING IT
+
+Item 2385 measured, and concluded in its own words, that **"the hop count does [depend on label
+elision], the grouped count does not"**:
+
+```text
+    shape alone          LABELS=1          LABELS=2          ratio
+    grouped count        53.23 52.96       53.15 53.44       1.00x   FLAT
+```
+
+That reads as a statement about grouped counts in general and it is not. `mixprof-2380.mjs`'s own
+note says which rung it exercises: _"`grouped` is `detectGroupedNodeCount`'s rung"_ — the NODE
+grouped count, `MATCH (n:L) RETURN n.k, count(*)`, with no hop in it. **The HOP grouped count is a
+different rung and it pays 1.20-1.34x.** No contradiction; a scope correction, and the kind that
+matters because "the grouped count does not depend on it" is exactly the sentence a later reader
+would use to skip this measurement.
+
+### NOT BUILT, and what would have to be true for it to be worth taking
+
+The residual is ~25% on a shape whose labelled arm is already the optimised one — item 2087's table
+is the precedent (`count(c.k)` 20.02 vacuous against 20.51 real, "already had the rung"), and
+[[label-vacuity-gates-fast-paths]] records the standing conclusion that **the realistic number is
+already the optimised one and the vacuous arm is unreachable for a real schema**. A fix would have
+to make a grouped hop test labels per vertex the way `levelWalk` does, across the whole grouped
+family at once rather than at one width — which is the "fix the 43/79 gates" project that item 2422
+priced as mispriced work, for a 1.2-1.34x.
+
+**So the one-hop family is CLOSED**: `sum`/`min`/`max`/`avg`/`count(x.k)` and `DISTINCT` fixed at
+items 2421/2423/2424, `rows` refuted at item 1940's residual (needs codegen, forbidden), `topk`,
+`skiponly` and `collect` refuted at item 2415 as the far-driven baseline's artifact, and `grouped`
+refuted here for want of an immune sibling.
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
