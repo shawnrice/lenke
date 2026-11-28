@@ -125197,7 +125197,7 @@ amortize policies behave exactly as item 2438 verified them — and only replace
 answer is "no CSR". The change therefore belongs in `farDrivenHopWalk`'s `viaCsr === undefined`
 branch, not in the dispatch gate above it.
 
-**Expected: warm unchanged at ~8.5, interleaved 36.19 to ~14.4 (2.52x), controls flat.** Worth
+~~[BUILT at item 2443: interleaved 35.43 to 15.36 (2.25x), warm UNCHANGED at ~8.1, controls flat, twelve cells answering identically.]~~ **Expected: warm unchanged at ~8.5, interleaved 36.19 to ~14.4 (2.52x), controls flat.** Worth
 building, and it needs the route decision as a PURE FUNCTION with its own unit test and mutants,
 because a route choice is answer-equivalent and every mutant otherwise survives
 ([[perf-gate-needs-its-own-test]]); plus `onehopfam-2415.mjs` against
@@ -125220,3 +125220,96 @@ GATES. No engine change this item: `hop-projection.ts` restored, ABLATE marker c
 byte-identical, dist rebuilt inside the restore trap, `git diff` clean for `packages/gql` and
 `packages/core`. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. `alloc:labeltest` gained a
 `WRITE_MODE` knob (interleave / warm), which is what made the deciding row measurable.
+
+## Item 2443 — **SHIPPED: the far-driven walk's no-CSR fallback is now the EDGE-DRIVEN walk, and the write-interleaved one-hop `rows` read goes 35.43 ms to 15.36 — 2.25x — with the WARM row UNCHANGED at ~8.1.** The design is item 2442's: decide AFTER `csrHopRoute` answers, never before it is asked, because a `csrIsBuilt` gate would stop the CSR ever being built
+
+Item 2442 measured the trade and proved the obvious fix self-defeating. This builds the shape it
+specified.
+
+### WHAT CHANGED
+
+`farDrivenHopWalk` takes an optional `noCsr` thunk, invoked at the one point where `csrHopRoute` has
+already DECLINED — so the ask is still counted and items 2438's second-ask and amortize policies are
+untouched, which is the whole reason the hook sits there rather than in the dispatch above. The
+single-type dispatch supplies `farDrivenNoCsr`, which routes to the edge-driven walk when
+`edgeDrivenBeatsNoCsrFallback(labelCoverage(graph, startLabel))` and to `startDriven` otherwise.
+
+Two structural notes:
+
+- `edgeDrivenBeatsNoCsrFallback` is an EXPORTED PURE FUNCTION at module scope, not an inline
+  condition — both so it can be tested at all (see below) and because item 119 measured 1.17x on an
+  UNRELATED shape merely from growing this file's dispatch closure.
+- `buildEdgeDriven` gives the dispatch and the thunk ONE SPELLING of the edge-driven construction,
+  and it moved that construction OUT of the returned closure, so the closure is now SMALLER than
+  before the change.
+
+### THE NUMBERS, arms alternated, four cells per arm, one cell per process
+
+```text
+    N=200,000, LBL_REPS=11, warmup 3 declared      CHANGED    BASE     CHANGED
+      vacuous  interleave (one write per read)       15.36     35.43     16.12    2.25x FASTER
+      vacuous  WARM                                   8.22      8.12      7.84    unchanged
+      mixed    interleave                            15.97     14.98     14.85    flat
+      mixed    WARM                                  15.78     16.33     15.99    flat
+```
+
+**All twelve cells answer identically** — 200,011 rows interleaved, 200,000 warm.
+
+**The warm row is the one that matters most and it did not move.** Deleting the vacuity
+short-circuit would have cost it 8.54 to 15.62 (item 2442); conditioning on `csrIsBuilt` would have
+cost it permanently by preventing the CSR from ever arming. Deciding after the decline keeps it.
+
+A step is visible in the CHANGED interleaved series — `27.4 26.9 27.2 27.2 | 15.1 15.4 15.3 …` —
+four reps before the faster mode settles. Reported rather than smoothed, per the rule that an
+adaptive route's cost is a function of its read history.
+
+### THE GATE HAS TEETH, which is not optional for a route change
+
+A route choice is ANSWER-EQUIVALENT: the gql suite (5,498 tests), the oracle's 2,424
+route-invariance cells and all seven fuzzers pass with `edgeDrivenBeatsNoCsrFallback` returning a
+constant in either direction. Nothing but a test against the function itself can see it break
+([[perf-gate-needs-its-own-test]]).
+
+```text
+    mutant of edgeDrivenBeatsNoCsrFallback     verdict
+      flip the comparison (>= to <=)            CAUGHT  1 pass / 3 fail
+      always true                               CAUGHT  1 pass / 3 fail
+      always false                              CAUGHT  1 pass / 3 fail
+      drop the `undefined` guard (?? 1)         CAUGHT  3 pass / 1 fail
+```
+
+The fourth is the subtle one: `labelCoverage` returning `undefined` means "cannot answer", and
+treating that as broad enough would route a 1%-coverage label into an O(|E|) pass — item 1938's
+measured 25x regression. Tree verified byte-identical to the live arm after the battery.
+
+### UNRELATED SHAPES ARE FLAT
+
+[[executor-edits-perturb]] measures up to 16% on unrelated rows from an edit to this family, so it
+was checked rather than argued:
+
+```text
+    NODES=200,000, MIXED=1, depth 1      CHANGED    BASE     CHANGED
+      rows                                 16.85     17.50     17.21
+      where                                60.86     61.91     62.56
+      topk                                 37.81     38.36     37.48
+      grouped                              42.03     40.79     42.76
+```
+
+Within ~5% everywhere, and `grouped`'s 1.03x against BASE sits inside its own two-CHANGED spread
+(42.03 against 42.76). These run in the realistic MIXED mode, so they do not take the far-driven
+route at all — genuine unrelated controls rather than the change's own rows.
+
+### WHAT THIS DOES NOT FIX
+
+The `vacuous interleave` row lands at ~15.4 ms, which is the edge-driven walk's cost, not a floor.
+Item 2439 priced the remaining terms: ~58% of a comparable read is general projection machinery
+behind [[no-runtime-codegen]]'s FIRM refusal. And the warm row's 8.1 ms still depends on the CSR
+being armed, which the second-ask policy correctly declines at a 1:1 read:write ratio (item 2438) —
+so a write-interleaved workload gets 15.4, not 8.1. That gap is the CSR build cost, which items
+2435/2436 showed is not incrementally maintainable in a packed layout.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; build 0. `packages/gql` 5,498 tests 0
+fail (plus the 4 new ones); `packages/core` 490 tests 0 fail; `oracle:onehopagg` 2,424
+route-invariance cells identical / 0 DIFFER, worst float error 0.014 of item 2401's bound;
+`bun run fuzz` 57 pass 0 fail exit 0. `rewrite_fuzz` not run: it guards the RUST optimizer and this
+change is TS-only, touching neither a rewrite nor `hash_join`.

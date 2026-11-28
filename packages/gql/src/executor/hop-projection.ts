@@ -3060,11 +3060,53 @@ export const detectHopProjection = (
       });
     }
 
-    const farDriven = farDrivenHopWalk({ types, typeName, out, farVar, farLabel, proj: walkProj });
     // BUILT LAZILY, ON FIRST USE — the same rule the multi-type arm above states: constructed
     // eagerly it is a closure every compile allocates and the declining path never calls, which
     // item 1388 measured as a real cost on the control (-3.7%).
+    //
+    // DECLARED BEFORE THE FAR-DRIVEN WALK so that walk's no-CSR fallback can reach it (item 2443).
     let edgeDriven: ((graph: Graph, params: Params) => Row[]) | undefined;
+
+    const buildEdgeDriven = (): ((graph: Graph, params: Params) => Row[]) => {
+      edgeDriven ??= edgeDrivenHopWalk({
+        typeName,
+        out,
+        farVar,
+        farLabel,
+        startLabel,
+        proj: walkProj,
+      });
+
+      return edgeDriven;
+    };
+
+    /*
+     * THE FAR-DRIVEN WALK'S FALLBACK IS NOW THE EDGE-DRIVEN WALK, NOT ITS OWN ADJACENCY COUNT
+     * (item 2443). It is reached only when `csrHopRoute` has already declined, so the win is on
+     * exactly the workload the second-ask policy declines for — one write per read, where item 2442
+     * measured 36.19 ms against 14.35, a 2.52x loss that the warm case (8.54 on the CSR) hides.
+     *
+     * SOUND BECAUSE OF WHERE IT IS CALLED FROM, which is the part to keep straight. The far-driven
+     * walk runs only under the vacuity gate below, so when this thunk fires the start label excludes
+     * nobody and the edge-driven walk — which DOES apply a start label, per edge — answers
+     * identically. Item 2442's ablation confirmed that on the rows: 200,011 interleaved and 200,000
+     * warm in all twelve cells. The coverage check is belt-and-braces for a future caller, since a
+     * vacuous label is coverage 1.0.
+     */
+    const farDrivenNoCsr = (graph: Graph, params: Params): Row[] =>
+      edgeDrivenBeatsNoCsrFallback(labelCoverage(graph, startLabel))
+        ? buildEdgeDriven()(graph, params)
+        : startDriven(graph, params);
+
+    const farDriven = farDrivenHopWalk({
+      types,
+      typeName,
+      out,
+      farVar,
+      farLabel,
+      proj: walkProj,
+      noCsr: farDrivenNoCsr,
+    });
 
     // Which walk is chosen is a PER-CALL decision, not a per-row one, so the branch costs the
     // inner loop nothing. The far-driven walk cannot apply a START label — it COUNTS adjacency and
@@ -3092,16 +3134,7 @@ export const detectHopProjection = (
         return startDriven(graph, params);
       }
 
-      edgeDriven ??= edgeDrivenHopWalk({
-        typeName,
-        out,
-        farVar,
-        farLabel,
-        startLabel,
-        proj: walkProj,
-      });
-
-      return edgeDriven(graph, params);
+      return buildEdgeDriven()(graph, params);
     });
   }
 
@@ -3902,6 +3935,36 @@ const edgeDrivenHopWalk = (w: {
     return rows;
   };
 };
+/**
+ * WHEN THE CSR IS ABSENT, IS THE EDGE-DRIVEN WALK THE BETTER FALLBACK? (item 2443)
+ *
+ * The far-driven walk exists to ride the CSR. When `csrHopRoute` declines — which the second-ask
+ * policy does on EVERY read of a write-interleaved workload (item 2438) — it falls back to counting
+ * each far vertex's adjacency through a `Map` lookup, which item 2439 priced at O(V) with a `Map` in
+ * the loop. The edge-driven walk does not need a CSR at all.
+ *
+ * MEASURED (item 2442), N=200,000, arms alternated, one cell per process:
+ *
+ * ```text
+ *   vacuous start label, one write per read   far-driven fallback 36.19 ms   edge-driven 14.35   2.52x
+ *   vacuous start label, WARM                 far-driven on CSR    8.54      edge-driven 15.62   1.83x
+ * ```
+ *
+ * So the choice is not "which walk is faster" but "is the CSR there", and the two cases want
+ * opposite answers. **The decision therefore has to be made AFTER `csrHopRoute` has answered, not
+ * before it is asked** — gating the far-driven walk on `csrIsBuilt` up front looks equivalent and is
+ * not: the CSR only ever gets built BECAUSE this walk asks for it, so such a gate would stop the
+ * asking, never arm, and lose the warm 8.54 ms permanently (item 2442).
+ *
+ * COVERAGE STILL DECIDES, for the same reason item 1940's middle ground needs it: the edge-driven
+ * walk is O(|E|) whatever the label excludes, so at low coverage the start-driven walk's sub-linear
+ * bucket scan wins and item 1938 measured a boolean gate there as a 25x regression at 1% coverage.
+ * A caller reaching this only with a VACUOUS start label has coverage 1.0 — but the gate is checked
+ * rather than assumed, so a future caller cannot silently inherit a 25x.
+ */
+export const edgeDrivenBeatsNoCsrFallback = (coverage: number | undefined): boolean =>
+  coverage !== undefined && coverage >= EDGE_DRIVEN_MIN_COVERAGE;
+
 const farDrivenHopWalk = (w: {
   types: readonly string[];
   typeName: string;
@@ -3909,8 +3972,14 @@ const farDrivenHopWalk = (w: {
   farVar: string;
   farLabel: LabelExpr | undefined;
   proj: CProjection;
+  /**
+   * What to run when `csrHopRoute` declines — supplied by a caller that has a sound alternative
+   * (item 2443). Absent, this walk keeps its own adjacency-counting fallback, which is the right
+   * answer for a caller with no better option.
+   */
+  noCsr?: (graph: Graph, params: Params) => Row[];
 }): ((graph: Graph, params: Params) => Row[]) => {
-  const { types, typeName, out, farVar, farLabel, proj } = w;
+  const { types, typeName, out, farVar, farLabel, proj, noCsr } = w;
 
   // THE MULTI-TYPE FORM (item 1390), and it is cheap for a reason specific to this walk: the edges
   // are never READ here, only COUNTED, so a disjunction needs the per-vertex UNION COUNT and
@@ -4074,6 +4143,14 @@ const farDrivenHopWalk = (w: {
       }
 
       return rows;
+    }
+
+    // NO CSR. A caller with a sound alternative gets it here rather than paying the
+    // adjacency-counting fallback below (item 2443: 36.19 ms against 14.35 at 200,000). The ask
+    // above has already been counted, so the second-ask and amortize policies are untouched and the
+    // CSR still arms on a read-heavy workload exactly as item 2438 verified.
+    if (noCsr !== undefined) {
+      return noCsr(graph, params);
     }
 
     // The OPPOSITE index from the start-driven walk: for an `out` hop the far end is the edge's
