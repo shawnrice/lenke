@@ -125472,3 +125472,98 @@ declining for a reason the fixture created.
 
 GATES. No engine change: `hop-projection.ts` restored from `target/LIVE-hopproj-2445.ts`, ABLATE
 marker count 0, dist rebuilt. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0.
+
+## Item 2446 — **THE FIRST FAN-IN SWEEP: 30 cells, and nine of ten shapes speed up monotonically under concentration (1.35x-4.04x) while `distinct` has a SLOW BAND — ~12.2 ms at 1,000-2,000 distinct targets against ~4-5 ms at 600 and at 4,000+, bounded on BOTH sides.** Two hypotheses refuted on the spot (powers of two; a generator artifact), and **the new degeneracy assertion earned itself on its very first sweep**, refusing two cells whose generator reached a seventh of the targets asked for
+
+Item 2445 established fan-in as a third gating axis. `onehopfam-2415.mjs` built uniform graphs, so
+every number this screen had produced described fan-in ~1. It now has a `FANIN` knob.
+
+### THE SWEEP, ten shapes x three fan-ins, one shape per process, MIXED=1
+
+```text
+    NODES=200,000, DEPTH=1, REPS=11      FANIN=1    0.1      0.01     1 -> 0.01
+      where                                65.48    26.28    16.22     4.04x
+      sum                                  13.60     5.35     4.49     3.03x
+      rows                                 17.31     8.78     8.22     2.11x
+      twocol                               17.88     9.88     9.41     1.90x
+      topk                                 40.86    33.78    27.03     1.51x
+      collect                              37.11    25.56    24.81     1.50x
+      grouped                              39.55    35.93    29.03     1.36x
+      orderby                              47.66    37.63    35.43     1.35x
+      count                                 1.68     1.96     1.70     0.99x  (closed form; correct)
+      distinct                             12.40     5.12    12.42     NON-MONOTONE
+```
+
+`count` being flat is right — it is a closed-form shortcut that never walks adjacency, so the target
+distribution cannot reach it. Every other shape gets faster as the far set concentrates, which makes
+**`distinct` the only outlier in thirty cells**.
+
+### THE BAND, bracketed
+
+```text
+    distinct, TARGETS = FANIN x 200,000
+      T=600      4.21 ms      fast
+      T=1000    12.51         SLOW
+      T=1100     4.54         fast
+      T=2000    12.20         SLOW
+      T=4000     4.81         fast
+      T=6000     3.87         fast
+```
+
+Not a threshold — a threshold is a monotone step. This is a band with fast ground on both sides, and
+the answer is 97 in every cell, so nothing about the result changes.
+
+### TWO HYPOTHESES KILLED, which is most of what this item did
+
+**Powers of two, refuted.** 1000 and 2000 sit at 97.7% of 1024 and 2048 — the worst load factor for a
+doubling hash table — which predicted a spike just under every power of two. **4000 is 97.7% of 4096
+and is FAST** (4.81). The story is dead.
+
+**A generator artifact, refuted.** A spike that moves with the modulus is the signature of generator
+structure, not engine behaviour — CLAUDE.md's whole fixture-degeneracy section is about arithmetic
+generators — so the probe gained a second mapping (`FANIN_GEN=hash`, a multiplicative hash with no
+small-factor structure against the modulus) and the band was measured under both:
+
+```text
+      TARGETS      arith     hash
+        1000       12.18    11.82
+        2000       12.39    12.17
+        4000        5.29     4.72
+```
+
+**The band survives the generator**, so it is the engine. That leaves a route chosen by estimated
+cardinality as the live hypothesis — which is exactly the class of finding this axis was built to
+surface — and it is NOT yet confirmed: only an ablation says which route runs, and that is the next
+step rather than a conclusion here.
+
+### THE DEGENERACY ASSERTION PAID FOR ITSELF IMMEDIATELY
+
+The `FANIN` knob shipped with a check that the generator actually reaches the requested distinct-target
+count, because CLAUDE.md records that `to = (a*k + b) % N` has twice produced a FUNCTIONAL graph whose
+degrees looked perfect. On the first sweep that used it, two cells threw:
+
+```text
+    FIXTURE DEGENERATE: FANIN=0.0105 asked for ~2100 distinct targets but the generator reaches
+    only 300. A number from this fixture would describe a graph with far more skew than requested.
+```
+
+`2100` and `4200` are divisible by 7, and the mapping is `(i * 7 + 3) % TARGETS` — so `gcd(7, T) = 7`
+collapses the reachable residues to a seventh. **Those two cells would have read as more evidence for
+whatever story I was telling**, at a skew seven times what I thought I had set. The assertion cost
+four lines and caught a real defect on its first use.
+
+### WHAT IS OPEN
+
+- **`distinct`'s band at 1,000-2,000 distinct far vertices, ~2.5x.** Ablate to identify the route
+  before pricing it; check `cost.rs`/the TS estimator's cardinality inputs, since a band bounded on
+  both sides is what a cardinality-driven route choice looks like.
+- **Every pre-2446 screen number describes fan-in ~1** and is not wrong, but is not general either.
+  The sweep above is the first data on the axis; nine shapes behaving monotonically is reassuring
+  rather than conclusive at three points each.
+
+`onehopfam-2415.mjs` gained `FANIN` (fraction of vertices eligible as edge targets; sources and
+out-degree untouched, so the row count is invariant and cells stay comparable) and `FANIN_GEN`
+(`arith` / `hash`), both echoed on the result line.
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `git diff` clean for
+`packages/gql` and `packages/core`.

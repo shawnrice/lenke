@@ -85,6 +85,38 @@ for (let i = 0; i < NODES; i += 1) {
  */
 const FANOUT = Number(process.env.FANOUT ?? 1);
 
+/*
+ * FAN-IN, the THIRD gating axis (item 2445) and the one this screen could not vary.
+ *
+ * `hop-projection.ts`'s multi-type far-driven route sits behind item 1390's SIGNED cost gate: it
+ * WINS at in-degree ~133 and LOSES at fan-in 1, so a UNIFORM graph never exercises it. Item 2444
+ * measured a uniform fixture, got the declining route, and quoted 5.2x where the real figure is
+ * 1.78x. Every number this screen has produced so far describes fan-in ~1 only.
+ *
+ * `FANIN` is the fraction of vertices eligible as edge TARGETS: 1 spreads them over the whole graph
+ * (in-degree ~1), 0.01 concentrates them onto 1% of it (in-degree ~100). Sources are untouched, so
+ * out-degree and the ROW COUNT are invariant and the cells stay comparable across the sweep.
+ */
+const FANIN = Number(process.env.FANIN ?? 1);
+const TARGETS = Math.max(1, Math.floor(NODES * FANIN));
+
+/*
+ * WHICH MAPPING PICKS THE TARGET, and it exists because a spike turned out to depend on it.
+ *
+ * `arith` is the original `(i * 7 + 3) % TARGETS`. `hash` is a multiplicative hash (Knuth's
+ * 2654435761, the same constant the FANOUT term already uses) which has no small-factor structure
+ * against the modulus. Item 2446 measured a reproducible 2.7-3.2x spike at TARGETS 1000 and 2000
+ * under `arith` that is absent at 600, 1100 and 4000 — the power-of-two load-factor hypothesis is
+ * refuted by 4000 being fast — so the question is whether the engine has a cliff or the GENERATOR
+ * does. Two mappings over the same target count answers it.
+ */
+const FANIN_GEN = process.env.FANIN_GEN ?? 'arith';
+
+const targetOf = (i, hop) =>
+  FANIN_GEN === 'hash'
+    ? Math.abs(Math.imul(i + hop * 7919, 2_654_435_761)) % TARGETS
+    : (i * 7 + 3 + hop * 2_654_435_761) % TARGETS;
+
 for (let e = 0; e < NODES * FANOUT; e += 1) {
   const i = e % NODES;
   const hop = Math.floor(e / NODES);
@@ -92,10 +124,37 @@ for (let e = 0; e < NODES * FANOUT; e += 1) {
   g.addEdge({
     id: `e${e}`,
     from: g.getVertexById(`v${i}`),
-    to: g.getVertexById(`v${(i * 7 + 3 + hop * 2_654_435_761) % NODES}`),
+    to: g.getVertexById(`v${targetOf(i, hop)}`),
     labels: ['E'],
     properties: { w: e % 13 },
   });
+}
+
+/*
+ * COUNT THE DISTINCT ENDPOINTS, because CLAUDE.md's rule is that a changed or raised-fanout fixture
+ * is not trustworthy until they are counted — `to = (a*k + b) % N` is invariant under `k -> k + N`,
+ * which has twice produced a FUNCTIONAL graph whose degrees looked perfect and whose k-hop counts
+ * were `F^k` by construction. Concentrating the targets is exactly the kind of change that can
+ * collapse them, so it is asserted rather than hoped: the distinct target count must be the
+ * requested TARGETS (within the modulus's reach), not a handful.
+ */
+const distinctTargets = new Set();
+
+for (let e = 0; e < NODES * FANOUT; e += 1) {
+  const i = e % NODES;
+  const hop = Math.floor(e / NODES);
+
+  distinctTargets.add(targetOf(i, hop));
+}
+
+const wantTargets = Math.min(TARGETS, NODES * FANOUT);
+
+if (distinctTargets.size < wantTargets * 0.9) {
+  throw new Error(
+    `FIXTURE DEGENERATE: FANIN=${FANIN} asked for ~${wantTargets} distinct targets but the ` +
+      `generator reaches only ${distinctTargets.size}. A number from this fixture would describe ` +
+      `a graph with far more skew than requested.`,
+  );
 }
 
 if (MIXED) {
@@ -256,6 +315,6 @@ const mid = kept.length >> 1;
 const med = kept.length % 2 === 1 ? kept[mid] : (kept[mid - 1] + kept[mid]) / 2;
 
 console.log(
-  `${SHAPE.padEnd(16)} d${DEPTH} F=${FANOUT} MIXED=${MIXED ? 1 : 0} NODES=${NODES} median=${med.toFixed(2)} ms answer=${answer}`,
+  `${SHAPE.padEnd(16)} d${DEPTH} F=${FANOUT} FANIN=${FANIN}/${FANIN_GEN} MIXED=${MIXED ? 1 : 0} NODES=${NODES} median=${med.toFixed(2)} ms answer=${answer}`,
 );
 console.log(`  series ${series.map((x) => x.toFixed(1)).join(' ')}`);
