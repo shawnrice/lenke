@@ -129607,3 +129607,67 @@ GATES. `bun run check` 0. No code change.
 OPEN — this is an owner decision after all, and a narrower one than item 2499 implied: **add `_CBRT`
 /`_LOG2` under the extension sigil, or leave the two TinkerPop-only functions unimplemented?** The
 `log`/`ln` question is CLOSED by ISO and needs nothing.
+
+## Item 2501 — **THE GROUPED AGGREGATE WAS THE ONE BUFFERING OPERATOR WITH NO MEMORY SHAPE, and it is CORRECT: `GROUP BY` retains O(DISTINCT GROUPS), not O(ROWS).** Three shapes added. The row sampler got it backwards and `MECH=cap` fixed it; a spelling gap it suggested did not survive a finer `CAP_STEP`
+
+### THE GAP WAS NARROW AND REAL
+
+`peakmem-2419.mjs` had 13 shapes covering a fold (`hop1sum`), a list (`hop1collect`), a dedup set
+(`hop1distinct`), a full sort and a bounded sort. **A grouped aggregate is none of those** — it holds
+an ACCUMULATOR PER GROUP — and `GROUP` did not appear in the shape table at all.
+
+(I got to it the wrong way and the detour is worth recording: `GROUP BY` has 0 mentions in
+`PROBES.md`, from which I concluded "GQL buffering memory is unmeasured". **False** — `peakmem` is
+ENTIRELY GQL and covers the family. I had searched for the wrong token and drawn a conclusion about
+coverage from its absence. The narrow claim — no GROUPED shape — is the one that held.)
+
+### THE ANSWER, FROM A SELF-CONTROLLING PAIR
+
+The fixture gives `k = i % 97` (97 groups whatever N) and `n = i` (N groups), so the same operator
+over the same walk can be run with only the group COUNT changing. `MECH=cap`, MiB the query needs on
+top of the graph:
+
+```text
+      arm                           25k   50k  100k  200k
+      hop1count   [constant ctl]      0     8     8     0     flat
+      hop1        [linear ctl]        8     8     8    16     grows
+      hop1group     97 groups         8     8     8     8     FLAT      <- O(GROUPS)
+      hop1groupwide  N groups         8     8    16    24     GROWS     <- group count IS N
+```
+
+**`GROUP BY` holds per-group state, which is the correct implementation** — a query returning 97 rows
+over a 200,000-element walk needs 8 MiB and does not grow. At `CAP_STEP=2` the flat arm reads
+0/2/2/4, so even its apparent 8 was mostly resolution.
+
+### THE ROW SAMPLER HAD IT BACKWARDS
+
+The default mechanism reported `hop1group` at **n^1.07** — indistinguishable from the every-row
+control's n^1.29 — which would have been the headline "a grouped aggregate retains O(rows)". It also
+put the pair in the wrong ORDER: `hop1groupwide` read n^0.44, BELOW the 97-group arm, though its
+group count is N. **An arm reading below its own control is an instrument bug until a swap says
+otherwise**, and that internal contradiction is what stopped the claim. `MECH=cap` resolved both: the
+flat arm is flat and wide > few, as it must be.
+
+So for a grouped shape the row-interval sampler is not trustworthy and the cap bisection is. That is
+not a contradiction of item 2458's "cap is unfit" — item 2475 already corrected that by making
+`CAP_STEP` a knob — but it is the first case where cap is the ONLY mechanism that gets the sign right.
+
+### AND A SPELLING GAP THAT WASN'T
+
+At `CAP_STEP=8` the implicit spelling (`RETURN x1.k AS g, count(*)`, grouping inferred) read **0 MiB
+at three of four sizes** against the explicit `LET gk = x1.k … GROUP BY gk` at 8 — an
+equivalent-spelling difference on the MEMORY axis, which the timing spelling probe cannot see. At
+`CAP_STEP=2` it dissolved, and the direction FLIPPED at the smallest size:
+
+```text
+      spelling              25k   50k  100k  200k
+      explicit LET+GROUP BY   0     2     2     4
+      implicit                6     2     2     2
+```
+
+Both flat, equal within noise, no consistent ordering. **A one-step difference at the resolution floor
+is not a finding, and tightening the knob is how you tell** — the same lever item 2475 added, used
+here to kill a false positive rather than to rescue a null.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instrument + docs only; no engine change,
+and nothing here needs an owner decision.

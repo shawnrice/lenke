@@ -136,6 +136,34 @@ const SHAPES = {
    */
   vltrail: 'MATCH TRAIL (a:P)-[:E]->{1,3}(z:P) RETURN DISTINCT z.n AS n',
   vlacyclic: 'MATCH ACYCLIC (a:P)-[:E]->{1,3}(z:P) RETURN DISTINCT z.n AS n',
+  /*
+   * THE GROUPED AGGREGATE (item 2501) — the one buffering operator this instrument had no shape
+   * for. The 13 shapes above cover a fold (`hop1sum`), a list (`hop1collect`), a dedup set
+   * (`hop1distinct`), a full sort and a bounded sort; a GROUP BY is none of those, because it holds
+   * an ACCUMULATOR PER GROUP. Whether its peak tracks GROUPS or ROWS is the whole question, and
+   * nothing had asked it.
+   *
+   * THE PAIR IS THE INSTRUMENT, and it is self-controlling: the same operator over the same walk,
+   * with ONLY the group COUNT changing. The fixture gives `k = i % 97` (97 groups whatever N) and
+   * `n = i` (N groups), so:
+   *
+   *   - `hop1group` MUST be FLAT in N if the implementation holds per-group state. It is the
+   *     constant arm, and it is the one that would expose holding every ROW.
+   *   - `hop1groupwide` MUST GROW, because its group count IS N. It is the linear arm, and it
+   *     proves the instrument can see grouped state at all — without it a flat `hop1group` could
+   *     just mean the sampler is blind to this shape (item 2457's rule, as a pair rather than a
+   *     note).
+   *
+   * Read the two TOGETHER. A flat `hop1group` is only meaningful beside a growing `hop1groupwide`.
+   *
+   * GQL's `GROUP BY` takes a BOUND NAME, not an expression, hence the `LET`. `hop1groupimplicit`
+   * is the same 97 groups written WITHOUT an explicit `GROUP BY` — grouping inferred from the
+   * aggregate — so the pair is also an equivalent-spelling check on the MEMORY axis, which the
+   * spelling probe (a timing instrument) cannot make.
+   */
+  hop1group: 'MATCH (a:P)-[:E]->(x1:P) LET gk = x1.k RETURN gk AS g, count(*) AS c GROUP BY gk',
+  hop1groupwide: 'MATCH (a:P)-[:E]->(x1:P) LET gk = x1.n RETURN gk AS g, count(*) AS c GROUP BY gk',
+  hop1groupimplicit: 'MATCH (a:P)-[:E]->(x1:P) RETURN x1.k AS g, count(*) AS c',
 };
 
 // ── the CHILD: builds the graph, optionally runs the query, reports its own high-water mark ─────

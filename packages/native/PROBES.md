@@ -3246,3 +3246,23 @@ What AGREES, and is worth knowing: arithmetic and precedence, `%`, `^`, unary mi
 constant folding, **division by zero RAISES in both** (TinkerPop `ArithmeticException`, lenke
 "math: division by zero" — not an infinity), an unbound variable raises in both, empty input gives
 empty output, `sqrt(-1)` is `NaN` in both, and `project` with equal or one `by()` matches exactly.
+
+### `peakmem-2419.mjs` gained the GROUPED AGGREGATE (item 2501)
+
+```
+MECH=cap SHAPE=hop1group        node peakmem-2419.mjs   # 97 groups  — must be FLAT
+MECH=cap SHAPE=hop1groupwide    node peakmem-2419.mjs   # N groups   — must GROW
+MECH=cap SHAPE=hop1groupimplicit node peakmem-2419.mjs  # same 97 groups, no explicit GROUP BY
+```
+
+The 13 earlier shapes covered a fold, a list, a dedup set and two sorts; a grouped aggregate holds an
+ACCUMULATOR PER GROUP and had no shape. **The pair is the instrument** — same operator, same walk,
+only the group COUNT changes (`k = i % 97` vs `n = i`) — so a flat `hop1group` is only meaningful
+beside a growing `hop1groupwide`.
+
+Answer: **`GROUP BY` retains O(DISTINCT GROUPS)**, 8 MiB flat across an 8x walk for 97 groups (0/2/2/4
+at `CAP_STEP=2`), while the N-group arm grows 8 -> 24.
+
+WARN **Use `MECH=cap` for these, not the default row sampler.** The sampler reported the 97-group arm
+at n^1.07 (the every-row control is n^1.29) and ranked the pair BACKWARDS, wide below few. Cap gets
+the sign right.
