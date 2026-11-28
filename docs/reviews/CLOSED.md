@@ -128023,7 +128023,7 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check`
 `packages/gql` **5655 pass / 0 fail**. No behaviour change — a corrected source comment and three tests
 replacing one that recorded the question.
 
-## Item 2478 — **`tree()` HOLDS 11.28 MiB ON A ONE-ROW OUTPUT — the largest non-`repeat` buffering shape in the engine, and invisible to a row-interval sampler.** `group()`/`aggregate()`/`store()` are all O(N) with **NO retained difference between `aggregate` and `store`**. And **`path()` retains LESS than the same walk without it** (0.00 against 0.19), because `readsPath` routes it away from a FUSED path that buffers
+## Item 2478 — **`tree()` HOLDS 11.28 MiB ON A ONE-ROW OUTPUT** (**ITEM 2479 APPORTIONS IT: 97% is the CONTRACTUAL canonical key — `tree().by('k')` reads 0.38 MiB, 29.7x less — and the accumulation IS the result, so there is no `repeat`-style lever: WON'T-FIX**) — the largest non-`repeat` buffering shape in the engine, and invisible to a row-interval sampler.** `group()`/`aggregate()`/`store()` are all O(N) with **NO retained difference between `aggregate` and `store`**. And **`path()` retains LESS than the same walk without it** (0.00 against 0.19), because `readsPath` routes it away from a FUSED path that buffers
 
 ### THE THIRD AND FOURTH MEMORY CLASSES
 
@@ -128098,3 +128098,76 @@ trusting the edit — the same `fmt`-reflow trap as item 2476, now twice in thre
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
 `alloc:retained` gains eight arms.
+
+## Item 2479 — **`tree()`'s ACCUMULATION IS ITS RESULT, so there is no `repeat`-style lever — WON'T-FIX. But the CONTRACTUAL KEY is 97% of its retained memory: 11.28 MiB against `tree().by('k')`'s 0.38, a 29.7x drop**, where item 1922 measured that same key at 73% of its TIME. The key dominates both axes. And my memo hypothesis is probably BACKWARDS
+
+### THE ITEM-2476 QUESTION, ASKED OF `tree()` AND ANSWERED NO
+
+Item 2476 found `repeatStep`'s level-by-level frontier buys only EMIT ORDER, so it could be a DFS
+holding nothing. `treeStep` is not that shape. It accumulates
+
+```js
+    const root: Record<string, unknown> = Object.create(null);   // every level Object.create(null)
+```
+
+and `tree()`'s contract is to RETURN that nested map. **The accumulation IS the output**, so there is
+nothing to stream and no lever of `repeat`'s kind. That is a won't-fix, and the reasoning is the
+result — `tree()` being O(PATHS) (item 2478) is a property of what it returns, not of how it is built.
+
+`tree()`'s TIME is separately and thoroughly closed: shipped 1.85x at item 1922, fusing declined at
+1925 (1.55x ceiling), declined again at 1954 with two refuted levers, and the nested-`Map` container
+refuted at 2110 (1.36x SLOWER). Nothing had measured its memory.
+
+### THE KEY IS 97% OF THE MEMORY, AND THAT IS NEW
+
+`treeKey` is `JSON.stringify(node.toJSON())` — the byte-identity contract with the Rust engine, not
+optional. `tree().by('k')` is the same walk with a short key (`"0"` instead of the full JSON):
+
+```text
+      arm                              rows   smpl    peak MiB
+      tree()                              1      0       11.28
+      tree().by('k')  [short key]         1      0        0.38     <- 29.7x
+      streaming values()  [control]   20000      4        0.01
+      CALIBRATION                     20000      4        0.18
+```
+
+So the tree's STRUCTURE is 0.38 MiB and its KEYS are the other 10.90. Set beside item 1922's timing
+(1013.61 ms against `by('k')`'s 269.67, the key 73% of the time), **the canonical key dominates both
+axes of this step** — 73% of time, 97% of memory.
+
+**This is not a free lever**, because the key is the cross-engine contract. What it IS: a 29.7x memory
+reduction already available to USERS who do not need canonical keys, which is a guidance finding
+rather than an engine change. The two arms produce DIFFERENT outputs by construction, so this
+apportions `tree()`'s total between key and structure — it is not an A/B of equivalents and neither
+arm is a control for the other.
+
+### THE MEMO HYPOTHESIS IS PROBABLY BACKWARDS, AND IS RECORDED AS UNRESOLVED
+
+This tick started from `treeStep`'s per-element memo —
+
+```js
+    const memo = ctx.keysStable === true ? new Map<unknown, string>() : undefined;
+```
+
+— as a pure SPEED structure (744 ms of 1013, item 1922) that the RESULT does not need, and therefore
+a candidate memory cost. That reasoning is likely inverted. `JSON.stringify` returns a FRESH string
+per call, so without the memo every occurrence of an element in the tree allocates its own copy of
+the same key; with it, one string is shared across all of them. **The memo is plausibly a memory
+SAVING, not a cost.** Not measured either way: disabling it needs `ctx.keysStable === false`, which
+takes a mutation step in the plan and changes the work, so this stays a reading of the code.
+
+### THE FIRST ARM WAS A NULL ARM, AND IDENTICAL-TO-THE-DIGIT IS WHAT CAUGHT IT
+
+The arm was `tree('k')` first. **`tree` takes no positional by**, so the string was silently ignored
+and the arm was `tree()` a second time. It read **11.28 against 11.28** — identical to the last digit
+— and would have been reported as "the canonical key costs no memory", the exact opposite of the
+truth, closing a real finding as a null.
+
+What caught it was the identity itself, then one command comparing the two arms' OUTPUTS
+(`JSON.stringify(a) !== JSON.stringify(b)` → `false`). The fluent `tree().by('k')` is the real
+spelling. **Assert an A/B arm IS the code it claims before trusting its reading** — this repo's rule
+already says so for patched files; it applies just as hard to a builder argument that may not exist,
+and comparing outputs is the cheap form of it.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
+`alloc:retained` gains one arm.

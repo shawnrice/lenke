@@ -218,6 +218,30 @@ const arms = [
   ['3 hops, no path  [control]', traversal(V(), out('E'), out('E'), out('E')), false],
   ['3 hops + path()', traversal(V(), out('E'), out('E'), out('E'), path()), false],
   ['tree()', traversal(V(), out('E'), tree()), false],
+  /*
+   * DECOMPOSING `tree()`'s 11.28 MiB, NOT an A/B of equivalents (item 2479). `tree()` keys every
+   * path position by `treeKey` = `JSON.stringify(node.toJSON())` — the byte-identity contract with
+   * the Rust engine — and item 1922 measured that key as 73% of the shape's TIME (1013.61 ms against
+   * `tree('k')`'s 269.67). Its MEMORY share has never been measured, and there are two places a
+   * canonical key is retained: as the tree's own property NAMES, and in `treeStep`'s per-element
+   * `memo` Map, which is a pure speed structure the RESULT does not need.
+   *
+   * `tree('k')` is the same walk with a short key instead of the canonical one. THE TWO OUTPUTS
+   * DIFFER (different key functions, so different nested maps), so this is not a same-multiset
+   * comparison and neither arm is a control for the other — it apportions the total between the key
+   * and the structure. It cannot separate the memo from the key strings IN the tree, because
+   * disabling the memo needs `ctx.keysStable === false`, which takes a mutation step in the plan and
+   * would change the work.
+   *
+   * THE ARM WAS `tree('k')` AT FIRST AND THAT WAS A NULL ARM (item 2479): `tree` takes no positional
+   * by, so the string was SILENTLY IGNORED and the arm was `tree()` again. It duly read 11.28 MiB
+   * against `tree()`'s 11.28 — identical to the last digit, which is what gave it away, and which
+   * would otherwise have been reported as "the canonical key costs no memory". The fluent
+   * `tree().by('k')` is the real spelling (keys become `"0"` rather than the full JSON) and its
+   * output genuinely differs. **Assert an A/B arm IS the code it claims before trusting its
+   * reading** — here by comparing the two arms' OUTPUTS, which cost one command.
+   */
+  ["tree().by('k') [short key]", traversal(V(), out('E'), tree().by('k')), false],
   ['group()', traversal(V(), values('k'), group()), false],
   ['aggregate() + cap', traversal(V(), values('k'), aggregate('x'), cap('x')), false],
   ['store() + cap', traversal(V(), values('k'), store('x'), cap('x')), false],
