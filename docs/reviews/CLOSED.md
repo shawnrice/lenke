@@ -130079,3 +130079,77 @@ rewrite was touched.
 OPEN — still small and unexplained: `out,dedupe,out` read 5.22 MiB at item 2505, neither the floor nor
 the full chain. Unaffected by this change (its labels exist), and worth a look if the dedupe-split
 chain route matters.
+
+## Item 2508 — **THE WRITE SIDE HAD NO MEMORY INSTRUMENT AT ALL. An open transaction holds ~162 B per CREATE and ~273 B per UPDATE, linear in the write count** — and three of the seven `tx*` structures are what scale, read directly rather than inferred
+
+### WHY THIS AXIS
+
+Every memory instrument here measures READS: `peakmem-2419` sweeps GQL walks, `retained-2457`
+Gremlin steps, `bare-hop-retain-2504` the chain CSR. **The write side was never measured** —
+`undo log` appears 13 times in `CLOSED.md` and ZERO times in `PROBES.md`, so it was discussed and
+uninstrumented. It is the same OOM question with a sharper edge: a transaction must hold enough to
+undo itself, so **how large a transaction can run before the process dies** is a hard limit on batch
+size, import size, and any "apply these N changes atomically" feature.
+
+### THE MEASUREMENT
+
+`tx-retain-2508.mjs` — the SAME writes run once with and once without the transaction wrapper, one
+shape per process, `global.gc()` before each sample:
+
+```text
+      addVertex (undo = delete)
+           N      no tx        in tx      delta   B/write
+       25000     14.34 MiB    18.25 MiB    3.91    163.9
+       50000     28.56        36.17        7.61    159.5
+      100000     57.13        72.58       15.45    161.9
+
+      setProperty (undo = the OLD value)
+       25000      1.19 MiB     7.85 MiB    6.65    279.1
+       50000      2.37        15.29       12.92    271.3
+      100000      4.82        30.87       26.05    273.1
+```
+
+Flat B/write across a 4x sweep in both cases, so the cost is genuinely **per write and linear**, not
+a fixed overhead. **A 1M-write transaction therefore holds ~162 MB (creates) or ~273 MB (updates) of
+bookkeeping ON TOP of the data.**
+
+### ATTRIBUTION, READ RATHER THAN GUESSED
+
+`Graph` carries seven per-transaction structures and the probe reads all of them at peak, so there is
+no need for a deletion sweep (item 2505's technique) when the engine exposes the candidates:
+
+```text
+      at N=100,000            addVertex    setProperty
+      txUndo                    100000        100000     scales
+      txEvents                  100000        100000     scales
+      txTokens                  200000        100000     scales — TWO per created vertex
+      txMarks                        1             1     fixed
+      txTouched                      0             0     fixed
+      txTouchedEdges                 0             0     fixed
+      txDepth                        1             1     fixed
+```
+
+**Three of seven scale; four are constant.** `txTokens` is the one worth noting — it is 2N for a
+create and N for an update, so a created vertex registers two tokens where a mutated one registers
+one.
+
+### THE INVERSION, WHICH IS THE INTERESTING PART
+
+**Outside a transaction, creates cost 12x what updates cost** (57.14 vs 4.82 MiB at N=100,000),
+because a create allocates the data and an update does not. **Inside one, updates cost 1.7x what
+creates cost per write** (273 vs 162 B). The reason is in the undo semantics: undoing a create is
+just a delete, while undoing a mutation requires capturing and HOLDING the old value. So the
+transaction's bookkeeping inverts the relative cost of the two write kinds — the cheap write becomes
+the expensive one to make atomic.
+
+That is a planning fact rather than a defect: an import of new data is the cheap case to wrap in a
+transaction, and a bulk property update is the expensive one.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instrument only; no engine change and no
+owner decision.
+
+OPEN — **is the per-write cost reducible?** Three structures each hold one entry per write and the
+numbers do not say whether they overlap in content. `txEvents` existing at all is a consequence of
+`events-observation-only` (notification is owed after commit), and `txTokens` at 2-per-create looks
+like the most compressible of the three. None of that is priced; this item establishes the floor, not
+a lever.

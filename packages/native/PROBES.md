@@ -3405,3 +3405,31 @@ Reading that against Gremlin's row-producing chain is apples to oranges.
 
 KEY `out(NOSUCH),out(NOSUCH)` at ~half of `out(E),out(NOSUCH)` is a THIRD confirmation of the code's
 "one CSR per hop shape … they share a slot numbering".
+
+## `tx-retain-2508.mjs` — what an OPEN TRANSACTION holds per write (item 2508)
+
+```
+cd packages/native && node tx-retain-2508.mjs
+TX_SIZES=50000,100000,200000 node tx-retain-2508.mjs
+```
+
+**The first write-side memory instrument** — every other one here measures reads, and `undo log` had
+13 `CLOSED.md` mentions against ZERO in this file. Runs the SAME writes with and without the
+transaction wrapper, one shape per process, and reads all seven `tx*` structures at peak.
+
+```
+      addVertex   (undo = delete)        +162 B/write   (163.9 / 159.5 / 161.9 at 25k/50k/100k)
+      setProperty (undo = old value)     +273 B/write   (279.1 / 271.3 / 273.1)
+```
+
+Flat across a 4x sweep, so **per-write and linear**: a 1M-write transaction holds ~162 MB (creates) or
+~273 MB (updates) of bookkeeping on top of the data.
+
+Attribution is READ, not inferred — three of seven structures scale (`txUndo` = N, `txEvents` = N,
+`txTokens` = **2N for a create**, N for an update); `txMarks`, `txTouched`, `txTouchedEdges`,
+`txDepth` are constant.
+
+KEY **The transaction INVERTS which write kind is expensive.** Outside one, creates cost 12x updates
+(57.14 vs 4.82 MiB at 100k) because they allocate the data. Inside one, updates cost 1.7x creates per
+write, because undoing a mutation must capture and hold the OLD value while undoing a create is just a
+delete. So wrapping an import is cheap and wrapping a bulk property update is not.
