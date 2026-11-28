@@ -3108,3 +3108,14 @@ a streaming control, a holding control and the holding/streaming ratio as a GATE
 At N=20,000 DEG=3 DEPTH=3 it reads 29.76 MiB for BFS-by-levels, **0.00 for DFS**, and 29.60 for the
 holding control — so the level frontier costs what holding every row costs. The fixture guards the
 `(k * DEG + d) % N` generator trap by counting distinct endpoints.
+
+### `unwrap-probe-2483.ts` — the local-scope conformance map against TinkerPop
+
+`cd packages/gremlin && bun unwrap-probe-2483.ts`. 21 local-scope cases with the TinkerPop 3.7.3
+value beside each, printing `agree`/`DIFFER` and a total. Currently 14 agree, 7 differ, and the
+differences have THREE causes, not one: the n=1 unwrapping (5 cases — the trigger is the REQUESTED
+WINDOW SIZE, not the result's size, which `limit(local,2)` over a one-element list proves by staying
+wrapped), `sample` having no local-scope overload (1), and an empty window dropping the ROW in
+TinkerPop where lenke keeps it (1). `dedupe` also has no local overload, so that case is not askable
+at all — and asking it anyway is what produced two FALSE `agree` rows in the first draft, since a
+fixture of distinct values cannot tell a dedupe from a non-dedupe.

@@ -128172,7 +128172,7 @@ and comparing outputs is the cheap form of it.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
 `alloc:retained` gains one arm.
 
-## Item 2480 — **A WRONG ANSWER, FOUND BY CHASING AN "UNTESTED SYMBOL": `tail(Scope.local)` returned the WHOLE list instead of the last element.** Confirmed against TinkerPop 3.7.3 AND against this engine's own Rust parser, which both default `n` to 1. **FIXED**, with the deviation that remains recorded rather than papered over (**ITEM 2481 CONFIRMS THE FIX WAS CORRECTLY SCOPED: TinkerPop has NO single-argument `limit(Scope)`/`skip(Scope)`/`range(Scope, lo)`, so `tail` was rightly the only step defaulted — and the n=1 UNWRAPPING is UNIFORM across the family, not a `tail` quirk**)
+## Item 2480 — **A WRONG ANSWER, FOUND BY CHASING AN "UNTESTED SYMBOL": `tail(Scope.local)` returned the WHOLE list instead of the last element.** Confirmed against TinkerPop 3.7.3 AND against this engine's own Rust parser, which both default `n` to 1. **FIXED**, with the deviation that remains recorded rather than papered over (**ITEM 2483 SPLITS THIS INTO FOUR FINDINGS — the n=1 unwrapping (whose trigger is the REQUESTED WINDOW, not the result size), `sample` and `dedupe` having NO local scope at all, and an empty window DROPPING THE ROW in TinkerPop; 14 of 21 cases agree.** ITEM 2481 CONFIRMS THE FIX WAS CORRECTLY SCOPED: TinkerPop has NO single-argument `limit(Scope)`/`skip(Scope)`/`range(Scope, lo)`, so `tail` was rightly the only step defaulted — and the n=1 UNWRAPPING is UNIFORM across the family, not a `tail` quirk**)
 
 ### THE SURVEY LED SOMEWHERE REAL THIS TIME, AND THE FIRST JOB WAS STILL TO DISQUALIFY MOST OF IT
 
@@ -128389,3 +128389,73 @@ would be worse than the comment.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; `bun test` in
 `packages/gql` **5655 pass / 0 fail**. No behaviour change — one comment recording the flip table and
 the unproven edge.
+
+## Item 2483 — **THE "ONE SEMANTIC CHOICE" IS FOUR SEPARATE FINDINGS, and the unwrapping rule is NOT what it looked like: a slicing step unwraps iff its REQUESTED WINDOW is 1, not iff its RESULT has one element.** 21 cases swept against the console, 14 agree, 7 differ. **Plus two MISSING local-scope overloads and a CARDINALITY difference** — and `bun run check` caught two FALSE AGREEMENTS in my own probe
+
+### THE DECISION WAS FRAMED AS ONE CHOICE; IT IS FOUR
+
+Items 2480-2481 recorded "local-scope slicing unwraps at n=1 in TinkerPop and not here" as a single
+semantic question. Sweeping the whole family (`packages/gremlin/unwrap-probe-2483.ts`, every TP value
+from `gremlin-console:3.7.3` on the modern graph) separates it into four:
+
+```text
+    cause                                   cases                 lenke            TinkerPop
+      1. the n=1 UNWRAPPING                 S1 S2 S3 S4 U1        [[35]]           [35]
+      2. `sample` has NO local scope        S5                    global sample    [[32]]
+      3. `dedupe` has NO local scope        (not askable)         —                [[…]]
+      4. an empty window DROPS THE ROW      E2                    [[]]  1 row      []  0 rows
+```
+
+Only the first is a wrapping question. The second and third are **missing API**, and the fourth is a
+**row-count difference**, which is a different kind of problem from a shape difference.
+
+### THE UNWRAPPING RULE, WHICH THE OBVIOUS GUESS GETS WRONG
+
+```text
+      tail(local, 1)   on 4 elements   ->  [35]      UNWRAPPED
+      limit(local, 1)  on 4 elements   ->  [29]      UNWRAPPED
+      range(local, 0, 1)               ->  [29]      UNWRAPPED
+      range(local, 2, 3)               ->  [32]      UNWRAPPED
+      tail(local, 1)   on 1 element    ->  [29]      UNWRAPPED
+      limit(local, 2)  on 1 element    ->  [[29]]    WRAPPED   <- the discriminating case
+      sample(local, 1) on 4 elements   ->  [[32]]    WRAPPED   <- the exception
+      fold()           on 1 element    ->  [[29]]    WRAPPED
+```
+
+**`limit(local, 2)` over a one-element list returns a one-element result and stays WRAPPED**, while
+`limit(local, 1)` unwraps. So the trigger is the REQUESTED WINDOW SIZE, not the result's size — and
+"unwrap a singleton result" would have been the wrong rule to implement. `sample(local, 1)` breaks
+even that, staying wrapped at a requested size of 1.
+
+Everything else agrees exactly: all size-2 windows, `order(local)` at both sizes, every local
+aggregate (`count`/`sum`/`min`/`max`/`mean` -> `[4]`/`[123]`/`[27]`/`[35]`/`[30.75]`), and
+`limit(local, 0)` -> `[[]]`. Those 14 agreements are the controls that make the 7 differences
+readable.
+
+### `limit(local,0)` KEEPS THE ROW AND `range(local,9,10)` DROPS IT
+
+Two ways to select nothing, two different outcomes in TinkerPop: `limit(local, 0)` yields `[[]]` (one
+row, empty list) and both engines agree; `range(local, 9, 10)` yields `[]` — **no row at all** — where
+lenke yields `[[]]`. A step that changes the ROW COUNT is a sharper divergence than one that changes a
+value's shape, and it was invisible until the empty cases were asked.
+
+### `bun run check` CAUGHT TWO FALSE AGREEMENTS IN MY OWN PROBE
+
+The first draft included `dedupe(Scope.local)` twice, and both rows printed **agree**. They were
+wrong: `dedupe(...labels: string[])` has no scope overload, so the symbol went in as a PROPERTY KEY.
+The rows agreed only because the four ages are already distinct — **a non-dedupe and a real local
+dedupe return the same list on a fixture with no duplicates.** `TS2345: Argument of type 'symbol' is
+not assignable to parameter of type 'string'` is what exposed it; the probe's own comparison column
+never would have.
+
+That is the **third** silently-dropped-positional-argument in five ticks (`tree('k')` 2479,
+`tail(2, Scope.local)` 2480, this), and the first where the trap produced a FALSE POSITIVE agreement
+rather than a false null. `sample(1)` is the same gap, kept in the table labelled `[GLOBAL ONLY]` so
+it reads as missing API rather than as an unwrapping difference.
+
+**A fixture with no duplicates cannot test a dedupe**, and more generally: an arm whose expected
+value coincides with the control's is not evidence. `bun run check` has now caught a defect in my own
+new code three ticks running (2480, 2481, 2483).
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No engine change — one probe added,
+`unwrap-probe-2483.ts`, runnable as `bun unwrap-probe-2483.ts` from `packages/gremlin`.
