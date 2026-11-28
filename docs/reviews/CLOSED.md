@@ -125473,7 +125473,7 @@ declining for a reason the fixture created.
 GATES. No engine change: `hop-projection.ts` restored from `target/LIVE-hopproj-2445.ts`, ABLATE
 marker count 0, dist rebuilt. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0.
 
-## Item 2446 — **THE FIRST FAN-IN SWEEP: 30 cells, and nine of ten shapes speed up monotonically under concentration (1.35x-4.04x) while `distinct` has a SLOW BAND — ~12.2 ms at 1,000-2,000 distinct targets against ~4-5 ms at 600 and at 4,000+, bounded on BOTH sides.** Two hypotheses refuted on the spot (powers of two; a generator artifact), and **the new degeneracy assertion earned itself on its very first sweep**, refusing two cells whose generator reached a seventh of the targets asked for
+## Item 2446 — **THE FIRST FAN-IN SWEEP: 30 cells, and nine of ten shapes speed up monotonically under concentration (1.35x-4.04x) while `distinct` has a SLOW BAND — ~12.2 ms at 1,000-2,000 distinct targets against ~4-5 ms at 600 and at 4,000+, bounded on BOTH sides.** ~~[THE BAND DOES NOT EXIST — item 2447: it is a WARM-UP artifact of REPS=11/WARMUP=3. At REPS=20/WARMUP=8 the two cells read 4.67 and 4.69. Every median in this table is suspect; the monotone RATIOS are probably directionally right.]~~ Two hypotheses refuted on the spot (powers of two; a generator artifact), and **the new degeneracy assertion earned itself on its very first sweep**, refusing two cells whose generator reached a seventh of the targets asked for
 
 Item 2445 established fan-in as a third gating axis. `onehopfam-2415.mjs` built uniform graphs, so
 every number this screen had produced described fan-in ~1. It now has a `FANIN` knob.
@@ -125564,6 +125564,95 @@ four lines and caught a real defect on its first use.
 `onehopfam-2415.mjs` gained `FANIN` (fraction of vertices eligible as edge targets; sources and
 out-degree untouched, so the row count is invariant and cells stay comparable) and `FANIN_GEN`
 (`arith` / `hash`), both echoed on the result line.
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `git diff` clean for
+`packages/gql` and `packages/core`.
+
+## Item 2447 — **ITEM 2446's `distinct` BAND DOES NOT EXIST. It is a WARM-UP ARTIFACT of my own harness**, and at an adequate warmup the two cells read **4.67 and 4.69 ms** where I reported 12.20 and 4.81. **The two hypotheses I "refuted" at 2446 both varied the FIXTURE while the artifact lived in the HARNESS — a control that varies the wrong thing confirms nothing.** The probe now carries two warm-up adequacy signals, and the second one catches exactly this
+
+Item 2446 reported a 2.5x band in `distinct` at 1,000-2,000 distinct far vertices, bounded on both
+sides, surviving a generator change. All of it was the median landing inside a tier-up transient.
+
+### WHAT ACTUALLY HAPPENS, from the per-rep series
+
+```text
+    distinct, REPS=14, WARMUP=3
+      TARGETS=2000   68.9  21.9   6.4   4.3  4.0  3.8  3.8  3.7  3.9  4.5 …   settles at rep 4
+      TARGETS=4000   69.2  15.9  12.4  12.7 12.7  5.5  4.8  4.8  4.7  4.7 …   settles at rep 6
+```
+
+The routes tier up slowly AND arm an adaptive cache, so the settle point **varies run to run and
+cell to cell**. With `WARMUP=3` and `REPS=11` the kept window straddles the transient for one cell
+and sits inside it for another, and the difference reads as a property of the graph.
+
+```text
+    distinct, TARGETS=2000 / 4000
+      REPS=11, WARMUP=3  (item 2446's settings)   12.20   4.81      <- the "band"
+      REPS=20, WARMUP=8                            4.67   4.69      <- identical
+      an inline reproduction, 11 reps, 3 warmup    4.60   4.59      <- identical
+```
+
+### WHY MY OWN CONTROLS MISSED IT, which is the lesson
+
+At item 2446 I killed two hypotheses and took that as evidence the effect was real:
+
+- **powers of two** — refuted because T=4000 is 97.7% of 4096 and fast;
+- **a generator artifact** — refuted because the band survived `FANIN_GEN=hash`.
+
+**Both controls varied the FIXTURE. The artifact was in the HARNESS.** Changing the target mapping
+cannot affect how many reps a route needs to tier up, so of course the band survived — that control
+was incapable of detecting the actual cause. Refuting two wrong explanations felt like converging on
+the truth and was in fact evidence about nothing.
+
+**The tell was already in hand and I misread it.** Profiling both sides showed the SAME route
+(`levelWalk` 88-90%, `distinctLevelOneRaw`) at near-identical cost — 52 ms against 54 ms over nine
+reads. Two cells running the same code at the same cost IS the statement that the band is not in the
+engine; I read it as "the profiler perturbed it away" and went looking for a gate. The inline
+reproduction (4.60 against 4.59) then settled it.
+
+### THE PROBE NOW CHECKS ITS OWN WARMUP, with two signals because one is not enough
+
+```text
+    signal                what it catches                                        verdict at REPS=11
+      spread              slowest kept sample >> median: window STRADDLES the     fires on T=4000
+                          transient
+      descending          median >> fastest of the last three samples: window     fires on T=2000
+                          is ENTIRELY INSIDE the transient
+```
+
+The first was the obvious one and it **does not catch this bug** — when every kept sample is slow
+there is no spread. The second compares the median against the most-warmed samples in TIME order,
+and at `REPS=11` it reports the offending cell exactly:
+
+```text
+    WARMUP SUSPECT (descending): median 12.31 ms is 3.1x the fastest of the last three samples 3.9
+    — the whole kept window is still tiering up. Raise WARMUP or REPS.
+```
+
+A warning rather than a throw, because a few shapes are legitimately bimodal (`csrAskedBefore` arms
+mid-series by design, items 2441/2442) and silently dropping those cells would hide real behaviour.
+What changes is that an unflagged number is now one whose warmup was checked. `WARMUP_TOL` tunes it.
+
+### WHAT THIS INVALIDATES
+
+**Item 2446's 30-cell table used `REPS=11, WARMUP=3`, so every number in it is suspect.** The large
+monotone ratios (`where` 4.04x, `sum` 3.03x) are probably directionally right — a transient cannot
+manufacture a 4x that moves consistently in one direction across three fan-ins — but the specific
+medians are not trustworthy and the table wants re-running at `REPS=20 WARMUP=8` with the new
+signals watched. Item 2446's heading is struck accordingly.
+
+**What survives item 2446 intact:** the `FANIN` knob itself, the degeneracy assertion (which caught
+two genuinely broken cells at a seventh of the requested skew — that was a real defect in the
+fixture, independent of this), and the finding that fan-in is an axis no screen had varied.
+
+### THE GENERALIZABLE RULE
+
+**A median is not robust to a transient that spans the whole window.** The usual defence — drop N
+warm-up samples, take the median of the rest — assumes the transient is shorter than the warmup, and
+says nothing when it is not. The only cheap detector is a comparison against the TAIL of the series
+in time order, because that is the one part guaranteed to be the most warmed. [[floor-arm-must-take-same-route]]
+records the sibling failure ("min-of-N hides a second-ask arming, the per-rep SERIES shows it as a
+step"); this is the same hazard reached through a median instead of a min.
 
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `git diff` clean for
 `packages/gql` and `packages/core`.

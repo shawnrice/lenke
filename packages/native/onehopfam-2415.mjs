@@ -314,6 +314,53 @@ const kept = series.slice(WARMUP).sort((a, b) => a - b);
 const mid = kept.length >> 1;
 const med = kept.length % 2 === 1 ? kept[mid] : (kept[mid - 1] + kept[mid]) / 2;
 
+/*
+ * IS THE WARMUP LONG ENOUGH? Asserted, because this probe reported a 2.5x "band" that did not exist
+ * (item 2447 correcting item 2446).
+ *
+ * These routes tier up slowly AND arm an adaptive cache: a `distinct` series reads
+ * `68.9 21.9 6.4 4.3 4.0 3.8 …` at one target count and `69.2 15.9 12.4 12.7 12.7 5.5 4.8 …` at
+ * another — settling at rep 4 in one case and rep 6 in the other. With WARMUP=3 the median then
+ * lands INSIDE the transient for one cell and outside it for the next, and the difference reads as
+ * a property of the graph. It is a property of the harness.
+ *
+ * THE CHECK: the SLOWEST kept sample must not be wildly above the median. A still-tiering series
+ * fails this; genuine run-to-run noise does not. It is a warning rather than a throw because a few
+ * shapes are legitimately bimodal (`csrAskedBefore` arms mid-series by design), and silently
+ * dropping those cells would hide real behaviour — but an unflagged number is now a number whose
+ * warmup was checked.
+ */
+const WARMUP_TOLERANCE = Number(process.env.WARMUP_TOL ?? 2);
+const slowestKept = kept[kept.length - 1];
+
+if (slowestKept > med * WARMUP_TOLERANCE) {
+  console.log(
+    `  WARMUP SUSPECT (spread): slowest kept sample ${slowestKept.toFixed(1)} ms is ` +
+      `${(slowestKept / med).toFixed(1)}x the median ${med.toFixed(2)} — the series is probably ` +
+      `still tiering up, so this median is not comparable across cells. Raise WARMUP or REPS.`,
+  );
+}
+
+/*
+ * THE SECOND SIGNAL, and it is the one that matters: a window entirely INSIDE the transient has no
+ * spread to detect. Item 2447's phantom band was exactly that — every kept sample slow, so the
+ * check above passed while the median was 2.5x the settled cost.
+ *
+ * So compare the median against the LAST samples in TIME order, which are the most warmed. If the
+ * median sits well above them, the window is still descending and the number describes the tier-up
+ * rather than the route.
+ */
+const tail = series.slice(-3);
+const tailFloor = Math.min(...tail);
+
+if (med > tailFloor * WARMUP_TOLERANCE) {
+  console.log(
+    `  WARMUP SUSPECT (descending): median ${med.toFixed(2)} ms is ` +
+      `${(med / tailFloor).toFixed(1)}x the fastest of the last three samples ` +
+      `${tailFloor.toFixed(1)} — the whole kept window is still tiering up. Raise WARMUP or REPS.`,
+  );
+}
+
 console.log(
   `${SHAPE.padEnd(16)} d${DEPTH} F=${FANOUT} FANIN=${FANIN}/${FANIN_GEN} MIXED=${MIXED ? 1 : 0} NODES=${NODES} median=${med.toFixed(2)} ms answer=${answer}`,
 );
