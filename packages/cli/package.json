@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@lenke/core": "workspace:*",
+    "@lenke/errors": "workspace:*",
     "@lenke/inspect": "workspace:*",
     "@lenke/native": "workspace:*"
   },

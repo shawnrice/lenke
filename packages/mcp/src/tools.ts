@@ -19,6 +19,7 @@ import {
   shortestPath,
   stronglyConnectedComponents,
 } from '@lenke/core';
+import { ErrorCode, LenkeError } from '@lenke/errors';
 import { parse, query } from '@lenke/gql';
 import { deserialize, type FormatName, FORMATS } from '@lenke/serialization';
 
@@ -46,7 +47,10 @@ const buildGraph = (args: Record<string, unknown>): Graph => {
   const format = (args.format as FormatName | undefined) ?? 'ndjson';
 
   if (!FORMATS.includes(format)) {
-    throw new Error(`\`format\` must be one of ${FORMATS.join(' | ')}`);
+    throw new LenkeError(`\`format\` must be one of ${FORMATS.join(' | ')}`, {
+      code: ErrorCode.UnknownFormat,
+      details: { format },
+    });
   }
 
   return deserialize(asString(data, 'data'), format);

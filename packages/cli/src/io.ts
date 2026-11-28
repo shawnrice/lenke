@@ -1,5 +1,6 @@
 import { extname } from 'node:path';
 
+import { ErrorCode, LenkeError } from '@lenke/errors';
 import { graphFromFormat, graphFromNdjson, type RustGraph } from '@lenke/native';
 
 // The backend type, taken from the loader so we needn't import it by name.
@@ -40,7 +41,10 @@ export const detectFormat = (file: string): Format | undefined =>
 export const formatFor = (file: string, override?: string): Format => {
   if (override !== undefined) {
     if (!isFormat(override)) {
-      throw new Error(`Unknown format '${override}'. Choose one of: ${FORMATS.join(', ')}.`);
+      throw new LenkeError(`Unknown format '${override}'. Choose one of: ${FORMATS.join(', ')}.`, {
+        code: ErrorCode.UnknownFormat,
+        details: { format: override },
+      });
     }
 
     return override;
@@ -49,7 +53,10 @@ export const formatFor = (file: string, override?: string): Format => {
   const detected = detectFormat(file);
 
   if (!detected) {
-    throw new Error(`Can't infer a format from '${file}'. Pass --format <${FORMATS.join(' | ')}>.`);
+    throw new LenkeError(
+      `Can't infer a format from '${file}'. Pass --format <${FORMATS.join(' | ')}>.`,
+      { code: ErrorCode.UnknownFormat, details: { file } },
+    );
   }
 
   return detected;

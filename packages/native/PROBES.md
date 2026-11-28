@@ -3579,3 +3579,30 @@ thrown-but-untested one (now 7 tests in `gremlin/src/executor/path-element-step-
 WARN **Count BOTH spellings when surveying codes.** The first pass searched the literal `'E_*'` string
 and reported seven dead codes; throw sites use the `ErrorCode.Name` symbol. Item 2501's rule, hit
 inside the sweep meant to find coverage gaps.
+
+## `codeless-throw-2519.ts` — does the same mistake carry the same code at every door? (item 2519)
+
+```
+cd packages/native && bun run codeless-throw-2519.ts
+```
+
+One user mistake (a bad serialization format), four doors, each printing `error.code`:
+
+```
+      LIBRARY deserialize() [CONTROL]                E_UNKNOWN_FORMAT
+      CLI formatFor(file, override)                  E_UNKNOWN_FORMAT   (was NO CODE)
+      CLI formatFor — undetectable extension         E_UNKNOWN_FORMAT   (was NO CODE)
+      MCP gql_run with a bad format                  E_UNKNOWN_FORMAT   (was NO CODE)
+      MCP gql_run, GOOD format [CONTROL: NO THROW]   NO THROW
+```
+
+KEY The finding was a PRE-VALIDATION split: the CLI and MCP checked `format` against their own
+`FORMATS` list before calling `deserialize`, so the library's coded error was unreachable there.
+
+WARN **A control validates the INSTRUMENT, not every row's mechanism.** The first version called
+`runTool.run(...)` — the method is `handle` and async — and the TypeError read as "NO CODE", a finding
+that was entirely the probe's. The library control could not catch it because it never touches the MCP
+path. The probe now asserts `typeof handle === 'function'` and labels a TypeError as `PROBE BUG`.
+
+WARN The MCP control needs VALID ndjson. With `'{}'` it raises `E_INVALID_SHAPE` — throwing for an
+unrelated reason, which proves nothing about whether the new throw over-fires.

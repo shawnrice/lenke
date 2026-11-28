@@ -130823,3 +130823,82 @@ instructing consumers to branch on a code this engine never raises for that faul
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; core 497 / gremlin **2927** (+7) / gql
 5666 / mcp 10 / errors 6, all 0 fail.
+
+## Item 2519 — **THE 105 CODE-LESS THROWS WERE 15, AND 13 OF THOSE ARE FINE.** The two that were not: the CLI and the MCP server each PRE-VALIDATE a serialization format and threw code-less, while the library they wrap raises `E_UNKNOWN_FORMAT` for the identical mistake — fixed at all three sites, and the pre-existing message-only tests stayed green throughout, which is the point
+
+### THE NUMBER COLLAPSED UNDER TRIAGE
+
+Item 2518 counted 105 `throw new Error(` against 307 coded and flagged `native`'s 91 as the worry.
+Splitting by whether the file is SHIPPED (under a package's `src/`, what a consumer imports) rather
+than one of this repo's own probe scripts:
+
+```text
+      native   91 code-less  ->   2 shipped   (89 are top-level probe scripts)
+      cli       7            ->   7
+      mcp       3            ->   3
+      react     2            ->   2
+      gql       2            ->   1
+      TOTAL   105            ->  15 shipped
+```
+
+**And 13 of the 15 are structurally fine — mostly SAFE BY TYPE rather than by reachability** (item
+2516's distinction):
+
+- `gql/executor/expr-analysis.ts` assigns `const unhandled: never = e` FIRST, so the compiler proves
+  the arm unreachable; it can only fire if someone adds an `Expr` kind without a case. Its comment
+  already explains why the exhaustiveness is load-bearing.
+- `native/src/abi.ts` is a load-time ABI assert — a stale build artifact, not user input.
+- `native/src/fixture-branching.ts` is the fixture-degeneracy guard from items 1516/1518.
+- the two `react` sites are "used outside its provider", a developer error at mount.
+- the CLI's argv-parsing throws report to a terminal, where a human reads the message.
+
+### THE TWO THAT WERE NOT FINE, AND WHY THE SPLIT WAS INVISIBLE
+
+`@lenke/serialization` raises a proper `LenkeError` with `ErrorCode.UnknownFormat` for an unknown
+format, and `serialization/src/errors.test.ts` asserts that code. But `cli/src/io.ts` and
+`mcp/src/tools.ts` each PRE-VALIDATE the format against their own `FORMATS` list before calling
+`deserialize` — so the library's coded error was unreachable for that input, and the same user mistake
+carried a code through one door and `undefined` through the others:
+
+```text
+      LIBRARY deserialize() [CONTROL]                E_UNKNOWN_FORMAT
+      CLI formatFor(file, override)                  NO CODE   -> now E_UNKNOWN_FORMAT
+      CLI formatFor — undetectable extension         NO CODE   -> now E_UNKNOWN_FORMAT
+      MCP gql_run with a bad format                  NO CODE   -> now E_UNKNOWN_FORMAT
+      MCP gql_run, GOOD format [CONTROL]             NO THROW  (unchanged)
+```
+
+The MCP one matters most, for item 2518's reason: its errors are returned to LLM clients over the
+protocol, where the code is the machine-readable half.
+
+`@lenke/errors` is zero-dep and 133 lines, so adding it to `cli` costs essentially nothing.
+
+### MUTATION — AND A DIRECT DEMONSTRATION OF RULE (xv)
+
+```text
+      cli  code-swap (BOTH sites, anchor count 2)     45 pass  1 FAIL
+      mcp  code-swap (anchor count 1)                 13 pass  1 FAIL
+```
+
+Each fails exactly the new code-assertion test. **The three pre-existing message-only assertions
+(`toThrow(/Unknown format/)`, `toThrow(/infer a format/)`) ALL still passed under both mutants** —
+they also passed throughout the fix itself. That is rule (xv) shown rather than argued: a message
+assertion cannot see a code change in either direction.
+
+(The CLI mutant's first anchor came back count 0 and the run ABORTED instead of reporting a survivor —
+`fmt` had reflowed the object literal across lines. Second time in two items that the anchor-count
+check converted a mangled needle into a loud failure.)
+
+### TWO PROBE BUGS THIS COST, BOTH WORTH THE RULE THEY GIVE
+
+1. The first version called `runTool.run(...)`; the method is `handle` and it is ASYNC. The resulting
+   `TypeError` reported as **"NO CODE" — a finding that was entirely the probe's.** The library
+   CONTROL could not catch it, because it never exercises the MCP call path: **a control validates the
+   instrument, not every row's mechanism.** The probe now checks `typeof handle === 'function'`
+   explicitly and labels a `TypeError` as `PROBE BUG`.
+2. The MCP control first passed `'{}'` as the data and read `E_INVALID_SHAPE` — throwing for a reason
+   unrelated to the change, so it proved nothing about over-firing. With valid NDJSON it reads NO
+   THROW, which is what shows the coded throw fires only for the bad format.
+
+GATES. `bun run build` 0; `fmt` 0; `lint` 0; `check` 0; core 497 / gremlin 2927 / gql 5666 / mcp
+**14** (+4) / errors 6 / cli **46** (+2) / serialization 144 / native 1438, all 0 fail.
