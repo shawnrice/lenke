@@ -129541,6 +129541,69 @@ OPEN — **two new owner decisions (the 6th and 7th)**, plus the naming gaps:
   more debuggable behaviour; NaN propagates silently through the rest of an expression.
 - **7th: `project()` with fewer `by()`s than keys.** TinkerPop CYCLES the `by()` list; lenke fills
   `{}`. TinkerPop's behaviour is surprising but it is the documented one.
-- **`cbrt` / `log2` absent, and `log` vs `ln`.** Adding `cbrt`/`log2` is purely additive and low
-  risk. Accepting `log` as an alias for `ln` is also additive, but it would leave two spellings for
+- ~~**`cbrt` / `log2` absent, and `log` vs `ln`.** Adding `cbrt`/`log2` is purely additive and low
+  risk.~~ **CORRECTED AT ITEM 2500: ISO 39075 defines NEITHER `CBRT` NOR `LOG2`, lenke's math set tracks ISO's exactly, and shipping them touches FIVE sites including `gql.rs`'s arity table — which would put non-ISO names in the GQL surface. The `log`/`ln` half is CLOSED: ISO defines `LOG(base, value)`, so TinkerPop's unary `log` cannot be aliased.** Accepting `log` as an alias for `ln` is also additive, but it would leave two spellings for
   one function in a surface that otherwise has one name per thing.
+
+## Item 2500 — **DO NOT SHIP `cbrt`/`log2`: ISO 39075 DEFINES NEITHER, and lenke's `math()` set tracks ISO's EXACTLY.** The "purely additive, no owner decision" premise I wrote into this tick is refuted, and the `log` naming divergence turns out to be FORCED by ISO conformance rather than a choice
+
+### THE AUTHORITATIVE ANSWER, FROM THE FREE ISO ARTIFACT
+
+`https://standards.iso.org/iso-iec/39075/ed-1/en/ISO_IEC_39075(en).bnf.txt`, 78,723 bytes:
+
+```text
+      CBRT    x0      <- ISO does NOT define it
+      LOG2    x0      <- ISO does NOT define it
+      LN      x2      LOG10  x2   SQRT  x2   EXP  x2
+      SIGN    x4      ABS    x4   FLOOR x2   POWER x2
+```
+
+**lenke's math function set is ISO's set**, and `cbrt`/`log2` are precisely the two TinkerPop extras
+that ISO omits. Their absence is principled, not an oversight — which is the opposite of how item
+2499 characterized it ("purely additive and low risk").
+
+### AND THE `log` DIVERGENCE IS NOT FIXABLE
+
+ISO's grammar, quoted:
+
+```text
+      LOG   <left paren> <general logarithm base> <comma> ...
+      LOG10 <left paren> <numeric value expression> <right paren>
+```
+
+**ISO defines `LOG` as the TWO-ARGUMENT form** and `LN` for natural log. lenke implements exactly
+that — `BINARY_FN.log = (base, value)` and `UNARY_FN.ln = Math.log`. TinkerPop's `log(x)` is UNARY
+natural log, so accepting it would contradict ISO's own `LOG(base, value)`, which lenke must keep.
+
+So the "accept `log` as an alias for `ln`" option I listed as merely additive-but-awkward is
+**unavailable**: the name is taken, by ISO, with a different arity and meaning. That closes the
+question rather than deferring it.
+
+### AND THE CODE ALREADY SAID SO
+
+`packages/gremlin/src/executor/misc.ts`, above `UNARY_FN`, before item 2499 ran:
+
+> Note: `log(base, value)` and `ln` (natural) follow GQL naming; TinkerPop/mXparser spells natural
+> log `log`.
+
+Item 2499 reported this as a discovery and said `math(` "was not mentioned ONCE in `CLOSED.md`" —
+true, and irrelevant, because the implementation site documented it precisely. **That is the fifth
+time this session that reading the rationale at the point of change has overturned a planned edit**
+(2493, 2495, 2497, 2498, now 2500), and the second time the rationale was a CODE COMMENT rather than
+a test. The store that answers "why is this like this" is the code, not the audit.
+
+### WHAT SHIPPING WOULD ACTUALLY COST
+
+Not two lines. The Rust `math()` lowering maps names to ENGINE SCALAR-FN names ("identical kernels"),
+and `gql.rs` carries its own arity table over the same list — so the math functions ARE the GQL
+function surface. Five sites: `exec/scalar.rs`, `gql.rs`'s arity table, `gremlin.rs`'s
+`is_unary_math_fn`, TS `misc.ts`, and the TS GQL twin. And the `gql.rs` step makes `cbrt(x)` callable
+in GQL, putting non-ISO names in an ISO surface — against this repo's leading-underscore convention
+for non-ISO syntax. The alternative, decoupling `math()` from the GQL kernels, gives up the
+bit-identity that `misc.ts`'s comment exists to protect.
+
+GATES. `bun run check` 0. No code change.
+
+OPEN — this is an owner decision after all, and a narrower one than item 2499 implied: **add `_CBRT`
+/`_LOG2` under the extension sigil, or leave the two TinkerPop-only functions unimplemented?** The
+`log`/`ln` question is CLOSED by ISO and needs nothing.
