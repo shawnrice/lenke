@@ -128171,3 +128171,91 @@ and comparing outputs is the cheap form of it.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
 `alloc:retained` gains one arm.
+
+## Item 2480 — **A WRONG ANSWER, FOUND BY CHASING AN "UNTESTED SYMBOL": `tail(Scope.local)` returned the WHOLE list instead of the last element.** Confirmed against TinkerPop 3.7.3 AND against this engine's own Rust parser, which both default `n` to 1. **FIXED**, with the deviation that remains recorded rather than papered over
+
+### THE SURVEY LED SOMEWHERE REAL THIS TIME, AND THE FIRST JOB WAS STILL TO DISQUALIFY MOST OF IT
+
+Seven gate-shaped symbols were named in no test. Reading each definition before writing anything
+(item 2472's lesson — the survey reports a SYMBOL, not a BEHAVIOUR):
+
+```text
+    symbol                 verdict
+      isPlan                 one-line structural guard (`'steps' in x`) — exercised by every
+      isPredicate            `map(traversal)` vs `map(closure)` test in the suite
+      isSubPlan              `isPlan(x) || isStepFn(x)` — same
+      hasAggregate           `collectAggregates(expr).length > 0` — every aggregate query
+      isSyntheticParam       `name.startsWith(NAME_PREFIX)` — the auto-param tests
+      isMemoUncorrelated     a module-state getter gating a subquery memo in `core.ts` — STILL OPEN
+      tailLocal              REAL BRANCHING, one caller, and the bug below
+```
+
+### `tailLocal` HAD NO TEST AND NO REACHABLE SPELLING IN ITS OWN TEST FILE
+
+`tail.test.ts` contains **zero** mentions of local scope. The only `tail(local)` text anywhere was in
+`values-tail-fusion.test.ts`, asserting that the FUSION SHORTCUT declines for it — built as a
+hand-written plan literal `as never`, so it never exercised `tailLocal` at all.
+
+Finding the public spelling took three wrong guesses, and the third is the interesting one:
+
+```text
+    tail(2, Scope.local)       -> {kind:'tail', n:2}                 SCOPE SILENTLY DROPPED
+    tail(Scope.local)          -> {kind:'tail', scope:'local'}       n MISSING
+    tail(Scope.local, 2)       -> {kind:'tail', n:2, scope:'local'}  correct
+```
+
+Scope comes FIRST, matching `count(Scope.local)` and `order(Scope.local)`. **`tail(2, Scope.local)`
+silently ignores the scope** — the same shape as item 2479's `tree('k')`, a dropped positional
+argument producing a plausible-looking plan, one tick later and in a different file.
+
+### THE BUG, AND TWO INDEPENDENT GROUND TRUTHS
+
+```text
+      form                      lenke TS (before)    TinkerPop 3.7.3    lenke Rust
+      tail() global, no arg     n:1  -> [35]         [35]               1
+      tail(Scope.local), no n   n:UNDEFINED -> ALL   [35]               1
+      tail(Scope.local, 2)      [[32,35]]            [[32,35]]          2
+```
+
+The overloads declared `tail(scope: symbol, n: number)` with `n` REQUIRED and the implementation used
+`b!`, so an untyped call produced `n: undefined`, and `tailLocal` computed
+`arr.slice(arr.length - undefined)` = `arr.slice(NaN)` = **the whole list**. Returning four elements
+where one was asked for.
+
+TinkerPop 3.7.3 in the console (`podman run -i docker.io/tinkerpop/gremlin-console:3.7.3`) says
+`tail(local)` is `[35]`. And `gremlin.rs`'s own `"tail"` arm already reads
+`if is_local { if comma { usize_arg } else { 1 } }` — **so this was also a cross-engine divergence,
+with Rust on the correct side.** Three ways wrong, which is why it was fixed rather than referred.
+
+**`limit(Scope.local)` is deliberately NOT given the same treatment**: TinkerPop has no such
+signature (`No signature of method ... limit() is applicable for argument types: (Scope)`), so
+requiring `n` there is right. Checking that was what stopped the fix from spreading to four steps
+that did not need it.
+
+### WHAT WAS FIXED, AND WHAT IS RECORDED INSTEAD
+
+Fixed: the missing `tail(scope: symbol, n?: number)` overload and `b ?? 1` in the scope branch.
+
+**Recorded, NOT fixed:** at n = 1 TinkerPop UNWRAPS the single element (`tail(local)` -> `[35]`,
+`range(local,0,1)` -> `[29]`) where this engine yields a one-element list (`[[35]]`). That is one
+semantic choice across every local-scope slicing step, not a defaulting bug, so it is an owner
+decision. The fix moves the answer from "all four elements" to "the last one, wrapped" — strictly
+closer, and honest about the gap.
+
+### WHY NOTHING CAUGHT IT, AND THE TYPECHECK GATE EARNING ITS KEEP
+
+A route choice is answer-equivalent and invisible to the differential suites; this was not a route
+choice but a WRONG ANSWER, and it still survived because **no test reached the form.** `bun run fuzz`
+is green and its own output shows `order(local)=56/42/15 of 400 generated` — the fuzzer DOES generate
+local scope, just never the no-`n` `tail(local)` spelling.
+
+And the typecheck gate caught a defect in my own test: the trap case `tail(2, Scope.local as never)`
+became `TS2345` once the new overload existed, because with `tail(scope, n?)` in place the reversed
+form is COMPILE-PREVENTED for typed callers. That is a better outcome than the test I set out to
+write, and the test now says so, reaching the runtime path through an explicit cast. **`bun run check`
+is not `lint` plus `fmt`** — it exited 2 here while both of those were 0.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; `bun test` 2897
+pass / 0 fail (gremlin) and 1430 / 0 (native); `bun run fuzz` all seven, 57 pass / 0 fail. Mutation:
+reverting `b ?? 1` to `b!` under the capped runner fails 2 tests, exit 1 — CAUGHT, restore verified at
+0 occurrences.
