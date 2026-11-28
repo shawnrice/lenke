@@ -128727,3 +128727,68 @@ surface and the cross-engine contract covers values, not row counts, only by imp
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
 one probe added, `empty-window-probe-2487.ts`, documented in `PROBES.md`.
+
+## Item 2488 — **A WRONG ANSWER IN A VERY COMMON SHAPE: `has(k, neq(v))` and `has(k, without(…))` INCLUDE elements that lack `k` entirely, where TinkerPop EXCLUDES them.** `has('age', neq(29))` returns `lop` and `ripple`, which have no `age` at all. **And a source comment in `gremlin.rs` asserts TinkerPop behaves the way lenke does — the console says it does not.** FOURTH owner decision, because both engines implement the comment
+
+### HOW THIS WAS REACHED, which is not where I was looking
+
+The tick's target was the text-predicate family. That part is a clean pass: **11 of 11 agree**, including
+the row that matters — `has('lang', notContaining('av'))` is `[]` in both, so an element LACKING the
+key does not satisfy a negated TEXT predicate. A naive `!contains` would have returned the four
+vertices with no `lang`, and lenke gets it right.
+
+Three TinkerPop predicates are missing outright (`notStartingWith`, `notEndingWith`, `notRegex`), and
+lenke's naming is inconsistent with itself — `startsWith` is JS-style where `endingWith` is
+TinkerPop-style. Both minor next to what the search turned up.
+
+**The lead came from `gremlin.rs`'s own comment**, found while checking whether Rust could express the
+three missing predicates:
+
+> TinkerPop: `has(k, neq(v))` / `has(k, without(…))` KEEP an element that lacks `k` (the negation is
+> vacuously satisfied), unlike a positive predicate whose 3VL drops a missing key. (The TEXT
+> negations — notContaining etc. — instead require the key present …)
+
+That is a precise claim about TinkerPop, and it is the opposite of what TinkerPop 3.7.3 does.
+
+### THE GROUND TRUTH, AND THE FOUR ROWS
+
+TinkerPop 3.7.3, modern graph — only `lop` and `ripple` carry `lang`; only the four PERSON vertices
+carry `age`:
+
+```text
+      query                            lenke TS                          TinkerPop 3.7.3
+      has('age', neq(29))              josh, LOP, peter, RIPPLE, vadas   josh, peter, vadas
+      has('lang', neq('java'))         josh, marko, peter, vadas         (empty)
+      has('lang', neq('xx'))           all six                           lop, ripple
+      has('lang', without('java'))     josh, marko, peter, vadas         (empty)
+      has('lang', notContaining('av')) (empty)                           (empty)          agree
+      has('lang', eq('java'))          lop, ripple                       lop, ripple      agree
+      has('lang', within('java'))      lop, ripple                       lop, ripple      agree
+      hasNot('lang')                   josh, marko, peter, vadas         same             agree
+```
+
+`has('age', neq(29))` is the clearest: `lop` and `ripple` have NO `age`, and lenke returns them.
+**TinkerPop requires the key present for a negation too** — the negation is not vacuously satisfied.
+`hasNot(k)` is how TinkerPop spells "lacks the key", and it is the step that already answers that
+question correctly here.
+
+The four agreeing rows are what make this attributable: the POSITIVE predicates and the TEXT negation
+are all correct, so the defect is exactly and only the equality/ordering negations (`neq`, `without`,
+and by extension anything lowered the same way).
+
+### WHY THIS IS A DECISION AND NOT A FIX
+
+- **It is a semantics change to one of the most common query shapes there is.** Any existing caller
+  of `has(k, neq(v))` over a graph with sparse properties gets different rows afterwards.
+- **Both engines appear to implement the comment deliberately**, and the comment states the intent.
+  So this is not a slip in one engine that the other contradicts — there is no cross-engine
+  divergence here to arbitrate, and nothing is currently red.
+- **The comment itself needs correcting either way**, because it attributes the behaviour to TinkerPop
+  and the console refutes that. Left alone it will justify the behaviour again to the next reader.
+
+So: recorded with the ground truth attached, as the fourth thing waiting on the owner. Not touched,
+because "make `neq` drop missing keys" changes answers for everyone and the current behaviour was
+chosen, not stumbled into.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No engine change — one probe added,
+`textp-probe-2488.ts`, documented in `PROBES.md`.

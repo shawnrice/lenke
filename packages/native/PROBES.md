@@ -3171,3 +3171,19 @@ five drop cases read `1:[]`.
 
 The sixth DIFFER is `sample(0)`, labelled `[GLOBAL]`: `sample` has no local overload here (item
 2483), so that row is the global sample and a different question.
+
+### `textp-probe-2488.ts` — the text-predicate family against TinkerPop
+
+`cd packages/gremlin && bun textp-probe-2488.ts`. 11 rows with the TinkerPop 3.7.3 value beside each:
+`containing`, `notContaining`, `startsWith`, `endingWith`, `regex`, the empty needle for each, case
+sensitivity, and the MISSING-KEY rows. Currently **11 agree, 0 DIFFER** — including
+`has('lang', notContaining('av'))` being `[]`, which a naive `!contains` would get wrong.
+
+It also records what is ABSENT rather than skipping it: TinkerPop has eight text predicates and lenke
+has five, missing `notStartingWith`, `notEndingWith` and `notRegex`. And lenke's naming is
+inconsistent with itself — `startsWith` (JS-style) against `endingWith` (TinkerPop-style).
+
+⚠️ **The equality/ordering negations are a different story and are NOT in this probe** — see item
+2488: `has(k, neq(v))` and `has(k, without(…))` INCLUDE elements lacking `k` where TinkerPop excludes
+them (`has('age', neq(29))` returns `lop`/`ripple`, which have no `age`). A `gremlin.rs` comment
+asserts TinkerPop behaves the lenke way; the console refutes it.
