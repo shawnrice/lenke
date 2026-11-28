@@ -3699,3 +3699,20 @@ WARN The CONTROL rows caught FOUR harness errors of mine here — a wrong method
 `queryJson`), decoding a non-buffer success value, `degree(())` from double-interpolation, and a
 `WHERE` between `YIELD` and `RETURN`. None became a false finding. A fifth: the probe reads the BUILT
 DIST, so the fix looked unapplied until `bun run build` (rule 2514).
+
+## `agg-case-parity-2527.ts` — is an aggregate NAME case-insensitive on both engines? (item 2527)
+
+```
+cd packages/native && bun run agg-case-parity-2527.ts
+```
+
+Every row agrees — `count`, `COUNT`, `Count`, `SUM`, `COLLECT_LIST`, `STDDEV_POP` all ACCEPTED on both
+engines, with the lowercase rows as controls.
+
+KEY **A REFUTED HYPOTHESIS, kept so nobody re-derives it.** Rust's `agg_fn` folds via
+`to_ascii_uppercase()` while TS holds a LOWERCASE `Set`, which looked like item 2526's shape (the same
+query, two verdicts). It is not: TS folds case too.
+
+KEY Verified alongside it by reading both sources: the aggregate TABLES match exactly — 11 names each
+(count, sum, min, max, avg, collect_list, collect, stddev_pop, stddev_samp, percentile_cont,
+percentile_disc).

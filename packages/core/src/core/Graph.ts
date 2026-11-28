@@ -201,10 +201,27 @@ export const CONFIG_IDS: Record<`limits.${keyof GraphLimits}`, number> = {
 
 /**
  * Wire id for the non-limit `parallelism` setting (matches Rust `ConfigId::Parallelism`).
- * Id 4 is reserved for the native-only `dictMaxDistinct` knob (not surfaced here), so
- * parallelism takes 5. Like the limit ids, it rides the one keyed FFI setter.
+ * Like the limit ids, it rides the one keyed FFI setter.
  */
 export const PARALLELISM_CONFIG_ID = 5;
+
+/**
+ * Wire ids the NATIVE engine has assigned to knobs this engine does not surface. They are listed
+ * here for one reason: {@link CONFIG_IDS} is append-only, and "take the next id" is only safe if
+ * the reader can see which ids are already gone.
+ *
+ * ITEM 2527 — the hazard this replaces. The previous note said only that "id 4 is reserved for the
+ * native-only `dictMaxDistinct` knob", so a reader looking at ids 0-3 and 5 would take **6** as the
+ * next free one. Native has had `ConfigId::LimitsIntermediateCells = 6` since the vectorized
+ * frontier landed. A collision would not error: the FFI setter is keyed by id, so a host setting
+ * this engine named 6 would silently drive native's `intermediate_cells` instead. The next
+ * genuinely free id is **7**.
+ *
+ *   - 4 — `LimitsDictMaxDistinct` (native dictionary-encoding threshold)
+ *   - 6 — `LimitsIntermediateCells` (the width-aware companion to `limits.intermediate`;
+ *     pure-TS has no vectorized frontier, so it is native-only)
+ */
+export const NATIVE_ONLY_CONFIG_IDS: readonly number[] = [4, 6];
 
 /**
  * The spec passed to {@link Graph.createIndex}: which element (`on`), the index

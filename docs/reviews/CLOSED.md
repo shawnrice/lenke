@@ -131388,3 +131388,65 @@ A third probe (`edgetype-ts-honored-2526.ts`) was DELETED rather than kept: it d
 
 GATES. `build` 0; `fmt` 0; `lint` 0; `check` 0; gql **5672** (+6) / native 1438 / core 497 /
 gremlin 2927 / mcp 14 / cli 46, all 0 fail.
+
+## Item 2527 — **the parity-claim sweep: three enumerable cross-engine registries compared entry by entry, ALL THREE VERIFIED** (aggregate table 11/11, wire ids, default limits), my own derived hypothesis REFUTED by measurement — **and one forward-looking hazard found and closed: TS's "take the next id" advice pointed at an id native had already taken**
+
+### THE SWEEP, AND WHY ITS DENOMINATOR IS NOT REPORTABLE
+
+Item 2526 found a false parity claim, so the obvious question is how many more there are. A plain-text
+sweep matched **218** lines in shipped TS src — and the number is useless. **62** were "the same
+question", which is this repo's design-rationale phrase, not a parity claim at all. A tightened pass
+looking for a backticked Rust symbol returned 138, and most of those name the TS function `matches`,
+which my regex read as snake_case. **So I cannot honestly report "N of M verified"**, only what the
+three ENUMERABLE registries say — chosen because a table, an enum and a defaults struct are exactly
+the shape where a mismatch is both likely and mechanically detectable.
+
+```text
+      CLAIM                                                  VERDICT
+      ast.ts: "Mirrors the native engine's aggregate table"  VERIFIED — 11 names each, identical
+      CONFIG_IDS: "matching the Rust `ConfigId`"             VERIFIED — 0,1,2,3 and parallelism 5
+      DEFAULT_CONFIG: "Mirrors `GraphConfig::default()`"     VERIFIED — all 4 shared limits + 1
+```
+
+Aggregates on both sides: count, sum, min, max, avg, collect_list, collect, stddev_pop, stddev_samp,
+percentile_cont, percentile_disc. Defaults: `range`/`trail` 1,000,000, `intermediate` 50,000,000,
+`operatorChain` 1,024, `parallelism` 1 — with `intermediate_cells` (200,000,000) and
+`dict_max_distinct` (4096) correctly native-only and absent from TS.
+
+### A HYPOTHESIS OF MINE, REFUTED
+
+Rust's `agg_fn` matches on `name.to_ascii_uppercase()` while the TS set holds LOWERCASE strings, so I
+expected `RETURN COUNT(*)` — the SQL-conventional spelling — to be valid on native and an error on
+TS, which is item 2526's shape. **Measured on both engines: every casing is accepted by both**
+(`count`, `COUNT`, `Count`, `SUM`, `COLLECT_LIST`, `STDDEV_POP`), with the lowercase rows as controls.
+TS folds case too. Clean null, and `agg-case-parity-2527.ts` keeps the rows so nobody re-derives it.
+
+### THE ONE REAL FINDING — A HAZARD, NOT YET A BUG
+
+`CONFIG_IDS`'s note says the list is **append-only** and "a new setting takes the next id". The
+`PARALLELISM_CONFIG_ID` comment then said only that "id 4 is reserved for the native-only
+`dictMaxDistinct` knob". A reader seeing ids 0-3 and 5 therefore takes **6** — and native assigned
+`ConfigId::LimitsIntermediateCells = 6` when the vectorized frontier landed. Native's enum uses
+**0,1,2,3,4,5,6**; the next genuinely free id is **7**.
+
+**A collision would not error.** The FFI limit setter is ONE export keyed by id, so a host setting
+this engine numbered 6 would silently drive native's `intermediate_cells` — a wrong-knob write, in
+the class this repo cares about most.
+
+Fixed by exporting `NATIVE_ONLY_CONFIG_IDS = [4, 6]` with both entries explained, so the hazard is
+STRUCTURAL rather than prose-only, plus 5 tests.
+
+**MUTATION — both directions bite:**
+
+```text
+      MUTANT A  a TS id set to 6 (the mistake the old comment invited)   2 pass  3 FAIL
+      MUTANT B  reserved set back to [4] (the pre-2527 state)            4 pass  1 FAIL
+      RESTORED                                                           5 pass  0 fail
+```
+
+**What the tests cannot do, stated in the file**: they pin the TS side only. `store.rs` is not
+reachable from a TS test, so a future native id must still be mirrored into `NATIVE_ONLY_CONFIG_IDS`
+by hand — naming that limit beats implying the pair stays in sync by itself.
+
+GATES. `build` 0; `fmt` 0; `lint` 0; `check` 0; core **502** (+5) / gql 5672 / gremlin 2927 /
+native 1438 / sync 179 / cli 46 / mcp 14 / inspect 25, all 0 fail.
