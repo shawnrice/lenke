@@ -34,6 +34,8 @@ import { Session } from 'node:inspector';
 
 import { Graph } from '@lenke/core';
 import { query } from '@lenke/gql';
+// `out` is aliased: the step name collides with a local in this file (lint caught the shadow).
+import { V, dedupe, out as outStep, toArray, traversal, values } from '@lenke/gremlin';
 
 const COUNT = Number(process.env.COUNT ?? 250_000);
 const SHAPE = process.env.SHAPE ?? 'cal';
@@ -217,6 +219,25 @@ const buildGraph = () => {
   return g;
 };
 
+/*
+ * GREMLIN SHAPES (item 2450), so one instrument covers both surfaces rather than two.
+ *
+ * Item 2449 measured the TS Gremlin one-hop at 1117.1 B/row against GQL's 87.0 and a HAND far-driven
+ * walk's 31.0 — so the engine is 36x its own floor on the same adjacency structures emitting the
+ * same values, which rules out [[gremlin-ts-unmeasured]]'s item-234 escape ("the big ratio was data
+ * layout, not overhead"). What is missing is the SITE, and that is what this file already measures
+ * for GQL.
+ *
+ * A Gremlin shape is a PLAN run through `toArray`, not a query string, so it cannot live in `SHAPES`
+ * next to the GQL text. `GREMLIN_SHAPES` is keyed the same way and the runner picks whichever map
+ * holds the name.
+ */
+const GREMLIN_SHAPES = {
+  gOutValues: () => traversal(V(), outStep(), values('k')),
+  gValues: () => traversal(V(), values('k')),
+  gOutDedupe: () => traversal(V(), outStep(), dedupe()),
+};
+
 const SHAPES = {
   hop1: 'MATCH (a:P)-[:E]->(x1:P) RETURN x1.k AS k',
   hop1sum: 'MATCH (a:P)-[:E]->(x1:P) RETURN sum(x1.k) AS s',
@@ -262,11 +283,38 @@ if (SHAPE === 'cal') {
   console.log(
     `#   SOUND if the count is >= COUNT (one object each, plus a string per iteration), \`burn\` is NAMED, and allocs/element is FLAT across COUNT. Compare 250000 against 1000000.`,
   );
+} else if (GREMLIN_SHAPES[SHAPE] !== undefined) {
+  const plan = GREMLIN_SHAPES[SHAPE]();
+  const g = buildGraph();
+  // Warm, so step construction and any route arming are not charged to the walk.
+  const warm = toArray(plan, g);
+
+  if (warm.length === 0) {
+    throw new Error('the gremlin shape returned no rows');
+  }
+
+  const walked = NODES * REPS;
+  const r = await byAllocationSite(() => {
+    let last;
+
+    for (let i = 0; i < REPS; i += 1) {
+      last = toArray(plan, g);
+    }
+
+    return last;
+  });
+
+  console.log(
+    `# SHAPE=${SHAPE} (GREMLIN) NODES=${NODES} REPS=${REPS} rows=${warm.length} walked=${walked}`,
+  );
+  show('#', r, walked);
 } else {
   const text = SHAPES[SHAPE];
 
   if (text === undefined) {
-    throw new Error(`unknown SHAPE ${SHAPE}; have ${Object.keys(SHAPES).join('|')}`);
+    throw new Error(
+      `unknown SHAPE ${SHAPE}; have ${Object.keys(SHAPES).join('|')} (gql) or ${Object.keys(GREMLIN_SHAPES).join('|')} (gremlin)`,
+    );
   }
 
   const g = buildGraph();

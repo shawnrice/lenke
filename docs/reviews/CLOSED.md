@@ -125738,7 +125738,7 @@ check, and now a missing `bc`. **The common shape is a tool that degrades into a
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `git diff` clean for
 `packages/gql` and `packages/core`.
 
-## Item 2449 — **THE GREMLIN SURFACE'S FIRST MEMORY NUMBERS, and the finding is INVERTED: Gremlin allocates 1.80x LESS than GQL on a scan-rooted projection (70.9 against 127.5 B/row) and 12.8x MORE on a one-hop (1117.1 against 87.0).** Adding `out()` costs **~1046 B/row**, 15.8x Gremlin's own scan. Two independent routes reach the same term, so it is `out()` and not a general "Gremlin is heavier"
+## Item 2449 — **THE GREMLIN SURFACE'S FIRST MEMORY NUMBERS, and the finding is INVERTED: Gremlin allocates 1.80x LESS than GQL on a scan-rooted projection (70.9 against 127.5 B/row) and 12.8x MORE on a one-hop (1117.1 against 87.0).** Adding `out()` costs **~1046 B/row**, 15.8x Gremlin's own scan. Two independent routes reach the same term, so it is `out()` and not a general "Gremlin is heavier" ~~[SITE FOUND at item 2450: `out()` allocates a `Set<Edge>` PER VERTEX in `iterAllDeduped`, for a dedup that is vacuous unless an edge carries two labels — and GQL already gates that on `multiTypeEdgeCount === 0`. Hand floor 31.0 B/row, so 36x is OVERHEAD, not layout.]~~
 
 Items 2416-2448 built churn, retained bytes, GC share, allocation counts, peak live, a minimum-heap
 bisection, the wasm high-water, write-path waste and a fan-in sweep. **Every one measures GQL.**
@@ -125821,3 +125821,101 @@ outvalues / dedup / all), `GM_N`, `GM_REPS`, `MECH=cal` for the calibration row.
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
 Two lint rules conflicted on the calibration's verdict string (`no-unnecessary-template-expression`
 against `prefer-template`) and the fix is a hoisted variable rather than suppressing either.
+
+## Item 2450 — **`out()` ALLOCATES A `Set<Edge>` PER VERTEX for a dedup that cannot deduplicate anything unless an edge carries two labels — and the GQL side already gates exactly that on `multiTypeEdgeCount === 0`.** The allocation-site profile puts `iterByLabel` at **93.08 MiB of 214 (43%)** and `Set` at 400,000 allocations, **2 per element**. A HAND far-driven walk is **31.0 B/row against the engine's 1117.1 — 36.0x**, so item 234's "data layout, not overhead" escape does not apply here
+
+Item 2449 found the Gremlin one-hop at 1117.1 B/row against GQL's 87.0, and left the mechanism open
+because the scale did not fit the recorded generator-chain story. This finds the site.
+
+### THE HAND FLOOR FIRST, because it decides whether there is anything to find
+
+```text
+    N=200,000, median of 7                     rows      churn        B/row
+      gremlin V().out().values('k')         200,000   213.07 MiB     1117.1
+      a HAND far-driven walk, same values   200,000     5.91 MiB       31.0
+                                                                      36.0x
+```
+
+The hand version walks the SAME adjacency maps and emits the SAME values. [[gremlin-ts-unmeasured]]
+records that at item 234 a per-shape floor **retracted two of three Gremlin targets** because "the big
+ratio was data layout, not overhead" — that escape is unavailable here. 36x is overhead.
+
+### THE SITES, from allocation tracking with the inspector transport excluded
+
+```text
+    SHAPE=gOutValues NODES=50,000 REPS=4 — 3,000,764 allocations, 214.05 MiB
+    => 15.00 allocs/element, 1122.2 B/element   (item 2449 measured 1117.1 independently)
+
+      1,400,337 allocs    53.45 MiB   next             (native)        7 per element
+        400,000 allocs    93.08 MiB   iterByLabel      :909            2 — 43% of all BYTES
+        600,000 allocs    22.89 MiB   iterAllDeduped   :929            3
+        400,000 allocs    28.99 MiB   Set              (native)        2 SETS per element
+        200,026 allocs     7.63 MiB   values           :9736           1
+```
+
+The transport exclusion matters and is the reason these numbers are usable: `#onMessage` alone is
+94.02 MiB, and with it included the headline would read 402.09 MiB. Item 2416 made this exact mistake
+in the other direction — its first exclusion was `(native):0`, which dropped the engine's own `next`.
+Excluding by URL containing `inspector` keeps `next` and drops the transport.
+
+### THE MECHANISM, read from source rather than inferred
+
+```text
+    out()  ->  outEdgesOf(graph, v, [])  ->  iterByLabel(byLabel, [])  ->  labels.length > 0 is FALSE
+           ->  iterAllDeduped(byLabel)   ->  new Set<Edge>()   PER VERTEX
+```
+
+```ts
+const iterAllDeduped = function* (byLabel: Map<string, Set<Edge>>): Iterable<Edge> {
+  const seen = new Set<Edge>(); // one per CALL, i.e. one per vertex
+  for (const set of byLabel.values()) {
+    for (const e of set) {
+      if (seen.has(e)) {
+        continue;
+      }
+      seen.add(e);
+      yield e;
+    }
+  }
+};
+```
+
+**An edge appears in two of those buckets only if it carries two labels.** `iterByLabel` already knows
+this for the named case — `labels.length === 1` yields straight from the bucket with no `Set` — but
+the UNNAMED case, which is what a bare `out()` is, always pays.
+
+**And the gate already exists on the other surface.** Items 1375/1386/1390 record it verbatim for GQL:
+_"when `graph.multiTypeEdgeCount === 0` the union IS the sum, so not one membership test runs"_. The
+core maintains `multiTypeEdgeCount`; the Gremlin path does not consult it.
+
+So the shape of the fix is: when `multiTypeEdgeCount === 0`, `iterAllDeduped` yields from each bucket
+with no `Set` and no membership test. **Not built here** — it needs the gate as a tested unit, mutants
+(a route choice is answer-equivalent, so the suites cannot see it break), `bun run fuzz`, and a check
+that `-[:A|B]->`-style multi-label edges still dedupe.
+
+### A RECORDED CLAIM THAT NEEDS RE-READING
+
+[[element-dedup-identity-vs-key]] states that **"Gremlin keeps no dedup set at all on a far-driven
+walk"** — the insight that produced 3.13x and 14.5x cumulative at item 1590, reached by profiling the
+fast side. Measured in bytes, a bare `out()` allocates **one `Set<Edge>` per vertex**, plus a second
+`Set` per element from elsewhere in the chain.
+
+Those are not necessarily in conflict: item 1590's claim is about the walk Gremlin uses to _drive_ a
+far-side traversal, not about `iterAllDeduped`'s per-vertex edge dedup. But the note as written reads
+as a general statement and it is the kind of thing a future reader will rely on. **Its scope needs
+narrowing to the walk it actually measured**, which is done in the memory note rather than left to be
+rediscovered.
+
+### WHAT IS NOT YET EXPLAINED
+
+The `Set` row is 400,000 allocations — **2 per element**, where `iterAllDeduped` accounts for one per
+VERTEX. At this fixture (one edge per vertex) those coincide numerically, so a second `Set` source
+exists and is unidentified. `next` at 7 per element is the generator delegation (`iterByLabel`
+`yield*`s into `iterAllDeduped`, so every edge crosses two generator layers), and collapsing that is a
+separate, riskier change than the gate above.
+
+`alloc:count` gained a Gremlin mode (`SHAPE=gOutValues | gValues | gOutDedupe`) so one instrument
+covers both surfaces; its calibration row still passes unchanged.
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. The Gremlin `out` step
+is imported as `outStep` because the bare name shadowed a local — caught by lint, not by me.
