@@ -67,6 +67,18 @@ type Shape = {
  * quantifier is a plain hop, which already has its own rung.
  */
 const shapeOf = (pattern: PathPattern, clauseWhere: Expr | undefined): Shape | undefined => {
+  /*
+   * `pattern.segments.length !== 1` IS UNREACHABLE BY ANY PARSEABLE QUERY (item 2471). Dropping it
+   * flips no verdict in a nine-shape sweep, because the PARSER rejects a multi-segment
+   * `ANY SHORTEST` outright with `E_SYNTAX`. That is stronger than the conditional redundancy this
+   * survey has found elsewhere: not unreached by today's callers, but unreachable while the grammar
+   * stands. It is kept, and `last-route-detectors.test.ts` asserts the syntax error so the guard
+   * becomes live the moment the grammar admits the shape.
+   *
+   * `pattern.pathVar !== undefined` is an OPEN QUESTION, not a verdict: `MATCH p = ANY SHORTEST …`
+   * IS admitted, so the parser appears to bind `p =` somewhere other than `pattern.pathVar`. The
+   * test pins the observed behaviour; where the binding lands is unconfirmed.
+   */
   if (
     pattern.pathVar !== undefined ||
     pattern.segments.length !== 1 ||

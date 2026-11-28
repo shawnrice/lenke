@@ -126711,6 +126711,8 @@ differential, fuzz or conformance test can see a mutant in an admission conditio
 
 ```text
     18 detect* route detectors with no test by name
+      [item 2471 TOOK the last three: 15 tests, 8 of 9. chainGroupedLevels and
+       chainPagedProjection are REACHABLE — 2467's 'nothing reaches them' was my probe's fault.]
       [item 2470 TOOK detectOptionalOrderedProjection + detectOptionalGroupedHopCount:
        14 tests, 4 of 6. count(*) and count(z) route differently because they ANSWER differently.]
       [item 2469 TOOK the detectHop2* trio: 15 tests, 4 of 8 mutants, all survivors
@@ -127262,8 +127264,11 @@ Continuing item 2460's map. These four — `detectChainStarCount`, `detectChainF
 **At depth 2 the `hop2*` detectors take the grouped and ordered shapes**, so three chain detectors
 never light there; depth 3 is where they appear. And **`detectChainGroupedLevels` is a DIFFERENT
 detector from `detectChainGroupedCount`** — a depth-3 grouped count reaches the latter, so a test
-written from the detector name alone would have asserted the wrong field. `chainGroupedLevels` and
-`chainPagedProjection` were NOT reached by any shape probed here and remain uncovered.
+written from the detector name alone would have asserted the wrong field. ~~`chainGroupedLevels` and
+`chainPagedProjection` were NOT reached by any shape probed here and remain uncovered.~~ **BOTH ARE
+REACHABLE — corrected at item 2471, and this wording is the dangerous kind because it invites
+deletion. My probe SHAPES were wrong: the grouped arm needs the key on the chain's START variable
+(I keyed on the far one) and the paged arm needs a SKIP with NO LIMIT (I used SKIP + LIMIT).**
 
 **The one-hop contrast is documented and sharp**: fold and distinct admit a single hop deliberately
 ("ONE HOP IS ADMITTED HERE AND NOWHERE ELSE… at one hop the recurrence degenerates to
@@ -127534,3 +127539,67 @@ printing the counts showed the conjunction slice was unique and the SEG line was
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
 **5,631 tests 0 fail** including the 14 new ones. Both sources restored and verified byte-identical
 after the battery; the only changes to them are the two comments. Scratch probes removed.
+
+## Item 2471 — **ITEMS 2467 AND 2469 PUT TWO LIVE DETECTORS ON RECORD AS CANDIDATE DEAD CODE, AND THAT WAS WRONG: both are reachable, my probe SHAPES were not.** Reading the guard chains fixed it in one run. 15 tests over the last three detectors on item 2460's map, 8 of 9 mutants caught — and the survivor is **unreachable by any query that PARSES**, which is stronger than the conditional redundancy found seven times before it
+
+`detectChainGroupedLevels`, `detectChainPagedProjection` and `detectShortestEndpointCount`. The map
+is now fully covered.
+
+### "NOTHING REACHES IT" WAS A CLAIM ABOUT THE PROBER
+
+```text
+    detector                 what its guard actually requires        what I had probed
+      chainGroupedLevels       group key is a property of the CHAIN'S   keyed on the FAR variable
+                               START variable                           (only chainGroupedCount takes that)
+      chainPagedProjection     a SKIP with NO LIMIT                     SKIP 1 LIMIT 2, which declines
+      shortestEndpointCount    ANY SHORTEST + a BOUNDED quantifier      `->*`, refused for max === null
+```
+
+Each correction came from READING THE GUARD, which is the rule items 2467 and 2470 each paid for in a
+different form. **Had the earlier wording stood, two live detectors would have been on record as
+candidate dead code** — the most expensive kind of wrong entry, because it invites deletion.
+
+`chainGroupedLevels` also serves the `LET` spelling of the same key: the guard resolves a `LET` name
+back to its expression before testing the variable, so `RETURN a.k AS ak, count(*)` and
+`LET ak = a.k RETURN ak, count(*)` reach the same arm. A spelling asymmetry there would be exactly
+the class of bug this repo is named for, so both are asserted.
+
+### THE SURVIVOR IS UNREACHABLE BY THE GRAMMAR, NOT MERELY BY TODAY'S CALLERS
+
+`shapeOf` refuses `pattern.segments.length !== 1`, and dropping that condition flips nothing across
+nine shapes — because **the PARSER rejects a multi-segment `ANY SHORTEST` with `E_SYNTAX`**. That is
+a fifth and strongest variant of the survivor verdict: not conditionally redundant behind a
+neighbouring clause (2461/2464/2465/2466/2468/2469/2470), not unreachable for the current input set
+(2463), but unreachable while the grammar stands. The test asserts the syntax error, so the guard
+becomes live the moment the grammar admits the shape.
+
+### A FIXTURE GAP FROM CONFUSING TWO DISTINCT MEANINGS OF `DISTINCT`
+
+`se-admits-distinct` survived the first battery because I had asserted `count(DISTINCT z)`, which
+declines via `countStarColumn` — it is not a `count(*)` at all. The `projection.distinct` guard is
+about **`RETURN DISTINCT`**, and only `RETURN DISTINCT count(*)` reaches it; dropping the condition
+admits exactly that query and nothing else. Both shapes are now asserted, each labelled with the
+guard it actually reaches.
+
+### ONE OPEN QUESTION, RECORDED RATHER THAN CLAIMED
+
+`shapeOf` tests `pattern.pathVar !== undefined` and returns undefined for it — yet
+`MATCH p = ANY SHORTEST …` **IS admitted**. The likeliest reading is that the parser binds `p =`
+somewhere other than `pattern.pathVar`, which would make that condition dead for the same reason as
+the segment count. **I did not confirm where the binding lands**, so the test pins the observed
+behaviour and the comment says the question is open. Calling it a defect without that check would be
+the error item 2463 recorded, in reverse.
+
+### AND TWO INSTRUMENT NOTES
+
+`gl-admits-far-key` is caught with **`0 pass 1 fail`**, not `14 pass 1 fail`: the mutant makes the
+whole test file fail to load. Still a catch, and distinguishable from an assertion failure — worth
+reading the pass count, not just the fail count.
+
+An anchor built from a multi-line block needs the block's OWN newlines: my first selector mutant
+asserted `old != new` and fired, because the slice ended at `||` with no trailing newline so the
+line-removal matched nothing. The assert caught it; printing the `repr` found it immediately.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
+**5,646 tests 0 fail** including the 15 new ones. All three sources restored and verified
+byte-identical after the battery; the only change to them is one comment. Scratch probes removed.
