@@ -126711,6 +126711,8 @@ differential, fuzz or conformance test can see a mutant in an admission conditio
 
 ```text
     18 detect* route detectors with no test by name
+      [item 2466 TOOK detectNodeDistinctProjection + detectHopDistinctProjection: 11 tests,
+       6 of 8; a conjunction's SKIP/LIMIT pair is ASYMMETRIC — skip load-bearing, limit dead.]
       [item 2465 TOOK detectVarLengthCount: 13 tests, 7 of 8 mutants; the mirror guard
        is a POLICY not a correctness barrier — dropping it answers CORRECTLY.]
       [item 2464 TOOK detectForCount + detectForProjection: 13 tests, 6 of 7 mutants;
@@ -127159,3 +127161,77 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check`
 **5,568 tests 0 fail** including the 13 new ones. `var-length-count.ts` restored and verified
 byte-identical after four separate mutant applications; the only change to it is the comment. Both
 scratch probes removed.
+
+## Item 2466 — **THE `DISTINCT` PROJECTION PAIR: `detectNodeDistinctProjection` serves the TWO-COLUMN form specifically, which is the shape every fuzzer's grouped case uses and whose gate nothing pinned.** 11 tests, 6 of 8 mutants caught. **Two of the six conditions in one conjunction are CONDITIONALLY REDUNDANT and its SKIP/LIMIT pair is ASYMMETRIC** — `skip`'s mutant is caught, `limit`'s is not. And a battery whose anchors embed the code it mutates STOPS WORKING the moment you comment that code, which is the assert earning its place twice in one item
+
+Continuing item 2460's map after 2461-2465.
+
+### THE ROUTING IS FINER THAN THE NAMES SUGGEST, and probing showed it before any test was written
+
+```text
+    MATCH (n:P) RETURN DISTINCT n.k AS k            -> distinctProjection        (ONE column)
+    MATCH (n:P) RETURN DISTINCT n.k AS k, n.t AS t  -> nodeDistinctProjection    (TWO columns)
+    MATCH (a:P)-[:E]->(x:P) RETURN DISTINCT x.k, x.t -> chainDistinctLevels + hopDistinctProjection
+    MATCH (n:P) RETURN n.k AS k, n.t AS t           -> nodeProjection
+```
+
+So `detectNodeDistinctProjection` is the TWO-COLUMN arm, and `[[fuzzer-blind-to-one-column-group]]`
+records that every fuzzer's grouped shape is exactly that form — the arm the generative tests lean on
+hardest had no gate test. The hop row also shows two detectors admitting at once, which is correct:
+precedence lives in `runLinear`, not in the table.
+
+### THE WINDOW TRIO IS ROW-LEVEL CORRECTNESS, quoted from the source
+
+"`distinctRows` runs AFTER the rows exist, so a window would have to be applied after the dedupe and
+`detectNodeProjection` would have applied it before. **Getting that order wrong returns different
+ROWS, not a different order**, so the combination is refused rather than guessed at."
+
+### 6 OF 8, AND THE SURVIVORS SPLIT A CONJUNCTION'S OWN CONDITIONS
+
+```text
+      node-admits-no-distinct   CAUGHT  10/1
+      node-admits-star          *** SURVIVED ***   conditionally redundant
+      node-admits-one-column    CAUGHT  10/1
+      node-admits-order-by      CAUGHT  10/1
+      node-admits-skip          CAUGHT  10/1
+      node-admits-limit         *** SURVIVED ***   conditionally redundant
+      hop-admits-no-distinct    CAUGHT  10/1
+      hop-admits-one-column     SURVIVED -> CAUGHT 10/1   (fixture gap, fixed)
+```
+
+**`proj.star` and `proj.limit` are both dead, and the flip test says so**: with either dropped,
+no shape in the candidate set changes its verdict. `RETURN DISTINCT *` has no projection items, so
+`items.length < 2` already refuses it; a two-column `DISTINCT … LIMIT 1` is refused by the inner
+`detectNodeProjection`, which declines the windowed shape itself.
+
+**The SKIP/LIMIT pair is therefore ASYMMETRIC** — adjacent lines in one conjunction, one load-bearing
+and one not. That is worth a comment precisely because the symmetry of the source invites the
+assumption that both behave alike. Both carry the row-level reason above regardless of which guard
+currently fires.
+
+**And the hop detector's `items.length < 2` IS load-bearing where its node-side twin is not.** The
+single-column hop DISTINCT flips from `null` to admitted when it is dropped, while nothing else
+moves — so the source's stated intent ("TWO columns or more, so this cannot accept a shape
+`distinctProjection` does") is enforced only there. That fixture was the one genuine FIXTURE GAP: I
+had tested a single-column NODE DISTINCT and never the hop twin.
+
+### THE BATTERY BROKE ITSELF, AND THE ASSERT CAUGHT IT
+
+Two separate anchor failures in one item, both useful:
+
+- The `skip`/`limit` pair I first tried as an anchor occurs **three times** in `node-scan.ts`, so
+  `assert count == 1` refused it and NEITHER comment was written — the byte-identical check confirmed
+  the file was untouched. Including the `orderBy` line above makes it unique.
+- Then adding the comments INSIDE the conjunction invalidated five mutant scripts that embedded the
+  whole block, and the battery reported `ANCHOR x0 … not a verdict` for each rather than passing them
+  as caught. Regenerating the scripts from the live block restored all eight.
+
+**A mutation script that embeds the code under test is coupled to it**, so a comment is a breaking
+change to the battery. The right response is to regenerate from the file rather than to loosen the
+anchor — and `ANCHOR FAILED — not a verdict` is the line that makes the difference visible instead of
+silent.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
+**5,579 tests 0 fail** including the 11 new ones. Both mutated sources restored and verified
+byte-identical; the only change to `node-scan.ts` is the two comments. Scratch probes removed before
+the commit.

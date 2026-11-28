@@ -2739,10 +2739,24 @@ export const detectNodeDistinctProjection = (
   // order, so the combination is refused rather than guessed at.
   if (
     !proj.distinct ||
+    /*
+     * `proj.star` IS CONDITIONALLY REDUNDANT AND KEPT (item 2466). Dropping it moves NOTHING:
+     * `RETURN DISTINCT *` has no projection items, so the `< 2` test below already refuses it.
+     * Measured by applying the mutant alone and finding no shape whose admission flips. It stays
+     * because it says something different — "a star projection is not a row projection" — and a
+     * future star form carrying items would otherwise slip through on item count alone.
+     */
     proj.star ||
     proj.items.length < 2 ||
     (proj.orderBy?.length ?? 0) > 0 ||
     proj.skip !== undefined ||
+    /*
+     * `proj.limit` IS ALSO CONDITIONALLY REDUNDANT AND KEPT (item 2466): with it dropped, a
+     * two-column `DISTINCT … LIMIT 1` still declines, because the inner `detectNodeProjection`
+     * refuses the windowed shape itself. The SKIP half above is NOT redundant — its mutant IS
+     * caught — so the pair is asymmetric, and the row-level reason in the comment above applies to
+     * both regardless of which guard currently fires.
+     */
     proj.limit !== undefined
   ) {
     return null;
