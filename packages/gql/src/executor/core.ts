@@ -1420,6 +1420,31 @@ const memoizeIfUncorrelated = (
   expr: Extract<Expr, { kind: 'exists' | 'countSubquery' | 'valueSubquery' }>,
   fn: CompiledExpr,
 ): CompiledExpr => {
+  /*
+   * BOTH HALVES OF THIS `||` ARE LIVE, AND EACH IS THE SOLE DECLINER FOR A DISTINCT SET OF SHAPES
+   * (item 2482). The flag is `!queryHasWrite(query)` (`withCompileScope`'s fourth argument, set in
+   * `compile.ts`), so instrumenting the two conditions and running five shapes gives:
+   *
+   *     shape                                    memoFlag  correlated  verdict
+   *       MATCH (n:P) INSERT (:Q …) COUNT{Q}       false      false      DECLINED  <- flag only
+   *       MATCH (n:P) INSERT (:Q …) EXISTS{Q}      false      false      DECLINED  <- flag only
+   *       MATCH (n:P) SET n.k = 9   COUNT{k=9}     false      false      DECLINED  <- flag only
+   *       MATCH (n:P)               COUNT{P}       true       false      MEMOIZED
+   *       MATCH (n:P)        COUNT{P WHERE p.k=n.k} true      true       DECLINED  <- set only
+   *
+   * So neither condition is redundant with the other: the write flag is the only thing refusing the
+   * three write shapes, and the correlation set is the only thing refusing the correlated one. That
+   * is NOT the conditional-redundancy verdict this survey reached seven times elsewhere.
+   *
+   * WHAT IS NOT ESTABLISHED, recorded rather than assumed: forcing this gate fully ON (`false ||`)
+   * changed NO ANSWER on any of the three write shapes — each still read `[{c:3},{c:3},{c:3}]`,
+   * because the writes land before the projection's subquery evaluates, so the "uncorrelated" value
+   * really is constant across rows even with a write in the query. The flag therefore prevents a
+   * memo that would not have been wrong on any shape reachable here. It is a CORRECTNESS guard by
+   * intent — `execEpoch` above documents the cached-plan hazard it pairs with — but its
+   * wrong-answer case is unproven, not demonstrated. A shape where a write makes the subquery's
+   * value differ PER ROW would prove it; none was found.
+   */
   if (!isMemoUncorrelated() || correlatedSubqueries.has(expr)) {
     return fn;
   }

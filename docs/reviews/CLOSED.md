@@ -128325,3 +128325,67 @@ both 0 (item 2480 was the first). It is not `lint` plus `fmt`.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; `bun test` in
 `packages/gremlin` **2907 pass / 0 fail**. No engine change this tick — tests only, so the fuzzers
 were not re-run (item 2480 ran all seven for the code change they cover).
+
+## Item 2482 — **THE 2460 SURVEY IS FINISHED, and its last item is the ONE gate whose two conditions are BOTH LIVE: `isMemoUncorrelated()` is the sole decliner for every WRITE query and `correlatedSubqueries` the sole decliner for a correlated one.** Not the conditional redundancy this survey found seven times. **But forcing the gate ON changed NO ANSWER — so its wrong-answer case is unproven, and that is recorded rather than assumed**
+
+### WHAT THE FLAG ACTUALLY IS
+
+`isMemoUncorrelated()` reads a module flag in `compile-state.ts` set by `withCompileScope`'s fourth
+argument, and `compile.ts` passes **`!queryHasWrite(query)`**. So the subquery memo in
+`memoizeIfUncorrelated` is enabled only for read-only queries — a correctness guard by intent, the
+same shape as `treeStep`'s `ctx.keysStable` (item 1922) and pairing with the `execEpoch` guard that
+already stops a CACHED plan serving a stale value to a later run.
+
+### THE FLIP SWEEP, AND WHY A DECLINE OBSERVATION WOULD HAVE PROVED NOTHING
+
+Instrumenting BOTH conditions rather than watching the verdict (item 2477's rule):
+
+```text
+    shape                                      memoFlag  correlated  verdict
+      MATCH (n:P) INSERT (:Q …) COUNT{Q}         false      false      DECLINED  <- flag ONLY
+      MATCH (n:P) INSERT (:Q …) EXISTS{Q}        false      false      DECLINED  <- flag ONLY
+      MATCH (n:P) SET n.k = 9   COUNT{k=9}       false      false      DECLINED  <- flag ONLY
+      MATCH (n:P)               COUNT{P}         true       false      MEMOIZED
+      MATCH (n:P)        COUNT{P WHERE p.k=n.k}  true       true       DECLINED  <- set ONLY
+```
+
+Every one of those five DECLINED-or-MEMOIZED verdicts is also a verdict about WHICH condition did it,
+which is the thing a decline alone never tells you. **Neither condition is redundant with the other.**
+Across items 2461-2482 that makes this the only one of the surveyed gates where both halves earn their
+place.
+
+### THE PART THAT IS NOT PROVEN, AND SAYING SO IS THE POINT
+
+Forcing the gate fully ON (`false || correlatedSubqueries.has(expr)`) changed **no answer**: all three
+write shapes still read `[{c:3},{c:3},{c:3}]`, identical to the LIVE arm. The reason is visible in the
+numbers — `c` is 3 at every row, the POST-write total, so the writes land before the projection's
+subquery evaluates and the "uncorrelated" value really is constant across rows even with a write
+present. The flag is therefore refusing a memo that would not have been wrong on any shape reachable
+here.
+
+So: **live and non-redundant as a ROUTE gate, unproven as a CORRECTNESS gate.** A shape where a write
+makes the subquery's value differ PER ROW would prove the latter; none was found. Both the table and
+this gap are now a comment on the gate.
+
+**And no test was written.** The gate's effect is answer-equivalent on every shape that exists, so
+nothing asserting through the public surface can see it — which is `perf-gate-needs-its-own-test`
+exactly, and `memoizeIfUncorrelated` is not exported. Padding a file with a test that cannot fail
+would be worse than the comment.
+
+### TWO PROCESS FAILURES, ONE OF THEM NEW AND WORSE THAN THE OLD ONE
+
+- **A self-referential insert hung the probe and truncated the arm I needed.**
+  `MATCH (n:P) INSERT (:P {k: 9})` inserts into the label being matched and does not terminate;
+  `timeout` then killed the run after its FIRST line, so the LIVE baseline was one shape deep and
+  looked complete.
+- **A backgrounded command's `trap` NEVER RUNS, so the mutant survived in the tree.** The harness
+  moved the timed-out command to the background, which meant the restore and its verification —
+  both later lines of the same command — never executed at all. Item 2477's failure was a trap that
+  RAN and silently failed on a relative path; this one never fired. **So: never put a mutant
+  application and a long-running probe in the same command.** Apply, run, restore as three separate
+  commands, each short enough that it cannot be backgrounded. Caught by checking `grep -c MUT` after
+  stopping the task, then restoring by hand and confirming `git diff` was empty.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; `bun test` in
+`packages/gql` **5655 pass / 0 fail**. No behaviour change — one comment recording the flip table and
+the unproven edge.
