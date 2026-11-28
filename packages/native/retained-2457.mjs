@@ -35,6 +35,7 @@ import { Graph } from '@lenke/core';
 import {
   V,
   aggregate,
+  as_,
   cap,
   dedupe,
   fold,
@@ -45,6 +46,7 @@ import {
   path,
   repeat,
   run,
+  select,
   simplePath,
   store,
   traversal,
@@ -245,6 +247,72 @@ const arms = [
   ['group()', traversal(V(), values('k'), group()), false],
   ['aggregate() + cap', traversal(V(), values('k'), aggregate('x'), cap('x')), false],
   ['store() + cap', traversal(V(), values('k'), store('x'), cap('x')), false],
+  /*
+   * LABEL RETENTION (item 2502) — the one operator class with no arm here. `as()`/`select()` did
+   * not appear in this file at all, and it is the structural SIBLING of `path()`, which does:
+   * `path()` retains the WHOLE path per traverser, `select` retains the NAMED positions. A live
+   * label pins the labelled element, so a walk carrying labels cannot drop what the unlabelled
+   * walk drops — which is exactly a "how much must it hold to do the walk" question.
+   *
+   * THE FIRST THREE ARMS ALL EMIT A `Vertex`, VERIFIED BEFORE ADDING THEM. That is the whole design
+   * and it is item 2478's lesson applied in advance: the `path()` pair isolated nothing until its
+   * control stopped differing in OUTPUT TYPE as well as in the thing under test. Here the control
+   * and both `select('a')` arms return the same single far vertex at the same row count, so between
+   * them the ONLY variable is HOW MANY LABELS ARE LIVE — zero, one, three.
+   *
+   * `select('a','b','c')` is listed last and apart, because it returns a record rather than a
+   * vertex. It prices the OUTPUT of a multi-select, not label retention, and must not be read
+   * against the three above.
+   *
+   * ⚠️⚠️ **DO NOT READ THESE FOUR NUMBERS AS LABEL RETENTION. THE SAMPLER CANNOT MEASURE THIS
+   * PAIR, AND `label-retain-swap-2502.mjs` IS THE POSITION SWAP THAT PROVES IT.** The design above
+   * is careful and still insufficient; both halves failed, in different ways:
+   *
+   *   - **Label COUNT is an ORDER ARTIFACT.** One live label against three, both through the same
+   *     `select` path, measured 0.23 vs 0.04 MiB — and swapping the order swapped the numbers
+   *     (0.23 vs 0.04 again, the other way round). **Whichever arm runs FIRST pays**, so the
+   *     1-vs-3 reading of 0.01 vs 0.01 here is two position-dependent values at the floor, not a
+   *     finding that labels are free.
+   *   - **The bare-walk control is INVALID**, and that part is stable rather than noise: `ctl`
+   *     reads ~14.5 MiB in BOTH positions and the labelled arm ~0.2 in both. A walk carrying
+   *     labels cannot retain 72x LESS than the same walk without them, so the two generator chains
+   *     differ in something other than labels and the comparison isolates nothing.
+   *
+   * ⚠️ **THE SAME INVALID CONTROL SITS UNDER THE `3 hops ± path()` PAIR ABOVE**, which prints the
+   * identical shape (control 1.56 MiB, `path()` 0.01). That pair's framing is as unusable as this
+   * one's: `path()` cannot retain less than the same walk without paths, so "0.01" is not evidence
+   * that path tracking is free. Item 2478 fixed the OUTPUT TYPE of that control and the inversion
+   * survived; matching the output type was necessary and not sufficient.
+   *
+   * These arms are KEPT, with this warning, because they record a measured dead end — the next
+   * reader would otherwise add them again. The question needs a cap-style mechanism for Gremlin,
+   * the way `MECH=cap` answered the grouped aggregate for GQL at item 2501.
+   */
+  ['3h bare [INVALID ctl]', traversal(V(), out('E'), out('E'), out('E')), false],
+  [
+    '3h 1 label [unmeasurable]',
+    traversal(V(), as_('a'), out('E'), out('E'), out('E'), select('a')),
+    false,
+  ],
+  [
+    '3h 3 labels [unmeasurable]',
+    traversal(V(), as_('a'), out('E'), as_('b'), out('E'), as_('c'), out('E'), select('a')),
+    false,
+  ],
+  [
+    '3h select(a,b,c) [output]',
+    traversal(
+      V(),
+      as_('a'),
+      out('E'),
+      as_('b'),
+      out('E'),
+      as_('c'),
+      out('E'),
+      select('a', 'b', 'c'),
+    ),
+    false,
+  ],
   [CALIBRATION, traversal(V(), values('k')), true],
 ];
 const measured = new Map();

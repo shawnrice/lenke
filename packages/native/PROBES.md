@@ -3266,3 +3266,29 @@ at `CAP_STEP=2`), while the N-group arm grows 8 -> 24.
 WARN **Use `MECH=cap` for these, not the default row sampler.** The sampler reported the 97-group arm
 at n^1.07 (the every-row control is n^1.29) and ranked the pair BACKWARDS, wide below few. Cap gets
 the sign right.
+
+## `label-retain-swap-2502.mjs` — the POSITION SWAP for a retained-memory pair (item 2502)
+
+```
+cd packages/native && node label-retain-swap-2502.mjs
+SWAP_N=200000 SWAP_STEP=16384 node label-retain-swap-2502.mjs
+```
+
+Runs each arm ORDER in its own child process, because an in-process A/B lets the first arm's
+allocation state shape the second's. Built because `retained-2457.mjs`'s new label arms printed an
+impossible ordering, and the repo's rule is that **an arm reading below its own control is an
+instrument bug until a position swap says otherwise.**
+
+What it found, and both halves matter:
+
+- **Label COUNT is an ORDER ARTIFACT** — 1 live label vs 3, same `select` path: whichever runs FIRST
+  reads 0.23 MiB and the second 0.04, in both orders. Not measurable by the row sampler.
+- **The bare-walk control is INVALID but STABLE** — `ctl` ~14.5 MiB in both positions against the
+  labelled arm's ~0.2. A labelled walk cannot retain 72x less, so the chains differ in more than
+  labels.
+
+WARN **This invalidates the framing of `retained-2457.mjs`'s EXISTING `3 hops ± path()` pair**, which
+prints the same shape (1.56 vs 0.01). Do not read that as "path tracking is free".
+
+WARN Answering either question needs a cap-style mechanism for Gremlin (bisect the smallest
+`--max-old-space-size` the traversal survives), as `MECH=cap` did for GQL's grouped aggregate at item 2501. The row-interval sampler is now the wrong instrument for TWO shape classes.

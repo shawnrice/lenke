@@ -129671,3 +129671,63 @@ here to kill a false positive rather than to rescue a null.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instrument + docs only; no engine change,
 and nothing here needs an owner decision.
+
+## Item 2502 — **A SHIPPED INSTRUMENT'S ARM PAIR PRINTS AN IMPOSSIBLE ORDERING, AND IT IS NOT NOISE.** Label retention was the one uncovered operator class; measuring it found that the `3 hops` bare-walk control is invalid, which also invalidates the framing of the EXISTING `3 hops ± path()` pair
+
+### THE GAP, BY 2501's METHOD
+
+`retained-2457.mjs`'s 15 arms cover a fold, a sort, a dedup set, `groupCount`, `group`,
+`aggregate`/`store`, `tree` and two `path()` pairs. **`as()`/`select()` appeared ZERO times** — and
+label retention is the structural sibling of `path()`: `path()` retains the whole path per traverser,
+`select` retains the NAMED positions. A live label pins the labelled element.
+
+Four arms added, designed against item 2478's lesson IN ADVANCE: the control and both `select('a')`
+arms were checked to emit a `Vertex` at the same row count before being written, so between them the
+only variable is how many labels are live.
+
+### BOTH HALVES OF THE DESIGN FAILED, IN DIFFERENT WAYS
+
+`label-retain-swap-2502.mjs` runs each order in its own child process:
+
+```text
+      order=ctl,lbl    ctl  14.59 MiB   lbl   0.18 MiB    IMPOSSIBLE ORDERING
+      order=lbl,ctl    lbl   0.24 MiB   ctl  14.49 MiB    (ctl high in BOTH positions)
+      order=lbl,lbl3   lbl   0.23 MiB   lbl3  0.04 MiB    ratio 5.57x
+      order=lbl3,lbl   lbl3  0.23 MiB   lbl   0.04 MiB    ratio 5.45x
+```
+
+- **Label COUNT is an ORDER ARTIFACT.** One live label against three, both through the same `select`
+  path, and **whichever arm runs FIRST reads 0.23 while the second reads 0.04** — the numbers follow
+  the position, not the arm. So the main probe's `0.01 vs 0.01` for 1-vs-3 labels is two
+  position-dependent values at the floor. **I had already written "label count is free" from those
+  two numbers; the swap is what took it back.**
+- **The bare-walk control is INVALID, and this half is STABLE** — `ctl` reads ~14.5 MiB in both
+  positions, `lbl` ~0.2 in both. A walk carrying labels cannot retain 72x LESS than the same walk
+  without them, so the two generator chains differ in something other than labels.
+
+### THE PART THAT REACHES BEYOND MY OWN ARMS
+
+**The same invalid control sits under the EXISTING `3 hops ± path()` pair**, which prints the
+identical shape — control 1.56 MiB, `path()` 0.01 — and that pair is committed and was read as a
+result. `path()` cannot retain less than the same walk without paths, so **0.01 is not evidence that
+path tracking is free.** Item 2478 fixed that control's OUTPUT TYPE and the inversion survived:
+matching the output type was necessary and not sufficient.
+
+So this item corrects a shipped instrument rather than the engine. The four arms are KEPT and
+relabelled (`3h bare [INVALID ctl]`, `3h 1 label [unmeasurable]`, …) with the swap's numbers in the
+comment, because a deleted dead end gets re-added; the calibration gate still passes at 79.6x.
+
+### WHAT WOULD ACTUALLY ANSWER IT
+
+A cap-style mechanism for Gremlin — bisect the smallest `--max-old-space-size` a traversal survives
+at — which is exactly how `MECH=cap` answered the grouped aggregate for GQL one item ago. `peakmem`
+only runs GQL strings, so this is a build rather than a knob. **That is now the second shape class
+where the row-interval sampler is the wrong instrument** (item 2501's grouped aggregate was the
+first), which is a strong hint the sampler's remaining arms deserve a swap each.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instruments only; no engine change and
+no owner decision.
+
+OPEN — **are the OTHER 15 arms order-dependent too?** Every one of them was measured in a single
+fixed order in one process. The swap costs one child process per pair and it has now overturned two
+readings in two items.
