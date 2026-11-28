@@ -385,3 +385,164 @@ fn config_reports_applied_as_one_and_every_refusal_as_zero() {
         "config has no error channel — it answers with its status alone",
     );
 }
+
+/*
+ * Item 2544: the COMMAND-NAME surface. Item 2543 pinned the numeric discriminants
+ * (`format`/`lang`/`action`/`which`) and left this uncovered — `lnk_command` dispatches on a
+ * STRING, the same "accept then ignore" risk over a far wider input space.
+ *
+ * SEVEN names are matched: `last_write_scope`, `merge`, `epoch`, `prepare`, `prepared_run`,
+ * `prepared_free`, `algo`. (My first count said eight: a regex for `"name" =>` also scooped
+ * `"arrow" | "arrow_ipc"`, which matches a FORMAT string inside a payload, not a command. And the
+ * catch-all is spelled `other =>`, not `_ =>`, so a regex for `_ =>` found nothing and briefly
+ * suggested the match had no fallback. A failed pattern is not evidence about structure.)
+ *
+ * ## WHAT THESE ROWS ASSERT, AND THE STALE COMMENT THEY REPLACE
+ *
+ * Measured with no payload, all seven implemented names answer `E_FFI` with a message naming the
+ * payload they want, and only an UNKNOWN name answers `E_NOT_IMPLEMENTED`. That distinction is the
+ * assertion: it separates "built, needs input" from "not built" at the CODE level, so it survives
+ * message rewording (rule xv).
+ *
+ * It also replaces a comment in `ffi.rs` that listed prepared statements, `epoch` and `merge` as
+ * "not yet built in the engine" when all three have working arms — a claim that would have told a
+ * reader prepared statements were unavailable. Pinning it as code is what stops it drifting again.
+ */
+#[test]
+fn every_implemented_command_rejects_a_missing_payload_rather_than_reporting_unimplemented() {
+    let names = [
+        "last_write_scope",
+        "merge",
+        "epoch",
+        "prepare",
+        "prepared_run",
+        "prepared_free",
+        "algo",
+    ];
+
+    for name in names {
+        let s = open();
+        let mut out_len: usize = 0;
+
+        // SAFETY: `s` is live, the name is a valid UTF-8 range, the payload is null (documented as
+        // "no input"), and `out_len` is writable.
+        let out = unsafe {
+            super::lnk_command(
+                s,
+                name.as_ptr(),
+                name.len(),
+                std::ptr::null(),
+                0,
+                &raw mut out_len,
+            )
+        };
+
+        if out.is_null() {
+            let report = pending().unwrap_or_else(|| {
+                panic!("`{name}` returned null with NO report — the host cannot describe this")
+            });
+
+            assert!(
+                report.contains("E_FFI"),
+                "`{name}` has an arm, so a missing payload is an INPUT error (E_FFI), not \
+                 E_NOT_IMPLEMENTED — if this name was removed, say so here: {report}",
+            );
+        } else {
+            // A command that needs no payload may legitimately succeed; it must then be silent.
+            assert!(
+                pending().is_none(),
+                "`{name}` succeeded but left a report pending"
+            );
+            free_out(out, out_len);
+        }
+
+        // SAFETY: `s` is live and freed exactly once.
+        unsafe { super::lnk_close(s) };
+    }
+}
+
+#[test]
+fn an_unknown_command_reports_not_implemented_and_echoes_the_name() {
+    let s = open();
+    let mut out_len: usize = 0;
+    let name = "no_such_command_xyz";
+
+    // SAFETY: `s` is live; the name is a valid UTF-8 range.
+    let out = unsafe {
+        super::lnk_command(
+            s,
+            name.as_ptr(),
+            name.len(),
+            std::ptr::null(),
+            0,
+            &raw mut out_len,
+        )
+    };
+
+    assert!(out.is_null(), "an unknown command must return null");
+
+    let report = pending().expect("an unknown command records a report");
+
+    assert!(
+        report.contains("E_NOT_IMPLEMENTED"),
+        "an unknown command is E_NOT_IMPLEMENTED, which is what separates it from the seven \
+         implemented names above: {report}",
+    );
+    assert!(
+        report.contains(name),
+        "the report echoes the name the host asked for, so the host can log it: {report}",
+    );
+
+    // SAFETY: `s` is live and freed exactly once.
+    unsafe { super::lnk_close(s) };
+}
+
+/*
+ * The CONTROL for both rows: a command that genuinely WORKS, with its payload. Without it, the two
+ * above could pass against an engine where every command failed.
+ *
+ * `last_write_scope` is the choice because its payload is a bare property name rather than a JSON
+ * document, so the row tests the command rather than a JSON parser.
+ */
+#[test]
+fn a_command_with_its_payload_succeeds_and_returns_a_document() {
+    let s = open();
+    let mut out_len: usize = 0;
+    let name = "last_write_scope";
+    let payload = "room";
+
+    // SAFETY: `s` is live; both ranges are valid UTF-8; `out_len` is writable.
+    let out = unsafe {
+        super::lnk_command(
+            s,
+            name.as_ptr(),
+            name.len(),
+            payload.as_ptr(),
+            payload.len(),
+            &raw mut out_len,
+        )
+    };
+
+    assert!(
+        !out.is_null(),
+        "the control command must succeed: {:?}",
+        pending()
+    );
+    assert!(pending().is_none(), "a successful command leaves no report");
+
+    // SAFETY: the engine returned `out_len` bytes at `out`.
+    let text = unsafe {
+        std::str::from_utf8(std::slice::from_raw_parts(out, out_len))
+            .expect("the document is UTF-8")
+    };
+
+    assert!(
+        text.contains("scopes"),
+        "the documented output shape is {{\"scopes\":[…],\"open\":b}}: {text}",
+    );
+
+    free_out(out, out_len);
+
+    // SAFETY: `s` is live and freed exactly once.
+    unsafe { super::lnk_close(s) };
+}

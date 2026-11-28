@@ -132527,3 +132527,79 @@ an untested discriminant surface invites.
 GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0 in BOTH configurations; Rust
 **default 1364 + 4 + 13 + 725** and **capi 1375 + 4 + 13** (+7), 0 failed; `bun run check` 0. Tests
 only, so no fuzz run was owed.
+
+## Item 2544 — **`lnk_command`'s STRING-NAME surface, the gap 2543 named — and the measurement refuted a comment that called three built features "not yet built".** Seven names are implemented, not four
+
+### THE SURFACE
+
+2543 pinned `ffi.rs`'s numeric discriminants and explicitly left this open: `lnk_command` dispatches
+on a STRING, the same "accept then ignore" risk over a far wider input space.
+
+**Seven names are matched**: `last_write_scope`, `merge`, `epoch`, `prepare`, `prepared_run`,
+`prepared_free`, `algo`.
+
+**Two of my own structural reads were wrong first, both from regexes** — the third and fourth time
+this session, so the rule is earning its place:
+
+- a pattern for `"name" =>` reported EIGHT, scooping `"arrow" | "arrow_ipc"`, which matches a
+  **format string inside a payload**, not a command name;
+- a pattern for `_ =>` found nothing and briefly suggested the match had **no fallback**. The
+  catch-all is spelled `other =>`. A failed pattern is not evidence about structure — find the thing.
+
+### THE MEASUREMENT, AND THE COMMENT IT REFUTES
+
+With no payload, each name was run through the real entry and its report read:
+
+```text
+      last_write_scope   E_FFI             "requires the scope-key name as the input payload"
+      merge              E_FFI             "requires an NDJSON payload as input"
+      epoch              E_FFI             "requires the token name as the input payload"
+      prepare            E_FFI             "requires a {query, maxDepth?} payload"
+      prepared_run       E_FFI             "requires a {handle, params} JSON payload"
+      prepared_free      E_FFI             "requires a {handle} JSON payload"
+      algo               E_FFI             "requires a {name, config} JSON payload"
+      (an unknown name)  E_NOT_IMPLEMENTED "command '…' is not yet implemented"
+```
+
+All seven are **built**: each validates its payload and names what it wants. Only an unknown name
+reaches the catch-all.
+
+The comment sitting on that catch-all read:
+
+> Remaining exotic tiers (**prepared statements, epoch, merge**, binary snapshot) are not yet built
+> in the engine.
+
+**Three of those four are built.** A reader looking for prepared statements would have concluded they
+were unavailable — the 2533/2536 failure mode, where a stale comment is worse than none because it
+reads as current. Corrected in place, naming what is genuinely absent (a binary-snapshot command; the
+binary format is reached through `lnk_encode`'s format discriminant instead).
+
+### THE CONTRACT, PINNED AS CODE RATHER THAN PROSE
+
+The assertion is the **code-level distinction**, which is what makes it survive message rewording
+(rule xv): an implemented name answers `E_FFI` for a missing payload, and only an unknown name
+answers `E_NOT_IMPLEMENTED`. So the comment's content is now a test — if a name is added or removed,
+the test says so instead of the comment drifting again.
+
+A weaker contract is also asserted across all seven: **every name either succeeds or explains
+itself.** A null return with NO report is the defect, because the host then sees a failure it cannot
+describe. 2542 made that channel trustworthy, so "explains itself" is checkable.
+
+Plus the control (rule xvi): `last_write_scope` WITH its payload succeeds, returns the documented
+`{"scopes":[…],"open":b}` shape, and leaves no report. Without it, both other rows would pass against
+an engine where every command failed. Its payload is a bare property name rather than JSON, so the
+row tests the command and not a JSON parser.
+
+### THE MUTANTS
+
+```text
+      H1  the `epoch` arm removed (the name becomes unknown)        1 FAIL
+      H2  the unknown-command report stops echoing the name         1 FAIL
+      H3  `merge` reports E_NOT_IMPLEMENTED for a bad payload       1 FAIL
+```
+
+H3 is the one that matters: it is precisely the confusion the stale comment encoded, and the test now
+refuses it.
+
+GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0 in BOTH configurations; Rust
+**default 1364 + 4 + 13 + 725** and **capi 1378 + 4 + 13** (+3), 0 failed; `bun run check` 0.

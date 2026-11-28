@@ -1254,8 +1254,22 @@ pub unsafe extern "C" fn lnk_command(
                 }
             }
         }
-        // Remaining exotic tiers (prepared statements, epoch, merge, binary snapshot)
-        // are not yet built in the engine — each fills an arm here, never a new symbol.
+        /*
+         * A future command fills an arm above, never a new symbol — that is the point of
+         * dispatching on a name.
+         *
+         * This comment used to read "remaining exotic tiers (prepared statements, epoch, merge,
+         * binary snapshot) are not yet built in the engine". Measured at item 2544, three of those
+         * four ARE built: `prepare` / `prepared_run` / `prepared_free`, `epoch` and `merge` each
+         * have a working arm that validates its payload and reports `E_FFI` when it is missing. A
+         * reader looking for prepared statements would have concluded they were unavailable.
+         *
+         * What is genuinely absent is a binary-snapshot command (the binary format is reached
+         * through `lnk_encode`'s format discriminant instead). Pinned by
+         * `every_implemented_command_rejects_a_missing_payload_rather_than_reporting_unimplemented`,
+         * which asserts the CODE each name answers with — so if a name is added or removed, the
+         * test says so rather than this comment drifting again.
+         */
         other => {
             crate::ffi_error::set(
                 "E_NOT_IMPLEMENTED",
