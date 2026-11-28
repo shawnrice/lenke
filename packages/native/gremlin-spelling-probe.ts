@@ -231,6 +231,47 @@ const GROUPS: readonly Group[] = [
    * Both widths are here because the gap GREW with depth: a group at one hop alone would have
    * flagged 2.9x, which is inside the noise some rows here carry.
    */
+  /*
+   * THE UNTYPED HOP AGAINST THE SAME HOP WITH EVERY LABEL NAMED (item 2453).
+   *
+   * `out()` means "every edge type", so on a graph whose only edge labels are `T` and `U`,
+   * `out()` and `out('T','U')` are the SAME traversal by definition — not a coincidence of this
+   * fixture the way `out()` against `out('T')` would be. The fixture assertions below pin that the
+   * graph has exactly those two labels, which is what makes the equivalence exact.
+   *
+   * WHY THE GROUP DID NOT EXIST, and why that matters more than the group itself. Item 2452
+   * measured `out()` at 64.1 ms / 1117.1 B/row against `out('E')`'s 8.4 ms / 31.1 on a single-label
+   * graph — 7.6x time, 35.9x bytes, identical rows — because all three hand-walk selectors in
+   * `hop-values.ts` require `labels.length >= 1`, so the untyped spelling falls to the general
+   * `adjacentEdges` delegation chain. This probe flags a spread over 2x and has existed since item
+   * 1305; it never saw that 7.6x because no group named the untyped spelling. **A probe cannot flag
+   * what its groups do not express** — the same sentence this file already carries about the
+   * fixture's missing second edge label, now true of the group list rather than the graph.
+   *
+   * BOTH ELEMENT SHAPES, because the walks are different code: `out()` lands on a vertex and
+   * `outE()` yields the edge, and `hop-values.ts` admits them through different arms.
+   *
+   * AND BOTH PROJECT A REAL PROPERTY, which the first cut of this group got wrong: it read
+   * `out().values('w')`, but `w` is an EDGE property and `out()` lands on a VERTEX, so both arms
+   * answered `[]` and the group measured a walk feeding an empty projection. **It still flagged, at
+   * 2.38x** — which is the dangerous part, because a vacuous group can produce a real-looking
+   * number. The vertex arm now reads `k` and the edge arm `w`, so each answer is non-empty and the
+   * ANSWERS check has something to compare. This file's header records the same class of error from
+   * the other direction: a token arm that "answered 0 where `hasLabel('Mgr')` answered 667".
+   *
+   * NO `count()` ARM, deliberately: both spellings are answered by a count shortcut at ~0.18 us, so
+   * the probe puts them under its comparison floor and reports them as not compared. That the
+   * untyped case IS already covered for `count` is worth knowing, and it is exactly why a `count`
+   * arm cannot test the WALK.
+   */
+  [
+    'untyped vs all-labels hop: out().values(k) vs out(T,U).values(k)',
+    [traversal(V(), out(), values('k')), traversal(V(), out('T', 'U'), values('k'))],
+  ],
+  [
+    'untyped vs all-labels edge hop: outE().values(w) vs outE(T,U).values(w)',
+    [traversal(V(), outE(), values('w')), traversal(V(), outE('T', 'U'), values('w'))],
+  ],
   [
     'groupCount by-spelling, one hop: {by: k} vs .by(k)',
     [

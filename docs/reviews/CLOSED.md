@@ -126085,7 +126085,7 @@ such gaps "each cost 100-300x and each returned the correct answer, so no correc
 it". This is one.
 
 **Adding the group to `spelling:gremlin` is the cheaper half of this item and does not depend on the
-optimization landing.**
+optimization landing.** ~~[DONE at item 2453: the group flags at 2.37-2.49x over three isolated runs with identical answers — and it NARROWS this item, because `outE()` is FLAT, so the gap is the VERTEX-landing walk, not untyped hops generally.]~~
 
 ### WHAT IS NOT DONE
 
@@ -126098,3 +126098,67 @@ on unrelated rows.
 
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `git diff` clean for
 `packages/gremlin`, `packages/gql` and `packages/core`.
+
+## Item 2453 — **`spelling:gremlin` NOW COVERS THE UNTYPED HOP, and it flags: `out().values(k)` against `out(T,U).values(k)` reads 2.37x / 2.43x / 2.49x over three isolated runs with identical answers.** The group narrows item 2452's finding too — **`outE()` is FLAT (283.8 against 290.7 ms), so the gap is the VERTEX-landing walk, not untyped hops generally.** And my first cut of the group was VACUOUS and still flagged at 2.38x
+
+Item 2452 measured a 7.6x between `out()` and `out('E')` and found `spelling:gremlin` had no group
+for it, so its >2x threshold had never seen it. This closes that, independently of any optimization.
+
+### THE EQUIVALENCE IS EXACT, not a fixture coincidence
+
+`out()` means "every edge type", and the probe's fixture has exactly two edge labels (`T` at 2N
+edges, `U` at N/2) — pinned by the file's own fixture assertions. So **`out()` and `out('T','U')` are
+the same traversal by definition**, which is a stronger basis than item 2452's `out()` against
+`out('E')`: that pair coincides only because that fixture had one label.
+
+### THE FLAG, confirmed the way the probe's own output demands
+
+```text
+    SPELL_N=200000 SPELL_REPS=9, group run ALONE three times (item 1073: one isolated run is one reading)
+      out().values(k)        253.270    247.975    251.364 ms
+      out(T,U).values(k)     107.012    102.218    101.088 ms
+                               2.37x      2.43x      2.49x
+      answers                500000:[0,0,0,41,41,43,32,32]  — identical in every arm
+```
+
+Tight across three runs, and the answer check has something real to compare.
+
+### THE ASYMMETRY, which narrows item 2452's claim
+
+```text
+      out().values(k)   vs out(T,U).values(k)     2.37-2.49x     FLAGS
+      outE().values(w)  vs outE(T,U).values(w)    283.8 / 290.7  FLAT (0.98x)
+```
+
+**The edge-yielding hop is flat.** So "the untyped spelling has no hand walk" is too broad as a
+diagnosis — `outE()` reaches a route that costs the same as its all-labels twin, and only the
+vertex-landing `out()` pays. That matters for the fix: whatever `hop-values.ts` admits for the edge
+shape at zero labels already works, and the missing arm is specifically the one that resolves the far
+VERTEX. Item 2452's 7.6x stands as measured; its explanation needed this split.
+
+### MY FIRST CUT OF THE GROUP WAS VACUOUS AND FLAGGED ANYWAY
+
+The first version read `out().values('w')`. **`w` is an EDGE property and `out()` lands on a VERTEX**,
+so both arms answered `[]` — the group measured a walk feeding an empty projection. **It still
+reported 2.38x**, which is the dangerous part: a vacuous group produces a real-looking number, and
+the probe's ANSWERS check could not catch it because both arms were equally empty. An answer check
+compares arms to each other; it cannot tell that both are vacuous.
+
+This file's header already records the same class from the other direction — a token arm that
+"answered 0 where `hasLabel('Mgr')` answered 667" — so the lesson is now recorded in both
+directions: **an arm's answer must be non-empty, not merely equal to the other arm's.**
+
+No `count()` arm, deliberately: both spellings are answered by a count shortcut at ~0.18 us and fall
+under the probe's comparison floor. That the untyped case is ALREADY covered for `count` is worth
+knowing, and it is exactly why a count arm cannot test the walk.
+
+### A HARNESS NOTE
+
+`bun run fmt` collapsed the new group arrays onto single lines, so a follow-up patch anchored on the
+expanded form missed. The assert caught it and nothing was written — but the probe then ran against
+the UNCHANGED file, and the only tell was its output still printing `values(w)`. **Re-read a file
+after a formatter touches it before anchoring into it again**; the assert protects the write, not the
+conclusion drawn from the run that follows.
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Probe-only change:
+two groups added to `gremlin-spelling-probe.ts`.
