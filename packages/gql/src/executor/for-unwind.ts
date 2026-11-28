@@ -434,6 +434,17 @@ export const detectForCount = (
   clauses: readonly Clause[],
   compiled: readonly CClause[],
 ): ((graph: Graph, params: Params) => Row[]) | null => {
+  /*
+   * CONDITIONALLY REDUNDANT AND KEPT (item 2464). Relaxed to `< 2`, the only newly admitted shape
+   * is a two-clause `FOR x IN […] RETURN count(*)` with no MATCH — and it still returns `null`,
+   * because the base-count step below asks `detectCountShortcut` for the query with the `FOR`
+   * removed, which is a bare `[return]` it refuses. Measured, not reasoned: the mutant leaves all
+   * 13 tests in `for-route-detectors.test.ts` green.
+   *
+   * It becomes load-bearing the moment that base step learns to serve a MATCH-less `RETURN
+   * count(*)`, at which point this would scale a count over no rows. No test can cover the
+   * coupling while both stand, so it is stated here instead.
+   */
   if (clauses.length < 3) {
     return null;
   }

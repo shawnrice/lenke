@@ -126711,6 +126711,8 @@ differential, fuzz or conformance test can see a mutant in an admission conditio
 
 ```text
     18 detect* route detectors with no test by name
+      [item 2464 TOOK detectForCount + detectForProjection: 13 tests, 6 of 7 mutants;
+       FOUR admission mutants survived the first cut — a genuine FIXTURE GAP.]
       detectChainDistinctLevels      detectChainFoldLevels       detectChainGroupedLevels
       detectChainOrderedProjection   detectChainPagedProjection  detectChainStarCount
       detectForCount                 detectForProjection         detectHop2GroupedCount
@@ -127003,3 +127005,80 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check`
 **5,542 tests 0 fail** including the 9 new ones. Battery re-run against the committed file after
 `lint` objected to an unnecessary `as Expr`; same result. `expr-analysis.ts` restored and verified
 byte-identical.
+
+## Item 2464 — **THE FIRST `detect*` ROUTE DETECTORS TESTED, and the first cut had FOUR surviving admission mutants — a genuine FIXTURE GAP, the one verdict of the four that IS a test defect.** The diagnosis is the lesson: my no-FOR case had only TWO clauses, so the length guard rejected it before either kind check ran. **A decline is not evidence that a guard works; it is evidence that SOME guard works.** 13 tests, 6 of 7 runnable mutants caught, and the survivor is CONDITIONALLY REDUNDANT
+
+Item 2460's map listed 18 `detect*` detectors with no test. These are the first two: `detectForCount`
+and `detectForProjection`.
+
+### TESTED THROUGH `compileLinear`, NOT BY HAND-BUILDING CLAUSES
+
+A detector takes `(fast, compiled)` where `fast` is the clause list **after every rewrite PASS has
+run**, so a hand-made `Clause[]` tests a shape the planner never produces. 36 test files already use
+the `parse` -> `compileLinear` idiom, and it also covers composition: `compileLinear`'s own comment
+says "EVERY detector RUNS … the field order below carries no precedence whatsoever."
+
+That distinction is not academic. `MATCH (n:Person) FOR x IN [1, 2] LET z = x RETURN count(*)` parses
+to `[match, for, let, return]`, whose second-to-last clause is a `let` — and `forCount` serves it
+anyway, because a PASS inlines the trailing `LET` first. **Reading the pre-pass clause kinds would
+have made that look like a gate admitting a shape it refuses.**
+
+**Every route assertion is paired with the ROWS the route produces** (`gate-returning-a-value`:
+asserting a detector "returned something" let three wrong residuals through). Each test calls the
+returned function and compares against the engine's answer for the same text.
+
+### FOUR ADMISSION MUTANTS SURVIVED THE FIRST CUT
+
+```text
+    first cut (8 tests)                      after (13 tests)
+      forcount-len-guard-relaxed  SURVIVED     SURVIVED  (and that is a real verdict, below)
+      forcount-drops-return-check SURVIVED     CAUGHT  12/1
+      forcount-drops-for-check    SURVIVED     CAUGHT  12/1
+      forcount-admits-non-literal SURVIVED     CAUGHT  12/1
+      forcount-times-off-by-one   CAUGHT       CAUGHT  12/1
+      forcount-ignores-times      CAUGHT       CAUGHT  12/1
+      forcount-drops-prop-branch  CAUGHT       CAUGHT  12/1
+```
+
+The arithmetic was covered from the start; **every ADMISSION guard was not**, and the reason is one
+sentence: my original decline case, `MATCH (n:Person) RETURN count(*)`, has only TWO clauses, so
+`clauses.length < 3` rejected it and neither kind check was ever reached. The test looked like it
+covered declines. It covered one decline, three times over.
+
+The four fixtures that fix it, each found by probing rather than guessing:
+
+- **two clauses** — `FOR x IN [1, 2, 3] RETURN count(*)` (no MATCH), which is what the length guard
+  is actually for.
+- **three clauses, no FOR** — `MATCH (a:Person) MATCH (b:Person) RETURN count(*)`, post-pass
+  `[match, match, return]`, which finally reaches `loop.kind !== 'for'`.
+- **last clause is a WRITE** — `MATCH (n:Person) FOR x IN [1, 2] SET n.k = x`, post-pass
+  `[match, for, set]`, which reaches `ret.kind !== 'return'`.
+- **a non-literal list element** — `FOR x IN [1, $p]`. The source calls this a correctness
+  condition, not caution: "an element that FAULTS must fault, and the general path is where that
+  happens, so the whole list has to be inert."
+
+A fifth covers a decline that happens **further in** than any guard: a nested `FOR` passes both kind
+checks and the inertness test, then fails because `detectCountShortcut` refuses the base query with
+the inner `FOR` removed.
+
+### THE SURVIVOR IS CONDITIONALLY REDUNDANT, MEASURED
+
+Relaxing `clauses.length < 3` to `< 2` leaves all 13 tests green. **Applied in isolation, the only
+newly admitted shape still returns `null`**: the two-clause `FOR … RETURN count(*)` slices to a bare
+`[return]`, which the base-count step refuses. So the guard is dead given its downstream neighbour —
+2461's verdict class, not a fixture gap.
+
+It becomes load-bearing the moment that base step learns to serve a MATCH-less `RETURN count(*)`, at
+which point it would scale a count over no rows. No test can cover the coupling while both stand, so
+it is a comment at the guard, with the counterfactual.
+
+### AND ANOTHER DUPLICATED BLOCK
+
+One mutant could not run: `const column = countStarColumn(ret.projection)` plus its null check
+appears **twice** in `for-unwind.ts`, at lines 121 and 463. The battery refused to guess which, which
+is the occurrence-counting rule working — and it is the second duplicate this survey has turned up
+after `isConstExpr` / `cheapPureExpr` at item 2463. A change to one does not reach the other.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
+**5,555 tests 0 fail** including the 13 new ones. `for-unwind.ts` restored and verified
+byte-identical after both batteries; the only change to it is the comment.
