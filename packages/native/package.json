@@ -66,7 +66,8 @@
     "oracle:onehopagg:mutants": "node onehopagg-mutants-2416.mjs",
     "alloc:count": "node alloccount-2418.mjs",
     "alloc:peak": "node --expose-gc peakmem-2419.mjs",
-    "alloc:wasm": "bun wasmmem-2425.mjs"
+    "alloc:wasm": "bun wasmmem-2425.mjs",
+    "alloc:write": "node --expose-gc writemem-2432.mjs"
   },
   "dependencies": {
     "@lenke/core": "workspace:*",

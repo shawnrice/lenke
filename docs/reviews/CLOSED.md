@@ -696,7 +696,7 @@ t.n` gave `[2,3]` against native's `[4,1]`).
   inherent to the frozen immutable bag (a single-key write must build a new object and freeze it,
   and the freeze is what makes a stray mutation throw). Do not "fix" it without replacing that
   design. Items 147, 148, confirmed 266. **Item 2180 measured SET's marginal as FLAT in row
-  width — +4.01 ms at 2 properties against +4.52 at 65, so 32x the width buys 13% — so whatever
+  width — +4.01 ms at 2 properties against +4.52 at 65, so 32x the width buys 13% **(IN TIME — item 2432 measured the same shape in MEMORY and it is NOT flat: churn grows ~15 B per existing property while the retained figure stays at 73 B, so the waste ratio reaches 17.73x at 64 properties)** — so whatever
   the screen's 13.1x SET flag is made of, it is NOT the O(width) term this entry closed.**
 - ~~**Native raised on a capped product whose predicate faults past the cap, where TS returned
   rows**~~ — **FIXED by item 288**, as a side effect rather than a target. Two shapes, both loud
@@ -124190,3 +124190,94 @@ Both remaining candidates are coverage gaps rather than flagged shapes:
 
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
 `onehopfam-2415.mjs` gained a `where-floor` arm, which is what made the floor comparison one command.
+
+## Item 2432 — **THE WRITE PATH HAD NO MEMORY COVERAGE AT ALL — five instruments, all reads — and the new one prices a design decision in bytes for the first time: a property write churns O(K) garbage to store a FLAT 73 bytes, so the waste ratio reaches 17.73x at 64 properties.** Item 2180's "SET's marginal is FLAT in row width" is about TIME; in MEMORY it is not flat. **And my own harness reported a 2151.93x waste ratio before I noticed it was measuring an unreachable graph**
+
+Items 2416-2425 built churn, retained bytes, GC share, peak live, the minimum-heap bisection and the
+wasm high-water. **Every one measures a READ.** The only write figure anywhere was `alloc:wasm`'s
+LOAD row, a bulk ingest. That is the wrong way round for an engine whose sharpest recorded cliffs are
+on the write path — item 680's `csr_fresh` demotion (one `addEdge` costs every later read up to
+24.07x), [[ts-set-is-o-width]]'s three O(K) passes, [[write-cost-deferred-checks]]'s O(row width)
+recheck. None of those were found by a memory instrument, because there wasn't one.
+
+### THE QUANTITY THAT MATTERS FOR A WRITE IS THE RATIO
+
+A read's churn is nearly all garbage. A write's churn is partly the structure it is SUPPOSED to keep,
+so the useful figure is how much transient garbage it makes per byte it stores:
+
+```text
+    OPS=50,000, PROPS=1           churn/op    kept/op    waste (churn/kept)
+      addVertex                     1732 B      617 B      2.81x
+      addEdge                       2219        1377       1.61x
+      setProp                         328          89      3.70x
+      bulkLoad (per element)        2128         986       2.16x
+```
+
+`addEdge` is the heaviest operation and the LEAST wasteful. And the bulk path stores the same
+structure as the incremental one — `bulkLoad` keeps 986 B/element against `addVertex` + `addEdge`'s
+617 + 1377 = 1994 per vertex-plus-edge pair, and 2 x 986 = 1972. That agreement is what validates the
+harness rather than any single row.
+
+### THE FINDING: O(K) CHURN FOR O(1) STORED DATA
+
+`setProp`'s ratio at one existing property is the cheapest the shape can look, so the property count
+was swept — which is what [[ts-set-is-o-width]]'s "three O(K) passes" predicts should matter:
+
+```text
+    K (existing properties)   churn/op    kept/op    waste
+      1                          328 B       89 B     3.70x
+      4                          359         73       4.93x
+      16                         554         73       7.60x
+      64                        1299         73      17.73x
+```
+
+**The churn grows with K at ~15 B per existing property while the retained figure is FLAT at 73 B.**
+A single-key write to a 64-property vertex throws away 1,299 bytes to store 73. The ratio has no
+ceiling: at 256 properties it would be ~4 KB per write.
+
+### THIS IS A PRICE, NOT A TARGET — and the design refusal stands
+
+`CLOSED.md` closes the mechanism explicitly: _"TS `SET`'s O(width) — CLOSED BY DESIGN. Item 147
+removed one of the three O(K) passes; the other two are inherent to the frozen immutable bag (a
+single-key write must build a new object and freeze it, and the freeze is what makes a stray mutation
+throw). **Do not 'fix' it without replacing that design.**"_ That holds, and nothing here argues
+with it. What is new is the PRICE of that decision in bytes, which was never measured.
+
+**AND IT SCOPES A RECORDED "FLAT" RESULT.** The same entry carries item 2180's correction: _"SET's
+marginal is FLAT in row width — +4.01 ms at 2 properties against +4.52 at 65, so 32x the width buys
+13%."_ That is TIME, and it is not in conflict: allocating and copying 64 properties costs little
+time, because nursery allocation is a pointer bump and V8 copies fast, while costing real BYTES. A
+reader taking "flat in row width" as "SET has no width cost" would be wrong about memory by 4x.
+Same shape as item 2428's correction to item 2385: a measured "flat" is flat in the quantity that
+was measured.
+
+### MY OWN HARNESS LIED FIRST, and the absurd number is what caught it
+
+The first run reported `bulkLoad` at **0.09 MiB retained and a waste ratio of 2151.93x** for a
+100,000-element graph — against `addVertex`'s 29.42 MiB for half the data. `retained` is read after a
+forced collection, so it only sees what is still REFERENCED, and that arm created its graph INSIDE
+the measured closure and returned a row count: the graph was unreachable before the collection ran.
+`addVertex` and `addEdge` were right BY ACCIDENT, because they happen to create the graph outside
+the closure. Every arm now assigns it to a module-level `KEEP`, so retention is deliberate rather
+than incidental — and the bulk-versus-incremental agreement above is the check that it worked.
+
+That is the fifth instrument in this stretch caught lying before any engine number was read from it
+(items 2416's three, 2419's maxRSS, and this). The calibration is the whole reason the number is
+usable.
+
+### THE PROBE IS ALSO SHAPED BY A DOCUMENTED TRAP
+
+[[graph-pinned-until-microtask-drain]]: a discarded `Graph` is retained IN FULL by its pending
+`drainMutations` microtask, so a build-and-discard loop retains every graph it made (148 / 614 /
+1242 MiB over 10 / 45 / 90 reps). The probe therefore awaits a MACROTASK before each baseline, not
+only after the window — without that, a phase reads the PREVIOUS phase's graph as part of its own
+starting heap and its retained figure comes out negative when the drain finally runs.
+
+### WIRED
+
+`bun run alloc:write`, alongside `alloc` / `alloc:calibrate` / `alloc:count` / `alloc:peak` /
+`alloc:gcobs` / `alloc:rust` / `alloc:wasm`. Knobs: `PHASE` (one phase per process), `OPS`, `PROPS`.
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
+The churn meter calibrated at 81.8 and 80.6 B/object over a 4x range, matching item 2416's 80.1-81.6
+for the same object — the same mechanism, independently re-verified in this file.
