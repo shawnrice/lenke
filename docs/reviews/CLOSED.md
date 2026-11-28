@@ -126725,7 +126725,7 @@ differential, fuzz or conformance test can see a mutant in an admission conditio
       isMemoUncorrelated isConstExpr        isKnownScalarFn
 ```
 
-The var-length three are the ones to take first: `ACYCLIC`/`TRAIL` admission is where this repo has
+~~[TAKEN at item 2461: 18 tests, 8 of 9 mutants caught; the survivor is redundant only CONDITIONALLY, via `null >= 2` coercing false while `null >= 0` is true.]~~ The var-length three are the ones to take first: `ACYCLIC`/`TRAIL` admission is where this repo has
 already SHIPPED a wrong answer (the zero-length path omission, shipped at 2002 and caught at 2005 by
 a fuzzer, not by a unit test). **Two caveats before writing any of them**, both already paid for:
 `gate-returning-a-value` (asserting "it returned something" let three wrong residuals through — assert
@@ -126765,3 +126765,86 @@ the rest.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change,
 no new probe — a survey, a correction, and the sweep item 2458 left running.
+
+## Item 2461 — **THE VAR-LENGTH ADMISSION GATES GET THEIR FIRST TESTS: 18 tests over the five `reachability.ts` gates, 8 of 9 mutants caught.** And the survivor is the keeper: `q.max !== null` is redundant **conditionally on the clause above it, through a type coercion** — `null >= 2` is false but **`null >= 0` is TRUE**, so relaxing the `min >= 2` bound makes it load-bearing and its absence admits an UNBOUNDED quantifier. No unit test can cover that coupling, so it is now a comment where someone would relax it
+
+Item 2460's coverage map put these at the top: `quantifierServed`, `trailMinAdmissible`,
+`isAcyclicMode` and `quantMin` were named in **no** test, `reachQuantifierIsExact` in exactly one.
+
+### WHY A UNIT TEST AND NOT A QUERY TEST
+
+A gate that NARROWS is answer-equivalent: a servable shape goes to the general matcher and comes
+back with the same rows, slower. No differential, fuzz or conformance test can see it
+(`perf-gate-needs-its-own-test`).
+
+**The widening direction is worse than slow.** `trailMinAdmissible`'s mode exclusions are documented
+as "a measured divergence rather than caution" (item 2007, nine hazard fixtures across three
+bounds) — `WALK` reaches vertices a trail cannot, so admitting it answers WRONGLY. And `ACYCLIC`/
+`TRAIL` admission is exactly where this repo has already shipped a wrong answer: the zero-length
+path omission went out at item 2002 and was caught at **2005 by a fuzzer, not by a test like this**.
+
+Each assertion pins the VALUE at a boundary rather than that a gate "answered"
+(`gate-returning-a-value` — three wrong residuals got through that way).
+
+### THE CONTRACTS, read off the code
+
+One caution worth recording: **in this file a doc comment PRECEDES the function it documents**, so
+the block sitting directly after `trailMinAdmissible` belongs to the next symbol, not to it. I began
+to attribute a "WALK IS ADMITTED" comment to `trailMinAdmissible`, whose code refuses `walk` — the
+code settled it.
+
+- `reachQuantifierIsExact(q)`: `min <= 1` and `max === null || max >= 1`. **Takes no mode at all** —
+  a BFS over the reached set IS walk reachability, so `min <= 1` is served whatever the mode says.
+- `trailMinAdmissible(q, mode)`: mode `undefined` or `trail`, `min >= 2`, max neither `null` nor
+  `undefined`, and `max >= min`.
+- `quantifierServed` is the disjunction, which makes it **asymmetric in mode**: `{1,}` is served
+  under `walk`, `{2,3}` is not. That looks like an oversight until you see the first bullet, so it
+  is pinned.
+- `isAcyclicMode(p)`: `(p.mode ?? 'trail') === 'acyclic'`. The default is the entire gate.
+
+### THE MUTANTS
+
+```text
+    baseline                                                  18 pass  0 fail
+      acyclic-default-flipped     (?? 'trail' -> 'acyclic')   CAUGHT  17/1
+      trail-min-off-by-one        (>= 2 -> >= 1)              CAUGHT  17/1
+      trail-mode-widened-to-walk  (admit 'walk')              CAUGHT  16/2
+      trail-mode-narrowed         (drop the undefined arm)    CAUGHT  16/2
+      trail-accepts-unbounded     (q.max !== null -> true)    *** SURVIVED ***
+      trail-range-check-dropped   (max >= min -> max >= 0)    CAUGHT  17/1
+      exact-min-widened           (<= 1 -> <= 2)              CAUGHT  16/2
+      exact-max-bound-dropped     (>= 1 -> >= 0)              CAUGHT  17/1
+      quantmin-default-one        (?? 0 -> ?? 1)              CAUGHT  17/1
+```
+
+Both mode directions are caught, which is the pair that matters: widening is a wrong answer,
+narrowing is an invisible slowdown.
+
+### THE SURVIVOR, SETTLED EXHAUSTIVELY RATHER THAN BY SAMPLING
+
+```text
+    trailMinAdmissible, live vs mutant over the WHOLE input domain
+      6 mins x 8 maxes x 5 modes, plus q === undefined   480 combinations
+      divergences                                          0
+      null >= 2  ->  false        (why it is redundant today)
+      null >= 0  ->  TRUE         (why it will not stay redundant)
+```
+
+Item 2459's survivor was settled by 4,000 RANDOM trials; this domain is small enough to enumerate,
+so it is enumerated. Zero divergences: with `min >= 2` required, `null >= 2` coerces to `0 >= 2` and
+the range clause already refuses an unbounded max.
+
+**But the redundancy is conditional on another clause, and the mechanism is a coercion.** `null >= 0`
+is TRUE, so the moment the `>= 2` bound is relaxed toward 0 — a plausible future widening, since the
+whole point of that clause is which arm serves which quantifier — `q.max !== null` becomes the only
+thing refusing an unbounded quantifier from an arm that must have a bound.
+
+**No unit test can cover that**: while both clauses stand, no input distinguishes them, which is
+precisely what the 480-combination sweep proves. So the protection is a comment at the clause,
+stating the coupling and the counterfactual, where a person relaxing the min bound will read it.
+That is the same verdict shape as item 2459 (redundant-and-keep) with a sharper reason: not "the
+branch is never consulted" but "the branch is not consulted YET".
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
+**5,533 tests 0 fail** including the 18 new ones. `reachability.ts` restored and verified
+byte-identical after the mutant battery; the only change to it is the comment.

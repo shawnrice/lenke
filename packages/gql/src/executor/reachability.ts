@@ -897,6 +897,17 @@ export const trailMinAdmissible = (
   q !== undefined &&
   (mode === undefined || mode === 'trail') &&
   (q.min ?? 0) >= 2 &&
+  /*
+   * `q.max !== null` IS REDUNDANT TODAY AND MUST STAY (item 2461). Mutating it to `true` leaves all
+   * 18 gate tests green, and an EXHAUSTIVE differential over the whole input domain (6 mins x 8
+   * maxes x 5 modes, 480 combinations) finds zero divergences — because `null >= 2` coerces to
+   * `0 >= 2` and the range clause below already refuses an unbounded max.
+   *
+   * THE REDUNDANCY IS CONDITIONAL ON THE CLAUSE ABOVE, through a coercion. `null >= 0` is TRUE, so
+   * the moment the `>= 2` bound is relaxed toward 0, this clause becomes load-bearing and its
+   * absence admits an UNBOUNDED quantifier into an arm that must have a bound. No unit test can
+   * cover that coupling, since no input distinguishes the two while both clauses stand.
+   */
   q.max !== null &&
   q.max !== undefined &&
   q.max >= (q.min ?? 0);
