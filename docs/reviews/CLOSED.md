@@ -128459,3 +128459,65 @@ new code three ticks running (2480, 2481, 2483).
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No engine change — one probe added,
 `unwrap-probe-2483.ts`, runnable as `bun unwrap-probe-2483.ts` from `packages/gremlin`.
+
+## Item 2484 — **THE MECHANICAL DETECTOR FOR THE DROPPED-ARGUMENT CLASS DOES NOT WORK, AND WHY IS THE RESULT: sentinel survival cannot see any of the three real instances.** The oracle has to be TINKERPOP'S SIGNATURE LIST, not "did my argument reach the step". Built it, ran it over 62 builders, found NO new defect, and deleted it rather than commit a 33-false-positive instrument
+
+### THE PREMISE
+
+Three dropped-argument instances in five ticks, each found by accident while chasing something else:
+`tree('k')` (2479, two arms read 11.28 against 11.28 and nearly closed a real 29.7x finding as a
+null), `tail(2, Scope.local)` (2480, a silently dropped scope sitting on top of a real wrong answer),
+`dedupe(Scope.local)` (2483, which printed `agree` TWICE because a fixture of distinct values cannot
+tell a dedupe from a non-dedupe). Three accidents in five ticks reads like a class worth a detector.
+
+### THE DETECTOR, AND THE TWO REASONS IT FAILED
+
+Call every step builder with a distinctive sentinel and check the sentinel survives into the compiled
+step. 62 builders x 5 argument shapes.
+
+**First cut: 160 of 283 flagged, and useless.** Almost all of it was NILADIC builders —
+`identity('ZQX')`, `drop(919193)`, `unfold(…)`, `tree(…)`, `simplePath(…)` — where JS ignores extra
+arguments because the function declares no parameters. That is the language's calling convention, not
+a dropped parameter. Filtering on `fn.length` cut it to 33 (16 dropped, 17 coerced) of 104.
+
+**Second cut: all 33 are my sentinel's fault, not the code's.** Nearly every remaining hit is
+`Scope.local` handed to a builder that never advertised a scope parameter, which the TYPE refuses. The
+only structurally interesting residuals:
+
+```text
+      fold('ZQX')                 -> {kind:'fold'}                  arity 2, seed alone is dropped
+      values(Scope.local)         -> {kind:'values', keys:[null]}    symbol COERCED to a null key
+      select(Scope.local)         -> {kind:'select', labels:[]}      symbol REMOVED instead
+```
+
+`fold(seed, reducer)` requires both and TinkerPop has no single-argument `fold(seed)` either, so
+requiring both is CORRECT and the only gap is silence where an error would be better — the same
+verdict shape as item 2481. The `values`-nulls-it / `select`-removes-it inconsistency is real but
+untyped-only.
+
+**So: no new defect found.**
+
+### WHY SENTINEL SURVIVAL WAS THE WRONG ORACLE, which is the transferable part
+
+Re-read the three real instances against what this detector tests:
+
+```text
+      instance                  sentinel survived?   what actually made it a bug
+        tree('k')                 n/a — niladic        TinkerPop HAS tree().by(k); the positional
+                                                       form looked plausible and did nothing
+        tail(2, Scope.local)      no                   but the BUG was the missing `tail(Scope)`
+                                                       overload, not the reversed call
+        dedupe(Scope.local)       no                   TinkerPop HAS dedup(local); lenke has no
+                                                       overload at all
+```
+
+**Every one of them is "a form TinkerPop supports is accepted and ignored, or not expressible at
+all".** Sentinel survival cannot see that: it knows nothing about which forms SHOULD exist. A detector
+that would find all three takes TinkerPop's signature list as its oracle and asks, for each
+signature, whether lenke expresses it — which is what items 2480-2483 did by hand, one family at a
+time, and what found the only real defect (`tail(Scope.local)`).
+
+The probe was deleted rather than committed: a standing instrument that reports 33 untyped-only hits
+would mislead whoever runs it next, and its conclusion is this entry.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; working tree clean. No code change.
