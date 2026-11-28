@@ -127,6 +127,17 @@ jobs:
       - name: cargo test (lenke-engine)
         run: cargo test --manifest-path crates/lenke-engine/Cargo.toml
 
+      # The C ABI (`ffi.rs` + `ffi_error.rs`, ~1360 lines) is `#[cfg(feature = "capi")]`, so the
+      # step above NEVER COMPILES IT — measured at item 2542: `cargo test … ffi` collects 0 tests
+      # without the feature and 4 with it. That is the boundary every bun:ffi and wasm consumer
+      # crosses, and it was outside both the test and the lint gate.
+      #
+      # Added as a SEPARATE step rather than a flag on the one above: the gate exists so the plain
+      # lib/test build does not export the engine's `#[no_mangle]` symbols (see lib.rs), and that
+      # property is worth keeping. This step covers the gated code without changing it.
+      - name: cargo test (lenke-engine, capi)
+        run: cargo test --manifest-path crates/lenke-engine/Cargo.toml --features capi
+
       - name: cargo test (lenke-engine-core)
         run: cargo test --manifest-path crates/lenke-engine-core/Cargo.toml
 
@@ -134,6 +145,11 @@ jobs:
       # status of the last command in the pipe, which has let broken lint through.
       - name: cargo clippy (lenke-engine)
         run: cargo clippy --all-targets --manifest-path crates/lenke-engine/Cargo.toml -- -D warnings
+
+      # Same blind spot for the lint gate: a clippy error inside the `capi` modules could never
+      # fail CI. Verified clean at the time this was added, so it starts green.
+      - name: cargo clippy (lenke-engine, capi)
+        run: cargo clippy --all-targets --manifest-path crates/lenke-engine/Cargo.toml --features capi -- -D warnings
 
       - name: cargo clippy (lenke-engine-core)
         run: cargo clippy --all-targets --manifest-path crates/lenke-engine-core/Cargo.toml -- -D warnings

@@ -20,6 +20,9 @@
 
 use std::cell::RefCell;
 
+#[cfg(test)]
+mod tests;
+
 thread_local! {
     /// The calling thread's most recent failure, pre-rendered as a JSON report
     /// (`{"code","message","details"}`) ready to hand across the boundary.

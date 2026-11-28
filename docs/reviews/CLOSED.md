@@ -132300,14 +132300,26 @@ GATES. Probe and branch instrumentation fully reverted (`git checkout`, then cou
 to 0); `cargo build --tests` 0; Rust **1363 + 4 + 13 + 725**, 0 failed. No source change, so no fuzz
 run was owed.
 
-## Item 2541 — **`bind.rs` had ZERO tests and one param position pinned; the source audit came back CLEAN, and then TWO of my own nine new rows turned out VACUOUS.** The vacuity is the finding worth keeping
+## Item 2541 — ~~**`bind.rs` had ZERO tests and one param position pinned**~~ **OVERSTATED — see the correction at item 2542.** `bind/tests.rs` exists with 6 tests covering ~5 positions AND the bound-vs-direct oracle. What 2541 actually added: 4 previously-uncovered positions, and the vacuity lesson, which is the part worth keeping
 
 ### WHY THIS MODULE
 
-`bind.rs` replaces every `Expr::Param` in a prepared plan with its value. 446 lines, **no in-file
-tests**, and exactly two references from test code: `a_param_prefix_seeds_like_a_literal_one` (ONE
-position — a `STARTS WITH` operand) and one parse-cache test. That is item 2539's shape again: a
-surface with many entry points pinned at one of them.
+`bind.rs` replaces every `Expr::Param` in a prepared plan with its value. 446 lines, no tests
+**inside the file**, and two references from elsewhere.
+
+> **CORRECTED AT ITEM 2542.** That reading was wrong, and wrong by the trap this file already
+> records as rule (2532): **Rust keeps tests in a SIBLING `tests.rs`**, and `bind/tests.rs` exists —
+> 185 lines, 6 tests, covering a WHERE comparison, an inline `{k: $p}`, an arithmetic operand, two
+> distinct parameters, a repeated name (last-wins), a missing parameter, idempotence across clones,
+> **and `bound_plan_matches_direct_substitution` — the bound-vs-direct oracle this item presents
+> below as its own idea.** My survey predicate asked which files mention `parse_cache::`-style paths,
+> which a CHILD module never writes. So "a surface pinned at one position" was false: it was pinned
+> at about five, with the right oracle already chosen.
+>
+> What this item does add, and what the mutants below confirm is load-bearing: four positions nobody
+> had covered — the `IN` NEEDLE (`$p IN x.tags`), an `ANY SHORTEST` per-hop `edge_pred`, a bare
+> `RETURN` expression, and an operand under `NOT` — plus a function-call argument and `ORDER BY`.
+> And the two vacuity traps, which stand on their own.
 
 ### THE SOURCE AUDIT WAS CLEAN, AND NARROWED WHAT COULD EVEN BE WRONG
 
@@ -132367,3 +132379,91 @@ a pin it did not have, and buys the next reader the two vacuity traps.
 
 GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0; Rust **1364 + 4 + 13 + 725** (+1),
 0 failed; `bun run check` 0. No source change outside tests, so no fuzz run was owed.
+
+## Item 2542 — **a CI BLIND SPOT: ~1,360 lines of C ABI were never compiled, tested or linted by CI**, found while writing the first tests `ffi_error.rs` has ever had. Plus a correction to item 2541, which fell into the trap this file already records
+
+### FIRST, THE CORRECTION TO 2541
+
+Item 2541 opened "`bind.rs` had ZERO tests and one param position pinned". **That was wrong, and
+wrong by rule (2532) — the rule this very file records.** Rust keeps tests in a SIBLING `tests.rs`,
+and `bind/tests.rs` exists: 185 lines, 6 tests, covering a WHERE comparison, an inline `{k: $p}`, an
+arithmetic operand, two distinct parameters, a repeated name (last-wins), a missing parameter,
+idempotence across clones — **and `bound_plan_matches_direct_substitution`, the bound-vs-direct
+oracle 2541 presents as its own idea.**
+
+My survey predicate asked which files mention `bind::`, which a CHILD module never writes. So the
+module was pinned at about five positions with the right oracle already chosen, not at one. 2541's
+heading is struck and its body corrected in place; what it genuinely added is four uncovered
+positions (the `IN` needle, `ANY SHORTEST`'s `edge_pred`, a bare `RETURN` expression, an operand
+under `NOT`) and the two vacuity traps, which stand on their own.
+
+**The lesson is not "check for a sibling tests.rs" — I had that written down.** It is that a survey
+whose predicate is `MODULE::` cannot see a child module, and I reused the predicate from a sweep
+where that did not matter.
+
+### THE FINDING
+
+`ffi_error.rs` — 92 lines, no tests anywhere, zero `CLOSED.md` mentions — hand-rolls **JSON string
+escaping** for the C ABI's last-error channel. That is the ENCODER counterpart to the decoder
+escaping audited at 2533/2535, so I wrote its first tests with `serde_json` as the independent
+oracle.
+
+**Then the filter collected 0 tests.** `ffi` and `ffi_error` are both `#[cfg(feature = "capi")]`, so
+the default `cargo test` never compiles them. Measured:
+
+```text
+      cargo test … ffi                      0 tests collected
+      cargo test … --features capi ffi      4 tests collected   (all of them mine)
+```
+
+And CI runs exactly the default:
+
+```yaml
+run: cargo test --manifest-path crates/lenke-engine/Cargo.toml
+run: cargo clippy --all-targets --manifest-path crates/lenke-engine/Cargo.toml -- -D warnings
+```
+
+So **`ffi.rs` (1264 lines) + `ffi_error.rs` (95 lines) — the boundary every bun:ffi and wasm consumer
+crosses — sat outside BOTH the test gate and the lint gate.** `ffi.rs` has no tests of its own
+either, which is only visible once you ask with the feature on. A clippy error inside those modules
+could never fail CI.
+
+### THE FIX, AND WHY IT IS ADDITIVE
+
+Two new CI steps rather than a flag on the existing two. The gate is deliberate — lib.rs says it
+keeps the plain lib/test build from exporting the engine's `#[no_mangle]` symbols — and that property
+is worth keeping, so the `capi` build gets its own step instead of changing the symbol-free one.
+**Clippy with `--features capi` was verified clean first**, so the new gate starts green rather than
+landing red.
+
+```text
+      cargo fmt                      0
+      cargo clippy (default)         0
+      cargo clippy (capi)            0      <- newly gated
+      cargo test (default)           1364 + 4 + 13 + 725, 0 failed
+      cargo test (capi)              1368 + 4 + 13, 0 failed    <- the +4 are the new tests
+```
+
+### THE TESTS, AND WHAT THEY COMPARE
+
+Four rows over the whole channel. The oracle compares **decoded VALUES, not bytes**, and that choice
+is forced: this escaper sends `0x08` and `0x0c` through its `< 0x20` arm as `\u0008` / `\u000c`
+where serde writes `\b` / `\f`. Both are valid JSON and both decode identically, so a byte-identity
+assertion would fail on correct code. The corpus covers every control character 0x00-0x1f, quotes,
+backslashes, astral characters and the empty string.
+
+The other three rows test the module's own docstring claims (rule xiv): that reading TAKES the report
+(so one failure is never reported twice), that `begin()` clears a stale report AND that recording
+still works afterwards (a clear that broke recording would also pass the first assertion), and —
+recorded deliberately — that **`code` is NOT escaped**: `set` pushes it raw, so a quote in a slug
+emits malformed JSON. Every caller passes a fixed slug, so that is safe by REACHABILITY rather than
+by construction; the row pins the status quo so a future caller threading a dynamic string fails
+here rather than silently handing the host broken JSON.
+
+Three mutants, each caught: the quote escape removed, the control range narrowed to `< 0x09`, and
+read changed from `take()` to `clone()`.
+
+### STILL OPEN
+
+**`ffi.rs`'s 1264 lines have no tests of their own.** Now that CI compiles and lints them, that is a
+real and visible gap rather than an invisible one — a candidate for a later tick.
