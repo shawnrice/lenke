@@ -124282,7 +124282,7 @@ GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 
 The churn meter calibrated at 81.8 and 80.6 B/object over a 4x range, matching item 2416's 80.1-81.6
 for the same object — the same mechanism, independently re-verified in this file.
 
-## Item 2433 — **I CHECKED WHETHER ITEMS 2421/2423 REGRESSED THE WRITE PATH, BECAUSE THEY MOVED THE COMMONEST SHAPES ONTO A CSR-CACHED PASS, AND THEY DID NOT: both routes pay the SAME pre-existing penalty — a read following ONE `addEdge` costs 3.49x on the old route and 3.89x on the new one.** And the new write instrument prices the rebuild at **4.21 MiB of churn**, which is the TS analogue of item 680's native `csr_fresh` demotion, measured on this side for the first time
+## Item 2433 — **I CHECKED WHETHER ITEMS 2421/2423 REGRESSED THE WRITE PATH, BECAUSE THEY MOVED THE COMMONEST SHAPES ONTO A CSR-CACHED PASS, AND THEY DID NOT: both routes pay the SAME pre-existing penalty — a read following ONE `addEdge` costs 3.49x on the old route and 3.89x on the new one.** ~~[the mechanism claim — "the penalty is NOT the CSR cache" — is CORRECTED at item 2434: it IS an O(|V| + |E|) CSR rebuild, on BOTH routes, via two different cache modules. The headline conclusion stands.]~~ And the new write instrument prices the rebuild at **4.21 MiB of churn**, which is the TS analogue of item 680's native `csr_fresh` demotion, measured on this side for the first time
 
 Items 2421 and 2423 moved the one-hop aggregates and `RETURN DISTINCT` onto `levelWalk`, and
 `levelWalk` calls `csrFor` — a cache keyed on `graph.topologyVersion`, which ANY adjacency write
@@ -124358,3 +124358,95 @@ GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0.
 `chain-fold-levels.ts` restored from `target/pristine-cfl-2433.ts` and verified byte-identical
 (`git status` clean for `packages/gql`), with the dist rebuilt afterwards. `writemem-2432.mjs` gained
 `readWarm` and `readAfterWrite` phases.
+
+## Item 2434 — **THE WRITE-THEN-READ PENALTY IS AN O(|V| + |E|) CSR REBUILD, ON BOTH ROUTES, AND THIS CORRECTS MY OWN ITEM 2433's MECHANISM CLAIM ONE ITEM LATER.** `buildCsr` + `csrFor` are **46.4% of the after-write profile and ABSENT from the warm one**; on the old route item 1895's inline CSR arm goes **11 ms warm to 121 ms after a write**. Item 2433 concluded "the penalty is NOT the CSR cache" from a grep; the profile says it is, via TWO cache modules sharing one invalidation key
+
+Item 2433 measured the penalty (3.49-3.89x) and reasoned about its cause from `grep 'csrFor('`: the
+old route has no call site, therefore the CSR cache cannot be it. **That inference was wrong**, and it
+was wrong in the way CLAUDE.md warns about — timing and a call-site grep cannot tell you which code
+ran. The profile can.
+
+### WHAT A WRITE ACTUALLY COSTS, with the warm run as the control
+
+```text
+    N=200,000, one-hop sum, self time, 5 reads per arm
+      POST-2421 (csr-cache.ts)      WARM              AFTER ONE addEdge
+        buildCsr                     absent            97 ms   29.5%
+        csrFor                       absent            56 ms   16.9%
+        levelWalk                    41 ms  24.2%      38 ms   11.4%
+                                                       --------------
+                                     CSR frames:       153 ms  46.4% of the profile
+
+      PRE-2421 (item 1895's arm)    WARM              AFTER ONE addEdge
+        the CSR-arm closure          11 ms  30.5%     121 ms   77.5%
+        engine total                 37 ms            157 ms
+```
+
+**On the new route the two CSR frames do not exist in the warm profile and are 46.4% of the
+after-write one.** On the old route the whole cost lands inside one closure — `+110 ms` of a `+120 ms`
+total — and that closure's own comment names it: _"THE CSR ARM (item 1895)"_. The walk inside it does
+the same work in both arms (the same graph plus five edges), so the increment is the build.
+
+**The control is what makes the old route readable**, and skipping it is exactly
+[[frame-attribution-trap]]: the closure contains the build AND the walk, so at 77.5% alone it proves
+nothing. Against 30.5% warm it does.
+
+### SO THERE ARE TWO CSR CACHES, NOT ONE, AND ITEM 2433's GREP ONLY SAW THE FIRST
+
+`buildCsr` has exactly ONE caller — `csrFor`, in `csr-cache.ts` — whose only callers are in
+`chain-fold-levels.ts`. That part of item 2433 is true and it is why the grep was reassuring. What it
+missed is that the OLD route builds its own CSR inline, item 1895's arm, outside `csr-cache.ts`
+entirely. Four modules key a cache on `topologyVersion` (`csr-cache.ts`, `filtered-chain-csr.ts`,
+`two-hop-filtered-csr.ts`, `acyclic-count.ts`) and the adjacency structure is built in more places
+than the one the grep matched.
+
+**ITEM 2433's HEADLINE STANDS AND IS NOW BETTER EXPLAINED.** Items 2421/2423 introduced no write-path
+regression — and the reason is not "the penalty is unrelated to the CSR" but "both routes rebuild a
+CSR, so moving between them changes nothing about the write path." Its number (3.49x against 3.89x)
+was right; its mechanism was not. Item 2433's "the penalty is NOT the CSR cache I moved these shapes
+onto" is struck.
+
+### TWO DISCRIMINATORS THAT NARROW IT WITHOUT ANY ENGINE EDIT
+
+A property write does not change topology, so it should not invalidate an adjacency structure:
+
+```text
+    N=200,000, one-hop sum        median      vs warm
+      warm (no write)              12.74 ms    —
+      after setProperty            13.56 ms    1.06x      <- a NON-topology write is FREE
+      after addEdge                48.63 ms    3.82x
+```
+
+And only shapes that WALK adjacency pay:
+
+```text
+      hopSum     13.36 -> 58.43   4.37x
+      hopRows    11.47 -> 38.60   3.36x
+      nodeOnly    7.59 ->  7.22   0.95x    <- unaffected
+      hopCount    closed form               <- never walks, unaffected
+```
+
+So the invalidation is adjacency-specific, not a graph-wide index flush and not the mutation buffer:
+`verticesByLabel`, the property indexes and the parse/plan caches are all ruled out by `nodeOnly`
+being flat.
+
+### THIS IS NOW A REAL TARGET, which item 2433 could not say
+
+With the mechanism localized, the lever is INCREMENTAL CSR MAINTENANCE: one `addEdge` changes one
+vertex's adjacency, and the structure is rebuilt for all 200,000. The design note in `csr-cache.ts`
+argues against keeping STALE GENERATIONS — _"every shape built from the old topology is equally
+invalid, and keeping the map would leak one entry per shape per write"_ — and that argument is about
+retaining old copies, not about updating one in place, so it does not block this.
+
+What a build costs, from item 2432's instrument: **+4.21 MiB of churn** per rebuild, and 97-121 ms at
+200,000 elements. Not attempted here — it is a design change in two separate builders, and the
+`order` array's construction is the part that has to be shown to be incrementally maintainable at
+all.
+
+**Priced, localized, and left open deliberately.** The native side's twin is item 680, where nothing
+re-arms `csr_fresh` and a selective edge type costs 24.07x; this is the same shape measured on the TS
+side with the mechanism now named.
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0.
+`chain-fold-levels.ts` restored from `target/pristine-cfl-2434.ts`, the ablation marker verified
+absent, `git status` clean for `packages/gql`, dist rebuilt.
