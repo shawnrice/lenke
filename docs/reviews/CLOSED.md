@@ -126720,6 +126720,8 @@ differential, fuzz or conformance test can see a mutant in an admission conditio
       (and csrEligible, which gates the CSR arm)
 
     19 predicates with no test by name — the load-bearing ones
+      [item 2462 TOOK csrEligible, tailIsOrderFree, tailIsOrderFreeFrom, isSliceable,
+       hasRevisit, hasAny and isEmptyPlan: 20 tests, 12 of 12 mutants caught.]
       quantifierServed  trailMinAdmissible  isAcyclicMode     (var-length semantics)
       tailIsOrderFree   tailIsOrderFreeFrom isSliceable       (order/slice licences)
       isMemoUncorrelated isConstExpr        isKnownScalarFn
@@ -126848,3 +126850,78 @@ branch is never consulted" but "the branch is not consulted YET".
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
 **5,533 tests 0 fail** including the 18 new ones. `reachability.ts` restored and verified
 byte-identical after the mutant battery; the only change to it is the comment.
+
+## Item 2462 — **SIX MORE EXECUTOR GATES TESTED, 20 tests across four Gremlin files, 12 of 12 mutants caught.** `csrEligible` is the clearest case on item 2460's map because it is used in BOTH POLARITIES at its call sites, so a flip changes two behaviours in opposite directions and neither shows up as a wrong row. Three contracts worth pinning: an EMPTY order-free tail is **false**, `isSliceable` deliberately refuses a **string**, and `hasRevisit` uses **Set** semantics, so `NaN` revisits itself and `0`/`-0` are one element
+
+Continuing down item 2460's coverage map after 2461 took the var-length gates.
+
+### WHY `csrEligible` FIRST, despite being a one-liner
+
+```ts
+export const csrEligible = (hop: Hop): boolean => hop.kind !== 'both' && hop.labels.length === 1;
+```
+
+Its call sites use it **both ways round** — `csrEligible(hop) && seenBefore(…)` in
+`coalesce-hop-values.ts`, and `!csrEligible(thenHop)` / `!csrEligible(elseHop)` in
+`choose-hop-values.ts`. A single mutation therefore widens one route and narrows another at the same
+time, and because a route choice is ANSWER-EQUIVALENT neither direction appears as a wrong row in any
+differential, fuzz or conformance suite. The whole domain is 3 kinds x 4 label counts, so it is
+ENUMERATED in one assertion rather than sampled — the 2461 preference, applied where it is trivial.
+
+`both` is refused even with one label, because it would need two adjacency partitions.
+
+### THREE CONTRACTS THAT LOOK LIKE BUGS UNTIL PINNED
+
+- **An EMPTY order-free tail is `false`.** `tailIsOrderFreeFrom([], 0)` returns false, and the source
+  says why: a tail must END in `count`, because that is what makes order unobservable rather than
+  merely reordered — an empty tail returns the elements themselves. A bare `[count]` IS order-free.
+- **`tailIsOrderFreeFrom` checks only from `from` ONWARD.** `[order, out, count]` is order-free from
+  index 1 and not from 0. It takes an index rather than a slice deliberately (`seedRest` asks once
+  per leading filter of every traversal, so slicing would allocate on a path every query takes), and
+  the consequence — an order-SENSITIVE step before `from` does not disqualify the tail — is now
+  asserted, because it reads like an oversight.
+- **`isSliceable` refuses a STRING**, which is an explicit carve-out, not a consequence: a string IS
+  iterable. And **`hasRevisit` uses a `Set`**, so it differs from `===` exactly where a Set does —
+  `NaN` revisits itself and `0`/`-0` are the same element. Both are pinned so a future rewrite to
+  `===` or to `Array.includes` fails rather than drifting.
+
+`hasAny` gets the assertion its contract needs: it must pull **at most one** element, measured with a
+counting generator, not merely report the right boolean.
+
+### THE MUTANTS, twelve across four files
+
+```text
+    baseline                                                        20 pass  0 fail
+      csr-admits-both          (drop the kind check)                CAUGHT  18/2
+      csr-admits-many-labels   (=== 1  ->  >= 1)                    CAUGHT  19/1
+      csr-admits-zero-labels   (=== 1  ->  <= 1)                    CAUGHT  19/1
+      tail-count-check-dropped (stop requiring a trailing count)    CAUGHT  19/1
+      tail-empty-admitted      (>=  ->  > on the length guard)      CAUGHT  17/3
+      tail-interior-unchecked  (loop bound  ->  from)               CAUGHT  17/3
+      tail-off-by-one-end      (include the count in the scan)      CAUGHT  15/5
+      revisit-never            (membership test  ->  false)         CAUGHT  17/3
+      revisit-adjacent-only    (clear the set each step)            CAUGHT  18/2
+      hasany-drains            (consume the whole stream)           CAUGHT  19/1
+      sliceable-allows-string  (drop the string carve-out)          CAUGHT  19/1
+      emptyplan-off-by-one     (length === 0  ->  <= 1)             CAUGHT  19/1
+```
+
+**The battery was RE-RUN against the committed test file.** The first pass earned its verdicts
+against a slightly earlier version — `lint` and `check` then objected to two helper constructors (an
+unnecessary `as Hop`, and a bare `{ steps }` that does not overlap `Plan`, which carries
+`readsPath`/`kinds`/`mayFault` and two symbol keys by construction, item 1504). Fixing those changed
+no assertion, but a mutation verdict should be earned by the code that ships, so all twelve were run
+again. Same result.
+
+### WHAT REMAINS ON THE MAP
+
+The `detect*` family is the bulk of what is left and it is a different cost: those take a parsed
+clause plus a graph and return a PLAN, so each needs a fixture rather than a literal. Two warnings
+already paid for apply with full force there — `gate-returning-a-value` (three wrong residuals got
+through an "it returned something" assertion, each routing and then declining downstream with the
+same answer) and `rung-precedence-hides-the-code-under-test` (delete the gate's key line and see
+whose ANSWER changes before trusting a green suite).
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
+`packages/gremlin` **2,890 tests 0 fail** including the 20 new ones; `bun run fuzz gremlin` 45 pass 0
+fail. All four mutated sources restored and verified byte-identical.
