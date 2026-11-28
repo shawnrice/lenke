@@ -131569,3 +131569,58 @@ owns the module. Running `bun test` in `packages/core` gave a green on "February
 
 GATES. `build` 0; `fmt` 0; `lint` 0; `check` 0; core **511** (+9) / gql 5672 / native 1438 /
 gremlin 2927 / sync 179, all 0 fail.
+
+## Item 2530 — **the "literal-only module" hypothesis is REFUTED on both codecs: 7 mutants on csv and pg-text, ALL SEVEN CAUGHT.** And the refutation sharpens item 2529's rule — what made `temporal.ts` vulnerable was not literal assertions, it was FIXTURES THAT DID NOT SPAN THE RULE'S DECISION BOUNDARY
+
+### THE HYPOTHESIS, AND WHY IT LOOKED GOOD
+
+Item 2529 confirmed 2528's inverse — a module checked only against typed literals is where a mutant
+hides — and found three wrong calendar answers surviving ~10,800 tests. This tick applied it to
+`packages/serialization`, whose numbers looked like the next hit: `csv/index.ts` is **1355 lines** and
+`csv.test.ts` has **ZERO byte-level assertions** (it names RFC 4180 four times in prose and never
+checks the emitted bytes). My reasoning was that round-trip is a differential for INVERTIBILITY only —
+a codec that quotes wrongly still round-trips with itself — so the output FORMAT would be unguarded.
+
+### REFUTED, SEVEN FOR SEVEN
+
+```text
+      csv — quoteField's five triggers and its escape convention
+      M1  a comma no longer forces a quote                 1 FAIL
+      M2  LIST_SEP no longer forces a quote                1 FAIL
+      M3  a bare CR no longer forces a quote               4 FAIL
+      M4  backslash-escape instead of RFC quote-doubling   1 FAIL
+
+      pg-text — encodeScalar
+      P1  non-finite emitted literally instead of `null`   1 FAIL
+      P2  booleans swapped [CONTROL]                       7 FAIL
+      P3  the `null` token uppercased                      8 FAIL
+```
+
+**My reasoning was wrong about this codec specifically**: the decoder follows RFC 4180 strictly rather
+than mirroring the encoder's quirks, so a wrong quote decision breaks INVERTIBILITY and round-trip
+catches it. Round-trip is a stronger differential than I credited whenever the two sides are written
+to a spec rather than to each other.
+
+P1 is the one I expected to survive and the most informative that it did not. `encodeScalar` maps a
+non-finite number to the **`null` token** — deliberately lossy, colliding with real `null` — so
+round-trip structurally CANNOT distinguish `NaN` from `null`. It is caught anyway, by a test asserting
+the token directly.
+
+### THE REFINEMENT, WHICH IS THE ACTUAL DELIVERABLE
+
+Rule (xxiv) as written ("a module checked only against TYPED LITERALS is where a mutant hides") is too
+loose, and these seven mutants are the counter-evidence. **What made `temporal.ts` vulnerable was
+narrower: its fixtures did not SPAN the rule's decision boundary.** `temporal.test.ts` used 1600 and
+2000 — _both_ leap by the /400 rule — and never 1900 or 2100, so no fixture could decide the `% 100`
+clause whatever the assertions compared against.
+
+These codecs' fixtures do span theirs: a comma, an embedded quote, a bare CR, the list separator, a
+non-finite number, a real `null` and both booleans are all present, so every rule has a discriminating
+case.
+
+**So the productive question is not "literals or oracle?" but "does any fixture sit on each side of
+every branch this code takes?"** That is checkable by reading the fixtures against the conditions, and
+it is what should be asked next — a sharper instrument than the one I brought to this tick.
+
+GATES. `fmt` 0; `lint` 0; `check` 0; serialization 144, 0 fail. Tree clean — `git diff --stat` empty
+after the mutation run.
