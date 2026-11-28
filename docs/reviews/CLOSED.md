@@ -129004,7 +129004,7 @@ needs both.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No code change — a measurement.
 
-## Item 2492 — **ITEM 2491's HEADLINE NUMBER WAS WRONG (the fuzzer generates FIVE predicates, not one), and extending the set to eleven EXPOSED A REAL CROSS-ENGINE DIVERGENCE — which refutes items 2488/2489's claim that "both engines agree, so there is nothing to arbitrate".** Also: the four TEXT predicates cannot be fuzzed at all, because `planToGremlin` cannot emit them. **Change REVERTED, not shipped — it takes the fuzzer from 1-in-30 red to 2-in-6**
+## Item 2492 — **ITEM 2491's HEADLINE NUMBER WAS WRONG (the fuzzer generates FIVE predicates, not one), and extending the set to eleven EXPOSED A REAL CROSS-ENGINE DIVERGENCE (**LOCALIZED AT ITEM 2493: it is `has(k, neq(v))` against a STORED NULL, one `has` and nothing else — `order(local)`/`dedup()`/`path()` were red herrings. ISO, lenke's GQL and lenke's Rust all say the TS engine is wrong; a DEFECT, not a decision**) — which refutes items 2488/2489's claim that "both engines agree, so there is nothing to arbitrate".** Also: the four TEXT predicates cannot be fuzzed at all, because `planToGremlin` cannot emit them. **Change REVERTED, not shipped — it takes the fuzzer from 1-in-30 red to 2-in-6**
 
 ### FIRST, THE CORRECTION TO MY OWN MEASUREMENT
 
@@ -129070,3 +129070,71 @@ the composite divergence is understood.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `gremlin-fuzz` 45 pass / 0 fail after the
 revert; working tree clean of the change. No code shipped — a correction, a located divergence, and a
 named emitter gap.
+
+## Item 2493 — **LOCALIZED TO ONE STEP AND A STORED NULL: `has(k, neq(v))` where `k` holds a STORED NULL returns the row in the TS engine and not in Rust. `order(local)`/`dedup()`/`path()` were red herrings.** ISO 39075, lenke's own GQL surface and lenke's own Rust engine all agree the TS engine is WRONG — so this is a defect, not a decision. Pinned as six `test.failing` rows with two agreeing controls
+
+### THE BISECT, AND WHAT IT KILLED
+
+Item 2492 captured `g.V().has('lang', neq('lop')).order(local).dedup().path().count()` at ts `[7]`
+against native `[6]`, and left `order(local)`, `dedup()` and `path()` as the suspects — I had named
+`order(local)` on a non-list as the most likely. All three are irrelevant:
+
+```text
+      plan                                        ts     native   verdict
+      V().count()                        CONTROL  [7]    [7]      agree
+      has('lang', neq('lop')).count()             [7]    [6]      DIFFER  <- shortest
+      … .order(local).count()                     [7]    [6]      DIFFER
+      … .order(local).dedup().count()             [7]    [6]      DIFFER
+      … .order(local).dedup().path().count()      [7]    [6]      DIFFER  (the 2492 plan)
+      has('lang').values('name')         CONTROL  vadas,lop,ripple,hybrid — agree
+      has('lang', neq('java')).values()           DIFFERS TOO — same cause, different value
+```
+
+**One `has` is the whole thing.** And the differing row is `vadas` — the vertex the fuzzer's fixture
+patches with `setProperty('lang', null)`, a **STORED NULL**, which this repo's
+`null-first-class-policy` makes a PRESENT value rather than a missing key. The presence control
+settles that reading: **both engines agree `vadas` HAS the key** (`has('lang')` returns it in both),
+so the defect is in the COMPARISON, not in key lookup.
+
+**So this is NOT item 2488's defect.** That one is the MISSING key and both engines share it. This one
+is a STORED NULL and the engines disagree. Two distinct defects in the same predicate, and 2492 was
+right that (4)'s "nothing to arbitrate" framing was too strong — but wrong about which question it
+was.
+
+### THREE AUTHORITIES, ALL AGAINST THE TS ENGINE
+
+```text
+      ISO/IEC 39075 3VL          `null <> 'lop'` is UNKNOWN; a WHERE keeps only TRUE  -> exclude
+      lenke's GQL surface        MATCH (v:P) WHERE v.k <> 'lop'  ->  the stored null is EXCLUDED
+      lenke's Rust engine        native [6]                      ->  the stored null is EXCLUDED
+      lenke's TS Gremlin         ts [7]                          ->  the stored null is INCLUDED  ✗
+```
+
+The GQL check also confirms the surrounding semantics are right there: `PROPERTY_EXISTS` separates a
+stored null (present) from a missing key (absent), and `IS NULL` reads both as NULL. **Two of the
+three references are in-house and already consistent with each other**, which is what makes this a
+defect to fix rather than a semantics choice to refer — unlike decisions (3) and (4).
+
+### PINNED, NOT LEFT AS A SEED
+
+Six rows are `test.failing` in `packages/native/src/stored-null-neq-2493.test.ts` with the two
+agreeing controls beside them. That is the right idiom and not a dodge: a VALUE divergence may never
+go in `divergence-registry.ts`, these are FIXED minimal cases rather than a random seed (item 2492's
+objection), CI stays green while the defect stands, and the moment the TS engine is corrected they
+flip red and must be promoted to ordinary tests. The NDJSON carries the same stored nulls as the TS
+fixture, because a drifted fixture reads as a divergence — the trap the fuzzer's own comment warns
+about.
+
+### TWO MISTAKES IN THE WRITING, BOTH CAUGHT BY THE GATE
+
+- An intermediate edit gave the assertion's two sides DIFFERENT prefixes
+  (`` `${label} ts=${ts}` `` against `` `${label} native=${nat}` ``), which **could never compare
+  equal** — an always-failing assertion dressed as a comparison. The label was redundant anyway: it
+  is the test's own name.
+- `bun run lint` then rejected the leftover ``run(`${label}`, …)`` as an unnecessary template. Sixth
+  tick running that `check`/`lint` has caught a defect in my own new code.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; the new file 8
+pass / 0 fail; `packages/native` **1438 pass / 0 fail**; `bun run fuzz` clean on three consecutive
+runs (the single failure seen once is the documented ~1-in-30 residual, present on the unmodified
+fuzzer at item 2492 and unrelated to a test-only addition).
