@@ -128660,3 +128660,70 @@ Final form recurses and sorts at every level, with the expectations written in t
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
 one probe added, `select-forms-probe-2486.ts`, documented in `PROBES.md`.
+
+## Item 2487 — **ITEM 2483's CARDINALITY FINDING IS NOT ONE CASE BUT FIVE, ALL ONE MECHANISM: lenke NEVER DROPS THE ROW, where TinkerPop drops it whenever the requested window STARTS AT OR BEYOND the list's length.** The rule is not "the result is empty" — `range(local,2,2)` and `range(local,4,5)` are both empty and only the second drops. 9 agreeing controls make the 5 readable
+
+### THE RULE, WHICH THE OBVIOUS GUESS GETS WRONG
+
+Item 2483 found `range(local,9,10)` yielding `[]` in TinkerPop against `[[]]` here and could not say
+whether it generalized. Enumerating every way to empty a local list (TinkerPop 3.7.3, modern graph,
+ages `[29, 27, 32, 35]`):
+
+```text
+      ROW KEPT  [[]]                        ROW DROPPED  []
+        limit(local, 0)                       range(local, 9, 10)
+        tail(local, 0)                        range(local, 4, 5)
+        sample(local, 0)                      empty fold + limit(local, 1)
+        range(local, 0, 0)                    empty fold + tail(local, 1)
+        range(local, 2, 2)                    empty fold + range(local, 0, 1)
+        empty fold (no slicing at all)
+        empty fold + order(local)
+        empty fold + count(local)  ->  [0]
+```
+
+**`range(local, 2, 2)` and `range(local, 4, 5)` both produce an empty list, and only the second drops
+the row.** The discriminator is the window's START against the list's length: slicing NOTHING keeps
+the row, having NOTHING TO SLICE FROM drops it. Asking for zero elements of a list that exists is a
+keep; asking for one element of an empty list is a drop. Aggregates never drop.
+
+### AND LENKE SIMPLY DOES NOT IMPLEMENT IT
+
+```text
+      case                            lenke     TinkerPop   verdict
+        range(local, 9, 10)             1:[]      0:          DIFFER
+        range(local, 4, 5)              1:[]      0:          DIFFER
+        empty fold + limit(local, 1)    1:[]      0:          DIFFER
+        empty fold + tail(local, 1)     1:[]      0:          DIFFER
+        empty fold + range(local, 0, 1) 1:[]      0:          DIFFER
+        limit(local, 0)                 1:[]      1:[]        agree
+        tail(local, 0)                  1:[]      1:[]        agree
+        range(local, 0, 0)              1:[]      1:[]        agree
+        range(local, 2, 2)              1:[]      1:[]        agree
+        empty fold                      1:[]      1:[]        agree
+        empty fold + order(local)       1:[]      1:[]        agree
+        empty fold + count(local)       1:0       1:0         agree
+        range(local, 3, 99)             1:[35]    1:[35]      agree
+        fold                            1:[…]     1:[…]       agree
+      9 agree, 6 DIFFER of 15
+```
+
+**Every one of the five drop cases keeps the row here, and every keep case agrees.** So this is not
+five divergences but one missing rule, and the nine agreements are what make that attributable rather
+than a guess — a probe where everything differed would not have localized it.
+
+The sixth DIFFER is E07 and is a DIFFERENT, already-known thing: `sample` has no local-scope overload
+(item 2483), so `sample(0)` here is the GLOBAL sample, which drops the row (`0:`) where TinkerPop's
+`sample(local, 0)` keeps it (`1:[]`). Labelled `[GLOBAL]` in the probe so it cannot be misread as part
+of the cardinality rule.
+
+### WHAT THIS DOES TO THE OPEN DECISION
+
+Item 2483's finding (3d) was "an empty window drops the row in TinkerPop where lenke keeps it", one
+case, unexplained. It is now: **implement "drop the row when the window's start is at or beyond the
+list's length" in the local slicing path**, affecting `range`, `limit` and `tail`, with a 15-row
+conformance table to verify against and 9 rows that must not move. That is a decision with a scope
+instead of a research project — still the owner's, because it is a CARDINALITY change to a shipped
+surface and the cross-engine contract covers values, not row counts, only by implication.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
+one probe added, `empty-window-probe-2487.ts`, documented in `PROBES.md`.

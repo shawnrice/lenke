@@ -3155,3 +3155,19 @@ indistinguishable from a bare `select('a')` when a label is bound once.
 
 Also pins: `select('zz')` on an UNBOUND label is `[]` in both engines, not an error. And `P` is not a
 namespace here — predicates are top-level exports, so TinkerPop's `P.neq('b')` is `neq('b')`.
+
+### `empty-window-probe-2487.ts` — the local-slicing CARDINALITY rule against TinkerPop
+
+`cd packages/gremlin && bun empty-window-probe-2487.ts`. 15 ways to empty a local list, each with the
+TinkerPop 3.7.3 row COUNT as well as its value (the leading number in every cell is the row count,
+which is the quantity at issue). Currently **9 agree, 6 DIFFER** — and 5 of the 6 are ONE missing
+rule, not five divergences.
+
+**TinkerPop drops the row iff the requested window STARTS AT OR BEYOND the list's length**, which is
+not the same as "the result is empty": `range(local,2,2)` and `range(local,4,5)` are both empty and
+only the second drops. Slicing nothing keeps the row; having nothing to slice from drops it.
+Aggregates never drop (`count(local)` on an empty fold is `[0]`). lenke never drops at all, so all
+five drop cases read `1:[]`.
+
+The sixth DIFFER is `sample(0)`, labelled `[GLOBAL]`: `sample` has no local overload here (item
+2483), so that row is the global sample and a different question.
