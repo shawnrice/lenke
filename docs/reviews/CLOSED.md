@@ -127677,7 +127677,7 @@ lost. 6 of 6 mutants caught against the MERGED file (`isReserved` case-sensitive
 always-true; `quoteIdent` ignoring reserved words, ignoring the bare-shape test, dropping the
 backtick escape). `lexer.ts` restored and verified byte-identical. Scratch probes removed.
 
-## Item 2473 — **TWO MEMORY CLASSES AMONG GREMLIN'S BUFFERING STEPS, separated by a CARDINALITY sweep rather than a size one: `order()` and `fold()` hold O(N) regardless of distinct count, while `dedupe()` and `groupCount()` hold O(DISTINCT) and are ~0 on a low-cardinality stream.** And the instrument reported `fold()` as FREE until I noticed it had **taken zero samples** — a one-row output never reaches a row-interval sampler
+## Item 2473 — **TWO MEMORY CLASSES AMONG GREMLIN'S BUFFERING STEPS** (~~two~~ **THE ROSTER IS FINISHED AT ITEM 2478 AND THERE ARE MORE: `tree()` is O(PATHS) at 11.28 MiB on a ONE-ROW output, `group()`/`aggregate()`/`store()` are O(N) with no `aggregate`-vs-`store` difference, and `path()` retains LESS than its own control because `readsPath` routes it off a FUSED path that buffers**), separated by a CARDINALITY sweep rather than a size one: `order()` and `fold()` hold O(N) regardless of distinct count, while `dedupe()` and `groupCount()` hold O(DISTINCT) and are ~0 on a low-cardinality stream.** And the instrument reported `fold()` as FREE until I noticed it had **taken zero samples** — a one-row output never reaches a row-interval sampler
 
 `alloc:retained` was built at item 2457 to ask "does shape X stream or buffer?" and then only ever
 aimed at hop walks, which stream. These are the shapes it was for. The GQL side was already covered
@@ -128022,3 +128022,79 @@ code nobody reads, in a directory nobody checked.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; `bun test` in
 `packages/gql` **5655 pass / 0 fail**. No behaviour change — a corrected source comment and three tests
 replacing one that recorded the question.
+
+## Item 2478 — **`tree()` HOLDS 11.28 MiB ON A ONE-ROW OUTPUT — the largest non-`repeat` buffering shape in the engine, and invisible to a row-interval sampler.** `group()`/`aggregate()`/`store()` are all O(N) with **NO retained difference between `aggregate` and `store`**. And **`path()` retains LESS than the same walk without it** (0.00 against 0.19), because `readsPath` routes it away from a FUSED path that buffers
+
+### THE THIRD AND FOURTH MEMORY CLASSES
+
+Item 2473 split `order()`/`fold()` (O(N)) from `dedupe()`/`groupCount()` (O(DISTINCT)). This finishes
+the roster. `alloc:retained`, N=20,000, out-degree 2, 7 reps:
+
+```text
+      arm                            rows   smpl    peak MiB
+      streaming values()  [control] 20000      4        0.01
+      tree()                            1      0       11.28   <- O(PATHS), and one row
+      group()                           1      0        0.18
+      aggregate() + cap                 1      0        0.17
+      store() + cap                     1      0        0.17
+      3 hops, no path   [control]  160000     39        0.18
+      3 hops + path()              160000     39        0.00   <- LESS than its own control
+      1 hop, no path    [control]   40000      9        0.02
+      1 hop + path()                40000      9        0.02
+      CALIBRATION (holds every row) 20000      4        0.18
+      calibration / streaming = 15.0x  (gate: must exceed 10x)
+```
+
+**`tree()` is the find.** 11.28 MiB — the same order as `repeat(out).times(3)`'s 11.11 over FOUR TIMES
+the rows — from a walk whose output is a single row. It holds the whole traversed tree, so it is
+O(PATHS), the same class as the `repeat` frontier and not the O(N)/O(DISTINCT) classes. **Its `smpl`
+column reads 0**: a one-row output never reaches a row-interval sampler, so this number exists only
+because item 2473 added the unconditional RESULT reading. Without that it would have printed 0.00 and
+read as free.
+
+**`aggregate` and `store` are indistinguishable in retained memory** — 0.17 both. They differ as
+barriers (one is eager, one lazy), which is a TIME and ordering property; the live set is the same
+collection either way. A null worth recording, because the eager/lazy distinction invites the
+assumption that it shows up here.
+
+### `path()` COSTS NEGATIVE MEMORY, AND THE MECHANISM IS A ROUTE CHANGE
+
+A path-tracking walk retaining LESS than the same walk without paths is not a thing that can be true
+of one route, so it is two routes:
+
+```text
+      traversal(V(), out, out, out)           readsPath=false   steps=4    0.19 MiB
+      traversal(V(), out, out, out, path())   readsPath=true    steps=5    0.00 MiB
+```
+
+`readsPath` is a plan flag, and a path-reading plan is refused the fused walk. So the **FUSED route is
+the one that buffers**, and `path()` opts out of it. That inverts the usual direction: the
+optimization costs memory, and the step that looks expensive is cheap because it disables the
+optimization. Stated at the strength it was measured — the flag difference and the memory difference
+are both confirmed; that the fused route's buffer IS the 0.19 is a strongly supported hypothesis, not
+a measurement of the buffer itself.
+
+### TWO INSTRUMENT ERRORS, BOTH CAUGHT BY THE SAME TELL
+
+The `path()` pair took three attempts, and the signal each time was **an arm reading below its own
+control**, which cannot be a property of the code:
+
+1. **The first control ended in `values('k')`**, so the pair differed in OUTPUT TYPE (scalars against
+   `Path` objects) as well as in path tracking, and isolated nothing. Fixed to emit bare traversers.
+2. **The anomaly survived**, so I suspected arm ORDER — a lazily-built shared structure that the
+   first arm pays for and the second finds warm (the `floor-arm-must-take-same-route` shape). Tested
+   by swapping the two arms: the reading followed the SHAPE, not the position (0.00 for `path()` run
+   first or second, 0.19 for the control either way). **Refuted, and that refutation is what made the
+   finding safe to report.**
+
+Only then was the route difference worth looking for. The rule earns a sharper form: **an arm that
+reads below its own control is an instrument bug until a position swap says otherwise** — and if the
+swap clears it, the reading is real and needs a mechanism.
+
+A third error cost a run before any of that: the import anchor failed because `fmt` had already
+reflowed that import into a multi-line form when the frontier arms were added, so the patch wrote
+NOTHING and the run printed the old arms. Caught by reading the arm list in the output rather than
+trusting the edit — the same `fmt`-reflow trap as item 2476, now twice in three ticks.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
+`alloc:retained` gains eight arms.

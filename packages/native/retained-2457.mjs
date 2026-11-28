@@ -34,15 +34,21 @@
 import { Graph } from '@lenke/core';
 import {
   V,
+  aggregate,
+  cap,
   dedupe,
   fold,
+  group,
   groupCount,
   order,
   out,
+  path,
   repeat,
   run,
   simplePath,
+  store,
   traversal,
+  tree,
   values,
 } from '@lenke/gremlin';
 
@@ -187,6 +193,34 @@ const arms = [
   ['dedupe()', traversal(V(), values('k'), dedupe()), false],
   ['fold()', traversal(V(), values('k'), fold()), false],
   ['groupCount()', traversal(V(), values('k'), groupCount()), false],
+  /*
+   * THE REMAINING BUFFERING SHAPES (item 2478). Item 2473 split `order()`/`fold()` (O(N)) from
+   * `dedupe()`/`groupCount()` (O(DISTINCT)); these are the rest.
+   *
+   * `path()` IS PAIRED WITH A NO-PATH CONTROL AT THE SAME DEPTH, because depth changes the ROW
+   * COUNT as well as the per-row state — at out-degree 2 a 3-hop walk emits 4x the rows of a 1-hop
+   * one, so an unpaired depth comparison confounds the two and no reading from it could be
+   * attributed. The quantity of interest is the RATIO of each `path()` arm to the control beside it.
+   *
+   * THE CONTROL ENDED IN `values('k')` AT FIRST, AND THAT WAS WRONG (item 2478). It made the pair
+   * differ in OUTPUT TYPE as well as in path tracking — scalars against `Path` objects — so it
+   * isolated nothing, and the `3 hops + path()` arm read 0.00 against the control's 0.18. **A
+   * path-tracking walk cannot retain LESS than the same walk without paths**, which is what gave the
+   * design away (a reading that is wrong for a case you already know indicts the instrument). The
+   * control now emits the bare traversers, one object per row, exactly as the `path()` arm does.
+   *
+   * `tree()`, `group()`, `aggregate`/`store` all emit ONE row, so the row-interval sampler never
+   * fires for them (item 2473's trap) — their number comes from the unconditional RESULT reading and
+   * their `smpl` column is expected to read 0.
+   */
+  ['1 hop, no path   [control]', traversal(V(), out('E')), false],
+  ['1 hop + path()', traversal(V(), out('E'), path()), false],
+  ['3 hops, no path  [control]', traversal(V(), out('E'), out('E'), out('E')), false],
+  ['3 hops + path()', traversal(V(), out('E'), out('E'), out('E'), path()), false],
+  ['tree()', traversal(V(), out('E'), tree()), false],
+  ['group()', traversal(V(), values('k'), group()), false],
+  ['aggregate() + cap', traversal(V(), values('k'), aggregate('x'), cap('x')), false],
+  ['store() + cap', traversal(V(), values('k'), store('x'), cap('x')), false],
   [CALIBRATION, traversal(V(), values('k')), true],
 ];
 const measured = new Map();
