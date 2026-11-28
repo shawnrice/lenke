@@ -131624,3 +131624,53 @@ it is what should be asked next — a sharper instrument than the one I brought 
 
 GATES. `fmt` 0; `lint` 0; `check` 0; serialization 144, 0 fail. Tree clean — `git diff --stat` empty
 after the mutation run.
+
+## Item 2531 — **the boundary-spanning instrument worked and PageRank came back CLEAN.** It narrowed 306 lines to three candidates statically; measurement resolved all three, and the one survivor is a PROVABLY EQUIVALENT guard. The correction worth keeping: **a test-to-source line ratio is not coverage quality**
+
+### THE INSTRUMENT, USED AS 2530 DEFINED IT
+
+Rule (xxvi): ask "does any fixture sit on each side of every branch this code takes?" — read FIXTURES
+against CONDITIONS statically, and only then mutate what looks unspanned. Applied to
+`core/src/algorithms/`, picking `pagerank.ts` because its ratio looked worst (306 src / 142 test).
+
+Static pass over its shape-dependent conditions, counting fixtures across ALL core tests:
+
+```text
+      CONDITION                    fixtures   verdict after measurement
+      unknown edge type                 0*    COVERED — *my count was wrong
+      empty graph (`n === 0`)           0     EQUIVALENT mutant
+      dampingFactor: 1                  0     measured SOUND, nothing catchable to add
+      dangling redistribution         many    COVERED (3 mutants, 3/3/2 FAIL)
+```
+
+### THE THREE RESOLUTIONS
+
+1. **Unknown edge type — covered, and my first count was a reporting bug.** My sweep printed "nothing
+   above = no fixture" unconditionally beneath lines that had already listed hits. Counted properly:
+   `edgeLabel: 'NOPE'` appears at **17 call sites across 9 algorithms** (pagerank included) plus 8 in
+   native's conformance suite. There is even a dedicated `unknown edge type → uniform 1/N` test
+   asserting the exact outcome the source comment claims — rule (xiv) already satisfied.
+2. **The empty-graph guard is an EQUIVALENT mutant, proven not assumed.** Removing
+   `if (n === 0) return []` leaves 511/511 passing, so I measured what the code then does: pagerank on
+   an empty graph still returns `[]`, because `nf = 0` makes every loop iterate zero times and the
+   output is empty regardless. (All eight algorithms return `[]` on an empty graph, with and without
+   the guard.) Not a gap — rule (x) resolved by measurement rather than inference.
+3. **`dampingFactor: 1` is unfixtured and sound.** Measured on the two shapes that distinguish it — a
+   3-cycle (no sink) and a 3-chain (sink at the end) — across d = 0, 0.5, 0.85, 1: every total is
+   1.000000 and every score finite, including d=1 on the sink, where mass would drain without the
+   dangling term. **No test added**: the dangling mutants are already caught 3/3/2, so a d-extreme row
+   would be a test that cannot fail (rule xii / item 2513).
+
+### THE CORRECTION
+
+I chose pagerank because 306/142 was the weakest ratio in the directory. **That framing was wrong.**
+Its 142 lines contain a PROPERTY-BASED ORACLE — `mass is conserved (scores sum to 1) even with
+dangling sinks`, where Σscore = 1 is a mathematical invariant rather than a typed literal — plus the
+sink shape and the unknown-edge-type claim with its stated numeric outcome. That beats volume: the
+module whose fixtures span its branches is well tested at any ratio.
+
+So **ratio is not coverage quality**, the same error class as item 2527's "a text sweep's count is not
+a denominator". The boundary-spanning question is the right one; line counts are not a proxy for it.
+
+GATES. `fmt` 0; `lint` 0; `check` 0; core 511, 0 fail. Tree clean — `git diff --stat` empty after the
+mutation run.
