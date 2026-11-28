@@ -185,6 +185,29 @@ const SHAPES: [string, Plan][] = [
   // hoist REFUTED at item 829. Read this row for regressions in the TS column; the cross-engine
   // ratio on it is a category difference.
   ['V().out() [bare]', traversal(V(), out('KNOWS'))],
+
+  /*
+   * THE GENUINELY UNTYPED HOP (item 2454), which this bench did not have a row for.
+   *
+   * EVERY ROW NAMED `V().out()` ABOVE AND BELOW IS `out('KNOWS')` — including the one labelled
+   * `[bare]`. The names read as untyped and the plans are typed, which is a trap: it nearly cost
+   * this item its perturbation reading, because those rows looked like the target shape and are in
+   * fact its CONTROLS (they are untouched by a change to the zero-label arm, and measured flat
+   * across it). The rows below say `untyped` in the name for that reason.
+   *
+   * WHY IT MATTERED THAT THEY WERE MISSING: `out()` with no label had no hand walk at all until
+   * item 2454 — all three selectors in `hop-values.ts` required `labels.length >= 1` — so it fell
+   * to the general `adjacentEdges` delegation chain. Item 2452 measured that at 7.6x the time and
+   * 35.9x the bytes of `out('E')` on a single-label graph, and this bench could not see any of it.
+   * The same sentence this file already carries about `hopbothyield`: "`bench:gremlin` had NO ROW
+   * for this shape, which is why the TS/native gap on it was never seen."
+   *
+   * THE WIN FALLS WITH OUT-DEGREE, because the overhead removed is PER VERTEX rather than per edge
+   * — measured 3.31x at degree 1, 2.34x at 2 and 1.95x at 5 over 200,000 vertices. This fixture is
+   * degree 5, so it is the LEAST favourable of the three and that is the point of having it here.
+   */
+  ['V().out() [UNTYPED]', traversal(V(), out())],
+  ['V().out().values(age) [UNTYPED]', traversal(V(), out(), values('age'))],
   ['V().out().id()', traversal(V(), out('KNOWS'), id())],
   // THE SAME TRAVERSAL WITH A TRAILING STEP (item 608). `hopValuesShortcut` matched a plan of
   // EXACTLY three steps, so this was four and dropped the whole query onto the traverser

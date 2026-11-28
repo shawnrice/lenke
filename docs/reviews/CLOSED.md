@@ -126089,7 +126089,7 @@ optimization landing.** ~~[DONE at item 2453: the group flags at 2.37-2.49x over
 
 ### WHAT IS NOT DONE
 
-Nothing is built. The fast arm needs: the `multiTypeEdgeCount === 0` precondition as a tested pure
+~~[BUILT at item 2454: `out()` 253 -> 123 ms (2.06x), the spelling group closed from 2.4x to 1.2x — and NO `multiTypeEdgeCount` precondition was needed, because the multi-type branch it joins already dedupes with an inline array scan rather than a `Set`.]~~ Nothing is built. The fast arm needs: the `multiTypeEdgeCount === 0` precondition as a tested pure
 function with mutants (a route choice is answer-equivalent); a test that a MULTI-label edge still
 appears exactly once through `out()` at depth 1 AND depth 2 (the 13-divergence incident was at depth
 ≥ 2, so depth 1 alone would not have caught it); `bun run fuzz` and `bun run fuzz gremlin`; and
@@ -126133,7 +126133,7 @@ Tight across three runs, and the answer check has something real to compare.
 **The edge-yielding hop is flat.** So "the untyped spelling has no hand walk" is too broad as a
 diagnosis — `outE()` reaches a route that costs the same as its all-labels twin, and only the
 vertex-landing `out()` pays. That matters for the fix: whatever `hop-values.ts` admits for the edge
-shape at zero labels already works, and the missing arm is specifically the one that resolves the far
+shape at zero labels already works, and the missing arm is specifically the one that resolves the far ~~[BUILT at item 2454.]~~
 VERTEX. Item 2452's 7.6x stands as measured; its explanation needed this split.
 
 ### MY FIRST CUT OF THE GROUP WAS VACUOUS AND FLAGGED ANYWAY
@@ -126162,3 +126162,121 @@ conclusion drawn from the run that follows.
 
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Probe-only change:
 two groups added to `gremlin-spelling-probe.ts`.
+
+## Item 2454 — **SHIPPED: the untyped hop gets a hand walk, `out()` goes 253 ms to 123 (2.06x), and `spelling:gremlin`'s group closes from 2.4x to 1.2x — 0 groups over 2x.** It needed NO `multiTypeEdgeCount` precondition, because the branch it joins already dedupes with an inline array scan. **Two of three mutants SURVIVED the first test file, and each exposed a FIXTURE gap rather than a logic gap.** And `bench:gremlin` had no untyped row at all — every row named `V().out()` is `out('KNOWS')`
+
+Item 2452 found the gap, item 2453 narrowed it to the vertex-landing shape and guarded it with a
+spelling group. This builds it.
+
+### THE CHANGE, which is a fill rather than a walk
+
+`hop-values.ts` gained `const allTypes = labels.length === 0 && kind !== 'both'` and admits it into
+the existing MULTI-TYPE branch — "every bucket" is "these buckets" with a different fill:
+
+```ts
+if (manyTypes === undefined) {
+  for (const bucketOfLabel of byLabel.values()) {
+    buckets.push(bucketOfLabel);
+  }
+} else {
+  for (const t of manyTypes) {
+    buckets.push(byLabel.get(t));
+  }
+}
+```
+
+Patched in **both halves** — the lazy `*[Symbol.iterator]()` and the eager `drain()` — because that
+branch keeps two copies of the loop and a fix to one would diverge silently. The bucket fill appears
+exactly twice; both were counted before patching.
+
+**NO `multiTypeEdgeCount` PRECONDITION IS NEEDED, and that is the whole reason this is small.** The
+branch's earlier-buckets dedupe is an inline array scan, NOT a `Set`, and it is exactly the membership
+test `iterAllDeduped` performs — so a multi-label edge is still emitted once. That matters because
+item 1413 refuted a `multiTypeEdgeCount === 0` guard INSIDE the chain (−0.5% where it helps, −7.5%
+where it cannot) and a NO-SEEN ablation refuted removing the dedupe outright (−0.4%). This removes the
+DELEGATION and keeps the dedupe.
+
+**Order is preserved by construction**: `iterAllDeduped` walks `byLabel.values()` in insertion order
+and skips an edge already yielded; filling from the same `byLabel.values()` and applying the same
+earlier-buckets test gives the identical sequence. The 13 divergences the index records for untyped
+hops — "zero labels means every bucket, so a multi-type edge is visited once per label it carries",
+every one at depth ≥ 2 — are exactly what that test prevents.
+
+`both` at zero labels is NOT admitted: the branch sets `forward = kind === 'out'`, so admitting it
+would walk `adjTo` only. Item 2453 measured the edge-yielding shape as already flat, so there is no
+evidence of a gap to chase there.
+
+### THE WIN, AND IT FALLS WITH OUT-DEGREE
+
+```text
+    spelling:gremlin group, SPELL_N=200000, three isolated runs
+      out().values(k)       253 / 248 / 251  ->  124 / 129 / 122 ms      2.06x
+      vs out(T,U).values(k)   2.37x / 2.43x / 2.49x  ->  1.21x / 1.18x / 1.19x
+      verdict                 flagged  ->  0 group(s) over 2x, answers identical
+```
+
+```text
+    isolated, N=200,000, median of 7, same fixture varying only out-degree
+      degree   out()      out('E')   ratio
+        1       26.3 ms     7.9 ms   3.31x
+        2       56.7       24.2      2.34x
+        5      126.1       64.6      1.95x
+```
+
+**The overhead removed is PER VERTEX, not per edge**, so the win shrinks as degree rises — 3.31x at
+one edge per vertex down to 1.95x at five. Quoting a single figure for this change would be wrong;
+the degree is part of the number.
+
+### THE MUTANTS FOUND MY TEST FILE WANTING, which is the point of running them
+
+```text
+    mutant                     first cut (5 cases)    after (7 cases)
+      drop-dedupe               CAUGHT 2 pass/3 fail   CAUGHT 4/3
+      fill-first-bucket-only    *** SURVIVED 5/0 ***   CAUGHT 6/1
+      admit-both                *** SURVIVED 5/0 ***   CAUGHT 6/1
+```
+
+Both survivors were **fixture** gaps, not assertion gaps:
+
+- every vertex in the first fixtures had its edges in ONE bucket (the multi-label edge is in two, but
+  it is the SAME edge), so stopping the fill after the first bucket lost nothing. The new case gives a
+  vertex one `T` edge and one `U` edge to DIFFERENT vertices.
+- nothing used `both()`, so admitting it was invisible. The new case asserts `both()` returns both
+  directions.
+
+A route change is answer-equivalent, so none of this is visible to the suites: gremlin's 2,863 tests,
+all seven byte-identity fuzzers and `fuzz gremlin` pass with the arm present or absent.
+
+### THE PERTURBATION GATE PASSED, AND THE REASON IT IS VALID IS ITSELF A FINDING
+
+```text
+    bench:gremlin, PROBE_N=50000, arms CHANGED / BASE / CHANGED, each run twice (ts column)
+      V().values(age)        0.7 0.7 | 0.8 0.8 | 0.7 0.7      flat
+      E().values(w)          5.1 6.2 | 6.3 5.6 | 5.6 5.7      flat
+      V().has(age,gt).count  0.3 0.3 | 0.4 0.4 | 0.4 0.3      flat
+```
+
+Items 1413/1415/1440/1442/1462 price an edit to this file at up to 16% on unrelated rows; nothing
+moves beyond its own two-pass spread.
+
+**But every bench row named `V().out()` is actually `out('KNOWS')` — including the one labelled
+`[bare]`.** The names read as untyped and the plans are typed. That is what makes them valid controls
+here (a typed hop is untouched by the zero-label arm), and it nearly cost this item its reading: the
+target row appeared to move only ~6% because it was never the target row.
+
+### SO THE BENCH HAD NO UNTYPED ROW AT ALL, and two are added
+
+```text
+      V().out() [UNTYPED]                ts 25.2   native 60.68
+      V().out().values(age) [UNTYPED]    ts 33.8   native  6.37    ts/nat 5.3x
+```
+
+The second is a **5.3x TS-against-native gap this bench could not previously see** — independent of
+this item's optimization, and the same sentence the file already carries about `hopbothyield`:
+_"`bench:gremlin` had NO ROW for this shape, which is why the TS/native gap on it was never seen."_
+That 5.3x is now a visible, unpriced target rather than a blind spot.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; build 0. `packages/gremlin` 2,863 tests
+0 fail plus the 7 new ones; `packages/core` 490 0 fail; `bun run fuzz` 57 pass 0 fail exit 0;
+`bun run fuzz gremlin` 45 tests 0 fail. `hop-values.ts` restored to the CHANGED arm after the mutant
+battery and verified byte-identical.

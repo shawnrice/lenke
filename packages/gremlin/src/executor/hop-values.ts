@@ -291,6 +291,35 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
   // 60.7% of a multi-type hop count; item 1378 measured it at NOTHING on the Gremlin COUNT path,
   // which is a different function from this one.
   const manyTypes = labels.length > 1 && kind !== 'both' ? labels : undefined;
+
+  /*
+   * THE UNTYPED HOP (item 2454), which had no hand walk at all: `oneType`, `manyTypes` and
+   * `bothOneType` each require `labels.length >= 1`, so a bare `out()` fell to the general
+   * `adjacentEdges` delegation chain. Item 2452 measured that at **7.6x the time and 35.9x the
+   * bytes** of `out('E')` on a single-label graph (64.1 ms / 1117.1 B/row against 8.4 / 31.1), and
+   * `out('E')` already sits AT a hand walk's floor (31.1 against 31.0), so the gap was delegation
+   * rather than layout. Item 2453's `spelling:gremlin` group reads 2.37-2.49x for `out()` against
+   * `out(T,U)` — the same traversal by definition, since naming every label is naming none.
+   *
+   * IT REUSES THE MULTI-TYPE BRANCH RATHER THAN ADDING A WALK, and that is the whole reason this is
+   * small: "every bucket" is just "these buckets" with a different fill. The branch's earlier-buckets
+   * dedupe — an inline array scan, NOT a `Set` — is exactly the membership test `iterAllDeduped`
+   * performs, so a multi-label edge is still emitted once, and NO `multiTypeEdgeCount` precondition
+   * is needed. That matters: item 1413 refuted a `multiTypeEdgeCount === 0` guard INSIDE the chain
+   * (-0.5% where it helps, -7.5% where it cannot) and a NO-SEEN ablation refuted removing the dedupe
+   * outright (-0.4%), so this change deliberately keeps the dedupe and removes the DELEGATION.
+   *
+   * ORDER IS PRESERVED BY CONSTRUCTION. `iterAllDeduped` iterates `byLabel.values()` in insertion
+   * order and skips an edge it has already yielded; filling `buckets` from the same `byLabel.values()`
+   * and applying the same earlier-buckets test yields the identical sequence. The 13 divergences the
+   * index records for untyped hops ("zero labels means every bucket, so a multi-type edge is visited
+   * once per label it carries", every one at depth >= 2) are exactly what that test prevents.
+   *
+   * `both` AT ZERO LABELS IS NOT ADMITTED — it needs both directions interleaved to TinkerPop's
+   * contract, which is `iterBoth`'s job, and item 2453 measured the edge-yielding shape as already
+   * FLAT, so there is no evidence of a gap there to chase.
+   */
+  const allTypes = labels.length === 0 && kind !== 'both';
   /**
    * EXACTLY TWO TYPES, with both bucket lookups HOISTED and no per-vertex array (item 1442).
    *
@@ -516,7 +545,7 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
     };
   }
 
-  if (manyTypes !== undefined) {
+  if (manyTypes !== undefined || allTypes) {
     const forward = kind === 'out';
 
     return {
@@ -534,8 +563,16 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
 
             buckets.length = 0;
 
-            for (const t of manyTypes) {
-              buckets.push(byLabel.get(t));
+            if (manyTypes === undefined) {
+              // THE UNTYPED CASE: every bucket, in `byLabel`'s own insertion order, which is the
+              // order `iterAllDeduped` uses.
+              for (const bucketOfLabel of byLabel.values()) {
+                buckets.push(bucketOfLabel);
+              }
+            } else {
+              for (const t of manyTypes) {
+                buckets.push(byLabel.get(t));
+              }
             }
 
             for (let i = 0; i < buckets.length; i += 1) {
@@ -585,8 +622,16 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
 
             buckets.length = 0;
 
-            for (const t of manyTypes) {
-              buckets.push(byLabel.get(t));
+            if (manyTypes === undefined) {
+              // THE UNTYPED CASE: every bucket, in `byLabel`'s own insertion order, which is the
+              // order `iterAllDeduped` uses.
+              for (const bucketOfLabel of byLabel.values()) {
+                buckets.push(bucketOfLabel);
+              }
+            } else {
+              for (const t of manyTypes) {
+                buckets.push(byLabel.get(t));
+              }
             }
 
             for (let i = 0; i < buckets.length; i += 1) {
