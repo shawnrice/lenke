@@ -132225,3 +132225,77 @@ panic assertions.
 GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0; Rust **1363 + 4 + 13 + 725** (+2),
 0 failed; `bun run fuzz` **57 pass 0 fail** (a storage-format change needs them); `bun run check` 0;
 native 1438 / cli 46, 0 failed.
+
+## Item 2540 — **the abort class generalized: 2539's defect was the ONLY one of its kind, and the structural reason is sharp.** Of 467 textual allocation-sizing sites, exactly one derived its size from external unvalidated input. Both candidates I chased came back negative
+
+### THE SWEEP
+
+2539 found a decoder that could abort the process on one flipped byte, so the question is whether any
+OTHER path sizes an allocation from something it does not control. Swept every `.rs` file under
+`crates/` for `with_capacity` / `reserve` / `vec![_; n]`, **splitting shipped code from test code**
+(rule 2519 — `binary.rs` alone shows 21 `unwrap()` of which only 3 are shipped) and discarding
+self-evidently bounded forms (a literal, `.len()`, `capacity()`).
+
+**467 sites across 34 files.** That is a text-sweep count, not a denominator (2527), and the number is
+useless on its own — what matters is the predicate. The dangerous property is narrow:
+
+> `n` derives from EXTERNAL, UNVALIDATED input.
+
+Classified against that, every site falls into one of four buckets, and only the first is exposed:
+
+```text
+      BUCKET                                                   exposed?   examples
+      a count read off the wire                                YES        binary.rs count() — FIXED 2539
+      data already in memory (node_count, result rows, slots)  no         store.rs, exec/*, algo.rs, arrow.rs
+      a span WITHIN the input (s1 - s0)                        no         csv.rs 626/640 — bounded by input len
+      an ENCODE-side sink sized from our own store             no         pg_text/graphson/stream `new(nodes, edges)`
+```
+
+`arrow.rs` looked like a candidate because IPC is a length-prefixed format, but it is **egress only** —
+`n` is our own result-row count. The `lenke-codec` sinks are the same shape: `new(nodes, edges)` is
+called by the encoder.
+
+### BOTH CANDIDATES I CHASED CAME BACK NEGATIVE, AND MOST OF THIS ITEM WAS SPENT ON THE SECOND
+
+**`ffi.rs:341 lnk_alloc(len)` — considered and DECLINED.** It is not a decoder reading a length out of
+a document; it is an explicit allocator the host calls, documented as "allocate `len` bytes of
+engine-owned scratch for the host to fill". Bounding it would break the contract: the host asked for
+exactly that many bytes. **One owner-facing question does fall out of it** — `Vec::with_capacity`
+ABORTS on failure, so `lnk_alloc(huge)` kills the process where a C allocator would return NULL and
+let the host recover. `try_reserve` would make it return a null pointer instead. That is an ABI
+contract choice, not a bug, so it is surfaced rather than taken.
+
+**`gql.rs:3816 vec![None; k as usize]` — NOT CONFIRMED REACHABLE.** `k` comes from a GQL quantifier,
+which is query TEXT, so this looked like the 2539 class reachable from a string a user types. It is
+not, as far as I could drive it:
+
+```text
+      MATCH (a)-[:R]->{4000000000,4000000000}(b)      parses OK, 0.00s — a different path entirely
+      MATCH ((x)-[:R]->(y)){4000000000,4000000000}    parses OK, 0.00s
+```
+
+There is **no bound on `imin`/`imax` anywhere in `gql.rs`** — so the site is not guarded, it is simply
+not reached by the shapes I could construct. I confirmed that by instrumenting the branch itself
+rather than inferring from the outside: a `println!` on the `if imin == imax && imin >= 1` line
+**never fired** for any of the five queries, including the two documented quantified-group forms taken
+from `gql/tests.rs`. The branch sits behind two `E_NOT_IMPLEMENTED` guards about a quantified
+subpath-group body, so the reachable shape is narrower than those guards suggest.
+
+I am not claiming a defect I could not reach, and I am not claiming it is safe either: the honest
+state is **unreached by the queries I could build, with no upstream bound**. Anyone who finds the
+shape that lands there should bound `k` against something real before the `vec!`.
+
+### WHAT THIS IS WORTH
+
+A clean null with a structural reason (rule xi), and the reason is the reusable part: **an allocation
+sized from data already in memory cannot be made to abort by input, because the data had to fit
+first.** That is why 467 sites reduce to one, and it is a much better filter than "audit every
+`with_capacity`". The one exposed bucket — a count read off the wire — now has exactly one member and
+it is bounded and tested.
+
+Most of this tick went into a hypothesis that did not confirm. Recording that is the point: the
+alternative is a later pass re-deriving the same negative.
+
+GATES. Probe and branch instrumentation fully reverted (`git checkout`, then counted the needles back
+to 0); `cargo build --tests` 0; Rust **1363 + 4 + 13 + 725**, 0 failed. No source change, so no fuzz
+run was owed.
