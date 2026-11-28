@@ -131111,3 +131111,68 @@ never approached holds trivially:
 ```
 
 GATES. `fmt` 0; `lint` 0; `check` 0; gql 5666, 0 fail.
+
+## Item 2523 — **the stale-literal sweep: NO live defect (every fixture still clears its threshold, 5,000-6,000 against 4,096) but only 22% headroom, 13 mention-only sites that CANNOT read their constant, and 2 tests holding a LOCAL COPY of one.** Both copies now import the real value; raising the source 4096→8192 moves the fixture to 8202 instead of stranding it at 4106
+
+### THE SWEEP
+
+Item 2522's lesson generalized: a constant raised later silently un-tests every loop bound written as a
+literal. So: every named numeric constant in shipped src (45, minus char codes, byte offsets and
+format tags), then which tests can actually READ each one.
+
+```text
+      threshold               value   exported   how tests refer to it
+      SEEK_FLOOR_ELEMENTS     4,096   no -> YES  LOCAL COPY `const SEEK_FLOOR_ELEMENTS = 4_096`
+      TAIL_CACHE_CAP          4,096   no -> YES  LOCAL COPY `const TAIL_CACHE_CAP = 4096`
+      SEEK_FLOOR_VERTICES     4,096   no         comment only, x4 files, literal fixtures
+      SWEEP_BLOCK             4,096   no         comment only, x2 files, literal fixtures
+      PARSE_CACHE_CAP           512   via stats  `parseCacheStats().cap` (item 2522 made it tracked)
+      SEED_SHARE                 32   no         comment only
+```
+
+**Every live fixture still clears its threshold** — 5,000 in `orient-prefilter`, `hop-count-seek`,
+`type-union-hop-answers`, `chain-projection`, `product-inline-lift`, `pinned-chain-count`,
+`seeded-sweep-start`; 6,000 in `seek-gate` — all against 4,096. So there is no repeat of 2522 in the
+tree today. **Headroom is 22%**: raising any 4,096 floor to 8,192, an ordinary tuning change, would
+make EIGHT files stop crossing it, and not one of them could notice, because none can read the value.
+
+### THE COLUMN THAT MISLEADS, AND THE TWO REAL HAZARDS
+
+A first pass counted "test references by name" and reported 7 for `SEEK_FLOOR_ELEMENTS`, 5 for
+`TAIL_CACHE_CAP` — which reads like the tests track them. **They cannot**: neither constant was
+exported, so every reference is either prose in a comment or a LOCAL COPY of the number. Two tests
+held exactly that copy, which is worse than a comment because it _looks_ coupled:
+
+```ts
+      range-cap.test.ts:15   const SEEK_FLOOR_ELEMENTS = 4_096;
+      lazy-tail.test.ts:18   const TAIL_CACHE_CAP = 4096;   // then: const tail = TAIL_CACHE_CAP + 10
+```
+
+`lazy-tail`'s `TAIL_CACHE_CAP + 10` is the sharp case. With the copy, raising the real cap to 8,192
+leaves the fixture at 4,106 — below the cap, so the eager-fill behaviour it exists to pin is never
+reached and the test goes QUIET rather than red, exactly as item 2522's bound did.
+
+### THE FIX, AND WHAT THE DEMONSTRATION DOES AND DOES NOT PROVE
+
+Both modules (`gql/executor/clauses.ts`, `gremlin/executor/index-seed.ts`) are internal — neither is
+re-exported from its package index — so adding `export` costs **zero public surface**. The two copies
+became imports. Verified by raising the source:
+
+```text
+      source TAIL_CACHE_CAP 4096 -> 8192
+      the test's imported cap now reads 8192; its fixture would be 8202   <- tracks
+      (with the old local copy it would have been 4106 — stranded below)
+      lazy-tail alone: 12 pass either way
+```
+
+**Honest about the limit of that**: the test passes at 12/12 under both, so "passing" does not
+distinguish them — this removes a SILENT DECOUPLING, and the evidence is that the effective fixture
+size follows the constant, not that any test now fails. A guard going quiet is precisely the failure
+mode that cannot be seen from a green suite.
+
+The remaining 8 comment-only sites are left as they are and listed here deliberately: **if any 4,096
+threshold moves, those are the files to re-check**, and that list is the cheap mitigation rather than
+exporting four more internals for tests that currently do cross.
+
+GATES. `build` 0; `fmt` 0; `lint` 0; `check` 0; core 497 / gremlin 2927 / gql 5666 / sync 179 /
+native 1438 / mcp 14 / cli 46 / serialization 144 / errors 6, all 0 fail.

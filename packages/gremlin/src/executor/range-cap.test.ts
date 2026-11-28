@@ -9,10 +9,11 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
+import { SEEK_FLOOR_ELEMENTS } from './index-seed.js';
 import { rangeCap, seedForStep } from './index-seed.ts';
 
 /** Mirrors the module's own constants; a drift here should fail loudly rather than silently pass. */
-const SEEK_FLOOR_ELEMENTS = 4_096;
+
 const SEEK_MAX_FRACTION = 1 / 8;
 
 describe('rangeCap', () => {

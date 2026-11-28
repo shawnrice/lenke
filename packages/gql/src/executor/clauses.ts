@@ -584,7 +584,7 @@ const pickPattern = (patterns: readonly CPath[], remaining: readonly number[], b
  * big enough to overflow this means a product big enough to be output-bound
  * anyway — so the cap gives up nothing that mattered.
  */
-const TAIL_CACHE_CAP = 4096;
+export const TAIL_CACHE_CAP = 4096;
 
 /** Do none of `rest`'s patterns bind or read anything `pat` binds? */
 const tailIsUncorrelated = (

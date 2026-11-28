@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 
 import { Graph } from '@lenke/core';
 
+import { TAIL_CACHE_CAP } from './executor/clauses.js';
 import { query } from './index.js';
 
 // `hoistedMatch` and the multi-pattern tail both used to COLLECT an uncorrelated tail before
@@ -15,7 +16,6 @@ import { query } from './index.js';
 // Items 144/145 are the trap this file is arranged around: a fault both engines must evaluate
 // reads as agreement and proves nothing. So every fault below sits on a candidate that comes
 // AFTER the one satisfying the limit.
-const TAIL_CACHE_CAP = 4096;
 
 /** u0 casts cleanly and matches; u1 would FAULT on the cast; u2 matches again. */
 const faultGraph = (): Graph => {

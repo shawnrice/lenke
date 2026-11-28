@@ -545,7 +545,7 @@ const idSeed = <E>(
 const SEEK_MAX_FRACTION = 1 / 8;
 
 /** Native's floor, and GQL's: below this, keep the existing behaviour rather than churn plans. */
-const SEEK_FLOOR_ELEMENTS = 4_096;
+export const SEEK_FLOOR_ELEMENTS = 4_096;
 
 /**
  * The cap for a RANGE candidate's count (item 1758) — the point past which the exact number cannot
