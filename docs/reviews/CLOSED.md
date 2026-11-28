@@ -123984,7 +123984,7 @@ refuted here for want of an immune sibling.
 
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
 
-## Item 2429 — **THE SCREEN'S FIRST FULL-DEPTH RUN IN THE REALISTIC LABEL MODE, and its target list is now measured rather than stale: TWO flags, both outside everything closed.** `where` at one hop is 3.2x its own rows cell; a SECOND COLUMN's marginal cost is 4.8 ms at depth 1 and 29.7-33.2 ms at depths 2-4 — 6.2-6.9x, the signature of a route lost at some width. **And the shapes items 2421-2424 fixed are now the FASTEST cells in the grid**
+## Item 2429 — **THE SCREEN'S FIRST FULL-DEPTH RUN IN THE REALISTIC LABEL MODE, and its target list is now measured rather than stale: TWO flags, both outside everything closed.** `where` at one hop is 3.2x its own rows cell; ~~a SECOND COLUMN's marginal cost is 4.8 ms at depth 1 and 29.7-33.2 ms at depths 2-4 — 6.2-6.9x, the signature of a route lost at some width.~~ **THAT FLAG IS AN ARTIFACT, REFUTED AT ITEM 2430: isolated, the depth-1 marginal is 19.6-20.1 ms rather than 4.8, so the ratio collapses to 0.5-1.9x and the marginal does not grow monotonically (20 / 10 / 37 across depths 1-3). The JUMP_FLAG is a DIFFERENCE of in-sweep cells and a difference amplifies in-sweep bias where the two ratio flags cancel it.** **And the shapes items 2421-2424 fixed are now the FASTEST cells in the grid**
 
 Item 2415 gave `rung-gap-screen.mjs` its `MIXED` knob and ran it only at depths 1-2. Items
 2421/2423/2424 then moved four shapes onto the level passes, so the flag list every later item would
@@ -124058,3 +124058,64 @@ advertised work already done) applied to an instrument instead of a document.
 
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
 `onehop-routes-2415.ts` gained `twocol` and `wherefar` rows so the route table covers both flags.
+
+## Item 2430 — **ITEM 2429's `twocol` FLAG IS AN ARTIFACT, and I recorded it as a live target one item ago.** Isolated, the second column's marginal is **19.6-20.1 ms at depth 1** against the screen's **4.8** — so the "6.2-6.9x growth with depth" is a ratio whose DENOMINATOR was 4x too small, and the marginal does not grow monotonically at all (20 / 10 / 37 across depths 1-3). **The screen's JUMP_FLAG is a DIFFERENCE of two in-sweep cells, and a difference amplifies in-sweep error where its sibling flags, being ratios, do not**
+
+Item 2429 read the screen's realistic-mode grid and recorded two flags. `twocol` was the stronger
+of them: a second projected column's marginal cost over `rows` reported as 4.8 ms at depth 1 and
+30.1 / 33.2 / 29.7 at depths 2/3/4 — the signature of a route lost at some width. It does not survive
+its own isolated instrument.
+
+### ISOLATED, ONE SHAPE PER PROCESS, TWO ORDER-ALTERNATED ROUNDS
+
+```text
+    N=400,000, MIXED=1         rows               twocol             MARGINAL
+      depth 1                   62.84 / 66.10      82.45 / 86.16      +19.6 / +20.1
+      depth 2                  237.58 / 239.53     247.04 / 250.95     +9.5 / +11.4
+      depth 3                  338.58             375.86             +37.3
+```
+
+**Depth 1's marginal is ~20 ms, not 4.8** — and with that denominator the screen's 6.2-6.9x becomes
+0.5-1.9x. The marginal also goes 20 then 10 then 37 across the three depths: NOT monotone, so the
+"grows with depth" signature the flag is built on is absent.
+
+### WHY THE SCREEN GOT IT WRONG, and it is not simple noise
+
+Both depth-1 cells read FASTER in the sweep than in isolation — `rows` 38.8 against 62.84-66.10 and
+`twocol` 43.6 against 82.45-86.16, each ~1.6-1.9x. The sweep runs fourteen modifiers over one graph
+in one process, so a cell reached later inherits warm caches and a warmed JIT from every cell before
+it. CLAUDE.md names the hazard in the other direction ("rows interfere; the `ffi` column drifts ~10%
+between arms"), and item 737's worked example is an in-sweep reading that overstated by 1.66x. Here
+it UNDERSTATED both cells, which would have been harmless on its own.
+
+**THE AMPLIFICATION IS THE POINT.** The screen's three flags use their cells differently:
+
+```text
+    PAIR_FLAG    cell / rows cell          a RATIO — a common factor cancels
+    DEPTH_FLAG   cell(d) / cell(d+1)       a RATIO — a common factor cancels
+    JUMP_FLAG    (cell - rows cell)        a DIFFERENCE — a common factor does NOT cancel,
+                 compared across depths     and the residual lands entirely in a small quantity
+```
+
+A marginal is the difference of two numbers that are each ~20-60 ms and ~1.7x off in the same
+direction; the difference is ~5-20 ms, so the same relative error in the cells becomes a several-fold
+error in the marginal. **The two ratio flags are robust to exactly the bias that destroys the
+marginal flag**, which is why `twocol` is the only one of item 2429's two that failed verification.
+
+### WHAT THIS CHANGES
+
+- **Item 2429's `twocol` flag is struck.** A second projected column costs ~10-37 ms on 400,000 rows
+  at every width measured, with no depth signature. Not a target.
+- **`where` at depth 1 (item 2429's other flag) is a PAIR flag** — a ratio — so it is not touched by
+  this and remains open, with item 698's floor rule still to apply.
+- **The screen's JUMP_FLAG now carries the caveat in its own header**: a marginal flag must be
+  verified on the per-shape instrument before it is quoted, because the sweep's own bias does not
+  cancel out of a difference. That is the standing lesson, and it is one the screen's other two flags
+  do not need.
+
+I recorded this as a live target one item ago on a single in-sweep reading, after writing in that
+same entry that a stale flag list "advertises work that no longer exists". The same discipline
+applies to a FRESH flag: a screen nominates, the per-shape instrument decides.
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
+`onehopfam-2415.mjs` gained a `twocol` shape, which is what made the verification one command.

@@ -112,6 +112,18 @@ const FLOOR_MS = Number(process.env.FLOOR_MS ?? 3);
  * DEPTH within one modifier: sorting N rows costs the same whatever walk produced them, so a
  * marginal that explodes with depth means the modifier lost its route at some width.
  */
+/*
+ * WARNING, ADDED AT ITEM 2430: A MARGINAL IS A DIFFERENCE, AND A DIFFERENCE AMPLIFIES THIS SWEEP'S
+ * OWN BIAS. Verify any JUMP flag on the per-shape instrument before quoting it.
+ *
+ * The two flags above are RATIOS — `cell / rows cell` and `cell(d) / cell(d+1)` — so a factor common
+ * to both cells cancels. This one is `cell - rows cell`, where it does not: the residual lands
+ * entirely in a small quantity. Item 2429 read a `twocol` marginal of 4.8 ms at depth 1 growing to
+ * ~30 at depths 2-4 and recorded a 6.2-6.9x target; isolated, one shape per process, the depth-1
+ * marginal is **19.6-20.1 ms** and the sequence across depths 1-3 is 20 / 10 / 37 — not monotone, and
+ * the ratio collapses to 0.5-1.9x. Both depth-1 cells read ~1.7x FASTER in the sweep than alone
+ * (`rows` 38.8 against 62.84-66.10), which is harmless in a ratio and fatal in a difference.
+ */
 const JUMP_FLAG = Number(process.env.JUMP_FLAG ?? 5);
 /**
  * FANOUT IS A KNOB AT ITEM 1836, AND RAISING IT SUPPRESSES THE TWO DEPTH-BASED FLAGS rather than

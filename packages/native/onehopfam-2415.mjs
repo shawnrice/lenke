@@ -142,6 +142,9 @@ const TEXT = {
   distinct: `${PATTERN} RETURN DISTINCT ${FAR}.k AS k`,
   countdist: `${PATTERN} RETURN count(DISTINCT ${FAR}.k) AS c`,
   where: `${PATTERN} WHERE ${FAR}.k > 44 RETURN ${FAR}.k AS k`,
+  // A SECOND projected column (item 2429's flag): its MARGINAL cost over `rows` should be flat in
+  // depth, because copying one extra value per row costs the same whatever walk produced the row.
+  twocol: `${PATTERN} RETURN ${FAR}.k AS k, ${FAR}.s AS s`,
 };
 
 /** The modifier's own work, done in JS over the engine's rows — the honest floor's second half. */
