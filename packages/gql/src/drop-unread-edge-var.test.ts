@@ -64,6 +64,59 @@ describe('an unread edge variable on a quantified segment is dropped', () => {
   });
 });
 
+/*
+ * A SINGLE HOP IS NOW DROPPED TOO, AND THE EARLIER REFUSAL'S RATIONALE WAS SHAPE-SPECIFIC.
+ *
+ * This file used to pin "a SINGLE HOP is left alone — no quantifier, and it costs nothing there",
+ * citing 0.2 ms either way. That measurement was real but it was taken under `count(*)`, which
+ * reads nothing. Once the RETURN reads a FAR-NODE PROPERTY the binding is expensive (items
+ * 2495-2497), and the two spellings must cost the same:
+ *
+ *     MATCH (a:P)-[e:E]->(b) RETURN count(*)    AS c     0.2 ms vs 0.4   nothing to win, as before
+ *     MATCH (a:P)-[e:E]->(b) RETURN count(b.k) AS c    116.8 ms vs 16.7  8.1x once dropped
+ *
+ * The relaxation is NARROW on purpose: a plain hop qualifies only on a SINGLE-SEGMENT pattern.
+ * Letting every unquantified segment through turned 18 gql + 1 native tests red — nearly all of
+ * them ANSWER tests over multi-segment chains and interior variables (item 2497).
+ */
+describe('an unread edge variable on a PLAIN HOP is dropped too (item 2498)', () => {
+  test('it is dropped on a single-segment pattern', () => {
+    expect(edgeVarOf('MATCH (a:P)-[r:E]->(b:P) RETURN count(b.k) AS c')).toBeUndefined();
+    expect(edgeVarOf('MATCH (a:P)-[r:E]->(b:P) RETURN count(*) AS c')).toBeUndefined();
+  });
+
+  test('the answer is unchanged, and matches the unbound spelling', () => {
+    expect(query(g(), 'MATCH (a:P)-[r:E]->(b:P) RETURN count(*) AS c')).toEqual(
+      query(g(), 'MATCH (a:P)-[:E]->(b:P) RETURN count(*) AS c'),
+    );
+  });
+
+  test('a MULTI-SEGMENT chain is left alone — composition is what the refusal protects', () => {
+    // Item 2497: dropping it here changes what later passes and rungs see, and those routes are
+    // wrong once a chain carries interior variables.
+    expect(edgeVarOf('MATCH (a:P)-[r:E]->(b:P)-[:E]->(c:P) RETURN count(c.k) AS c')).toBe('r');
+  });
+});
+
+describe('the two refusals the widening required (item 2498)', () => {
+  test('a name COLLIDING with a node is NOT inert and must be kept', () => {
+    // `(x:P)-[x:T]->(b)` binds one name to both a node and an edge, so it matches NOTHING.
+    // Dropping the variable would remove that constraint and INVENT ROWS — the wrong answer
+    // `grouped-hop.ts` records as item 487's, and `grouped-hop-rel-variable.test.ts` had already
+    // PRE-REGISTERED it against this very widening.
+    expect(edgeVarOf('MATCH (x:P)-[x:E]->(b:P) RETURN count(b.k) AS c')).toBe('x');
+    expect(query(g(), 'MATCH (x:P)-[x:E]->(b:P) RETURN count(b.k) AS c')).toEqual([{ c: 0 }]);
+  });
+
+  test('a NODE-level WHERE that reads it is seen, though `nameIsUnread` cannot see it', () => {
+    // A parenthesized subpath predicate lives on a NODE (`segments[0].node.where`), not on the
+    // clause and not on `seg.subpathWhere`, so the readability check is given it explicitly.
+    // Without this the drop left the predicate referencing an unbound name and the answer went
+    // empty.
+    expect(edgeVarOf('MATCH ((a:P)-[r:E]->(b:P) WHERE r.w > 0) RETURN count(b.k) AS c')).toBe('r');
+  });
+});
+
 describe('the refusals, each of which a mutant removes', () => {
   test('the projection READS it', () => {
     expect(edgeVarOf('MATCH (a:P)-[r:E]->{1,2}(b:P) RETURN count(r) AS c')).toBe('r');
@@ -73,11 +126,6 @@ describe('the refusals, each of which a mutant removes', () => {
     expect(edgeVarOf('MATCH (a:P)-[r:E]->{1,2}(b:P) WHERE size(r) > 1 RETURN count(*) AS c')).toBe(
       'r',
     );
-  });
-
-  test('a SINGLE HOP is left alone — no quantifier, and it costs nothing there', () => {
-    // Measured 0.2 ms either way, so there is nothing to win and the guard keeps the pass narrow.
-    expect(edgeVarOf('MATCH (a:P)-[r:E]->(b:P) RETURN count(*) AS c')).toBe('r');
   });
 
   test('a rel carrying an inline WHERE is left alone', () => {

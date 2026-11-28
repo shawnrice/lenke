@@ -2612,14 +2612,57 @@ export const dropUnreadEdgeVar = (clauses: readonly Clause[]): readonly Clause[]
     return clauses;
   }
 
+  /*
+   * EVERY NODE NAME IN THE PATTERN. A rel variable that COLLIDES with one of these is not inert:
+   * `MATCH (x:P)-[x:T]->(b)` binds one name to both a node and an edge and so matches NOTHING, and
+   * dropping the variable would remove that constraint and INVENT ROWS. `grouped-hop.ts` guards the
+   * same hazard through `relVarInert`, whose comment records it as "the wrong answer item 487
+   * shipped in the product one tick ago" — and `grouped-hop-rel-variable.test.ts` pins it with the
+   * note that it was written "BEFORE the widening rather than after it". That test is a
+   * PRE-REGISTERED guard against this very relaxation, and it caught it (item 2498).
+   */
+  const nodeNames = new Set<string>();
+  /*
+   * NODE-LEVEL `WHERE`S, WHICH `nameIsUnread` CANNOT SEE. A parenthesized subpath predicate is
+   * stored on a NODE, not on the clause and not on `seg.subpathWhere`:
+   *
+   *     MATCH ((x:Person)-[e:KNOWS]->(y:Person) WHERE e.weight > 0.7) RETURN y.name AS n
+   *                                     parses to  segments[0].node.where  — referencing `e`
+   *
+   * `nameIsUnread` is given only the CLAUSE `where` and the tail, so it reported `e` unread and the
+   * drop then left the predicate referencing an unbound name: the row count went to `[]` where
+   * native (correctly) answers `josh`. The quantifier requirement had been shielding this shape by
+   * accident. Each node `where` is run through `nameIsUnread` as well — it is conservative and
+   * refuses on any doubt, which is the behaviour wanted here (item 2498).
+   */
+  const nodeWheres: Expr[] = [];
+
+  const noteNode = (node: { variable?: string; where?: Expr }): void => {
+    if (node.variable !== undefined) {
+      nodeNames.add(node.variable);
+    }
+
+    if (node.where !== undefined) {
+      nodeWheres.push(node.where);
+    }
+  };
+
+  noteNode(pattern.start);
+
+  for (const seg of pattern.segments) {
+    noteNode(seg.node);
+  }
+
   let changed = false;
   const segments = pattern.segments.map((seg) => {
     const { rel, hopFrom, unitRest, innerQ, nested, subpathWhere } = seg;
 
     if (
       rel.variable === undefined ||
+      nodeNames.has(rel.variable) ||
       !nameIsUnread(rel.variable, m.where, tail) ||
-      rel.quantifier === undefined ||
+      nodeWheres.some((w) => !nameIsUnread(rel.variable as string, w, tail)) ||
+      (rel.quantifier === undefined && pattern.segments.length !== 1) ||
       hopFrom !== undefined ||
       nested !== undefined ||
       subpathWhere !== undefined ||
