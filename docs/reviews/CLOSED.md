@@ -65218,7 +65218,7 @@ build settles it either way, and costs a minute.
 **gql 3936/0** (13 new in `drop-unread-path-var.test.ts`), gremlin 1511/0, native 963/0 on a clean
 seed, serialization 144/0, `bun run fuzz` 20/0.
 
-### Item 1568 — SHIPPED, **71.9x** on `MATCH (a:P)-[r:E]->{1,2}(b:P) RETURN count(*)` (819.6 → 11.4 ms, converging with the spelling that never bound `r`): an unread EDGE variable on a quantified segment is item 1567's defect again, and `dropUnreadGroupBinds` misses it by one field. ~~Also measured: the 2-clause restriction costs 83x … the next target~~ — **TAKEN at item 1569, 75.6x**
+### Item 1568 — SHIPPED, **71.9x** (**ITEM 2495: this covered the VAR-LENGTH case ONLY — `dropUnreadEdgeVar` requires a quantifier, so the PLAIN-HOP mirror is still open at 19x**) on `MATCH (a:P)-[r:E]->{1,2}(b:P) RETURN count(*)` (819.6 → 11.4 ms, converging with the spelling that never bound `r`): an unread EDGE variable on a quantified segment is item 1567's defect again, and `dropUnreadGroupBinds` misses it by one field. ~~Also measured: the 2-clause restriction costs 83x … the next target~~ — **TAKEN at item 1569, 75.6x**
 
 Item 1567 dropped an unread PATH variable for 72.6x. The obvious follow-up is whether other unread
 bindings do the same, so it was measured rather than assumed:
@@ -129210,3 +129210,63 @@ is the thing to read.**
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; `packages/gremlin`
 **2907 pass / 0 fail**; `packages/native` **1438 pass / 0 fail**; `bun run fuzz` all seven **57 pass /
 0 fail**. Only the test file is modified — `predicates.ts` is back to its committed state.
+
+## Item 2495 — **A 19x EQUIVALENT-SPELLING GAP, UNCLOSED AND NOT IN `CLOSED.md` AT ALL: naming an edge variable you never read costs 19x on a PLAIN HOP.** `dropUnreadEdgeVar` requires a quantifier, so item 1568's 71.9x fix covered only the var-length case and the plain-hop mirror was left behind. **The two Gremlin flags are already closed (item 2300) — this came from the GQL probe**
+
+### THE REGRESSION PASS FIRST, because that is what the tick set out to do
+
+Neither spelling probe had run this session. `spelling:gremlin` reports **2 flagged groups and 0
+answer disagreements**, and both flags are already closed: item 2300 settled
+`out(T,U)` vs `union(out(T),out(U))` and `hasLabel(Univ).out` vs `out` as **N-INVARIANT CONSTANTS** —
+212 ns and 450 ns arms, flat across a 4x sweep in `SPELL_N`, two of them under the probe's own 500 ns
+floor. So the Gremlin spelling surface is confirmed still closed, with nothing new.
+
+### THE GQL PROBE FLAGS ONE GROUP, AND IT IS REAL
+
+```text
+      MATCH (a:P)-[:E]->(b)   RETURN count(b.k) AS c       9.3 -   9.8 ms
+      MATCH (a:P)-[e:E]->(b)  RETURN count(b.k) AS c     180.0 - 191.5 ms
+      three ISOLATED runs: 19.05x, 19.44x, 19.58x        0 answer disagreements
+```
+
+Isolated per the probe's own instruction (item 1073: one isolated run is still one reading), three
+times, and the spread is under 3%. **The edge variable `e` is bound and never read, and naming it
+costs 19x for a byte-identical answer** — the flagship equivalent-spelling class this repo exists to
+not have.
+
+**`edge variable named but unread` appears ZERO times in `CLOSED.md`**, so this is not a known target
+with a stale number; it is unrecorded.
+
+### THE MECHANISM IS ONE CONDITION, AND ITS HISTORY EXPLAINS IT
+
+`dropUnreadEdgeVar` in `rewrites.ts` strips exactly this binding, and refuses here on one line:
+
+```ts
+    if (
+      rel.variable === undefined ||
+      !nameIsUnread(rel.variable, m.where, tail) ||
+      rel.quantifier === undefined ||        // <- REQUIRES a quantifier
+      …
+```
+
+Item 1568 shipped this pass for `MATCH (a:P)-[r:E]->{1,2}(b:P) RETURN count(*)` at **71.9x** (819.6 →
+11.4 ms), "converging with the spelling that never bound" the variable. That is the VAR-LENGTH case.
+A **plain hop** carries no quantifier, so the pass declines by design and the same gap survives at
+19x — the mirror of a fix that already exists, one condition away.
+
+### NOT SHIPPED THIS TICK, AND ITEM 1662 IS WHY
+
+Relaxing `rel.quantifier === undefined` is a one-line change and the obvious move. Item 1662 is the
+warning against treating it as one: **"THE 9.4x TARGET WAS REAL BUT THE DIAGNOSIS WAS WRONG: the
+one-line refusal was the easy half, and the rewrite's POSITION in the composition"** was the rest —
+and `rewrites.ts`'s own pass list documents that `dropUnreadEdgeVar` runs before `dropUnreadPathVar`
+which runs before `dropUnreadGroupBinds`, each with a stated ordering reason. A plain-hop relaxation
+changes what the LATER passes see, so it needs the full treatment (`bun run fuzz`, both suites, a
+mutation check, and `LENKE_OPT_FUZZ_SEEDS=500000 rewrite_fuzz` since it IS a rewrite) rather than the
+tail of a long tick.
+
+So: priced at 19x on three isolated runs, mechanism identified to one condition, precedent fix named,
+and left for a tick that can do it properly. The measurement was the hard part.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No code change — a measurement and a
+diagnosis.
