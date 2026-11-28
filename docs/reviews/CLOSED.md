@@ -130284,3 +130284,87 @@ endpoints, labels and properties. Whether a lighter representation (ids rather t
 the elements are being removed anyway) would be correct is unexamined, and `no-dense-vertex-ordinal`
 already records that deletes under churn are where this engine's id handling hurts most (6.18x/11.34x,
 items 1369-1372/1397) — so that is the context any such attempt sits in.
+
+## Item 2511 — **A STRONG ROLLBACK HELPER WAS BLIND TO EDGE PROPERTIES, AND TWO OF THREE EDGE-PROPERTY UNDO PATHS WERE UNCOVERED.** Found by survey, proven by mutation — which also refuted my first framing twice before it was right
+
+### THE SURVEY, AIMED BY THE PREVIOUS MEASUREMENT
+
+Item 2510 established that a delete's undo holds ~30 cascaded edge entries per vertex. The obvious
+follow-up is a COVERAGE question rather than a perf one: is rollback of a cascading delete tested?
+**It is** — `transaction.test.ts` has a `rollsBackCleanly` helper that snapshots every vertex and
+edge, sorted, and demands byte equality before and after an aborted transaction. That is a strong
+helper, not a spot check, and the answer to the first question was simply "yes".
+
+**The gap was one line inside it.** The two rows are not symmetric:
+
+```text
+      vertices -> [v.id, [...v.labels].sort(), { ...v.properties }]     properties COMPARED
+      edges    -> [e.id, e.from.id, e.to.id, [...e.labels].sort()]      properties NOT compared
+```
+
+`seed()` deliberately gives `e1` a `{ w: 1 }`, so the data to compare was there and simply was not
+read — the asymmetry is what marks it an oversight rather than a decision. Every `rollsBackCleanly`
+case passed regardless of what a rollback did to an edge's properties.
+
+### THE MUTATION RUN ENUMERATED THREE UNDO PATHS AND CORRECTED ME TWICE
+
+Adding `{ ...e.properties }` to the snapshot and three edge-property cases, then mutating, produced a
+SURVIVOR — which this repo's rule says to treat as an unreached line before a weak assertion, and
+that is exactly what it was, twice over. `Edge.ts` has **three** separate paths:
+
+```text
+      1. setProperty     a TERNARY: `had` ? restore the old value : remove the key again
+      2. setProperties   bulk `undoRestore`/`undoRemove`, replayed as setProperties(undoValues)
+      3. removeProperty  a standalone recordUndo that puts the removed value back
+```
+
+My first mutant hit (2) while every case called (1) — survivor. My second hit a line in (3) while
+aiming at (1) — survivor again. Only after reading `setProperty` and finding the ternary did the
+anchors line up:
+
+```text
+      mutant                        with NEW tests      with OLD tests
+      setProperty  (ternary)        CAUGHT (4 fail)     CAUGHT (1 fail)    already covered
+      setProperties (bulk)          CAUGHT (1 fail)     SURVIVED           REAL GAP
+      removeProperty                CAUGHT (1 fail)     SURVIVED           REAL GAP
+```
+
+**So two of the three paths were genuinely uncovered and one already was.** My initial framing —
+"the whole edge-property undo path was unexercised" — was too broad, and the mutation table is what
+corrected it. The singular path was caught by the old tests all along.
+
+Both halves of the change are load-bearing for the two gaps: the new cases write an edge property,
+and the snapshot fix is what lets a wrong restored value fail. Without the snapshot change a case
+asserting a restored property value cannot fail at all, because the edge row never read it.
+
+### WHAT WAS ADDED
+
+Six cases, and the engine is CORRECT on all of them (29 pass, 0 fail — no latent defect was hiding
+behind the blind spot):
+
+- an edge property OVERWRITTEN rolls back to the old value (path 1, `had` branch)
+- an edge property ADDED rolls back to absent (path 1, else branch)
+- an edge `setProperties` bulk write rolls back both branches (path 2, `undoRestore` + `undoRemove`)
+- an edge property REMOVED rolls back to its old value (path 3)
+- an edge property set to a STORED NULL rolls back — distinct from a removal, because
+  `null-first-class-policy` makes `null` a PRESENT value
+- **a cascading delete of a HIGH-DEGREE vertex rolls back whole** — a hub with 20 leaves and 40
+  edges, each with its own label and properties. Every pre-existing case deletes a vertex of degree
+  ONE, and item 2510 showed the undo replays ~30 entries at degree 16; replay has an ORDER
+  constraint (the vertex must return before the edges pointing at it) that a single-edge case cannot
+  exercise.
+
+### GATES
+
+```text
+      bun run fmt / lint / check     0 / 0 / 0
+      packages/core                   497 pass, 0 fail   (6 new cases, 23 -> 29 in that file)
+      packages/gremlin               2915 pass, 0 fail
+      packages/gql                   5659 pass, 0 fail
+      packages/native                1438 pass, 0 fail
+      bun run fuzz                     57 pass, 0 fail
+      MUTATION                       3 paths, each CAUGHT by the new tests; 2 of 3 SURVIVED the old
+```
+
+`Edge.ts` is byte-identical to its pre-item state — this is a test-only change, verified rather than
+assumed.

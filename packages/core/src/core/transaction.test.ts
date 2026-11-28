@@ -234,7 +234,17 @@ describe('rollback replays every op when an element is re-created mid-transactio
   const snapshot = (g: Graph): string =>
     JSON.stringify([
       [...g.vertices].map((v) => [v.id, [...v.labels].sort(), { ...v.properties }]).sort(),
-      [...g.edges].map((e) => [e.id, e.from.id, e.to.id, [...e.labels].sort()]).sort(),
+      /*
+       * EDGE PROPERTIES ARE PART OF THE SNAPSHOT (item 2511). They were not, and the vertex row
+       * beside this one always read `{ ...v.properties }` — so for every `rollsBackCleanly` case
+       * below, a rollback that restored an edge with WRONG or MISSING properties passed. `seed()`
+       * deliberately gives `e1` a `{ w: 1 }`, so the data to compare was there and simply was not
+       * compared; the asymmetry with the vertex row is what gives it away as an oversight rather
+       * than a decision.
+       */
+      [...g.edges]
+        .map((e) => [e.id, e.from.id, e.to.id, [...e.labels].sort(), { ...e.properties }])
+        .sort(),
     ]);
 
   const rollsBackCleanly = (write: (g: Graph) => void): void => {
@@ -293,6 +303,102 @@ describe('rollback replays every op when an element is re-created mid-transactio
 
       a.setProperty('z', 1);
       g.removeVertex(a);
+    });
+  });
+
+  /*
+   * EDGE PROPERTY WRITES (item 2511) — the cases above cover a VERTEX property and edge LABELS, and
+   * none of them writes an edge PROPERTY. Combined with the snapshot having ignored
+   * `e.properties` until now, the whole edge-property undo path (`undoRestore`/`undoValues` in
+   * `Edge.ts`) was unexercised by this file: nothing wrote one, and nothing would have compared it
+   * if something had.
+   *
+   * `seed()` gives `e1` a `{ w: 1 }`, so OVERWRITING an existing key and ADDING a new one are
+   * different undo branches — `undoRestore` for the first, `undoRemove` for the second — and both
+   * get a case.
+   */
+  test('an edge property OVERWRITTEN rolls back to the old value', () => {
+    rollsBackCleanly((g) => {
+      g.getEdgeById('e1')!.setProperty('w', 999);
+    });
+  });
+
+  test('an edge property ADDED rolls back to absent', () => {
+    rollsBackCleanly((g) => {
+      g.getEdgeById('e1')!.setProperty('fresh', 'x');
+    });
+  });
+
+  /*
+   * `setProperties` IS A SECOND, SEPARATE UNDO PATH, and a mutation check is what revealed it
+   * (item 2511). `Edge.ts` records singular `setProperty` as
+   * `recordUndo(() => …setProperty(key, previousValue))`, while bulk `setProperties` builds
+   * `undoRestore`/`undoValues` and replays `setProperties(undoValues)`. Disabling the BULK branch
+   * left every case above green, because they all call the singular form — the survivor was not a
+   * weak assertion, it was an unreached line.
+   *
+   * Both branches of the bulk path get a case: `undoRestore` for keys that already exist (`w`) and
+   * `undoRemove` for keys that do not (`fresh2`), and one call exercises them together.
+   */
+  test('an edge setProperties (bulk) rolls back both branches', () => {
+    rollsBackCleanly((g) => {
+      g.getEdgeById('e1')!.setProperties({ w: -1, fresh2: 'y' });
+    });
+  });
+
+  /*
+   * `removeProperty` IS A THIRD UNDO PATH, found the same way (item 2511). `Edge.ts` has three,
+   * and a mutation run that kept producing survivors is what enumerated them:
+   *
+   *   1. `setProperty`  — a TERNARY: `had` ? restore the old value : remove the key again
+   *   2. `setProperties`— bulk `undoRestore`/`undoRemove`, replayed as `setProperties(undoValues)`
+   *   3. `removeProperty` — a standalone `recordUndo` that puts the removed value back
+   *
+   * Nothing in this file removed an edge property, so (3) was unreached. Removal is the spelling
+   * `null-first-class-policy` requires for deleting a property (a stored `null` is a PRESENT value,
+   * so `setProperty(k, null)` is a different operation and gets its own row).
+   */
+  test('an edge property REMOVED rolls back to its old value', () => {
+    rollsBackCleanly((g) => {
+      g.getEdgeById('e1')!.removeProperty('w');
+    });
+  });
+
+  test('an edge property set to a STORED NULL rolls back', () => {
+    // Not the same as a removal: `null` is a present value here.
+    rollsBackCleanly((g) => {
+      g.getEdgeById('e1')!.setProperty('w', null);
+    });
+  });
+
+  test('an edge property set then the edge cascade-deleted', () => {
+    rollsBackCleanly((g) => {
+      g.getEdgeById('e1')!.setProperty('w', 42);
+      g.removeVertex(g.getVertexById('b')!);
+    });
+  });
+
+  /*
+   * A HIGH-DEGREE CASCADE (item 2511). Every case above deletes a vertex of degree 1, and item 2510
+   * measured that a delete's undo is O(DEGREE) — ~30 entries per delete at degree 16, one per
+   * cascaded edge. Replaying thirty entries has an ORDER constraint a single-edge case cannot
+   * exercise: the vertex has to come back before the edges that point at it.
+   *
+   * Properties and distinct labels per edge, so a replay that restored the right COUNT of edges
+   * with the wrong attributes still fails.
+   */
+  test('a cascading delete of a HIGH-DEGREE vertex rolls back whole', () => {
+    rollsBackCleanly((g) => {
+      const hub = g.addVertex({ id: 'hub', labels: ['H'], properties: { n: 0 } });
+
+      for (let i = 0; i < 20; i += 1) {
+        const leaf = g.addVertex({ id: `leaf${i}`, labels: ['L'], properties: { i } });
+
+        g.addEdge({ id: `out${i}`, from: hub, to: leaf, labels: [`O${i}`], properties: { w: i } });
+        g.addEdge({ id: `in${i}`, from: leaf, to: hub, labels: [`I${i}`], properties: { w: -i } });
+      }
+
+      g.removeVertex(hub); // cascades to all 40 edges
     });
   });
 });
