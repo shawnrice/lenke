@@ -126350,7 +126350,7 @@ DECLINE.
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `git diff` clean for
 `packages/gremlin`, `packages/gql` and `packages/core`.
 
-## Item 2456 — **SHIPPED, and item 2455's unexplained residual has a name: `buckets.length = 0` followed by `push` costs 152.1 B PER VERTEX, against 0.0 for index-and-overwrite.** Truncating to zero lets V8 shrink the backing store, so every `push` re-grows it. **It was never untyped-specific — the MULTI-LABEL arm shares that fill and paid the same.** ~160 B/vertex removed, confirmed in isolation, in the engine at two degrees with a flat control, and in time at degree 1
+## Item 2456 — **SHIPPED, and item 2455's unexplained residual has a name: `buckets.length = 0` followed by `push` costs 152.1 B PER VERTEX, against 0.0 for index-and-overwrite.** Truncating to zero lets V8 shrink the backing store, so every `push` re-grows it. **It was never untyped-specific — the MULTI-LABEL arm shares that fill and paid the same.** ~160 B/vertex removed, confirmed in isolation, in the engine at two degrees with a flat control, and in time at degree 1 ~~[and the ~85 B/vertex it LEFT is CLOSED at item 2457: ~3.4% time ceiling per item 2097, and zero headroom cost — peak RETAINED is 0.1 B/row, the walk streams.]~~
 
 Item 2455 priced the residual at ~230 B per VERTEX (flat across a 10x degree sweep while the per-ROW
 figure fell as 1/degree) and could not explain it. The degree sweep was the discriminator, and the
@@ -126434,3 +126434,84 @@ fail. `hop-values.ts` restored to the CHANGED arm after the A/B and verified byt
 test: this is a pure refactor of a fill — same buckets, same order, same values — and item 2454's
 `untyped-hop-walk.test.ts` plus the multi-label suite already pin the observable behaviour, with the
 mutants from that item still covering the dedupe and the bucket enumeration.
+
+## Item 2457 — **THE ~85 B/VERTEX RESIDUAL IS CLOSED ON BOTH GROUNDS, AND NEITHER IS A MEASUREMENT I MADE: the TIME prize was already refuted at item 2097 (the `yield*` chain is 15x improvable in isolation and 3.4% of the query) and re-derived-then-closed at 2258, and the BYTES are pure churn — `alloc:retained`, a new instrument, puts PEAK RETAINED at 0.1 B/row for both hop arms against 10.4 for an arm that holds its rows.** Sampling `heapUsed` WITHOUT a collection measures OCCUPANCY, not retention, and on that reading a walk holding NOTHING outweighed one holding EVERYTHING
+
+Item 2456 removed ~160 B/vertex and left untyped at 116.0 B/row against the typed floor of 31.1.
+This asks what the remaining ~85 B is, and the answer is that it does not matter — twice over.
+
+### THE INDEX STOPPED A THIRD RE-DERIVATION, two tool calls in
+
+The per-vertex suspects in that branch are its generators, so generator fusion was the nomination.
+`CLOSED.md` holds **39 mentions of "delegation" and 23 of `yield*`**:
+
+- **item 2097** — REFUTED: the 3-deep `yield*` chain is **15x improvable IN ISOLATION and only 3.4%
+  of the query**.
+- **item 2258** — _"MY GENERATOR-FUSION NOMINATION IS CLOSED BY ITEM 2097 BEFORE A LINE WAS WRITTEN,
+  AND I MADE THE EXACT ERROR THAT ITEM NAMES."_
+
+So this lever has been nominated, refuted, re-derived and closed again. **This item was the third
+approach and the index caught it before any code was profiled** — which is the only reason this
+entry is three paragraphs instead of a tick. Item 2451 is the counter-example: the same check
+skipped, the same lever profiled, with "check CLOSED.md before pricing" already in my instructions.
+
+**The ceiling that follows is measured, not argued**: whatever the remaining bytes are, routing
+them out through generator fusion buys at most ~3.4% of the query.
+
+### AND THE BYTES ARE NOT A HEADROOM COST — A NEW INSTRUMENT, `alloc:retained`
+
+Churn and headroom are different quantities, and no existing probe separated them. `alloc:*`
+measures TOTAL BYTES ALLOCATED, a throughput and GC-pressure figure. What bounds how large a
+traversal can get before the process dies is **PEAK RETAINED**: the live set at the walk's
+high-water mark. Churn is collected as it goes and costs headroom nothing.
+
+```text
+    N=200,000 degree 1, sampled every 16,384 rows, median of 3
+      arm                              PEAK RETAINED    B/row
+      untyped out()                       0.02 MiB        0.1
+      typed   out('E')                    0.03 MiB        0.1
+      CALIBRATION (holds every row)       1.99 MiB       10.4
+                                                        70.6x
+```
+
+**Both hop arms retain essentially nothing: the walk STREAMS.** The untyped arm's whole 116 B/row
+is transient. So a larger graph does not raise a walk's high-water mark — what bounds you is the
+graph itself plus whatever you choose to materialize, and the calibration arm IS that choice
+(`toArray` over a lazy `run`).
+
+### THE FIRST VERSION OF THIS INSTRUMENT MEASURED THE WRONG QUANTITY, AND SAID SO LOUDLY
+
+```text
+      heapUsed sampled WITHOUT a collection  (OCCUPANCY, not retention)
+        untyped out()                      31.82 MiB
+        typed   out('E')                    7.55 MiB
+        CALIBRATION (holds every row)      13.43 MiB   <- LESS than a walk holding nothing
+```
+
+`heapUsed` counts garbage still waiting for a scavenge, so a high-churn walk outweighed one
+retaining all 200,000 rows. **Forcing a full collection before each reading is the whole difference
+between the two tables**, and the calibration arm is what exposed it — without an arm whose answer
+is known, 31.82 MiB reads as a finding.
+
+An even earlier cut was worse and is recorded because the failure is invisible: I passed
+`toArray(plan, g)` as the argument to the sampler, so the walk **completed before the baseline was
+taken** and I was sampling iteration of a finished array. It reported 7.5 MiB against 0.0 — a clean,
+entirely artefactual gap.
+
+**So the calibration arm is a GATE in the committed probe, not a note**: it holds every row, must
+exceed the streaming arms by 10x, and the probe exits 1 otherwise. Verified to fire — with
+`RET_STEP` large enough that no sample is ever taken, every arm reads 0 and it prints
+`INSTRUMENT BLIND` and exits 1.
+
+### WHAT THIS LEAVES
+
+- **The untyped/multi-label byte residual is CLOSED**: ~3.4% time ceiling (item 2097), and zero
+  headroom cost (above). Do not re-nominate generator fusion; this is the third time.
+- `alloc:retained` is wired as a script and generalizes beyond this question — it is the probe for
+  "does shape X stream, or does it buffer?", which nothing else here answered.
+- The typed arm's floor is unchanged at 31.1 B/row, still item 2450's hand floor.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine
+change — probe and one `package.json` script only. **`package.json` was briefly left as invalid
+JSON** by an insertion after the last entry of `scripts`, which has no trailing comma; the gates
+caught it immediately (`lint 1`, `check 1`) and it was repaired before anything else ran.

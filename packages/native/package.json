@@ -70,7 +70,8 @@
     "alloc:write": "node --expose-gc writemem-2432.mjs",
     "alloc:askpolicy": "bun askpolicy-2438.mjs",
     "alloc:labeltest": "bun labeltest-2441.mjs",
-    "alloc:gremlin": "node --expose-gc gremlinmem-2449.mjs"
+    "alloc:gremlin": "node --expose-gc gremlinmem-2449.mjs",
+    "alloc:retained": "node --expose-gc retained-2457.mjs"
   },
   "dependencies": {
     "@lenke/core": "workspace:*",
