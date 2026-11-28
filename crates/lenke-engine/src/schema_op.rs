@@ -102,7 +102,8 @@ pub fn apply(store: &mut Store, json: &str) -> Result<(), SchemaError> {
     }
 }
 
-/// The edge/vertex target selector — reads `on` (default `vertex`).
+/// The edge/vertex target selector. `on` is REQUIRED: a missing one is
+/// `missing field `on``, not a silent default to `vertex` (measured at item 2546).
 fn is_edge(fields: &[(String, Json)]) -> Result<bool, SchemaError> {
     match str_field(fields, "on")?.as_str() {
         "edge" => Ok(true),
@@ -399,7 +400,7 @@ fn keys_of(fields: &[(String, Json)]) -> Result<Vec<String>, SchemaError> {
         })?])
     } else {
         Err(SchemaError::BadRequest(
-            "index op needs `keys` (array) or `key` (string)".into(),
+            "needs `keys` (array) or `key` (string)".into(),
         ))
     }
 }
@@ -675,6 +676,156 @@ mod tests {
                 apply(&mut s, &json).unwrap_err(),
                 SchemaError::BadRequest(_)
             ));
+        }
+    }
+
+    #[test]
+    // Item 2546: the sixteen tests above reach many of this module's rejection paths, but EVERY
+    // negative assertion is `matches!(err, SchemaError::BadRequest(_))` — the VARIANT only. All
+    // fourteen distinct rejection messages collapse into that one pattern, so a change that routes
+    // a malformed input to the WRONG rejection passes every test while handing the host a
+    // misleading reason. This is rule (xv) inverted: those tests pin THAT it failed, never WHY.
+    //
+    // So this row asserts the DISCRIMINATOR — the part of each message that identifies the actual
+    // problem — and the loop below asserts the fifteen discriminators are DISTINCT, because a
+    // table whose rows all accepted the same substring would be the vacuous version of this test
+    // (rule xxxvi).
+    //
+    // Every expectation here was MEASURED by printing `apply`'s real return for each shape, not
+    // inferred, and three of them contradicted documentation: `on` is REQUIRED (the docstring said
+    // it defaulted to `vertex`), `cardinality` names its edge type `edgeType` and requires `min`.
+    fn every_malformed_schema_op_is_rejected_for_the_right_reason() {
+        // (tag, json, the substring that identifies the real problem)
+        let rows: [(&str, &str, &str); 15] = [
+            (
+                "a JSON array is not an op",
+                r#"["a"]"#,
+                "must be a JSON object",
+            ),
+            (
+                "`op` itself is missing",
+                r#"{"on":"vertex"}"#,
+                "missing field `op`",
+            ),
+            (
+                "an op name nobody knows",
+                r#"{"op":"nope"}"#,
+                "unknown schema op `nope`",
+            ),
+            (
+                "an index on/kind pair that does not exist",
+                r#"{"op":"createIndex","on":"edge","kind":"hash","keys":["w"]}"#,
+                "unsupported index: on=edge kind=hash",
+            ),
+            (
+                "an interval index given one key",
+                r#"{"op":"createIndex","on":"edge","kind":"interval","keys":["lo"]}"#,
+                "exactly two keys",
+            ),
+            (
+                "a single-key index given two",
+                r#"{"op":"createIndex","on":"vertex","kind":"range","keys":["a","b"]}"#,
+                "exactly one key",
+            ),
+            (
+                "an index op with neither `keys` nor `key`",
+                r#"{"op":"createIndex","on":"vertex","kind":"hash"}"#,
+                "needs `keys` (array) or `key` (string)",
+            ),
+            (
+                "`keys` that is not an array",
+                r#"{"op":"createIndex","on":"vertex","kind":"hash","keys":5}"#,
+                "field `keys`",
+            ),
+            (
+                "a cardinality direction that is neither",
+                r#"{"op":"cardinality","label":"P","edgeType":"E","direction":"sideways","min":0,"max":5}"#,
+                "`direction` must be",
+            ),
+            (
+                "a cardinality max that is a string",
+                r#"{"op":"cardinality","label":"P","edgeType":"E","direction":"out","min":0,"max":"five"}"#,
+                "`max` must be a number or null",
+            ),
+            (
+                "cardinality without `min`, which is REQUIRED",
+                r#"{"op":"cardinality","label":"P","edgeType":"E","direction":"out","max":5}"#,
+                "missing field `min`",
+            ),
+            (
+                "an `on` target nobody knows, via a CONSTRAINT op",
+                r#"{"op":"unique","on":"bogus","label":"P","key":"email"}"#,
+                "unknown `on` target `bogus`",
+            ),
+            (
+                "`on` omitted — REQUIRED, not defaulted to vertex",
+                r#"{"op":"unique","label":"P","key":"email"}"#,
+                "missing field `on`",
+            ),
+            (
+                "an op that only the exec layer can apply",
+                r#"{"op":"invariant","name":"n","source":"s"}"#,
+                "must be applied through the exec layer",
+            ),
+            (
+                "a label that is a number, not a string",
+                r#"{"op":"unique","on":"vertex","label":7,"key":"email"}"#,
+                "field `label`",
+            ),
+        ];
+
+        // A table whose discriminators were not distinct would pass while testing almost nothing.
+        for (i, (tag, _, want)) in rows.iter().enumerate() {
+            for (other_tag, _, other) in rows.iter().skip(i + 1) {
+                assert!(
+                    !other.contains(want) && !want.contains(other),
+                    "the discriminators for {tag:?} and {other_tag:?} overlap ({want:?} vs \
+                     {other:?}); one of these rows cannot distinguish its rejection",
+                );
+            }
+        }
+
+        for (tag, json, want) in rows {
+            let mut store = Store::default();
+            let err = apply(&mut store, json)
+                .expect_err(&format!("{tag}: this shape must be REJECTED, not accepted"));
+
+            let SchemaError::BadRequest(message) = &err else {
+                panic!("{tag}: expected a BadRequest, got {err:?}");
+            };
+
+            assert!(
+                message.contains(want),
+                "{tag}: the rejection does not identify the problem.\n  wanted to find: \
+                 {want:?}\n  got: {message:?}",
+            );
+        }
+    }
+
+    /// The control the table needs: a VALID op of each kind is accepted, so the rows above are
+    /// rejections of malformed input rather than a dispatcher that refuses everything.
+    #[test]
+    fn the_valid_spelling_of_each_rejected_shape_is_accepted() {
+        for (tag, json) in [
+            (
+                "a one-key vertex hash index",
+                r#"{"op":"createIndex","on":"vertex","kind":"hash","keys":["age"]}"#,
+            ),
+            (
+                "a two-key edge interval index",
+                r#"{"op":"createIndex","on":"edge","kind":"interval","keys":["lo","hi"]}"#,
+            ),
+            (
+                "a cardinality constraint with every required field",
+                r#"{"op":"cardinality","label":"P","edgeType":"E","direction":"out","min":0,"max":5}"#,
+            ),
+            (
+                "a vertex unique constraint",
+                r#"{"op":"unique","on":"vertex","label":"P","key":"email"}"#,
+            ),
+        ] {
+            let mut store = Store::default();
+            apply(&mut store, json).unwrap_or_else(|e| panic!("{tag} must be accepted: {e:?}"));
         }
     }
 

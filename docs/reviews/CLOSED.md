@@ -132674,3 +132674,80 @@ costume, and the second time this session a block comment I wrote failed to term
 
 GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0 in BOTH configurations; Rust
 **default 1364 + 4 + 13 + 725** and **capi 1380 + 4 + 13** (+2), 0 failed; `bun run fmt`/`check` 0.
+
+## Item 2546 — **`schema_op.rs`'s sixteen tests assert the error VARIANT and never the REASON.** Fourteen rejection messages collapse into one `matches!` pattern; plus three documentation claims refuted by measurement, two of them written by item 2545
+
+### THE GAP
+
+`schema_op.rs` is the schema-DDL surface behind `lnk_schema_apply`: 425 shipped lines, 16 in-file
+tests, no sibling `tests.rs`. All six op names appear in the test module, so a name sweep calls it
+covered. It is not, and the reason is structural:
+
+```text
+      unsupported_index_pairs_are_rejected        assert!(matches!(err, SchemaError::BadRequest(_)))
+      malformed_input_is_bad_request              assert!(matches!(…, SchemaError::BadRequest(_)))   x4
+      create_interval_index_needs_two_keys        assert!(matches!(err, SchemaError::BadRequest(_)))
+      unknown_type_name_is_invalid                assert!(matches!(err, SchemaError::Invalid(_)))
+```
+
+**Every negative assertion in the module pins the VARIANT only.** The shipped code has **fourteen
+distinct rejection messages** and all of them satisfy `BadRequest(_)`, so a change that routes a
+malformed input to the WRONG rejection passes every test while handing the host a misleading reason.
+This is rule (xv) inverted: those tests pin THAT it failed, never WHY.
+
+**Measured, not argued.** A mutant making the single-key check emit the interval message — right
+variant, right rejection, wrong reason, the exact shape of a copy-paste:
+
+```text
+      M1  vs unsupported_index_pairs_are_rejected         1 passed; 0 failed   SURVIVES
+      M1  vs create_interval_index_needs_two_keys         1 passed; 0 failed   SURVIVES
+      M1  vs malformed_input_is_bad_request               1 passed; 0 failed   SURVIVES
+      M1  vs the new discriminating test                  0 passed; 1 FAILED
+```
+
+### THREE DOCUMENTED CLAIMS REFUTED, TWO OF THEM MINE
+
+I printed `apply`'s real return for twenty-two shapes before writing a single assertion (rule:
+instrument, do not infer). Three expectations were wrong, and the wrong ones were all documentation:
+
+- **`on` does NOT default to `vertex` — it is REQUIRED.** `missing field `on`` for `unique`,
+  `required` AND `createIndex`. `is_edge`'s own docstring said "reads `on` (default `vertex`)".
+- **`cardinality` names its edge type `edgeType`, not `etype`**, and **requires `min`**.
+- Both errors had propagated into **`docs/abi.md`, which item 2545 wrote one tick earlier** — its
+  cardinality example used `etype` and omitted `min`, and its prose repeated the vertex default. A
+  host copying that example got two rejections.
+
+This is exactly the circularity item 2545 flagged when it derived the doc from the code, caught by
+refusing to assert against my own prose. The docstring and the doc are both corrected.
+
+### ALSO FIXED: A SHARED MESSAGE THAT NAMED THE WRONG FEATURE
+
+`{"op":"unique","on":"vertex","label":"P"}` was rejected with **"index op needs `keys` (array) or
+`key` (string)"** — a constraint user told about an index op, because the key reader is shared.
+Reworded to drop the false attribution; asserted nowhere else in the repo (checked before changing).
+
+### THE TEST
+
+Fifteen rows of (shape, discriminator), each asserting the message identifies the ACTUAL problem,
+plus a nested loop asserting the fifteen discriminators are pairwise DISTINCT — a table whose rows
+all accepted the same substring would be the vacuous version of this test (rule xxxvi). And a
+separate control that the VALID spelling of four rejected shapes is accepted, so the rows are
+rejections of malformed input rather than a dispatcher that refuses everything.
+
+```text
+      M1  a rejection reports another rejection's message    1 FAIL (old tests all survive)
+      M2  `on` silently defaults to vertex                   1 FAIL (17/18 pass — only this test)
+      M3  `min` becomes optional, defaulting to 0            1 FAIL
+```
+
+M2 is the one worth noting: it makes the OLD docstring's claim true, so a reader who trusted the
+docstring would have called that mutant the fix.
+
+### ONE SELF-INFLICTED GATE FAILURE
+
+The test name carried `THE_RIGHT_REASON` in caps for emphasis; `-D warnings` rejects it as
+`non_snake_case`, and that failed clippy in BOTH configurations and `bun run check`. Caught because
+the gates are run as separate commands reading each exit code — a piped clippy would have passed.
+
+GATES. `cargo fmt` 0; clippy 0 in BOTH configurations; Rust **default 1366 + 4 + 13 + 725** (+2) and
+**capi 1382 + 4 + 13**, 0 failed; `bun run fmt`/`check` 0.

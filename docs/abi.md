@@ -107,8 +107,11 @@ called it wrong_. There is no binary-snapshot command; the binary format is reac
 
 ## `lnk_schema_apply` — the schema-DDL vocabulary
 
-One tagged JSON object per call selects the operation. `on` selects the target and defaults to
-`vertex`.
+One tagged JSON object per call selects the operation. `on` selects the target and is **required** —
+a missing `on` is rejected with `missing field `on``, not defaulted to `vertex`. (Item 2545 wrote
+"defaults to `vertex`" here, copied from this module's own docstring; item 2546 measured both wrong
+and corrected the docstring too.) `cardinality` names its edge type `edgeType`, not `etype`, and
+requires `min`.
 
 ```jsonc
 { "op": "createIndex", "on": "vertex", "kind": "hash",     "keys": ["age"] }
@@ -118,7 +121,7 @@ One tagged JSON object per call selects the operation. `on` selects the target a
 { "op": "dropIndex",   "on": "vertex", "kind": "hash",     "keys": ["age"] }
 { "op": "unique",      "on": "vertex", "label": "Person",  "key": "email" }
 { "op": "required",    "on": "vertex", "label": "Person",  "key": "name" }
-{ "op": "cardinality", "label": "Person", "etype": "KNOWS", "direction": "out", "max": 5 }
+{ "op": "cardinality", "label": "Person", "edgeType": "KNOWS", "direction": "out", "min": 0, "max": 5 }
 { "op": "invariant",   "name": "…", "source": "…" }
 ```
 
