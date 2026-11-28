@@ -128591,3 +128591,72 @@ four vertices missing `age`/`lang` — which is item 2483's lesson that an arm w
 coincides with the control's is not evidence.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change.
+
+## Item 2486 — **THE `select` FAMILY IS COMPLETE AND CONFORMANT TOO: 13 TinkerPop forms, 13 expressed, 13 agree as MULTISETS — including the `Pop` forms, which only MEAN anything when a label is bound twice.** Second clean null from the 2484 oracle. **And it cost THREE canonicalizer rewrites, every failure the probe's**
+
+### THE FAMILY, AND WHY `Pop` NEEDED A SPECIFIC FIXTURE
+
+`select` is where `Pop` lives, and `Pop.first`/`Pop.last`/`Pop.all` are indistinguishable from a bare
+`select('a')` unless the label is bound MORE THAN ONCE. Every Pop row binds `a` twice
+(`as('a').out().as('a')`) — a fixture binding it once would have made all four agree and proved
+nothing, which is item 2483's lesson in its exact form.
+
+```text
+      form                          lenke (canonical)                     verdict
+      select('a')                   marko|marko|marko                      agree
+      select('a','b')               a=marko,b=josh | …lop | …vadas          agree
+      select(Pop.first,'a')         marko|marko|marko                       agree
+      select(Pop.last,'a')          josh|lop|vadas                          agree
+      select(Pop.all,'a')           josh,marko | lop,marko | marko,vadas    agree
+      select(Pop.all,'a').unfold()  josh|lop|marko|marko|marko|vadas        agree
+      select(Column.keys)           PERSON,SOFTWARE                         agree
+      select(Column.values)         josh,marko,peter,vadas,lop,ripple       agree
+      select('a','b','c')           5 rows                                  agree
+      select('a').by(traversal)     29|29|29                                agree
+      select(Pop.first,'a','b')     a=marko,b=josh | …lop | …vadas          agree
+      select(UNBOUND label)         (empty)                                 agree
+      where('a', neq('b'))          2 rows                                  agree
+```
+
+**`select('zz')` on an unbound label yields `[]` in BOTH** — empty, not an error. Worth pinning: a
+reimplementation could easily throw there.
+
+`select-pop.test.ts` already covered `Pop.first` and `Pop.all` but named `Pop.last` ONCE and `Column`
+not at all, which is why those two were the rows worth having.
+
+**`P` is not a namespace here.** TinkerPop spells predicates `P.neq('b')`; lenke exports them as
+top-level functions, so the form is `where('a', neq('b'))`. Same expressiveness, different surface —
+not a gap, and recorded because the probe's first draft imported a `P` that does not exist.
+
+### THE COMPARISON HAS TO BE A MULTISET, AND THAT IS NOT A CONCESSION
+
+Several rows hold the same values in a different ORDER — `Pop.last` is `[vadas,josh,lop]` here against
+`[lop,vadas,josh]` there, `Column.keys` is `[PERSON,SOFTWARE]` against `[SOFTWARE,PERSON]`. Walk order
+is explicitly not contracted (decided 2026-11-22), so an order-sensitive comparison would report a
+permanent false failure and the probe would be worthless as a regression guard. It canonicalizes by
+sorting at every level.
+
+**One row had to be changed rather than compared: `select('a','b','c')` originally carried
+`limit(2)`.** A WINDOW over an unordered 5-row set picks a different two in each engine, so that row
+could never agree by construction — a defect in my test design, not a divergence. Compared in full
+instead, and the console was re-run to get the unlimited answer.
+
+### THREE CANONICALIZER REWRITES, AND EVERY FAILURE WAS THE PROBE
+
+This is the fifth, sixth and seventh instrument-at-fault reading in this session, all in one tick:
+
+```text
+      attempt                          symptom                            cause
+      1. JSON.stringify                Maps render as {}                   item 2485's trap
+      2. Map / Array / else branch     [object Object] on THREE rows       select(a,b) returns a
+                                                                           PLAIN OBJECT, not a Map
+      3. inner arrays sorted one side  Pop.all and Column.values "differ"  expectations written
+                                                                           unsorted
+```
+
+Each one looked exactly like a dropped modulator or a wrong answer. **The fix each time was in the
+probe**, and the tell each time was the same: a reading that is wrong for a case I already know.
+Final form recurses and sorts at every level, with the expectations written in that same form.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
+one probe added, `select-forms-probe-2486.ts`, documented in `PROBES.md`.

@@ -3137,3 +3137,21 @@ The fixture is the modern graph because each form's presence CHANGES the answer 
 `java` twice, four vertices missing `age`/`lang`). It also pins two TinkerPop semantics in passing,
 both agreeing: `group().by(trav).by(trav)` reduces to a SINGLE value where `by(key)` collects a LIST,
 and `dedup().by(key)` DROPS vertices missing the key rather than grouping them under null.
+
+### `select-forms-probe-2486.ts` — the `select`/`Pop`/`Column` family against TinkerPop
+
+`cd packages/gremlin && bun select-forms-probe-2486.ts`. 13 forms with the TinkerPop 3.7.3 value
+beside each: `select(a)`, `select(a,b)`, `select(a,b,c)`, `select(Pop.first/last/all, a)`,
+`select(Pop.first, a, b)`, `select(Column.keys/values)`, `select(a).by(traversal)`, an UNBOUND label,
+and `where(a, neq(b))`. Currently **13 expressed, 0 inexpressible, 13 agree.**
+
+⚠️ It compares as a **MULTISET**, sorting at every level, and must: several rows hold the same values
+in a different order (`Pop.last`, `Column.keys`), and walk order is not contracted — an
+order-sensitive comparison would be a permanent false failure. For the same reason no row may carry a
+`limit`: a window over an unordered set picks a different subset per engine.
+
+⚠️ Every Pop row binds `a` TWICE (`as('a').out().as('a')`), because `Pop.first`/`last`/`all` are
+indistinguishable from a bare `select('a')` when a label is bound once.
+
+Also pins: `select('zz')` on an UNBOUND label is `[]` in both engines, not an error. And `P` is not a
+namespace here — predicates are top-level exports, so TinkerPop's `P.neq('b')` is `neq('b')`.
