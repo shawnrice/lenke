@@ -130483,3 +130483,77 @@ missing", and the answer belongs in a comment at the point of change rather than
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `packages/core` 497 pass, 0 fail.
 Comment only — no behaviour change, and `Graph.ts` restored from the mutant before it.
+
+## Item 2514 — **THE VALIDATOR FAMILY IS COVERED, BUT ONLY AT `core` — the GQL write surface's WIRING to it was untested, and 7 rows now pin it.** My first mutation table was meaningless for three of its four columns (the dist trap), and two of my own new rows turned out to test a different validator
+
+### THE WHOLE-FAMILY MUTANT, APPLIED TO `validate.ts`
+
+Three validators — `validateLabel` (non-empty, no `::`), `validatePropertyKey` (non-empty),
+`validatePropertyValue` (no bigint, recursing into list elements) — defined in `validate.ts`, called
+from `Vertex.ts`/`Edge.ts`, and **named in ZERO test files**. Each made a no-op in turn:
+
+```text
+      mutant                   core        gremlin    gql          native
+      validateLabel            CAUGHT 2    survived   CAUGHT 2     survived
+      validatePropertyKey      CAUGHT 2    survived   CAUGHT 2     survived
+      validatePropertyValue    CAUGHT 1    survived   survived     survived
+```
+
+**The family IS covered** — unlike item 2513's `applyingUndo` guards, every validator is caught. The
+`gql` column reads CAUGHT because of the 7 rows this item adds; before them it read survived.
+
+### MY FIRST RUN OF THAT TABLE WAS WORTHLESS FOR THREE COLUMNS
+
+It reported "gremlin/gql/native survived" for all three mutants, which I nearly wrote up as "only
+core's tests cover the boundary". **`packages/gql` resolves `@lenke/core` to the BUILT DIST**, so
+mutating `core/src` reached only `core`'s own tests. No `bun run build` sat between the mutant and the
+suites.
+
+The tell was that my own brand-new GQL tests ALSO survived — a survivor on a test written minutes
+earlier to catch exactly that mutant. Rule (x) says a survivor is an unreached line until the method
+is read; here it was an unreached BUILD. **This trap is in my own standing notes and I walked into it
+anyway; the rebuilt run is the only valid one.**
+
+### WHY A SURFACE TEST IS NOT REDUNDANT WITH CORE'S (the 2513 question)
+
+Core proves the validator throws. **Nothing proved a write arriving through a query surface reaches
+it** — a different claim, and the one at risk from this engine's habit of adding write FAST PATHS.
+`clauses.ts` holds the general write path (`addVertex` x3, `addEdge` x3, `setProperty` x5) and
+`shortcuts.ts` ALREADY has its own `setProperty` call site. A future rung that constructed an element
+directly, or assigned into `properties`, would leave every core test green. So unlike 2513's guards,
+the neighbouring coverage does NOT subsume this.
+
+Verified live before writing anything: GQL `INSERT (:``)`, `INSERT (:P {`` : 1})` and
+`MATCH (n:P) SET n.`` = 1` all throw with the validators' own messages, and the six core-API cases
+(empty label, empty key, bigint, bigint-in-array, setProperty bigint, empty edge type) all throw too.
+
+### AND TWO OF MY SEVEN ROWS TEST A DIFFERENT VALIDATOR THAN I LABELLED
+
+With `validatePropertyValue` a no-op, `gql` still survives — **including my two bigint rows.** They
+throw either way, because the PARAM boundary rejects a bigint before any write is attempted. The
+validator's own comment says so: _"the param + FFI boundaries already reject bigint with the same
+code; this closes the pure-JS in-process store, the one path that stored it raw."_
+
+So **`validatePropertyValue` is UNREACHABLE from the GQL write surface**, `packages/core` is the only
+place it can be tested, and it already is. The two rows are kept — the param boundary is itself a
+contract worth pinning (`numeric-model-f64`) — but renamed to say what they cover. A row named for
+the wrong mechanism is the "expectation written to match what the engine happens to do" failure from
+item 2499, caught here by the mutant rather than by reading.
+
+### GATES
+
+```text
+      bun run fmt / lint / check     0 / 0 / 0
+      packages/core                   497 pass, 0 fail
+      packages/gremlin               2915 pass, 0 fail
+      packages/gql                   5666 pass, 0 fail   (+7)
+      packages/native                1438 pass, 0 fail
+      bun run fuzz                     57 pass, 0 fail
+```
+
+`validate.ts` is byte-identical to its pre-item state — a test-only change, verified.
+
+OPEN — **`gremlin` survives all three mutants and no Gremlin test writes an invalid label/key.** The
+core API is wired (verified above), but whether the Gremlin `property()`/`addV` surface reaches the
+boundary is unverified, and it is the same question this item answered for GQL. `native` surviving is
+expected: the Rust engine has its own `validate_label`/`validate_prop_key` mirror.
