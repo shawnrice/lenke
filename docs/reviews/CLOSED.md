@@ -125639,7 +125639,7 @@ What changes is that an unflagged number is now one whose warmup was checked. `W
 monotone ratios (`where` 4.04x, `sum` 3.03x) are probably directionally right — a transient cannot
 manufacture a 4x that moves consistently in one direction across three fan-ins — but the specific
 medians are not trustworthy and the table wants re-running at `REPS=20 WARMUP=8` with the new
-signals watched. Item 2446's heading is struck accordingly.
+signals watched. Item 2446's heading is struck accordingly. ~~[RE-RUN at item 2448 with min-of-3 rounds: the axis is QUIET — every shape speeds up 1.34x-4.36x or is flat by design, nothing declines, nothing pays for skew.]~~
 
 **What survives item 2446 intact:** the `FANIN` knob itself, the degeneracy assertion (which caught
 two genuinely broken cells at a seventh of the requested skew — that was a real defect in the
@@ -125653,6 +125653,87 @@ says nothing when it is not. The only cheap detector is a comparison against the
 in time order, because that is the one part guaranteed to be the most warmed. [[floor-arm-must-take-same-route]]
 records the sibling failure ("min-of-N hides a second-ask arming, the per-rep SERIES shows it as a
 step"); this is the same hazard reached through a median instead of a min.
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `git diff` clean for
+`packages/gql` and `packages/core`.
+
+## Item 2448 — **THE FAN-IN AXIS IS QUIET.** Swept properly — 30 cells x 3 rounds, min of medians, warm-up checked — every shape either speeds up under concentration (1.34x-4.36x) or is flat by design, and **nothing declines, nothing pays for skew.** Three items of instrument-building produce no target, which is the honest outcome. **And the three cells the checker flagged are all at the MOST concentrated fan-in, because a FIXED warmup cannot serve a sweep whose cells span 1.7 to 60 ms**
+
+Items 2446 and 2448 each ran every cell once and each got a number wrong — 2446's `distinct` was a
+warm-up artifact (item 2447), 2448's `sum` a load outlier. This is the table with both defects fixed.
+
+### THE STABLE TABLE
+
+```text
+    NODES=200,000, MIXED=1, DEPTH=1, REPS=20, WARMUP=8, min of 3 rounds per cell
+      shape        FANIN=1    0.1      0.01     1 -> 0.01    flags
+      where         59.62    19.54    13.66      4.36x
+      distinct      12.05     5.01     4.44      2.71x       SUSPECT x3 at 0.01
+      sum           11.85     4.92     4.44      2.67x       SUSPECT x1 at 0.01
+      rows          16.21     8.42     6.72      2.41x
+      twocol        17.29     9.69     9.51      1.82x
+      collect       34.11    22.66    22.30      1.53x       SUSPECT x1 at 0.01
+      topk          36.17    24.03    25.09      1.44x
+      orderby       47.40    36.16    34.66      1.37x
+      grouped       40.32    35.63    30.00      1.34x
+      count          1.68     1.65     1.68      1.00x       flat BY DESIGN
+```
+
+`count` is a closed-form shortcut that never walks adjacency, so the target distribution cannot reach
+it — flat is correct, not a gap. `topk`'s 0.1 cell (24.03) sits 4% below its 0.01 cell (25.09), which
+is inside this row's run-to-run spread and not an inversion worth chasing.
+
+**Neither signal the sweep was built to find is present.** No cell fails to speed up where a sibling
+does, and no cell gets slower under concentration. The axis that items 2445-2447 instrumented, having
+cost three items and two retracted findings, has nothing in it.
+
+**That is worth stating plainly rather than dressed up.** The axis was worth instrumenting — item
+2445's correction of a 5.2x to 1.78x depended on it, and `label-vacuity-gates-fast-paths` now carries
+a measured counterexample because of it — but the sweep itself is a clean bill of health, and every
+pre-2445 screen number being fan-in ~1 turns out not to have hidden anything.
+
+### WHAT CHANGED FROM THE SINGLE-RUN TABLES, and why each defect needed a different defence
+
+```text
+    FANIN=1 cell     2446      2448 single-run     isolated          min-of-3
+      sum            13.60        22.56            12.3 / 12.8        11.85
+      grouped        39.55        42.89            39.1 / 41.7        40.32
+      orderby        47.66        53.63            48.4 / 47.1        47.40
+```
+
+`sum`'s single-run cell was a **1.8x outlier** and it put that row's ratio at 4.22x where the truth is
+2.67x. **No within-run check can catch it**: concurrent machine load inflates the whole series
+uniformly, so the spread is normal, the tail is consistent, and the warm-up signals correctly stay
+quiet. The only defence is running the cell again — CLAUDE.md's "prefer min or p25" and "several
+conclusions here were single-run against single-run and did not survive repetition", which I had read
+and not applied. `target/faninsweep.sh` now takes `ROUNDS` and reports the min of the medians.
+
+### THE FLAGGED CELLS ARE ALL AT FANIN=0.01, AND THAT IS A FINDING ABOUT FIXED WARMUPS
+
+`distinct` flagged in all three rounds, `sum` and `collect` in one each — every one at the most
+concentrated fan-in. The pattern is mechanical: **the tier-up transient is roughly CONSTANT in
+absolute time, so the faster the settled cost, the more reps it takes to clear.** A cell settling at
+4.4 ms needs many more reps than one settling at 60, and a single `WARMUP=8` cannot serve a sweep
+whose cells span 1.7 to 60 ms.
+
+So `distinct`'s 4.44 at FANIN=0.01 is **not quoted as trustworthy** — three flags say the window was
+still descending. Its ratio is reported as ~2.7x because item 2447 measured that cell at 4.67 / 4.69
+in a dedicated run, not because this cell is clean.
+
+**The instrument wants an adaptive warmup** — keep sampling until the tail stabilizes rather than
+dropping a fixed count — which is the obvious next improvement and is not built here.
+
+### A MISSING TOOL THAT LEFT A PLAUSIBLE NUMBER BEHIND
+
+The first version of the repeated sweep compared medians with `bc`. **`bc` is not installed on this
+box**, and its absence failed silently into the `||` branch, so `best` was overwritten every round and
+the reported "min of 3" was really the LAST round — exactly the quantity the repetition existed to
+stop trusting. It was caught only because a smoke test printed `command not found` beside an otherwise
+believable figure. The comparison now uses `python3`.
+
+That is the third time this stretch that a tool's limitation produced a confident wrong answer rather
+than an error: `grep` silently skipping a Unicode file, `grep … | head` truncating a completeness
+check, and now a missing `bc`. **The common shape is a tool that degrades into a plausible result.**
 
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `git diff` clean for
 `packages/gql` and `packages/core`.
