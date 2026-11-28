@@ -126009,7 +126009,92 @@ chain") and what item 1586 already took once by FUSING, for 1.90x.
 So the live question for this surface is whether `out()`'s two generator layers can collapse into one
 — and that note carries the constraint for it: a Gremlin fusion goes in `run`'s loop, NOT
 `applyPlanToStream`. **Not attempted here**, and the next attempt starts by grepping CLOSED.md for
-`iterByLabel` and for fusion, in that order.
+`iterByLabel` and for fusion, in that order. ~~[DONE at item 2452, and the index paid: the real gap is that `out()` with NO label has no hand walk at all — 7.6x the time and 35.9x the bytes of `out('E')` on a single-label graph, identical answers. Same hole item 1432 closed for `both` at 64.6%.]~~
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `git diff` clean for
+`packages/gremlin`, `packages/gql` and `packages/core`.
+
+## Item 2452 — **`out()` COSTS 7.6x THE TIME AND 35.9x THE BYTES OF `out('E')` ON A GRAPH WHERE EVERY EDGE IS `E` — 64.1 ms / 1117.1 B/row against 8.4 ms / 31.1 B/row, same 200,000 rows, identical answers.** `out('E')` already reaches the hand floor (31.1 against item 2450's measured 31.0); the zero-label spelling has **no hand walk at all**, because all three selectors in `hop-values.ts` require `labels.length >= 1`. **And `spelling:gremlin` does not cover the group**, which is why a 7.6x sat unflagged
+
+The index was searched first this time, and it paid: it refuted nothing here and instead supplied the
+precedent, the baseline and the blocker.
+
+### THE GAP
+
+```text
+    N=200,000, every edge carries only `E`, so both spellings select the IDENTICAL edges
+      spelling             rows      time        churn        B/row
+      out()   no label   200,000   64.1 ms   213.07 MiB      1117.1
+      out('E') one label 200,000    8.4 ms     5.93 MiB        31.1
+                                     7.6x        35.9x
+```
+
+**`out('E')` is AT the floor.** Item 2450 hand-wrote a far-driven walk over the same adjacency maps
+and measured 31.0 B/row; the one-label route measures 31.1. So there is no layout excuse available —
+the engine already achieves the floor on one spelling of the same question.
+
+### THE CAUSE, in three lines of `hop-values.ts`
+
+```ts
+const oneType = labels.length === 1 && kind !== 'both' ? labels[0] : undefined;
+const manyTypes = labels.length > 1 && kind !== 'both' ? labels : undefined;
+const bothOneType = labels.length === 1 && kind === 'both' ? labels[0] : undefined;
+```
+
+`labels.length === 0` matches none of them, so a bare `out()` falls to the general `adjacentEdges`
+tail and pays the delegation chain item 2450 profiled — `iterByLabel` 93.08 MiB, `next` at 7
+allocations per element from `yield*`-ing into `iterAllDeduped`.
+
+**This is the same hole, in the same file, that item 1432 closed for `both`**: _"`hopValuesShortcut`
+admits `both` but had no hand walk — `oneType` and `manyTypes` both exclude it — so it fell to the
+general `adjacentEdges` tail."_ That item measured the fix at **64.6% (181 → 61 ms)** with three flat
+controls, and item 1411 priced ONE generator layer at 2.1x.
+
+### WHY THIS IS NOT ITEM 1413's REFUTED LEVER
+
+Item 2451 retracted a dedup-skip guard that item 1413 had declined at −0.5%, and the distinction
+matters: **item 1413's guard sat INSIDE the delegation chain**, paying a branch to skip a `Set` while
+everything else stayed. This replaces the chain, which is the move item 1432 measured at 64.6%. The
+`Set` is incidental here — it disappears with the chain rather than being skipped within it.
+
+### THE BLOCKER, which the index also supplied
+
+A zero-label hand walk cannot simply iterate buckets. The index records a wrong-answer incident for
+exactly this case:
+
+> _"A 146-case sweep found 13 divergences, **every one an `out()` at depth 2 or more**: zero labels
+> means 'every bucket', so a multi-type edge is visited once per label it carries. The guard must be
+> `labels.length !== 1`."_
+
+So the fast path is available only where no edge carries two labels — `graph.multiTypeEdgeCount === 0`,
+the same one-sided test GQL uses — and the general path must remain for the rest. That is a
+precondition on the FAST ARM, not a guard inside the slow one, which is why item 1413's −7.5% does
+not transfer.
+
+**Note also that `out()` and `out('E')` are NOT equivalent in general** — `out()` means every edge
+type. They coincide on this fixture because it has one type, which is the common case and the reason
+the gap matters, but the fix must answer `out()`'s actual semantics.
+
+### THE COVERAGE GAP, which is worth closing even if the optimization is not taken
+
+[[gremlin-spelling-probe]] was built at item 1305 and "took the surface from 15 flagged groups to 2".
+**A 7.6x between two spellings of one question on a single-label graph is not in it** — had the group
+existed, the probe's own threshold (flags a spread > 2x) would have caught this long ago. CLAUDE.md's
+central discipline is that equivalent spellings must cost the same, and its whole rationale is that
+such gaps "each cost 100-300x and each returned the correct answer, so no correctness test could catch
+it". This is one.
+
+**Adding the group to `spelling:gremlin` is the cheaper half of this item and does not depend on the
+optimization landing.**
+
+### WHAT IS NOT DONE
+
+Nothing is built. The fast arm needs: the `multiTypeEdgeCount === 0` precondition as a tested pure
+function with mutants (a route choice is answer-equivalent); a test that a MULTI-label edge still
+appears exactly once through `out()` at depth 1 AND depth 2 (the 13-divergence incident was at depth
+≥ 2, so depth 1 alone would not have caught it); `bun run fuzz` and `bun run fuzz gremlin`; and
+same-file controls, because items 1413/1415/1440/1442/1462 price an edit to these files at up to 16%
+on unrelated rows.
 
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `git diff` clean for
 `packages/gremlin`, `packages/gql` and `packages/core`.
