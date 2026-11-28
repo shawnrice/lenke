@@ -126711,6 +126711,8 @@ differential, fuzz or conformance test can see a mutant in an admission conditio
 
 ```text
     18 detect* route detectors with no test by name
+      [item 2469 TOOK the detectHop2* trio: 15 tests, 4 of 8 mutants, all survivors
+       flip-verified. SKIP alone is the paged arm; SKIP + LIMIT is NOT.]
       [item 2467 TOOK the four reachable detectChain*: 23 tests, 4 of 7 mutants, the three
        survivors CONDITIONALLY REDUNDANT with verified counterfactuals (completed at item 2468).
        chainStarCount declines at RUN TIME on a homogeneous-label graph.]
@@ -127383,3 +127385,71 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check`
 **5,602 tests 0 fail** including the 23 in this file. Both chain sources restored and verified
 byte-identical after the battery; the only changes to them are the three comments. Item 2467's entry
 and item 2460's index line both corrected from PARTIAL in this commit. Scratch probe removed.
+
+## Item 2469 — **the `detectHop2*` trio, which owns the commonest non-trivial projection depth: 15 tests, 4 of 8 mutants caught, every survivor flip-verified and commented.** The finding a name-driven test would have inverted: **`detectHop2PagedProjection` serves a `SKIP` with NO `LIMIT`, and declines `SKIP` + `LIMIT` together.** And of five conditions in one conjunction, the flip sweep moved a verdict for exactly TWO
+
+Item 2467's field map showed the `detectChain*` family never lights at two hops, so these three are
+the only detectors covering depth-2 grouped, ordered and paged projections. None was named in a test.
+
+### THE FIELD MAP, probed before a line was written
+
+```text
+    depth-2 shape                 detector that lights
+      z.k, count(*)                 hop2GroupedCount
+      z.k, sum(z.k)                 (none)      <- only COUNT is grouped-served
+      ORDER BY k / DESC / + LIMIT   hop2OrderedProjection
+      SKIP 1                        hop2PagedProjection
+      LIMIT 2                       (none)
+      SKIP 1 LIMIT 2                (none)      <- the PAIR is not the paged shape
+      plain / two columns           hop2Projection
+      count(*) alone                (none; countShortcut owns it)
+      z.k, count(*) ORDER BY k      (none)
+```
+
+**`SKIP` ALONE IS THE PAGED ARM AND `SKIP` + `LIMIT` IS NOT.** A test written from the detector's
+name would have asserted `SKIP 1 LIMIT 2` and passed for the wrong reason, since that shape declines.
+Item 1905 records the rule from the other side — "a `SKIP` with no `LIMIT` reaches the deferred arm" —
+and `limitBound` alone short-circuits through `take` without projecting the tail, so there is nothing
+for this arm to save. Both halves of the guard are caught: admitting `skip === 0` and admitting a
+`null` skip each fail tests.
+
+### FIVE CONDITIONS, TWO LOAD-BEARING — the flip sweep, one run
+
+```text
+    shape                      LIVE   m2 keys  m3 width  m4 distinct  m5 agg  m6 no-order
+      1-key grouped count      Y      Y        Y         Y            Y       Y
+      DISTINCT grouped count   .      .        .         *** Y ***    .       .
+      2-key grouped count      .      .        .         .            .       .
+      2 items, no aggregate    .      .        .         .            .       .
+      grouped sum              .      .        .         .            .       .
+      ordered / skip-only      unchanged in every arm
+```
+
+Only **`ret.projection.distinct`** moved a verdict, admitting exactly `RETURN DISTINCT z.k, count(*)`
+and nothing else — now a fixture, and the mutant is caught. `!proj.countedGroups` was already caught
+by the original tests.
+
+**The other three in that conjunction — `!proj.aggregating`, `groupKeys.length !== 1`,
+`items.length !== 2` — move NOTHING**, because a non-aggregating or differently-shaped projection is
+refused further in by `plainRowProjectionIgnoringDistinct` and the inner `detectHop2Projection`. They
+are kept with the counterfactual: each states a different precondition of the rewrite below it, which
+**builds a synthetic one-item projection from exactly one key and one aggregate** — widen any of the
+three and that construction is wrong rather than merely unreached. That is a sharper reason than
+"defensive", and it is the kind that stops a future widening from looking free.
+
+`(projection.orderBy?.length ?? 0) === 0` gets the same verdict its `chain-projection.ts` twin got at
+item 2468, for the same reason: dropped, it moves nothing, because the plan build refuses an
+unordered projection anyway. Kept as the early exit.
+
+### THE ANCHOR COUPLING DID _NOT_ BITE THIS TIME, AND THE REASON IS WORTH KNOWING
+
+Items 2466 and 2468 both had comments invalidate every mutant anchor. Here the comments were inserted
+**before** `if (`, leaving the conjunction's own text byte-identical, so all eight anchors still
+matched — the battery re-ran with no `ANCHOR FAILED` line. **Placement decides whether a comment
+breaks a battery**: inside the construct it does, immediately above it it does not. (My regeneration
+script asserted anyway and failed loudly on a stale pattern, which cost nothing because the live
+anchors were already correct.)
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
+**5,617 tests 0 fail** including the 15 new ones. `hop2-projection.ts` restored and verified
+byte-identical after the battery; the only changes to it are the two comments. Scratch probes removed.

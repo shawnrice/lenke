@@ -940,6 +940,13 @@ export const detectHop2OrderedProjection = (
    * the value lives in `params` while this decision is cached across bindings. `sortRowsByColumns`
    * then applies `skip`/`limit` itself, including item 701's bounded top-k heap.
    */
+  /*
+   * CONDITIONALLY REDUNDANT AND KEPT (item 2469), the same verdict its `chain-projection.ts` twin
+   * got at item 2468: dropping it moves no verdict, because an unordered projection has no sort for
+   * the plan build to resolve and is refused there. It stays as the EARLY exit — this detector
+   * exists for ordered projections, so the decline should rest on a stated precondition rather than
+   * on a downstream accident.
+   */
   if ((projection.orderBy?.length ?? 0) === 0) {
     return null;
   }
@@ -1071,6 +1078,18 @@ export const detectHop2GroupedCount = (
 
   const proj = cret.projection;
 
+  /*
+   * THREE OF THESE FIVE CONDITIONS ARE CONDITIONALLY REDUNDANT AND KEPT (item 2469). A flip sweep —
+   * each mutant applied alone against nine candidate shapes — moved a verdict for only TWO of them:
+   * `!proj.countedGroups` and `ret.projection.distinct` below.
+   *
+   * `!proj.aggregating`, `proj.groupKeys.length !== 1` and `proj.items.length !== 2` each move
+   * NOTHING when dropped, because a non-aggregating or differently-shaped projection is refused
+   * further in — `plainRowProjectionIgnoringDistinct` and the inner `detectHop2Projection` both
+   * decline it. They stay because each states a DIFFERENT precondition of the rewrite below, which
+   * builds a synthetic one-item projection from exactly one key and one aggregate: widen any of the
+   * three and that construction is wrong rather than merely unreached.
+   */
   if (
     !proj.aggregating ||
     !proj.countedGroups ||
