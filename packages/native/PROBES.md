@@ -3468,3 +3468,33 @@ question: the code says events buffer "to be discarded on rollback", not to be d
 WARN The all-three figures (183/284 B/write) sit ~12% above item 2508's two-process deltas (162/273)
 because the baselines differ. Same quantity, two methods; quote 2508's for a headroom budget since it
 has a true no-transaction control.
+
+## `tx-delete-2510.mjs` — is the undo of a DELETE O(1) or O(degree)? (item 2510)
+
+```
+cd packages/native && node tx-delete-2510.mjs
+TX_DEGREES=1,4,16,64 TX_N=50000 TX_DELETES=10000 node tx-delete-2510.mjs
+```
+
+`tx-retain-2508.mjs` has `add` and `set` arms and no DELETE; `removeVertex` had ZERO mentions here.
+Every arm deletes the SAME COUNT and only the fixture out-degree changes, so degree is the only axis.
+
+```
+      deg    no tx MiB   in tx MiB     delta   B/delete   B/del/deg   txUndo
+        1       -6.20        3.50       9.70     1017.3      1017.3    27,998
+        4       -7.98       22.78      30.76     3225.4       806.3    81,999
+       16      -33.79       85.40     119.19    12497.6       781.1   298,000
+```
+
+**O(DEGREE): ~780 B per incident edge, ~400 B per undo entry.** `B/delete/degree` converging (1017 →
+806 → 781) is the cross-check that the growth is per-EDGE; `txUndo` at 298,000 entries for 10,000
+deletes says the same structurally (~30 per delete at degree 16 — one per cascaded edge plus the
+vertex).
+
+KEY **Item 2508's per-write budget (~162/273 B) does NOT cover deletes.** At degree 16 a delete costs
+~46x an update, and deleting 10,000 vertices swings 153 MiB relative to doing it untransacted.
+
+KEY The no-tx control reads NEGATIVE at every degree — outside a transaction a delete FREES memory —
+which is what makes the delta attributable rather than fixture noise.
+
+Not a defect: rollback must restore the cascaded edges. A budget correction, not a lever.

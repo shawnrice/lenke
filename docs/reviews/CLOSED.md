@@ -130217,3 +130217,70 @@ OPEN — **an owner decision, the eighth: may a buffered transaction event be de
 of stored?** It is worth 145 B per update (51% of the per-write cost on that arm) and 57 B per create.
 It touches the event contract and `TX_TOKENS` documents a live-element capture problem that may
 generalize, so it is not mine to take.
+
+## Item 2510 — **THE UNDO OF A DELETE IS O(DEGREE), NOT O(1): ~780 B PER INCIDENT EDGE, so item 2508's per-write budget does NOT cover deletes.** At degree 16, deleting 10,000 vertices in a transaction costs 119 MiB of bookkeeping where the same deletes OUTSIDE one FREE 34 MiB
+
+### HOW THIS WAS FOUND — THE METHOD TURNED ON MY OWN INSTRUMENT
+
+Items 2508/2509 measured and attributed the per-write transaction cost, and both their arms (`add`,
+`set`) are per-write BY CONSTRUCTION. Reading `tx-retain-2508.mjs`'s own shape table the way this
+session reads every other instrument's: **it has no DELETE arm**, `removeVertex` has ZERO mentions in
+`PROBES.md`, and "delete in a transaction" appears nowhere in either store.
+
+A delete is the one write whose undo is not obviously bounded, because `removeVertex` CASCADES to the
+incident edges and rolling it back must restore the vertex AND every edge that went with it.
+
+### THE AXIS IS DEGREE, WHICH IS THE WHOLE DESIGN
+
+Every arm deletes the SAME COUNT (10,000) from a graph of the same size (|V|=50,000); only the
+fixture's out-degree changes:
+
+```text
+      deg    no tx MiB   in tx MiB     delta   B/delete   B/del/deg   txUndo entries
+        1       -6.20        3.50       9.70     1017.3      1017.3           27,998
+        4       -7.98       22.78      30.76     3225.4       806.3           81,999
+       16      -33.79       85.40     119.19    12497.6       781.1          298,000
+```
+
+- **`B/delete` grows ~linearly with degree** — 1017 → 3225 → 12498 across two 4x steps.
+- **`B/delete/degree` CONVERGES to ~780** (1017 → 806 → 781), which is the cross-check: the growth is
+  genuinely per-EDGE, with the residual at degree 1 being the fixed per-delete part.
+- **`txUndo`'s entry count says the same thing structurally**: 298,000 entries for 10,000 deletes —
+  ~2.8, ~8.2 and ~29.8 per delete at degree 1, 4 and 16. That is roughly one entry per cascaded edge
+  plus the vertex, and it puts the unit at **~400 B per undo entry**.
+- **The no-transaction control reads NEGATIVE at every degree** (-6.2, -8.0, -33.8 MiB), exactly as it
+  should: outside a transaction a delete FREES memory. So the delta is unambiguously bookkeeping and
+  not fixture noise — the control is what makes the number attributable (item 2509's rule, in the form
+  this question needs).
+
+### WHAT IT MEANS FOR THE BUDGET
+
+Item 2508 gave a per-write floor of ~162 B (create) and ~273 B (update) and that **remains correct for
+those two kinds**. Deletes need a second term:
+
+```text
+      a delete costs roughly   400 B x (1 + incident edges)
+      i.e. ~780 B per edge, ~46x the per-update cost at degree 16
+```
+
+So "delete these 10,000 records atomically" is not a per-row budget at all — it is a per-EDGE budget,
+and at degree 16 it swings 153 MiB (from freeing 34 to holding 119) relative to doing the same deletes
+untransacted. A high-degree delete inside a transaction is the most memory-expensive write shape
+measured anywhere in this session.
+
+### IS IT A DEFECT?
+
+**No, and that is worth saying plainly.** Rollback has to restore the cascaded edges — there is nothing
+else the undo could hold and still be correct, which is the same conclusion item 2509 reached for
+`txUndo` on creates ("the inverse op IS the feature"). The finding is a BUDGET correction, not a
+lever: the number was simply never measured, and a caller sizing a batch from item 2508's figures
+would have underestimated a high-degree delete by more than an order of magnitude.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instrument only; no engine change and no
+owner decision.
+
+OPEN — the fixed part is ~400 B per undo entry and an edge's undo entry presumably holds the edge's
+endpoints, labels and properties. Whether a lighter representation (ids rather than references, since
+the elements are being removed anyway) would be correct is unexamined, and `no-dense-vertex-ordinal`
+already records that deletes under churn are where this engine's id handling hurts most (6.18x/11.34x,
+items 1369-1372/1397) — so that is the context any such attempt sits in.
