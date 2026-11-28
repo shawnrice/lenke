@@ -123739,7 +123739,7 @@ to return a single scalar, in big buffers rather than per-element objects (the c
       Rust/wasm engine   STREAMS (0.14x)      materialises (0.77-0.82x)
 ```
 
-The TS half of that table is what items 2421-2424 closed. **The Rust half is open**, and it is the
+The TS half of that table is what items 2421-2424 closed. **The Rust half is open** — PRICED at item 2426, which found that the engine already has streaming machinery for it and that the machinery is UNREACHABLE (its gate reads a cost ESTIMATE of 39,600 against a 1,000,000 threshold while the plan returns 4,320,000 rows) — and it is the
 half that matters more for an OOM: the CLI is wasm-only, so a multi-hop aggregate over a
 high-fanout graph grows linear memory in proportion to the PATH count while returning one row. Not
 taken here — this item is the instrument, the blindness and the measurement.
@@ -123754,3 +123754,98 @@ GATES. `cargo fmt -- --check` 0 and `cargo clippy --all-targets -- -D warnings` 
 `--manifest-path`, read UNPIPED); `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0;
 `bun run check` 0; `bun run test` 0; `bun run fuzz` 0; the oracle still 4,848/0 with route invariance
 2,424/0. No engine behaviour change: one instantiation seam, one probe, one knob.
+
+## Item 2426 — **THE RUST/WASM MULTI-HOP AGGREGATE'S PEAK MEMORY SCALES WITH THE PATH COUNT, and the engine ALREADY HAS the machinery to avoid it — but that machinery is UNREACHABLE: its gate compares a cost ESTIMATE of 39,600 against a threshold of 1,000,000 while the plan returns 4,320,000 rows.** Panic injection never fires. So the cheapest fix is the GATE, not an architecture change. **PRICED, NOT BUILT** — and the counting allocator could not have found this, because it measures TOTAL allocation and the question is PEAK
+
+Item 2425 found the Rust aggregate holding 0.77-0.82x of a full row materialisation to return one
+number, against the one-hop 0.14x streaming fold. This item asks where that memory goes and what it
+would take to not spend it.
+
+### THE PEAK SCALES WITH PATHS, measured on the exact instrument
+
+`alloc:wasm` reads linear memory, which never shrinks — an exact high-water mark, not a sample:
+
+```text
+    N=20,000, 3 hops            rows          hop3 (rows out)       hop3sum (ONE row out)
+      FANOUT=3                   540,000        30.88 MiB            10.25 MiB
+      FANOUT=4                 1,280,000        81.63 MiB            32.75 MiB
+      FANOUT=6                 4,320,000       335.13 MiB            (not run)
+```
+
+**`hop3sum` returns a single number and its peak grows 10.25 to 32.75 MiB as the paths go 540k to
+1.28M** — 3.2x the memory for 2.4x the paths. The row form is worse in absolute terms but it is
+_supposed_ to be: it returns the rows. The aggregate returns one.
+
+In wasm that is an OOM ceiling rather than a slowdown: `CLAUDE.md` records the CLI as wasm-only with
+an OOM surfacing as a bare `RuntimeError: unreachable`, and 335 MiB of linear memory for 4.3M paths
+puts the practical ceiling an order of magnitude below the native heap's.
+
+### THE COUNTING ALLOCATOR COULD NOT HAVE FOUND THIS, which is an instrument fact worth recording
+
+`alloc:rust` reports TOTAL allocation. Across the same threshold its bytes-per-row barely moved —
+194.8 to 175.7 B/row for the row form, 158.8 to 139.7 for the aggregate — because **a streaming path
+has the same TOTAL allocation as a materialising one and a far lower PEAK**: allocate a block, free
+it, allocate the next. Total and high-water are different questions, and only the wasm probe answers
+the second. That is the second time this stretch that two instruments on the same subject answered
+different questions (item 2419's churn-versus-peak was the first).
+
+### THE ENGINE ALREADY HAS THE MACHINERY, AND IT IS UNREACHABLE
+
+`pull_top_output_streamed` exists for exactly this — its own comment says the win is "avoiding the
+per-hop intermediate `Col`s, which only matters once the fan-out is huge" — and `streaming_chain`
+backs it. Its gate:
+
+```rust
+if crate::cost::estimate(input, store).rows < stream_output_threshold() {   // 1_000_000.0
+    return Ok(None);
+}
+```
+
+**PANIC INJECTION, TWICE, AND IT NEVER FIRES.** A `panic!` placed after the `streaming_chain` gate
+does not trigger at FANOUT=4 (1,280,000 rows) or FANOUT=6 (**4,320,000 rows**). Moved between the
+threshold and `streaming_chain`, it still does not. Reporting the estimate directly on the native
+build:
+
+```text
+    ABLATE-2426: estimate = 39600, threshold = 1000000
+```
+
+**The estimate is in the tens of thousands where the plan returns millions.** The code's own comment
+admits the path is unreached — _"the threshold is high enough that generated plans never reach this
+path — verified by assertion injection at 20,000 nodes"_ — but that reads as "deliberately
+conservative". It is stronger than that: the path stays dark at 4.3M actual rows, because the gate's
+INPUT is 25-100x below the quantity it is meant to gate on.
+
+### SO THE CHEAPEST FIX IS THE GATE, and three things stand between that and a commit
+
+1. **The path is `Plan::Project` ONLY.** Lowering the threshold would make the streamed projection
+   live — which would help `hop3`, the row form — but an AGGREGATE plan never reaches
+   `pull_top_output_streamed` at all. The aggregate needs its own fold-per-block arm, which is the
+   architecture piece.
+2. **The streamed and materialised projections have never been compared at a reachable size.** The
+   same comment says the two "were never compared, and they must produce the same rows", and that
+   forcing the choice under `cfg(test)` was "the only way to check that without building million-row
+   fixtures". Making the path live promotes an untested-at-scale alternative to the default.
+3. **Touching this area has a measured toll.** [[pull-alignment-is-load-bearing]]: any edit to
+   `exec::pull` costs the filtered-count cluster 1.08-1.24x and never gains — "that's the toll". A
+   gate change is not a `pull` edit, but an aggregate fold-per-block arm would be.
+
+**NOT BUILT.** The measurement and the mechanism are here; the change is an exec-path edit with a
+known toll, a cost-estimator question underneath it, and an equivalence gap at scale. Any attempt
+needs `LENKE_OPT_FUZZ_SEEDS=500000 cargo test --release … rewrite_fuzz` (200000 is NOT deep enough —
+500000 found a wrong answer at items 1148-1150) and every mutant under
+`timeout 600 systemd-run --user --scope -q -p MemoryMax=16G -p MemorySwapMax=0`, with 124/137 counted
+as CAUGHT.
+
+### WHAT WOULD SETTLE IT CHEAPLY, for whoever takes it next
+
+Force the threshold to 1.0 under `cfg(test)` with `with_stream_threshold` — which exists for exactly
+this — and measure the streamed projection's PEAK with `alloc:wasm` against the materialised one on
+the same plan. If the streamed path does not bound the high water, the whole direction is refuted for
+the cost of one build and no engine change. That is the measurement this item stopped short of,
+because `with_stream_threshold` is `cfg(test)` and the wasm probe is not a test.
+
+GATES. `cargo fmt -- --check` 0 and `cargo clippy --all-targets -- -D warnings` 0 (per-crate with
+`--manifest-path`, read UNPIPED); `bun run check` 0. `exec.rs` restored from its pristine copy and
+verified byte-identical (`git status` clean for `crates/`), both the `.so` and the wasm artifact
+rebuilt afterwards, and the restored build re-measured at the original 10.25 MiB.
