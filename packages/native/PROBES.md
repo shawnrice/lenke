@@ -3292,3 +3292,24 @@ prints the same shape (1.56 vs 0.01). Do not read that as "path tracking is free
 
 WARN Answering either question needs a cap-style mechanism for Gremlin (bisect the smallest
 `--max-old-space-size` the traversal survives), as `MECH=cap` did for GQL's grouped aggregate at item 2501. The row-interval sampler is now the wrong instrument for TWO shape classes.
+
+## `swap-all-2503.mjs` — POSITION-SWAP every buffering arm (item 2503)
+
+```
+cd packages/native && node swap-all-2503.mjs          # every arm, N=100k
+SWAP_N=200000 node swap-all-2503.mjs                  # the shipped probe's size
+SWAP_ONLY=tree,order SWAP_TOL=1.2 node swap-all-2503.mjs
+```
+
+Runs each arm TWICE — once FIRST in a fresh process, once SECOND after the CALIBRATION arm — one pair
+per process, and reports the `swing` between the two positions. **The partner is CALIBRATION, not a
+bare walk**: calibration holds every row so its retention is known a priori, and item 2502 showed a
+bare walk can cost more than the arm it controls for unrelated reasons.
+
+Result: **13 of 14 arms stable within 1.5x**; only `dedupe` exceeds it, at 0.04 vs 0.02 MiB — the
+resolution floor. So `retained-2457.mjs`'s arms ARE reproducible and its buffering roster stands.
+
+WARN This NARROWS item 2502: the sampler measures each arm fine. What is invalid is pairing an arm
+against a BARE WALK as its control — `bare3` 7.03 MiB against `path3` 0.14 (50x, impossible
+direction) reproduces at a second size and with a different partner. Still do not read
+`path() = 0.01` as "path tracking is free".

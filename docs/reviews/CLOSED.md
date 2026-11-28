@@ -129728,6 +129728,74 @@ first), which is a strong hint the sampler's remaining arms deserve a swap each.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instruments only; no engine change and
 no owner decision.
 
-OPEN — **are the OTHER 15 arms order-dependent too?** Every one of them was measured in a single
-fixed order in one process. The swap costs one child process per pair and it has now overturned two
-readings in two items.
+~~OPEN — **are the OTHER 15 arms order-dependent too?**~~ **ANSWERED AT ITEM 2503: NO — 13 of 14 are STABLE within 1.5x, and the one exception (`dedupe`, 1.68x) is 0.04 against 0.02 MiB at the resolution floor. The shipped arms are reproducible, so this item's "the sampler is the wrong instrument" generalization was too broad; the defect is PAIRING an arm against a BARE WALK, not the sampler.**
+
+## Item 2503 — **I EXPECTED SEVERAL POSITION-DEPENDENT ARMS AND FOUND ONE, AT THE FLOOR: 13 of 14 are STABLE.** The shipped probe's arms are reproducible; item 2502's claim needed narrowing, not extending — what is broken is using a BARE WALK as the control, not the sampler
+
+### THE HYPOTHESIS, AND ITS REFUTATION
+
+Item 2502 swapped two arms and overturned a reading both times, so the plan was to swap the rest
+expecting "several". `swap-all-2503.mjs` runs every arm TWICE — once FIRST in a fresh process, once
+SECOND after the CALIBRATION arm (the known-large quantity, deliberately not a bare walk) — one pair
+per process:
+
+```text
+      arm             rows    first   second    swing
+      order          100000     0.94     0.93     1.01x   stable
+      fold                1     0.91     0.90     1.01x   stable
+      dedupe             97     0.04     0.02     1.68x   POSITION-DEPENDENT
+      groupCount          1     0.14     0.12     1.11x   stable
+      group               1     1.09     1.08     1.01x   stable
+      aggregate           1     0.91     0.90     1.01x   stable
+      store               1     0.91     0.90     1.01x   stable
+      tree                1    48.07    48.07     1.00x   stable
+      treeby              1     0.20     0.21     1.01x   stable
+      repeat3        100000     7.21     7.20     1.00x   stable
+      repeatsimple   100000     7.21     7.20     1.00x   stable
+      path1          100000     0.06     0.06     1.01x   stable
+      path3          100000     0.14     0.15     1.04x   stable
+      bare3          100000     7.03     7.01     1.00x   stable
+```
+
+**13 of 14 within 1.5x, and the one exception is 0.04 against 0.02 MiB** — a 0.02 MiB absolute
+difference at the resolution floor, which is the same class of non-finding item 2501 recorded when a
+`CAP_STEP=8` spelling gap dissolved at `CAP_STEP=2`. So `dedupe` is not meaningfully unstable either.
+
+**The shipped probe's arms are reproducible.** My expectation was wrong and the instrument is in
+better shape than item 2502 implied.
+
+### SO ITEM 2502's CONCLUSION NARROWS
+
+That item ended with "the row-interval sampler is the wrong instrument for label/path retention",
+and generalized it to a second shape class. **The sharper statement, which this sweep supports and
+2502's own data already contained: the sampler measures each arm REPRODUCIBLY; what is invalid is
+PAIRING an arm against a BARE WALK as its control.**
+
+The inversion itself is real and it persists at a second size with a different partner:
+
+```text
+      bare3  7.03 MiB      path3  0.14 MiB      50x, impossible direction
+      (the shipped probe at N=200,000 reads 1.56 against 0.01, 156x — same sign)
+```
+
+A path-tracking walk cannot retain 50x less than the same walk without paths, so the bare walk is
+paying something the `path()` arm does not. That remains unexplained and remains the reason not to
+read `path() = 0.01` as "path tracking is free". But it is a CONTROL-SELECTION defect, not a sampler
+defect, and item 2502's label-COUNT finding (first-arm-pays, 0.23 vs 0.04) is now better explained
+the same way: both numbers sat at the floor, where 2501's resolution rule applies.
+
+### WHAT THIS CHANGES IN THE RECORD
+
+`retained-2457.mjs`'s buffering roster stands: `order`/`fold` O(N), `dedupe`/`groupCount`
+O(DISTINCT), `group`/`aggregate`/`store` O(N), `tree()` large (48 MiB at 100k, 82 at 200k — it
+scales), `tree().by('k')` 0.20. All reproduced here in both positions. Nothing in that roster needs
+striking.
+
+What needed striking was my own over-generalization one item ago, which is done above.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instrument only.
+
+OPEN — **why does a bare 3-hop walk retain 7 MiB when the same walk ending in `path()` retains
+0.14?** That is the one live question, it is stable across two sizes and two partners, and it is
+about those two generator chains rather than about the instrument. A cap-style mechanism for Gremlin
+would price it independently.
