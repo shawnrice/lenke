@@ -123983,3 +123983,78 @@ items 2421/2423/2424, `rows` refuted at item 1940's residual (needs codegen, for
 refuted here for want of an immune sibling.
 
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
+
+## Item 2429 — **THE SCREEN'S FIRST FULL-DEPTH RUN IN THE REALISTIC LABEL MODE, and its target list is now measured rather than stale: TWO flags, both outside everything closed.** `where` at one hop is 3.2x its own rows cell; a SECOND COLUMN's marginal cost is 4.8 ms at depth 1 and 29.7-33.2 ms at depths 2-4 — 6.2-6.9x, the signature of a route lost at some width. **And the shapes items 2421-2424 fixed are now the FASTEST cells in the grid**
+
+Item 2415 gave `rung-gap-screen.mjs` its `MIXED` knob and ran it only at depths 1-2. Items
+2421/2423/2424 then moved four shapes onto the level passes, so the flag list every later item would
+have read was stale in both directions. This is the full grid at `NODES=400000`, `MIXED=1`.
+
+### THE FIXED SHAPES ARE NOW THE CHEAPEST THINGS ON THE SHEET
+
+```text
+    modifier     depth1   depth2   depth3   depth4   depth5    rows@maxdepth
+      rows         38.8    216.7    310.2    492.6    643.1    400000
+      sum          28.1     35.3     44.2     51.4     57.5         1
+      maxagg       29.4     36.7     44.0     51.6     59.0         1
+      distinct     29.6     36.4     44.6     52.3     59.6        97
+      countdist    47.2     55.3     61.8     68.9     76.9         1
+```
+
+`sum`, `maxagg` and `distinct` are FASTER than the one-column `rows` cell at every depth and barely
+move with depth — 28.1 to 57.5 across five widths while `rows` goes 38.8 to 643.1. That is items
+2421/2423/2424 showing up in the instrument that nominated them, in the label mode that matters.
+
+### THE TWO FLAGS, and both are outside the closed list
+
+```text
+    where depth1       124.7 ms is 3.2x its own rows cell (38.8)
+    twocol depth2-4    marginal over rows 30.1 / 33.2 / 29.7 ms against 4.8 at depth1 — 6.2-6.9x
+```
+
+**`twocol` is the interesting one.** A second projected column costs **4.8 ms at one hop and ~30 ms
+at two or more** — and the marginal is the quantity that should be FLAT in depth, because copying one
+extra value per row costs the same whatever walk produced the row. A marginal that grows 6x means the
+second column stopped being served somewhere between one hop and two.
+
+### ROUTES CHECKED FIRST, and they rule out the obvious explanation
+
+```text
+                  depth 1              depth 2
+      rows         hopProjection        hop2Projection
+      twocol       hopProjection        hop2Projection
+      where(far)   hopProjection        hop2Projection
+```
+
+**Both flagged shapes ride the SAME rung as their baseline at both widths.** So this is not a
+compile-time route gap of the kind items 2421/2423 closed — the cost is INSIDE the rung, either as a
+runtime decline or as a per-row term that only the deeper arm pays. That distinction is what the next
+item has to establish, and [[rung-precedence-decides-speed]]'s rule applies: timing cannot tell a
+decline from more work, so it needs an ablation rather than another reading.
+
+### PRIOR ART CHECKED, and neither flag is refused
+
+- **`twocol`**: item 595 cached an edge's resolved endpoints and took the two-column hop projection
+  193.70 to 73.24 ms (2.64x). That is a different term — endpoint resolution, paid by any shape that
+  reads an endpoint — and says nothing about why the SECOND COLUMN's marginal grows with depth.
+  Nothing in `CLOSED.md` prices that marginal.
+- **`where` at one hop**: the filtered hop has been worked repeatedly (items 539, 1189, 1190 and the
+  filtered-count cluster), and item 4026's note that "a far-endpoint label compiles to a `Filter`, so
+  a labelled hop is a FILTERED hop" means this cell shares machinery with shapes already optimised.
+  The 3.2x is against the realistic-mode `rows` cell, which is itself inflated by the far-driven arm
+  being gone (item 2415) — so the honest reference here is `rows` at 38.8 and not the vacuous 31.68,
+  and the flag stands, but it needs the item-698 treatment (compare against the row form PLUS the
+  predicate's own work) before it is a prize.
+
+**Neither is taken here.** This item is the measured list: two live flags, their routes, and the
+prior art that does not cover them.
+
+### WHY THE LIST HAD TO BE RE-RUN AT ALL
+
+The screen's flags are what later items read when choosing a target, and four shapes changed rungs in
+the three items before this one. A flag list that predates a routing change advertises work that no
+longer exists — which is item 1301's finding (a sweep of 265 `OPEN` lines corrected 40, of which 35
+advertised work already done) applied to an instrument instead of a document.
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
+`onehop-routes-2415.ts` gained `twocol` and `wherefar` rows so the route table covers both flags.

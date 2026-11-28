@@ -56,6 +56,8 @@ const MODIFIERS: Record<string, (c: { text: string; far: string }) => string> = 
   distinct: ({ text, far }) => `${text} RETURN DISTINCT ${far}.k AS k`,
   countk: ({ text, far }) => `${text} RETURN count(${far}.k) AS c`,
   distinct2: ({ text, far }) => `${text} RETURN DISTINCT ${far}.k AS k, ${far}.s AS s`,
+  twocol: ({ text, far }) => `${text} RETURN ${far}.k AS k, ${far}.s AS s`,
+  wherefar: ({ text, far }) => `${text} WHERE ${far}.k > 44 RETURN ${far}.k AS k`,
   q11: ({ text }) => `${text.replace('-[:E]->', '-[:E]->{1,1}')} RETURN DISTINCT x1.k AS k`,
   minagg: ({ text, far }) => `${text} RETURN min(${far}.k) AS m`,
   avgagg: ({ text, far }) => `${text} RETURN avg(${far}.k) AS a`,
