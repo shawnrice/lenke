@@ -131248,3 +131248,64 @@ into a loud stop rather than a silent no-op.
 
 GATES. `build` 0; `fmt` 0; `lint` 0; `check` 0; inspect **19** (+6) / core 497 / gremlin 2927 / gql
 5666 / cli 46 / native 1438, all 0 fail.
+
+## Item 2525 — **`inspect`'s `plain` was annotated `: string` and was not total.** `JSON.stringify` THROWS on a bigint and a cycle, and returns `undefined` for a function or symbol — so `formatRows` crashed in `widths` with a message pointing nowhere near the value. Four crashes on inputs its own public signature accepts; now typed branches plus a named `[unserializable]`
+
+### FINISHING THE `inspect` SWEEP
+
+Item 2524 took `table.ts`. This took the rest, and the finding is in `value.ts` — 25 lines, the
+smallest module, whose own comment made a REACHABILITY argument:
+
+> No `bigint` case: the value model is float64-only (bigint is rejected at every write), so a cell
+> value is never a bigint.
+
+True of the WRITE path and irrelevant here: `formatRows(rows: readonly Row[])` with
+`Row = Record<string, unknown>` is a PUBLIC signature that accepts whatever a caller holds, graph or
+not. Item 2516's rule — safe BY TYPE beats safe by REACHABILITY — and this was the weaker kind.
+(`numeric-model-f64` governs what may be STORED; rendering a bigint a caller passed in endorses
+nothing.)
+
+### MEASURED: FOUR CRASHES, FOUR CONTROLS CLEAN
+
+```text
+      CONTROL string / number / null / plain object   OK
+      a bigint                    THREW  JSON.stringify cannot serialize BigInt
+      a circular object           THREW  cannot serialize cyclic structures
+      a function                  THREW  undefined is not an object (cells[i].length)
+      a Symbol                    THREW  undefined is not an object (cells[i].length)
+      a Vertex / an Edge          OK     <- the graph's OWN types render fine
+```
+
+The function and symbol rows are the sharp ones: `JSON.stringify` returns **`undefined`**, not a
+string, so `plain`'s `: string` was false and the crash surfaced downstream in `widths` reading
+`cells[i].length` — a message naming neither the value nor the function responsible. (TypeScript
+cannot catch it: the lib signature for `JSON.stringify` says `string`.)
+
+**A formatter is called to DISPLAY things, usually while diagnosing something else, so throwing
+replaces the information the caller came for.** My circular-adjacency worry was WRONG, though, and
+worth recording: a real `Vertex` and `Edge` both render, so the graph's own types were never the
+problem.
+
+Nothing pinned any of it — the pre-existing suite had no bigint, cyclic, symbol or function case.
+
+### THE FIX, AND THE SURVIVING MUTANT THAT SHOULD SURVIVE
+
+Typed branches (`bigint` → `10`, `symbol` → `Symbol(s)`, `function` → `[function name]`) then a
+`try`/`catch` ending in `'[unserializable]'`. `String(value)` would have been shorter but oxlint's
+`no-base-to-string` objected and was right: `[object Object]` tells a reader nothing, while naming the
+reason is the whole job of a formatter.
+
+```text
+      MUTANT A  bare JSON.stringify (the original)   21 pass  4 FAIL
+      MUTANT B  typed branches, `??` removed         25 pass  0 fail   <- SURVIVED
+      RESTORED                                       25 pass  0 fail
+```
+
+**Mutant B surviving is correct, not a gap.** `JSON.stringify` returns `undefined` for exactly three
+inputs — `undefined`, a function, a symbol — and all three are now handled above it, so the coalesce
+is UNREACHABLE: an EQUIVALENT mutant. Following item 2513's precedent, the invariant is written in a
+comment rather than wrapped in a test that cannot fail, and the line is kept because the invariant is
+one branch away from breaking.
+
+GATES. `build` 0; `fmt` 0; `lint` 0; `check` 0; inspect **25** (+6) / cli 46 / mcp 14 / core 497, all
+0 fail.

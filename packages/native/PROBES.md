@@ -3652,3 +3652,24 @@ surrogate.
 
 The width rows are the open half (decision 11): wcwidth is not implemented, so a CJK cell is still
 under-padded. The clip row is closed.
+
+## `plain-throws-2525.ts` — does formatRows survive values its signature accepts? (item 2525)
+
+```
+cd packages/inspect && bun run plain-throws-2525.ts
+```
+
+```
+      CONTROL string / number / null / plain object   OK
+      a bigint / a circular object                    OK (were THREW before 2525)
+      a function / a Symbol                           OK (were THREW: cells[i].length)
+      a Vertex / an Edge                              OK  <- the graph's own types always rendered
+      a Map / NaN / Infinity                          OK
+```
+
+KEY The function and symbol rows are why this matters: `JSON.stringify` returns `undefined`, not a
+string, so `plain`'s `: string` annotation was false and the crash surfaced in `widths`, naming
+neither the value nor the function responsible.
+
+KEY A real `Vertex`/`Edge` renders fine — the circular-adjacency worry that motivated the probe was
+WRONG, and the row stays to keep that recorded.
