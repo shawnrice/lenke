@@ -68,7 +68,7 @@ import {
 /** What a standing query currently knows. Stable reference between pushes. */
 export type ClientSnapshot = {
   /** Last pushed rows (a stable `[]` before the first push). Empty for a Gremlin query. */
-  rows: Row[];
+  rows: readonly Row[];
   /** A `lang: 'gremlin'` subscription's result values; `undefined` for a GQL query. */
   values?: unknown[];
   /** False until the host has answered (and on error) — render skeletons, not lies. */
@@ -404,7 +404,7 @@ const normalizeForSignature = (text: string, lang?: 'gql' | 'gremlin'): string =
   return out.trimEnd();
 };
 
-const EMPTY_ROWS: Row[] = [];
+const EMPTY_ROWS: readonly Row[] = [];
 const INITIAL: ClientSnapshot = { rows: EMPTY_ROWS, complete: false };
 
 /** Same columns, same values — used to keep a row's identity when a re-push doesn't change it. */

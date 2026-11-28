@@ -130976,3 +130976,77 @@ The SHARING is hazardous under either of (1) or (3) as written; (2) is the narro
 convenience is wanted. Tests ship now so the choice is made deliberately rather than discovered.
 
 GATES. `fmt` 0; `lint` 0; `check` 0; react **26** (+4, via vitest), all 0 fail.
+
+## Item 2521 — **the module-level-singleton sweep: 97 bindings, 95 safe, 2 shared empty sentinels whose TYPE invited a caller to corrupt them.** Both now `readonly` at zero blast radius — and the sweep turned up a real untested contract: the pre-push `rows` identity that `useSyncExternalStore` depends on, where a VALID mutant passed all 176 existing sync tests
+
+### GENERALIZING 2520 MECHANICALLY RATHER THAN HUNTING PROSE
+
+Item 2520's hazard was `const defaultGraph = new Graph()` at module scope — state shared by every
+importer. That shape is countable, so: every top-level `const X = new Thing()` / `[]` / `{}` in
+SHIPPED src (item 2519's split). **97 bindings.**
+
+Most are UPPER_CASE constant lookup tables (step-kind Sets, keyword Maps) — read-only by convention
+and intentionally shared. The hazardous subclass is narrower: **module-level EMPTY SENTINELS that are
+RETURNED to callers**, where a caller that mutates what it receives corrupts the shared instance for
+everyone afterwards. Ten of those:
+
+```text
+      readonly-TYPED   8   EMPTY_VERTICES x3, EMPTY_EDGES x2, EMPTY_ADJ, emptyTags, NO_EDGES (adjacency)
+      *** MUTABLE ***  2   gql/executor/matching.ts NO_EDGES: Edge[]
+                           sync/src/client.ts       EMPTY_ROWS: Row[]
+```
+
+**Eight are safe BY TYPE** (item 2516's distinction). The two that were not are the finding — and
+`NO_EDGES` is the sharper case, because `adjacency.ts` declares the SAME NAME as
+`readonly Edge[]` while `matching.ts` declares it mutable, so the intended convention already
+existed one file away.
+
+### THE SHARING IS CORRECT; ONLY THE TYPE WAS WRONG
+
+Worth stating, because it inverts 2520's conclusion. Both sentinels are shared ON PURPOSE:
+
+- `ClientSnapshot.rows`'s own comment calls it "a stable `[]` before the first push", and that
+  stability is load-bearing — `@lenke/react` feeds these snapshots to `useSyncExternalStore`, which
+  compares BY REFERENCE. A fresh `[]` per call is the classic "getSnapshot should be cached"
+  infinite-render loop.
+- `matching.ts` returns the shared empty to avoid an allocation per adjacency miss, in a function its
+  own comment measures at 19.8% of the largest TS-vs-native shortfall row.
+
+So sharing an EMPTY IMMUTABLE array is right where sharing a MUTABLE Graph (2520) was not. The gap was
+only that `Edge[]` / `Row[]` let a caller write to it — `snapshot.rows.sort()` mutates in place and is
+an easy mistake.
+
+**Blast radius of the fix: ZERO.** Making the sentinels `readonly` first surfaced 5 `TS4104`s — not
+mutations, but the CONSUMING FIELD TYPES (`FlatAdj.edges: Edge[]`, `ClientSnapshot.rows: Row[]`),
+which are the actual contract handed to callers. Widening those two fields to `readonly`:
+**0 typecheck errors across the monorepo.** Nothing mutated them and nothing relied on the mutable
+contract, so this is pure tightening: a future `rows.sort()` is now a compile error instead of a
+silent cross-query corruption.
+
+### A SURVIVING MUTANT THAT PROVED NOTHING, AND THE VALID ONE THAT FOLLOWED
+
+The sweep raised a second question: is the stable-empty identity TESTED? First attempt replaced every
+`EMPTY_ROWS` USE with a fresh `[]`; it survived sync 176/176 and react 26/26 (rebuilt, so react saw
+it) and I took that as the gap.
+
+**That mutant was INVALID.** `const INITIAL: ClientSnapshot = { rows: EMPTY_ROWS, complete: false }`
+is itself a module-level object evaluated ONCE, so swapping `EMPTY_ROWS` for a `FRESH()` call inside
+it cannot change the pre-push behaviour at all. The real sentinel was one level up. A mutant that
+cannot change the behaviour under test is not evidence about the tests.
+
+The VALID mutant — a per-entry `snapshot: { rows: [], complete: false }` — gives a clean three-arm
+measurement:
+
+```text
+      pre-existing 176 tests, valid mutant      176 pass  0 fail   <- the gap was REAL
+      with 3 new tests, valid mutant            178 pass  1 FAIL   <- caught
+      restored                                  179 pass  0 fail
+```
+
+`empty-rows-identity.test.ts` pins repeated `getSnapshot()` before any push, two different queries
+sharing one empty reference, and a snapshot taken before subscribing. Its port's `send` is a no-op so
+no host can ever answer — which is what makes those rows NECESSARILY the sentinel rather than
+coincidentally empty.
+
+GATES. `build` 0; `fmt` 0; `lint` 0; `check` 0; core 497 / gremlin 2927 / gql 5666 / sync **179**
+(+3) / native 1438 / mcp 14 / cli 46 / serialization 144 / react 26, all 0 fail.

@@ -2183,9 +2183,9 @@ export const relHasInlinePred = (rel: CRel): boolean => hasPredicate(rel.pred);
  * NOMINATION, NOT A PRICE". The `forof` arm is the tempting one and it is unreachable: the DFS frame
  * has to suspend and resume mid-bucket, which is exactly what a `for…of` cannot do.
  */
-type FlatAdj = { edges: Edge[]; nodes: Vertex[] | null; fwd: boolean };
+type FlatAdj = { edges: readonly Edge[]; nodes: Vertex[] | null; fwd: boolean };
 
-const NO_EDGES: Edge[] = [];
+const NO_EDGES: readonly Edge[] = [];
 
 const flatAdj = (graph: Graph, v: Vertex, rel: CRel, binding: Binding, params: Params): FlatAdj => {
   const hasPred = relHasInlinePred(rel);
