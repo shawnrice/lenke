@@ -3187,3 +3187,18 @@ inconsistent with itself — `startsWith` (JS-style) against `endingWith` (Tinke
 2488: `has(k, neq(v))` and `has(k, without(…))` INCLUDE elements lacking `k` where TinkerPop excludes
 them (`has('age', neq(29))` returns `lop`/`ripple`, which have no `age`). A `gremlin.rs` comment
 asserts TinkerPop behaves the lenke way; the console refutes it.
+
+### `missing-key-probe-2489.ts` — how far the missing-key defect reaches
+
+`cd packages/gremlin && bun missing-key-probe-2489.ts`. 11 rows over the modern graph, whose
+properties are SPARSE (only four of six vertices have `age`) — the only reason any of this is visible.
+Currently **9 agree, 2 DIFFER**, and the two are exactly `neq` and `without` inside `has()`.
+
+**Every ORDERING predicate agrees** — `gt`, `lte`, `inside`, `outside`, `between` — and so does the
+positive set predicate `within`, `hasNot(k)`, and `values(k).is(neq(v))`. `outside` is the one worth
+watching: its name most invites the vacuous-negation reading and it is correct.
+
+⚠️ The defect is a CONFLATION, not just a wrong answer: TinkerPop's `has(k, neq(v))` requires the key
+(3 rows) while its `not(has(k, eq(v)))` admits absence (5 rows), and lenke returns the 5 for BOTH. So
+lenke cannot express the first form at all — and callers who want today's behaviour already have
+`not(has(k, eq(v)))`, which is why the fix is lower-risk than item 2488 assumed.

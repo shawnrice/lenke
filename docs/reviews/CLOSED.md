@@ -128728,7 +128728,7 @@ surface and the cross-engine contract covers values, not row counts, only by imp
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
 one probe added, `empty-window-probe-2487.ts`, documented in `PROBES.md`.
 
-## Item 2488 — **A WRONG ANSWER IN A VERY COMMON SHAPE: `has(k, neq(v))` and `has(k, without(…))` INCLUDE elements that lack `k` entirely, where TinkerPop EXCLUDES them.** `has('age', neq(29))` returns `lop` and `ripple`, which have no `age` at all. **And a source comment in `gremlin.rs` asserts TinkerPop behaves the way lenke does — the console says it does not.** FOURTH owner decision, because both engines implement the comment
+## Item 2488 — **A WRONG ANSWER IN A VERY COMMON SHAPE: `has(k, neq(v))` and `has(k, without(…))` INCLUDE elements that lack `k` entirely, where TinkerPop EXCLUDES them.** `has('age', neq(29))` returns `lop` and `ripple`, which have no `age` at all. **And a source comment in `gremlin.rs` asserts TinkerPop behaves the way lenke does — the console says it does not.** FOURTH owner decision, because both engines implement the comment (**NARROWED AT ITEM 2489: the defect is EXACTLY `neq` and `without` — every ORDERING predicate agrees — and it is a CONFLATION with `not(has(k, eq(v)))`, which already gives TinkerPop's answer, so existing callers have a spelling that keeps working and the fix is LOWER-RISK than stated here**)
 
 ### HOW THIS WAS REACHED, which is not where I was looking
 
@@ -128792,3 +128792,67 @@ chosen, not stumbled into.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No engine change — one probe added,
 `textp-probe-2488.ts`, documented in `PROBES.md`.
+
+## Item 2489 — **ITEM 2488's DEFECT IS BOUNDED TO EXACTLY `neq` AND `without`, and it is a CONFLATION rather than a plain wrong answer: lenke's `has(k, neq(v))` returns what its own `not(has(k, eq(v)))` returns, where TinkerPop keeps those two forms DISTINCT.** Every ORDERING predicate agrees. 9 of 11 rows agree, which is what makes the two attributable — **and it makes the fix LOWER-RISK than item 2488 assumed**
+
+### THE WORRY, AND IT DID NOT HAPPEN
+
+Item 2488 found `has(k, neq(v))` admitting elements that lack `k`. The obvious concern was that the
+same lowering (`NOT(PropertyExists(k) AND base)`, per `gremlin.rs`'s comment) had been applied to
+every negation and to the ORDERING predicates, where three-valued logic also applies. It has not:
+
+```text
+      row                          lenke                            TinkerPop 3.7.3        verdict
+      hasNot('age')                lop, ripple                      same                   agree
+      has('age', neq(29))          josh, LOP, peter, RIPPLE, vadas  josh, peter, vadas     DIFFER
+      not(has('age', eq(29)))      josh, lop, peter, ripple, vadas  same                   agree
+      has('age', gt(29))           josh, peter                      same                   agree
+      has('age', lte(29))          marko, vadas                     same                   agree
+      has('age', inside(26,33))    josh, marko, vadas               same                   agree
+      has('age', outside(26,33))   peter                            same                   agree
+      has('age', between(27,33))   josh, marko, vadas               same                   agree
+      values('age').is(neq(29))    27, 32, 35                       same                   agree
+      has('age', within(29,32))    josh, marko                      same                   agree
+      has('age', without(29,32))   LOP, peter, RIPPLE, vadas        peter, vadas           DIFFER
+      9 agree, 2 DIFFER of 11
+```
+
+**`outside` is the one that mattered most and it agrees.** It is the ordering predicate whose name
+most invites the vacuous-negation reading, and it correctly requires the key. So does `inside`,
+`between`, `gt`, `lte`, and the positive set predicate `within`. The defect is exactly the two
+NEGATED equality/set predicates and nothing else.
+
+### IT IS A CONFLATION, WHICH CHANGES THE RISK PICTURE
+
+TinkerPop has both forms and they mean different things:
+
+```text
+      has('age', neq(29))     ->  3 rows   KEY REQUIRED — only the PERSONs whose age differs
+      not(has('age', 29))     ->  5 rows   absence ADMITTED — "lacks age, or has a different age"
+```
+
+**lenke's `has(k, neq(v))` returns the 5 — the same answer as lenke's own `not(has(k, eq(v)))`, which
+agrees with TinkerPop.** So the two spellings are conflated: lenke can currently express TinkerPop's
+`not(has(...))` twice over and its `has(k, neq(v))` not at all.
+
+That is materially better news than item 2488 recorded, and worth correcting explicitly: **anyone
+relying on today's behaviour already has a spelling that keeps working** (`not(has(k, eq(v)))`), so
+fixing `neq`/`without` to require the key is a two-row change with a ready migration path, not a
+semantics change that strands existing callers. Item 2488 framed the risk as "changes answers for
+every existing caller over a sparse graph"; the honest framing is "changes answers for callers who
+wrote `has(k, neq(v))`, all of whom can say `not(has(k, eq(v)))` and keep them".
+
+Still the owner's call — it is a behaviour change to a shipped surface and both engines implement the
+current reading deliberately — but the scope is now two predicates, 11 conformance rows, and 9 that
+must not move.
+
+### A MISTAKE WORTH THE LINE
+
+The probe did not get written on the first attempt: the command was
+`cp /dev/null /dev/null && python3 - <<'PYEOF' …`, the pointless `cp` failed, and **`&&` meant the
+heredoc never ran** — while the gates that followed on `;` ran and printed 0, so the output looked
+like a success until `bun` reported the module missing. Read the exit code of the command that
+matters, and do not put a decorative command in front of the one doing the work.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No engine change — one probe added,
+`missing-key-probe-2489.ts`, documented in `PROBES.md`.
