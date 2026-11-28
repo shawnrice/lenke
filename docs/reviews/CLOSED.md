@@ -122819,7 +122819,7 @@ in. Fixed with a value key, shared with the multiset check.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; the gql suite
 green; `hop-projection.ts` verified byte-identical to the pristine copy after the mutation run.
 
-## Item 2417 — **THE RUST SIDE HAD A COUNTING GLOBAL ALLOCATOR ALL ALONG, and item 2416 should have found it before building the TS one.** It covered parse and decode and never EXECUTION — extended here, and the cross-engine answer is decisive: **the Rust aggregate does NOT allocate per element (4x the walk costs +2 allocations) while the TS rung allocates ~124 B/element linearly.** So item 2416's target has a working reference implementation in this repo. Plus the allocation probes are now wired into `bun run`, which they were not
+## Item 2417 — **THE RUST SIDE HAD A COUNTING GLOBAL ALLOCATOR ALL ALONG, and item 2416 should have found it before building the TS one.** It covered parse and decode and never EXECUTION — extended here, and the cross-engine answer is decisive: **the Rust aggregate does NOT allocate per element (4x the walk costs +2 allocations)** ~~[unqualified]~~ **SCOPED TO ONE HOP by item 2425: at TWO and THREE hops it holds 0.77-0.82x of a full row materialisation to return one number (85.7 MB against 105.2 at degree 3), so it streams at one hop and materialises beyond it — the mirror image of the TS engine, whose one-hop case items 2421-2424 fixed.** The one-hop figures stand as measured, and the TS rung allocated ~124 B/element linearly. So item 2416's target has a working reference implementation in this repo. Plus the allocation probes are now wired into `bun run`, which they were not
 
 Three questions, three answers, and two of them are corrections to item 2416.
 
@@ -123648,3 +123648,109 @@ keyers agree on it anyway, and nothing can hand either of them one.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; `bun run test` 0;
 `bun run fuzz` 0. Oracle 4,848/0 with 192 faults and route invariance 2,424/0; `distinct2-check`
 10/0; `distinct-hardvalues` 18/0.
+
+## Item 2425 — **`process.memoryUsage()` IS BLIND TO WASM LINEAR MEMORY, so all four instruments built at items 2416-2419 report NOTHING for the engine the CLI actually runs.** Growing an instance 1.3 MB to 66.8 MB moved `arrayBuffers` by **zero**. The new probe is also the best-posed memory instrument here — linear memory never shrinks, so it is an EXACT high-water mark. **And it found a finding the JS side could not see: the multi-hop aggregate holds ~80% of a full row materialisation to return ONE number, in the engine where that is an OOM**
+
+Item 2424 left `rows`' 2.14x far-driven cliff as the next target. **It is priced ground**: item 1940
+BUILT the edge-driven walk for exactly that case (cliff 8.92x to 2.21x, and my 2.14x is that
+post-fix residual), and item 834 prices what remains as _"the COMPUTED-KEY row build is +12.5 ns a
+row, and its fix is codegen or a contract change"_ — with [[no-runtime-codegen]] FIRM. Checked, not
+re-derived; this item went to the instrument gap instead.
+
+### THE BLINDNESS, measured
+
+```text
+    WebAssembly.Memory grown deliberately      node's view of it
+      1.31 MiB  (fresh instance)                arrayBuffers 4,688,816   external 6,660,172
+     14.42 MiB  after grow(200 pages)           arrayBuffers 4,688,816   external 6,777,630
+     66.85 MiB  after grow(800 more)            arrayBuffers 4,688,816   external 6,777,630
+```
+
+**A 65 MB growth moved `arrayBuffers` by ZERO and `external` by 0.1 MB.** So churn, retained bytes,
+GC share, peak live and the minimum-heap bisection — every instrument of items 2416-2419 — report
+nothing at all for the wasm engine. And `CLAUDE.md` records that **the CLI is wasm-only** and that a
+wasm OOM surfaces as a bare `RuntimeError: unreachable`: the engine most likely to run out of memory
+was the one nothing could measure.
+
+### AND IT IS THE BEST-POSED MEMORY INSTRUMENT IN THIS REPO
+
+wasm linear memory NEVER SHRINKS, so `memory.buffer.byteLength` after a query is an EXACT high-water
+mark. None of the compromises the JS side carries:
+
+```text
+    JS peak (item 2419)                        wasm peak (this item)
+      a LOWER BOUND, sampled at GC points        EXACT, monotonic by construction
+      accurate to one nursery (~1-16 MiB)        accurate to one PAGE (64 KiB)
+      needs a forced GC, then discounts it       needs nothing
+      a process-wide mark buries a small phase   scoped to the instance
+```
+
+Calibrated against a deliberate `grow(160)`: **10.00 MiB reported against 10.00 expected, EXACT.**
+
+It needed one narrow seam — `createWasmEngineParts` returns the backend plus a `linearMemoryBytes()`
+reader, and `createWasmEngineBackend` delegates to it, so there is ONE instantiation path and no
+behavioural difference between the measured and unmeasured spelling. Nothing outside the instance
+can see that memory, which is the whole point.
+
+### THE FIRST RUN REPORTED 0 PAGES FOR EVERY QUERY, and that was the instrument being right
+
+At FANOUT=1 a k-hop walk returns |V| rows whatever k is, so every query fits inside the slack the
+LOAD already reserved (37.19 MiB for 50,000 nodes) and the probe correctly reports nothing. **A query
+only moves the high water when it needs MORE than the graph build did — which is the OOM condition.**
+That needs the row count to outgrow the element count, so the probe gained a `FANOUT` knob. At
+FANOUT=3, N=20,000:
+
+```text
+    shape          rows out      wasm linear memory grown
+      rows (1 hop)    60,000       0.00 MiB   (0 pages)
+      hop1sum              1       0.00 MiB
+      hop1distinct        97       0.00 MiB
+      hop2sum              1       0.00 MiB
+      hop2           180,000       6.88 MiB   (110 pages)
+      hop3           540,000      30.88 MiB   (494 pages)
+      hop3sum              1      10.25 MiB   (164 pages)   <- returns ONE number
+```
+
+**`hop2sum` returns one number and grows nothing; `hop3sum` returns one number and needs 10.25 MiB.**
+
+### THE CROSS-CHECK CORROBORATES IT ON A DIFFERENT QUANTITY
+
+The Rust counting allocator (item 2417's execution cases, which gained a 3-hop pair and an
+`ALLOC_DEG` knob here) measures allocations rather than linear memory. At `ALLOC_DEG=3`, N=20,000:
+
+```text
+    2 hops: RETURN c.age (rows out)     132 allocs   27.6 MB
+    2 hops: sum(c.age)  (ONE row out)   138 allocs   21.1 MB    0.77x of its row form
+    3 hops: RETURN d.age (rows out)     205 allocs  105.2 MB
+    3 hops: sum(d.age)  (ONE row out)   211 allocs   85.7 MB    0.82x
+```
+
+Item 2417 measured the Rust **one-hop** `sum` at **0.14x** of its row form — a streaming fold, 30
+allocations for 20,000 elements. At two and three hops it holds **77-82%** of a full materialisation
+to return a single scalar, in big buffers rather than per-element objects (the counts stay at 138 and
+211).
+
+**SO EACH ENGINE STREAMS AT EXACTLY THE WIDTH THE OTHER MATERIALISES AT:**
+
+```text
+                         ONE hop              TWO+ hops
+      TS engine          materialised         STREAMS (chainFoldLevels)
+                         -> FIXED at 2421
+      Rust/wasm engine   STREAMS (0.14x)      materialises (0.77-0.82x)
+```
+
+The TS half of that table is what items 2421-2424 closed. **The Rust half is open**, and it is the
+half that matters more for an OOM: the CLI is wasm-only, so a multi-hop aggregate over a
+high-fanout graph grows linear memory in proportion to the PATH count while returning one row. Not
+taken here — this item is the instrument, the blindness and the measurement.
+
+### WIRED
+
+`bun run alloc:wasm`, alongside `alloc` / `alloc:calibrate` / `alloc:count` / `alloc:peak` /
+`alloc:gcobs` / `alloc:rust`. `ALLOC_DEG` added to the Rust probe, because at degree 1 the shape
+that shows this cannot be built.
+
+GATES. `cargo fmt -- --check` 0 and `cargo clippy --all-targets -- -D warnings` 0 (per-crate with
+`--manifest-path`, read UNPIPED); `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0;
+`bun run check` 0; `bun run test` 0; `bun run fuzz` 0; the oracle still 4,848/0 with route invariance
+2,424/0. No engine behaviour change: one instantiation seam, one probe, one knob.

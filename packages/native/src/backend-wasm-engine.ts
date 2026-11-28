@@ -148,7 +148,27 @@ export const trapGuarded = (ex: WasmExports): WasmExports => {
 };
 
 /** Instantiate the engine wasm backend from `lenke_engine.wasm`. */
-export const createWasmEngineBackend = async (source: WasmSource): Promise<Backend> => {
+/**
+ * The backend PLUS a reader for the instance's linear memory — the only way to measure what the
+ * wasm engine costs in memory, because nothing outside the instance can see it.
+ *
+ * **MEASURED (item 2425): `process.memoryUsage()` IS BLIND TO WASM LINEAR MEMORY.** Growing an
+ * instance's memory from 1.3 MB to 66.8 MB moved `arrayBuffers` by **ZERO** (flat at 4,688,816) and
+ * `external` by 0.1 MB. So the churn, retained, peak and cap instruments built at items 2416-2419
+ * all read the JS heap and report nothing at all for the wasm engine — while `CLAUDE.md` records
+ * that the CLI is wasm-only and that a wasm OOM surfaces as `unreachable`.
+ *
+ * Linear memory also NEVER SHRINKS, which makes `buffer.byteLength` an EXACT high-water mark rather
+ * than a sampled one: no nursery granularity, no GC-point lower bound, no forced collection to
+ * discount. It is the best-posed memory instrument in this repo, and it was unreachable until this
+ * seam existed.
+ *
+ * `createWasmEngineBackend` delegates here, so there is ONE instantiation path and no behavioural
+ * difference between the measured and the unmeasured spelling.
+ */
+export const createWasmEngineParts = async (
+  source: WasmSource,
+): Promise<{ backend: Backend; linearMemoryBytes: () => number }> => {
   const instance = await instantiate(source);
   const ex = trapGuarded(instance.exports as unknown as WasmExports);
 
@@ -368,5 +388,13 @@ export const createWasmEngineBackend = async (source: WasmSource): Promise<Backe
     },
   };
 
-  return buildEngineBackend(abi);
+  return {
+    backend: buildEngineBackend(abi),
+    // `ex.memory.buffer` is REPLACED when the heap grows (see `u8` above), so this reads the live
+    // buffer on every call rather than caching a length.
+    linearMemoryBytes: () => ex.memory.buffer.byteLength,
+  };
 };
+
+export const createWasmEngineBackend = async (source: WasmSource): Promise<Backend> =>
+  (await createWasmEngineParts(source)).backend;

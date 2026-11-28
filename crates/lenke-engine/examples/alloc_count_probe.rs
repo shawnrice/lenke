@@ -269,9 +269,17 @@ fn main() {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(20_000);
-    let exec_store = harness::social_store(exec_nodes, 1);
+    // DEGREE is a knob since item 2425: at degree 1 a k-hop walk returns |V| rows whatever k is,
+    // so a shape that only outgrows the graph at higher fanout cannot be seen here at all. The
+    // wasm memory probe found a 3-hop aggregate needing 10.25 MiB of linear memory to return ONE
+    // number where the 2-hop one needs nothing, and that only appears above degree 1.
+    let exec_deg: u32 = std::env::var("ALLOC_DEG")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1);
+    let exec_store = harness::social_store(exec_nodes, exec_deg);
 
-    let exec_cases: [(&str, &str); 6] = [
+    let exec_cases: [(&str, &str); 8] = [
         // The row form is the reference: it MUST allocate per row, because it returns them all.
         (
             "1 hop: RETURN b.age (rows out)",
@@ -299,6 +307,17 @@ fn main() {
         (
             "2 hops: sum(c.age) (ONE row out)",
             "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person) RETURN sum(c.age) AS v",
+        ),
+        // THREE hops, added at item 2425. The wasm memory probe showed a 3-hop `sum` growing
+        // 10.25 MiB of linear memory to return ONE number where the 2-hop `sum` grows nothing, so
+        // the allocation count is the cross-check on a different quantity.
+        (
+            "3 hops: RETURN d.age (rows out)",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(d:Person) RETURN d.age AS v",
+        ),
+        (
+            "3 hops: sum(d.age) (ONE row out)",
+            "MATCH (a:Person)-[:KNOWS]->(b:Person)-[:KNOWS]->(c:Person)-[:KNOWS]->(d:Person) RETURN sum(d.age) AS v",
         ),
     ];
 
