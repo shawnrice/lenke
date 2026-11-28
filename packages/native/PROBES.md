@@ -3218,3 +3218,31 @@ neq('x'))` there includes the vertices lacking `k`. So the two surfaces of one e
 the GQL side is the one matching both ISO and TinkerPop. GQL also expresses the OTHER meaning
 (`WHERE k IS NULL OR k <> 'x'`), which is what TinkerPop spells `not(has(k, eq(v)))` — both languages
 have both meanings; only lenke's Gremlin collapses them.
+
+## `math-project-probe-2499.ts` — the `math()` and `project()` families (item 2499)
+
+```
+cd packages/gremlin && bun run math-project-probe-2499.ts
+```
+
+The first instrument for either step: `math(` had ZERO mentions in `PROBES.md` AND zero in
+`CLOSED.md`, `project(` had no probe. 24 rows, oracle TinkerPop 3.7.3, **18 agree / 6 DIFFER**.
+Compared as a multiset with per-level sorting; the row COUNT is reported because several rows are
+cardinality questions.
+
+The six divergences, each verified in BOTH directions (lenke's spelling tried on TinkerPop and
+TinkerPop's on lenke) rather than asserted:
+
+- **natural log is a MUTUAL naming divergence.** TinkerPop: `log(1)`=0.0, `ln(1)` raises. lenke
+  (both engines — `gremlin.rs`'s `is_unary_math_fn` lists `ln`): `ln(1)`=0, `log(1)` unknown. Each
+  side rejects the other's spelling. Same class as item 2488's `startsWith`/`startingWith`.
+- **`cbrt` and `log2` are genuinely absent** from both lenke engines; TinkerPop has `cbrt(8)`=2.0
+  and `log2(8)`=3.0.
+- **`math()` on a STRING returns NaN** where TinkerPop raises `IllegalStateException`.
+- **`project()` with FEWER `by()`s than keys fills `{}`** where TinkerPop CYCLES the `by()` list:
+  `project('n','a').by('name')` is `[n:marko, a:marko]` in TinkerPop, `{n:marko, a:{}}` in lenke.
+
+What AGREES, and is worth knowing: arithmetic and precedence, `%`, `^`, unary minus, `abs`, `sqrt`,
+constant folding, **division by zero RAISES in both** (TinkerPop `ArithmeticException`, lenke
+"math: division by zero" — not an infinity), an unbound variable raises in both, empty input gives
+empty output, `sqrt(-1)` is `NaN` in both, and `project` with equal or one `by()` matches exactly.

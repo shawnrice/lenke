@@ -129481,3 +129481,66 @@ read the result line, do not truncate it.
 
 **I wrote the mutation script with `cat >`,** which this repo's shell rules forbid outright. It
 worked only because the path was fresh — precisely the reliance the rule exists to remove.
+
+## Item 2499 — **THE `math()` AND `project()` FAMILIES HAD NO INSTRUMENT AT ALL, AND SIX ROWS OF 24 DIVERGE.** `math(` was not mentioned ONCE in `CLOSED.md`; natural log turns out to be a MUTUAL naming divergence, and I mischaracterized it three times before checking the adjacent spelling
+
+### WHY THIS FAMILY
+
+The GQL spelling sweep came back clean this tick (0 groups over 2x and clear of the null control —
+item 2498 closed the last one), so the target had to come from coverage rather than from timing. A
+count across both stores found `math(` at **0 in `PROBES.md` and 0 in `CLOSED.md`** and `project(` at
+0 probes. Both steps are exported and neither had ever been asked what it does at the edges.
+
+### THE SIX DIVERGENCES, each verified in BOTH directions
+
+```text
+      natural log      TinkerPop  log(1)=0.0     ln(1) RAISES
+                       lenke      ln(1)=0        log(1) unknown function      MUTUAL naming
+      cbrt(8)          TinkerPop  2.0            lenke  unknown              genuinely absent
+      log2(8)          TinkerPop  3.0            lenke  unknown              genuinely absent
+      math on STRING   TinkerPop  RAISES         lenke  NaN x6
+      project FEWER by TinkerPop  [n:marko, a:marko]   lenke  {n:marko, a:{}}  TP CYCLES the list
+```
+
+`gremlin.rs`'s `is_unary_math_fn` lists `ln`, so **both lenke engines agree with each other** — the
+natural-log row is a TinkerPop conformance gap of item 2488's `startsWith`/`startingWith` class, NOT
+a cross-engine divergence.
+
+### WHAT AGREES, WHICH IS THE LARGER HALF
+
+Arithmetic and precedence, `%`, `^`, unary minus, `abs`, `sqrt`, constant folding, an unbound
+variable raising, empty input giving empty output, `sqrt(-1)` being `NaN` in both, and `project` with
+equal or one `by()` matching exactly. **Division by zero RAISES in both** — TinkerPop
+`ArithmeticException`, lenke "math: division by zero" — which is worth recording because an
+f64 engine returning `Infinity` there would have been the natural guess and is not what happens.
+
+### I MISCHARACTERIZED ONE ROW THREE TIMES
+
+Worth writing down because the shape repeats:
+
+1. **Pre-labelled `log(0)` and `sqrt(-1)` as expected POLICY divergences** on the grounds that
+   `numeric-model-f64` maps NaN and the infinities to null. That rule governs values on the way IN,
+   not values COMPUTED by an expression: `sqrt(-1)` returns `NaN` in lenke and AGREES. A row
+   pre-labelled "expected divergence" is a row whose result nobody reads.
+2. **Then set `log(0)`'s expectation to `THROWS`**, which made lenke's "unknown function" error read
+   as AGREEMENT. TinkerPop does not throw there — it returns `-Infinity`. An expectation written to
+   match what the engine happens to do is not an oracle.
+3. **Then called `log` "not implemented"** without trying the adjacent spelling. It is `ln`, in both
+   engines, and TinkerPop rejects `ln` just as lenke rejects `log`.
+
+Each correction came from running something rather than reasoning further, and the third needed a
+second console round-trip that cost about a minute. The habit that would have skipped all three:
+measure the row, THEN classify it.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Probe only — no engine change, so the
+three conformance questions below are the owner's.
+
+OPEN — **two new owner decisions (the 6th and 7th)**, plus the naming gaps:
+
+- **6th: `math()` on a non-number.** lenke returns NaN, TinkerPop raises. Raising is the stricter and
+  more debuggable behaviour; NaN propagates silently through the rest of an expression.
+- **7th: `project()` with fewer `by()`s than keys.** TinkerPop CYCLES the `by()` list; lenke fills
+  `{}`. TinkerPop's behaviour is surprising but it is the documented one.
+- **`cbrt` / `log2` absent, and `log` vs `ln`.** Adding `cbrt`/`log2` is purely additive and low
+  risk. Accepting `log` as an alias for `ln` is also additive, but it would leave two spellings for
+  one function in a surface that otherwise has one name per thing.
