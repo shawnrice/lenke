@@ -127773,7 +127773,7 @@ every row and must scale with it.** So the step swallows the signal, and the row
 unreadable — not "flat". An earlier cell at N=2,000 had every shape including the CONSTANT control at
 0 MiB, which is the same thing one size down.
 
-That is the third domain limit for these mechanisms, and all three were found by their own controls:
+~~That is the third domain limit for these mechanisms~~ **CORRECTED AT ITEM 2475: `cap` was COARSE BY A CONSTANT, not unfit — the tolerance was a hard-coded `while (hi - lo > 8)`, now `CAP_STEP`, and at 1 MiB the linear control moves 3 -> 4 while the constant one reads 0.** The other two limits stand, and all were found by their own controls:
 `MECH=rss` refuted at item 2419, `MECH=highwater` unfit for growth at 2458 (it called an all-rows
 projection `n^0.05 CONSTANT`), and `MECH=cap` unfit below its ~8 MiB step here.
 
@@ -127813,3 +127813,71 @@ follow-up, not a result.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
 two instruments extended (`alloc:peak` gains `vltrail`/`vlacyclic`, `alloc:retained` gains the two
 frontier arms). The calibration gate still fires: ratio 153.7x and 197.3x across the sweep.
+
+## Item 2475 — **ITEM 2474's "`MECH=cap` IS UNFIT" WAS WRONG: the bisection tolerance was a HARD-CODED `while (hi - lo > 8)`, so the mechanism was coarse by a CONSTANT, not blind by construction.** With `CAP_STEP=1` the linear control moves and the question answers: **GQL's `ACYCLIC` path enumeration STREAMS — its heap need is FLAT across a 3x branching change, where holding those paths would cost 37 MiB.** The prediction from the known mechanism is REFUTED
+
+### THE INSTRUMENT WAS COARSE, NOT BLIND, AND THE DIFFERENCE IS ONE LINE
+
+Item 2474 swept fanout, got exactly 8 MiB in every cell including the LINEAR control, and concluded
+`MECH=cap` could not see the question — recording it as the third mechanism with a domain limit. The
+cause was `while (hi - lo > 8)` in `minCap`: a hard-coded tolerance, not a property of bisection.
+
+It is now `CAP_STEP`, defaulting to 8 so every earlier reading stays reproducible. A finer step costs
+`log2(8 / step)` extra child processes per arm — 1 MiB is three more.
+
+```text
+    N=20,000, query-only MiB above a graph-only arm
+      shape                      step=8          CAP_STEP=1
+                               F=1   F=3        F=1   F=3
+      hop1count  [CONSTANT]      8     8          0     0
+      hop1       [LINEAR]        8     8          3     4     <- MOVES
+```
+
+**The generalized rule: when a known-exponent control does not move, check whether the resolution is
+a CONSTANT you can change before declaring the mechanism unfit.** I had the right diagnosis at 2474
+(the signal is smaller than the step) and drew the wrong conclusion from it.
+
+`hop1` moved 3 -> 4 MiB, not 3x, so the only claim made of it is that it MOVED — which is what
+establishes the run is readable.
+
+### THE ANSWER: THE GENERAL MATCHER STREAMS ITS PATH ENUMERATION
+
+```text
+      vltrail    (MATCH TRAIL   (a:P)-[:E]->{1,3}(z:P) RETURN DISTINCT z.n)   3 MiB   3 MiB
+      vlacyclic  (MATCH ACYCLIC (a:P)-[:E]->{1,3}(z:P) RETURN DISTINCT z.n)   3 MiB   3 MiB
+```
+
+Both flat across a 3x branching change, while the linear control moved in the same run.
+
+**The effect size is what makes this null informative rather than inconclusive.** Item 2474 measured
+the Gremlin side at the SAME branching and depth: `repeat(out).times(3)` at out-degree 3 produces
+540,000 traversers and HOLDS 37.41 MiB. If GQL's general matcher materialized its enumeration, the
+reading would be ~37 MiB against a 1 MiB resolution — 37x. Its absence is a measurement, not a miss.
+
+So the mechanism `acyclic-reachset-2003.mjs` established holds for TIME and NOT for MEMORY: ACYCLIC
+is refused by `needsGeneralMatcher` and enumerates paths, which costs it 22x in time at 20,000
+vertices — but it enumerates them **lazily**, so the heap requirement is indistinguishable from
+TRAIL's reached-set BFS. **A shape can be exponential in time and constant in memory**, and nothing
+in this repo had separated those two for the var-length family.
+
+### AND THE CROSS-ENGINE CONTRAST IS THE USEFUL PART
+
+Same logical shape, two surfaces, opposite memory behaviour: Gremlin's `repeat()` holds its frontier
+(1.41 -> 37.41 MiB as degree goes 1 -> 3, item 2474), GQL's var-length streams it (3 -> 3 MiB). The
+GQL side is the better one here, and the Gremlin frontier is the OOM bound worth fixing.
+
+### WHY NO NEW PROBE WAS BUILT, which was the obvious move and the wrong one
+
+The task was framed as "build a GQL-side retained probe". Both designs fail for reasons worth
+recording rather than discovering twice:
+
+- **No lazy GQL entry point exists.** `query`, `execute` and `prepare` all return `Row[]`, so a
+  retained-DURING reading is not available without an engine-side hook.
+- **Holding the `Row[]` answers nothing here.** TRAIL and ACYCLIC yield the SAME reached set, so a
+  result-held reading is identical for both by construction.
+
+Fixing the existing instrument's resolution was the move; a third probe would have measured the wrong
+quantity more precisely.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
+`peakmem-2419.mjs` gains `CAP_STEP` and the default preserves every prior reading.

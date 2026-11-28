@@ -77,6 +77,7 @@ const SHAPE = process.env.SHAPE ?? 'cal';
 const ARM = process.env.ARM ?? 'parent';
 const SIZES = (process.env.SIZES ?? '25000,50000,100000,200000').split(',').map(Number);
 const REPS = Number(process.env.REPS ?? 1);
+const CAP_STEP = Number(process.env.CAP_STEP ?? 8);
 /** Calibration only: the MiB the child must hold live at once. */
 const HOLD_MIB = Number(process.env.HOLD_MIB ?? 0);
 
@@ -321,7 +322,7 @@ if (text === undefined) {
   throw new Error(`unknown SHAPE ${SHAPE}; have ${Object.keys(SHAPES).join('|')}`);
 }
 
-console.log(`# SHAPE=${SHAPE} MECH=${MECH} FANOUT=${FANOUT} REPS=${REPS}`);
+console.log(`# SHAPE=${SHAPE} MECH=${MECH} FANOUT=${FANOUT} REPS=${REPS} CAP_STEP=${CAP_STEP}`);
 console.log(`# ${text}`);
 
 if (MECH === 'cap') {
@@ -346,7 +347,17 @@ if (MECH === 'cap') {
       return null;
     }
 
-    while (hi - lo > 8) {
+    /*
+     * THE BISECTION TOLERANCE WAS HARD-CODED AT 8 MiB, AND THAT IS WHAT MADE THIS MECHANISM LOOK
+     * UNFIT (item 2475). Item 2474 swept fanout and got exactly 8 MiB in every cell — including the
+     * LINEAR control `hop1`, which returns every row and must scale — while the graph-only baseline
+     * moved 47 -> 71 MiB. The signal was smaller than the step, so the rows were unreadable rather
+     * than flat. `cap` was coarse by a constant, not blind by construction.
+     *
+     * `CAP_STEP` is that constant. The default stays 8 so every earlier reading remains reproducible;
+     * a finer step costs log2(8 / step) extra child processes per arm, so 1 MiB is three more.
+     */
+    while (hi - lo > CAP_STEP) {
       const mid = Math.floor((lo + hi) / 2);
       const ok =
         child(

@@ -3078,10 +3078,19 @@ which DUPLICATES `alloc:peak` and should be folded into it or dropped).
   `hop1` (returns every row) must grow as ~n^1 and `hop1count` must be ~n^0, and highwater reported
   `hop1` as **n^0.05, "CONSTANT - no OOM size"**. It also had a full 200,000-row sort peaking at
   **0.09 MiB**, which is impossible. Fewer collections at larger heaps means fewer samples.
-- `MECH=cap` bisects the smallest `--max-old-space-size` at which the shape completes, in child
+- `MECH=cap` **takes a `CAP_STEP` (default 8 MiB, item 2475)** and bisects the smallest
+  `--max-old-space-size` at which the shape completes, in child
   processes, differenced against a graph-only arm. It asks the OOM question directly instead of
   inferring it from sampling, and at 2458 its controls PASSED: `hop1count` needed 0 MiB at both
   sizes, `hop1` needed 8 MiB at 50k and 16 at 200k.
+
+  ⚠️ **THE DEFAULT STEP HIDES ANY EFFECT UNDER 8 MiB, and item 2474 mistook that for the mechanism
+  being unfit.** Sweeping fanout gave exactly 8 MiB in every cell INCLUDING the linear control, which
+  made the rows unreadable rather than flat. At `CAP_STEP=1` the same cells read 0 (constant control)
+  and 3 -> 4 (linear control). **When a known-exponent control does not move, check whether the
+  resolution is a CONSTANT you can change before declaring the mechanism unfit.** A finer step costs
+  `log2(8 / step)` extra child processes per arm.
+
 - `MECH=rss` is **refuted by its own controls** (see the probe header) and kept only to answer "did
   the query exceed what building the graph already needed".
 
