@@ -98,6 +98,26 @@ const SHAPES = {
   hop1distinct: 'MATCH (a:P)-[:E]->(x1:P) RETURN DISTINCT x1.k AS k',
   hop2: 'MATCH (a:P)-[:E]->(x1:P)-[:E]->(x2:P) RETURN x2.k AS k',
   hop2generic: 'MATCH (a:P)-[:E]->(x1:P)-[:E]->(x2:P) WHERE a.k >= 0 RETURN x2.k AS k',
+  /*
+   * THE SORT FAMILY (item 2458). A full sort MUST hold every row to order them, so `hop1order` is a
+   * second GROWING control alongside `hop1` — and unlike `hop1` it cannot be streamed by any
+   * implementation, which makes it the one arm whose peak is known a priori.
+   *
+   * The question is the BOUNDED pair. Item 2148 closed `ORDER BY` + `SKIP`/`LIMIT` as correctly
+   * routed and at its floor, and it demonstrated that the bounded path "never materializes the
+   * 200,000 rows" FROM TIME: `LIMIT 10` measured 4.97 ms against a 9.93 ms all-rows scan, i.e.
+   * cheaper than touching every row. That is good evidence and it is still an INFERENCE — that
+   * item contains no memory measurement at all (zero occurrences of peak, bytes, MiB or retained).
+   * A top-k whose heap is bounded by `k` has a peak FLAT in the walk; one that sorts and slices has
+   * a peak LINEAR in it. Both answer identically and both can be fast enough to pass a time gate.
+   *
+   * `hop1orderdeepskip` is the arm where the two stories diverge most: item 2148 measured a deep
+   * `SKIP` as costing the same as a full sort in TIME, so if the bound is real its peak should
+   * track `skip + limit` rather than N.
+   */
+  hop1order: 'MATCH (a:P)-[:E]->(x1:P) RETURN x1.k AS k ORDER BY k',
+  hop1orderlimit: 'MATCH (a:P)-[:E]->(x1:P) RETURN x1.k AS k ORDER BY k LIMIT 10',
+  hop1orderdeepskip: 'MATCH (a:P)-[:E]->(x1:P) RETURN x1.k AS k ORDER BY k SKIP 150000 LIMIT 10',
 };
 
 // ── the CHILD: builds the graph, optionally runs the query, reports its own high-water mark ─────

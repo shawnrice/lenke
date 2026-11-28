@@ -3047,3 +3047,45 @@ V8 inlines the callback, so the frame's 27% is the WORK inside it — the `bys` 
 dispatch, the nested lookup and insert — not the dispatch. **A `forEach` frame high in a profile is
 not evidence that `forEach` is the problem**, which is [[frame-attribution-trap]] in its third form
 this session (after a getter frame at item 1916 and a lazy-iterator frame at item 1919).
+
+## MEMORY IS FOUR DIFFERENT QUANTITIES, and this index was 500 items behind (item 2458)
+
+This file's allocation section stops at item 1925 and predates EVERY memory instrument built since.
+That is not a cosmetic gap: item 2457 wrote a second peak-live probe because this index did not
+mention the first one. It mentioned `peakmem` once in 3,000 lines and `alloc:peak` not at all.
+
+**Match the quantity to the question before picking a probe — three of these four are routinely
+quoted for each other, and only one of them bounds what the engine can answer at all.**
+
+| quantity      | what it is                           | instrument                      | what it CANNOT tell you                                                                                                                                              |
+| ------------- | ------------------------------------ | ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| CHURN         | total bytes allocated over a window  | `bun run alloc` (item 2416)     | nothing about simultaneity; a nursery recycles it. `hop2generic` churns 218 MiB at 5.7% GC and is fine                                                               |
+| RETAINED      | what SURVIVES the window             | `bun run alloc` (2416)          | nothing about the middle of the walk                                                                                                                                 |
+| COUNT / SITE  | how many allocations, and where      | `bun run alloc:count` (2418)    | nothing about how many are alive AT ONCE                                                                                                                             |
+| **PEAK LIVE** | the high-water mark DURING the query | **`bun run alloc:peak`** (2419) | — this is the OOM bound. A shape whose peak is CONSTANT in the walk answers any size; one whose peak GROWS has an OOM size, and that size is a property of the SHAPE |
+
+Also here: `alloc:gcobs` (GC observation), `alloc:write` (the write path, item 2432 — five probes
+preceded it and all five were reads), `alloc:rust` / `alloc:wasm`, `alloc:gremlin` (2449, the Gremlin
+surface's first memory numbers), `alloc:askpolicy`, `alloc:labeltest`, and `alloc:retained` (2457,
+which DUPLICATES `alloc:peak` and should be folded into it or dropped).
+
+### `alloc:peak`: USE `MECH=cap`, NOT `MECH=highwater` — measured at item 2458
+
+`alloc:peak` has three mechanisms and they are not interchangeable:
+
+- `MECH=highwater` samples `GCProfiler`'s per-collection `usedHeapSize`, so it only ever reads when
+  **V8 chooses to collect**. At item 2458 it FAILED ITS OWN CONTROL CHECK: the probe states that
+  `hop1` (returns every row) must grow as ~n^1 and `hop1count` must be ~n^0, and highwater reported
+  `hop1` as **n^0.05, "CONSTANT - no OOM size"**. It also had a full 200,000-row sort peaking at
+  **0.09 MiB**, which is impossible. Fewer collections at larger heaps means fewer samples.
+- `MECH=cap` bisects the smallest `--max-old-space-size` at which the shape completes, in child
+  processes, differenced against a graph-only arm. It asks the OOM question directly instead of
+  inferring it from sampling, and at 2458 its controls PASSED: `hop1count` needed 0 MiB at both
+  sizes, `hop1` needed 8 MiB at 50k and 16 at 200k.
+- `MECH=rss` is **refuted by its own controls** (see the probe header) and kept only to answer "did
+  the query exceed what building the graph already needed".
+
+**READ THE CONTROL LINE THE PROBE PRINTS.** It names the two arms whose exponents are known a
+priori; when one of them is wrong, every other row in that run is unusable, however plausible it
+looks. This is the same discipline as [[frame-attribution-trap]], applied to a growth exponent
+rather than a profile frame.

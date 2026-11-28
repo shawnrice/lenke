@@ -107153,7 +107153,7 @@ cardinality and that fixture's is high).
 GATES. `bun run fmt` 0; `bun run check` 0 read unpiped; `bun run test -- --skip-nx-cache` 21/21; 5,204 GQL
 tests; `bun run fuzz` all seven green.
 
-## Item 2148 — **CLOSED BY MEASUREMENT, NOTHING BUILT: `ORDER BY` + `SKIP`/`LIMIT` is correctly routed and at its floor. FOUR refutations, three of them my own hypotheses from this item**
+## Item 2148 — **CLOSED BY MEASUREMENT, NOTHING BUILT: `ORDER BY` + `SKIP`/`LIMIT` is correctly routed and at its floor. ~~[TIME ONLY — item 2458: this entry contains no memory measurement, and whether the bounded path bounds PEAK is unverified; its "never materializes the 200,000 rows" is an inference from time.]~~ FOUR refutations, three of them my own hypotheses from this item**
 
 The last of item 2145's five unbenched features, after 2146 (`OPTIONAL`, 33x) and 2147 (set ops, 5.55x).
 
@@ -126435,7 +126435,7 @@ test: this is a pure refactor of a fill — same buckets, same order, same value
 `untyped-hop-walk.test.ts` plus the multi-label suite already pin the observable behaviour, with the
 mutants from that item still covering the dedupe and the bucket enumeration.
 
-## Item 2457 — **THE ~85 B/VERTEX RESIDUAL IS CLOSED ON BOTH GROUNDS, AND NEITHER IS A MEASUREMENT I MADE: the TIME prize was already refuted at item 2097 (the `yield*` chain is 15x improvable in isolation and 3.4% of the query) and re-derived-then-closed at 2258, and the BYTES are pure churn — `alloc:retained`, a new instrument, puts PEAK RETAINED at 0.1 B/row for both hop arms against 10.4 for an arm that holds its rows.** Sampling `heapUsed` WITHOUT a collection measures OCCUPANCY, not retention, and on that reading a walk holding NOTHING outweighed one holding EVERYTHING
+## Item 2457 — **THE ~85 B/VERTEX RESIDUAL IS CLOSED ON BOTH GROUNDS, AND NEITHER IS A MEASUREMENT I MADE: the TIME prize was already refuted at item 2097 (the `yield*` chain is 15x improvable in isolation and 3.4% of the query) and re-derived-then-closed at 2258, and the BYTES are pure churn — ~~`alloc:retained`, a new instrument,~~ **[DUPLICATES `alloc:peak` — corrected at item 2458]** puts PEAK RETAINED at 0.1 B/row for both hop arms against 10.4 for an arm that holds its rows.** Sampling `heapUsed` WITHOUT a collection measures OCCUPANCY, not retention, and on that reading a walk holding NOTHING outweighed one holding EVERYTHING
 
 Item 2456 removed ~160 B/vertex and left untyped at 116.0 B/row against the typed floor of 31.1.
 This asks what the remaining ~85 B is, and the answer is that it does not matter — twice over.
@@ -126458,9 +126458,15 @@ skipped, the same lever profiled, with "check CLOSED.md before pricing" already 
 **The ceiling that follows is measured, not argued**: whatever the remaining bytes are, routing
 them out through generator fusion buys at most ~3.4% of the query.
 
-### AND THE BYTES ARE NOT A HEADROOM COST — A NEW INSTRUMENT, `alloc:retained`
+### AND THE BYTES ARE NOT A HEADROOM COST — ~~A NEW INSTRUMENT~~ A DUPLICATE ONE, `alloc:retained`
 
-Churn and headroom are different quantities, and no existing probe separated them. `alloc:*`
+**CORRECTED AT ITEM 2458: `alloc:peak` (`peakmem-2419.mjs`) ALREADY measures peak live.** It carries
+this exact churn / retained / count / peak taxonomy in its own header, and it has a `SIZES` growth
+sweep, a `CHILD_HOLD_MIB` calibration arm and a `MECH=cap` heap bisection that this probe lacks. The
+retention numbers below stand — the walk does stream — but the claim of novelty does not, and the
+right action at this item was to RUN `alloc:peak`, not to write a second probe.
+
+Churn and headroom are different quantities, and no existing probe separated them ~~[WRONG: `alloc:peak` does, and says so in its header]~~. `alloc:*`
 measures TOTAL BYTES ALLOCATED, a throughput and GC-pressure figure. What bounds how large a
 traversal can get before the process dies is **PEAK RETAINED**: the live set at the walk's
 high-water mark. Churn is collected as it goes and costs headroom nothing.
@@ -126515,3 +126521,87 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check`
 change — probe and one `package.json` script only. **`package.json` was briefly left as invalid
 JSON** by an insertion after the last entry of `scripts`, which has no trailing comma; the gates
 caught it immediately (`lint 1`, `check 1`) and it was repaired before anything else ran.
+
+## Item 2458 — **ITEM 2457's "NEW INSTRUMENT" WAS A DUPLICATE OF `alloc:peak`, and the store that should have caught it — `PROBES.md` — had stopped at item 1925, mentioning `peakmem` once in 3,000 lines and `alloc:peak` not at all.** Corrected, and the memory instruments are now indexed. Separately: **`MECH=highwater` FAILED THE PROBE'S OWN PRINTED CONTROL CHECK** (it called `hop1`, which returns every row, `n^0.05 CONSTANT`), and `MECH=cap`'s 8 MiB step is **too coarse at N=200,000** — proved by an impossible row, not assumed
+
+### THE DUPLICATION, and the specific store I did not search
+
+Item 2457 presented `alloc:retained` as a new instrument for a question "nothing else here could
+answer". `alloc:peak` (`peakmem-2419.mjs`) already answers it, and its own header states the
+taxonomy 2457 wrote up as a fresh insight:
+
+> `churn` total bytes allocated … `retained` what SURVIVES the window … `count/site` … **`PEAK`
+> (this) the HIGH-WATER MARK of live memory during the query. A shape whose peak is CONSTANT in the
+> walk can answer any size; one whose peak grows with the walk OOMs at some size.**
+
+It also has three MECHANISMS, a `SIZES` growth sweep, and a `CHILD_HOLD_MIB` calibration arm — all
+of which `retained-2457.mjs` lacks. 2457's entry is corrected in its heading, its body and its false
+premise ("no existing probe separated them"); the retention NUMBERS stand, because the finding that
+the hop walks stream is still true.
+
+**I checked `CLOSED.md` for the LEVER and nothing at all for the INSTRUMENT.** That is the gap:
+`CLOSED.md` indexes refuted levers, and a probe is not a lever. `packages/native/PROBES.md` is the
+instrument index — 3,049 lines, "indexed by question", opening with the rule that reading three file
+headers beats writing a fourth probe — and it **ends at item 1925**. Every memory instrument built
+since (2416 churn/retained, 2418 count/site, 2419 peak, 2425's wasm blindness, 2432 the write path,
+2449 the Gremlin surface) is absent from it. So the index was ~500 items behind precisely where I
+needed it.
+
+**Fixed rather than noted**: PROBES.md gains a memory section — the four quantities as a table with
+the probe for each and what each CANNOT tell you, the full `alloc:*` roster, and the mechanism
+guidance below. The first action of a measuring pass is now TWO stores: `CLOSED.md` for levers,
+`PROBES.md` for instruments.
+
+### `MECH=highwater` IS UNFIT FOR A GROWTH QUESTION, AND THE PROBE SAID SO ITSELF
+
+`alloc:peak` prints a control line naming two arms whose exponents are known a priori. Under
+`MECH=highwater`:
+
+```text
+      arm                            growth     required        verdict
+      hop1count  (closed form)       n^-0.00    ~n^0            PASS
+      hop1       (returns every row) n^0.05     ~n^1            *** FAIL ***
+```
+
+It reported the all-rows projection as **"CONSTANT — no OOM size"**, and had a full 200,000-row sort
+peaking at **0.09 MiB** after reading 11.89 and 18.65 MiB at smaller sizes. `GCProfiler`'s
+per-collection `usedHeapSize` only samples when **V8 chooses to collect**, and a larger heap collects
+less often, so the sampling thins exactly where the answer gets bigger.
+
+**Reading the control line is the whole discipline here.** When an arm with a known exponent is
+wrong, every other row in that run is unusable however plausible it looks — and the sort rows looked
+very plausible. Under `MECH=cap` (bisect the smallest `--max-old-space-size` that completes,
+differenced against a graph-only arm) both controls pass.
+
+### THE SORT FAMILY NOW HAS ROWS — AND THE FIRST READING IS BELOW RESOLUTION
+
+`ORDER BY` had no row in any memory instrument. Three are added (`hop1order`, `hop1orderlimit`,
+`hop1orderdeepskip`), because the open question is real: **item 2148 closed `ORDER BY` + `SKIP`/
+`LIMIT` as correctly routed and at its floor, and demonstrated that the bounded path "never
+materializes the 200,000 rows" BY INFERENCE FROM TIME** (`LIMIT 10` at 4.97 ms against a 9.93 ms
+all-rows scan). That item contains **zero** occurrences of peak, bytes, MiB or retained. A top-k
+whose heap is bounded by `k` has a peak FLAT in the walk; one that sorts and slices has a peak LINEAR
+in it. Both answer identically and both pass a time gate.
+
+```text
+    MECH=cap, query-only MiB above a graph-only arm
+      shape                                  N=50,000   N=200,000
+      hop1count   [control: constant]              0          0     PASS
+      hop1        [control: grows]                 8         16     PASS
+      hop1order        (full sort)                 8          8
+      hop1orderlimit   (LIMIT 10)                  8          8
+      hop1orderdeepskip (SKIP 150000 LIMIT 10)     8         16
+```
+
+**This table is NOT a finding, and the reason is in the table.** Every value is a multiple of 8, so
+the bisection step is 8 MiB and these rows are one or two steps apart. The pattern is the one I would
+have predicted — bounded arms flat, deep skip growing like the unbounded control — which is exactly
+why it needs rejecting: `hop1order` is a FULL SORT of 200,000 rows reading **less** than the same
+projection with no sort at all, and that is impossible. A resolution limit is the only consistent
+explanation, and it is established by an impossible row rather than assumed.
+
+A 4x wider sweep (`SIZES=200000,800000`) is running so a linear term moves 16 → 64 MiB and clears the
+step. Until it lands, **item 2148's bound remains unverified in memory, not confirmed.**
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0. No engine change — three probe
+shapes, the PROBES.md section, and the correction to item 2457's entry.
