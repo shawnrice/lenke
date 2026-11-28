@@ -153,8 +153,34 @@ impl<'a> Reader<'a> {
     fn f64(&mut self) -> Result<f64, String> {
         Ok(f64::from_le_bytes(self.take(8)?.try_into().unwrap()))
     }
+    /// An element count read from the input, BOUNDED BY THE BYTES THAT REMAIN.
+    ///
+    /// Item 2539: every `Vec::with_capacity(n)` in `from_binary` is fed from here, and `n` came
+    /// straight off the wire. A single corrupted byte in a length prefix therefore reserved
+    /// whatever that u32 said — measured, one flipped byte asked for **376 GB**, and an
+    /// allocation failure in Rust is an ABORT, not a catchable panic, so `catch_unwind` cannot
+    /// contain it and the process simply dies. For a database that loads snapshots from disk that
+    /// is a robustness defect, not a cosmetic one: no error, nothing to catch, no survivor.
+    ///
+    /// The bound needs no format knowledge. Every element costs AT LEAST ONE BYTE to encode (the
+    /// shortest is an empty string: a 4-byte length, so one byte is already generous), so a count
+    /// larger than the remaining input cannot describe real data. Rejecting it turns an abort into
+    /// an ordinary decode error, and the check is a comparison — it costs nothing on a good
+    /// snapshot, where the count is always far below the remaining size.
+    ///
+    /// This deliberately does NOT cap the capacity and carry on: a count that cannot be satisfied
+    /// means the bytes are corrupt, and a truncated-but-plausible read would invent a graph.
     fn count(&mut self) -> Result<usize, String> {
-        Ok(u32::from_le_bytes(self.take(4)?.try_into().unwrap()) as usize)
+        let n = u32::from_le_bytes(self.take(4)?.try_into().unwrap()) as usize;
+        let remaining = self.buf.len().saturating_sub(self.pos);
+
+        if n > remaining {
+            return Err(format!(
+                "binary: element count {n} exceeds the {remaining} bytes remaining — corrupt or truncated snapshot"
+            ));
+        }
+
+        Ok(n)
     }
     /// BORROWED from the input buffer. The binary format carries an explicit length and no
     /// escapes, so unlike the NDJSON parser's `string_cow` there is no owned fallback at all —
@@ -736,6 +762,155 @@ mod tests {
         bytes[4] = 0xFF; // corrupt the version field
         bytes[5] = 0xFF;
         assert!(from_binary(&bytes).err().unwrap().contains("version"));
+    }
+
+    /*
+     * Item 2539: the decoder must not ABORT on corrupt bytes.
+     *
+     * `truncated_input_errors_cleanly` above chops the input at exactly ONE point (`len - 5`). A
+     * decoder has a length prefix per section, so one cut exercises one branch. Sweeping EVERY
+     * prefix and every single-byte corruption found what one point could not: `count()` returned a
+     * u32 straight off the wire into eleven `Vec::with_capacity(n)` calls, and a single flipped
+     * byte asked for **376 GB**.
+     *
+     * ## WHY THAT WAS WORSE THAN A PANIC, AND WHAT THIS TEST CAN SEE
+     *
+     * An allocation failure in Rust is an ABORT (SIGABRT), not an unwind. `catch_unwind` below
+     * cannot contain it, no `Result` is produced, and the process dies — so before the fix this
+     * test did not fail with a message, it killed the test binary outright (signal 6). For a
+     * database that loads snapshots from disk that is a robustness defect with no survivor.
+     *
+     * So be precise about what the assertions prove. The `catch_unwind` arms catch a PANIC. The
+     * absence of an abort is NOT asserted by any line here — it is evidenced by this test
+     * REACHING its assertions at all. That is why the fix is a bound rather than a bigger
+     * `catch_unwind`: no amount of catching makes an abort recoverable.
+     *
+     * (The 16 GB cgroup cap this repo runs tests under is also why the original finding surfaced
+     * as a clean allocation failure instead of swapping the machine — see CLAUDE.md.)
+     */
+    /*
+     * The bound's RULE, tested on `count()` ITSELF — and the two earlier attempts are why.
+     *
+     * Attempt 1, the prefix/corruption sweep below, catches the SYMPTOM: with the bound removed it
+     * aborts the test binary (376 GB). But WEAKENING the bound a million-fold leaves the sweep
+     * green, because a bound that is still finite does not abort at this fixture size. The sweep
+     * cannot tell a correct bound from a merely survivable one.
+     *
+     * Attempt 2 inflated the first count inside a real snapshot and asserted the error text said
+     * "exceeds … remaining". **That also survived the weakened bound** — because with the first
+     * count let through, the decoder walks into garbage and a LATER `count()` trips the bound and
+     * produces the very same message. The assertion could not attribute the rejection to the site
+     * under test: exactly the trap of asserting that a gate "returned something" rather than what
+     * it decided.
+     *
+     * So test the function. `Reader` is private and this module is its sibling, so `count()` can
+     * be called on a buffer built to make the answer unambiguous.
+     */
+    #[test]
+    fn count_rejects_any_value_larger_than_the_bytes_that_remain() {
+        // 4 bytes of count followed by exactly 6 bytes of payload.
+        let framed = |n: u32| {
+            let mut v = n.to_le_bytes().to_vec();
+            v.extend_from_slice(&[0u8; 6]);
+            v
+        };
+
+        // ACCEPTED: at or below the 6 bytes that remain. The boundary itself is the control that
+        // separates a correct bound from an off-by-one.
+        for n in [0u32, 1, 5, 6] {
+            let bytes = framed(n);
+            let mut r = Reader::new(&bytes);
+
+            assert_eq!(
+                r.count()
+                    .expect("a count within the remaining bytes is valid"),
+                n as usize,
+                "count {n} should be accepted with 6 bytes remaining",
+            );
+        }
+
+        // REJECTED: one past the remaining bytes, and every magnitude above it.
+        for n in [7u32, 8, 100_000, u32::MAX] {
+            let bytes = framed(n);
+            let mut r = Reader::new(&bytes);
+            let err = r.count().expect_err(&format!(
+                "count {n} must be rejected with only 6 bytes remaining"
+            ));
+
+            assert!(
+                err.contains("exceeds") && err.contains("remaining"),
+                "count {n} was rejected for the wrong reason: {err}",
+            );
+        }
+    }
+
+    #[test]
+    fn no_prefix_or_single_byte_corruption_can_panic_the_decoder() {
+        // A richer graph than `fixture()` so more length prefixes exist to corrupt: several
+        // nodes, several edges, multi-label elements and properties of each kind.
+        let mut b = crate::store::Builder::default();
+        let a = b.node(&["Person", "Admin"], &[("age", Value::Num(30.0))]);
+        let c = b.node(&["Person"], &[("name", Value::Str("ann".into()))]);
+        let d = b.node(&["Org"], &[]);
+        b.edge(a, c, "KNOWS");
+        b.edge(c, d, "WORKS_AT");
+        b.edge(a, d, "FOUNDED");
+        let bytes = to_binary(&b.build());
+
+        let prev = std::panic::take_hook();
+        std::panic::set_hook(Box::new(|_| {}));
+
+        let mut prefix_panics: Vec<String> = Vec::new();
+        let mut decoded_prefixes = 0usize;
+
+        for cut in 0..=bytes.len() {
+            let slice = &bytes[..cut];
+
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| from_binary(slice))) {
+                Ok(Ok(_)) => decoded_prefixes += 1,
+                Ok(Err(_)) => {}
+                Err(_) => prefix_panics.push(format!("prefix of length {cut}")),
+            }
+        }
+
+        let mut corrupt_panics: Vec<String> = Vec::new();
+
+        for i in 0..bytes.len() {
+            for v in [0x00u8, 0xff, bytes[i] ^ 0x01] {
+                let mut corrupt = bytes.clone();
+                corrupt[i] = v;
+
+                if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| from_binary(&corrupt)))
+                    .is_err()
+                {
+                    corrupt_panics.push(format!("byte {i} set to {v:#04x}"));
+                }
+            }
+        }
+
+        std::panic::set_hook(prev);
+
+        assert!(
+            prefix_panics.is_empty(),
+            "{} of {} prefixes panicked, e.g. {:?}",
+            prefix_panics.len(),
+            bytes.len() + 1,
+            &prefix_panics[..prefix_panics.len().min(5)],
+        );
+        assert!(
+            corrupt_panics.is_empty(),
+            "{} of {} single-byte corruptions panicked, e.g. {:?}",
+            corrupt_panics.len(),
+            bytes.len() * 3,
+            &corrupt_panics[..corrupt_panics.len().min(5)],
+        );
+
+        // The CONTROL: the complete input is the only prefix that may decode. If this reads 0 the
+        // sweep proved nothing — a decoder that rejects everything passes both asserts above.
+        assert_eq!(
+            decoded_prefixes, 1,
+            "exactly one prefix (the whole snapshot) should decode, got {decoded_prefixes}",
+        );
     }
 
     #[test]

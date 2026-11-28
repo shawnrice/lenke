@@ -132146,3 +132146,82 @@ GATES. `cargo fmt` 0; **`cargo clippy --all-targets -D warnings` caught a real `
 the sink rewrite (exit 101 — which is why the gates run as separate commands with their exit codes
 read), fixed, then 0; Rust **1361 + 4 + 13 + 725**, 0 failed; `bun run fuzz` **57 pass 0 fail**;
 `bun run fmt`/`lint`/`check` 0; serialization 145 / core 511 / native 1438 / gql 5672 / cli 46, 0 failed.
+
+## Item 2539 — **the binary snapshot decoder could be made to ABORT THE PROCESS by one flipped byte: a corrupted length prefix asked for 376 GB, and an allocation failure in Rust is not catchable.** Bounded at the single choke point; the test that pins it took three attempts and the first two are the lesson
+
+### THE INSTRUMENT, AND WHY THE EXISTING TEST COULD NOT SEE IT
+
+`binary.rs` already had the obvious defensive rows — `bad_magic_is_rejected`,
+`unknown_version_is_rejected_not_misdecoded`, `truncated_input_errors_cleanly`. The last one chops
+the input at **exactly one point** (`len - 5`). The format carries a length prefix per section, so
+one cut exercises one branch.
+
+So: sweep EVERY prefix (0..=len) and every single-byte corruption (three values per position), with
+the cleanest oracle available and no spec needed — **the decoder must not panic.**
+
+The first run did not report a panic. It killed the test binary:
+
+```text
+      memory allocation of 376480727128 bytes failed
+      process didn't exit successfully … (signal: 6, SIGABRT)
+```
+
+### WHY THAT IS WORSE THAN A PANIC
+
+`count()` returned a `u32` straight off the wire, and eleven `Vec::with_capacity(n)` calls in
+`from_binary` are fed from it. A single corrupted byte in a length prefix therefore reserved whatever
+that u32 said. **An allocation failure in Rust ABORTS** — it does not unwind, `catch_unwind` cannot
+contain it, no `Result` is produced. For a database that loads snapshots from disk this is a
+robustness defect with no survivor: no error, nothing to catch, the process is gone.
+
+(The repo's 16 GB cgroup cap is why this surfaced as a clean allocation failure rather than swapping
+the machine. CLAUDE.md wrote that rule for _mutants_; here it caught shipped code.)
+
+### THE FIX: ONE CHOKE POINT, AND NO FORMAT KNOWLEDGE
+
+All twelve call sites go through `Reader::count()`, so the bound belongs there. It needs no knowledge
+of the format: **every element costs at least one byte to encode, so a count larger than the bytes
+remaining cannot describe real data.** Rejecting it turns an abort into an ordinary decode error, and
+costs one comparison on a good snapshot. It deliberately does NOT cap the capacity and continue — a
+count that cannot be satisfied means the bytes are corrupt, and a truncated-but-plausible read would
+invent a graph.
+
+After the fix the sweep completes: 209 prefixes (1 ok — the whole input — and 208 errors), 624
+corruptions, **0 panics, no abort**.
+
+### THE TEST TOOK THREE ATTEMPTS, AND THE FIRST TWO ARE THE POINT
+
+```text
+      MUTANT                              attempt 1    attempt 2    attempt 3
+      B1  bound removed (the defect)      SIGABRT      SIGABRT      SIGABRT
+      B2  bound weakened 1,000,000x       8 passed     1 passed     1 FAIL
+      B3  bound off by one                8 passed     —            1 FAIL
+```
+
+**Attempt 1 — the sweep — catches only the SYMPTOM.** With the bound removed it aborts; weakened a
+million-fold it stays green, because a bound that is still finite does not abort at this fixture
+size. The sweep cannot tell a correct bound from a merely survivable one.
+
+**Attempt 2 inflated the first count inside a real snapshot** and asserted the error said
+"exceeds … remaining". That ALSO survived the weakened bound — because with the first count let
+through, the decoder walks into garbage and a **later** `count()` trips the bound and emits the very
+same message. The assertion could not attribute the rejection to the site under test. That is the
+trap of asserting a gate "returned something" rather than what it decided, and it took measuring the
+mutant to see it: my reasoning said attempt 2 should work.
+
+**Attempt 3 tests `count()` itself.** `Reader` is private and the test module is its sibling, so the
+function can be called on a 4-byte count framed by exactly 6 payload bytes: 0/1/5/6 accepted (the
+boundary is the control that separates a correct bound from an off-by-one), 7/8/100000/u32::MAX
+rejected. B2 and B3 both die on it.
+
+### WHAT THE SWEEP CAN AND CANNOT ASSERT
+
+Worth stating because it is not obvious: the `catch_unwind` arms catch a PANIC, and **the absence of
+an abort is asserted by no line** — it is evidenced by the test REACHING its assertions at all. That
+is why the fix had to be a bound rather than a wider `catch_unwind`. The sweep also carries a control
+asserting exactly one prefix decodes, because a decoder that rejected everything would satisfy both
+panic assertions.
+
+GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0; Rust **1363 + 4 + 13 + 725** (+2),
+0 failed; `bun run fuzz` **57 pass 0 fail** (a storage-format change needs them); `bun run check` 0;
+native 1438 / cli 46, 0 failed.
