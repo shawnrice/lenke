@@ -3880,3 +3880,173 @@ fn an_indexed_bool_seek_declines_at_its_own_measured_break_even() {
         "an absent key is not"
     );
 }
+
+/*
+ * Item 2548: item 69 found that per-conjunct pushdown could move a RAISING predicate below a hop,
+ * where it sees rows the hop removes — "optimizing turned an answer into an error". It fixed that
+ * with `can_raise`, consulted by one `pushable` rule.
+ *
+ * `can_raise` names eight `Expr` variants and sends the other twenty-seven to `_ => false`. Most of
+ * that is deliberate and item 69 says why: a bare `Compare` is NOT claimed safe, because blocking
+ * comparisons from pushdown would block index seeding, which is what pushdown is for.
+ *
+ * But `Xor` is not that case. It is the structural twin of `And` and `Or` — `Xor(Box<Expr>,
+ * Box<Expr>)` — it is real ISO GQL surface syntax the parser builds, and it was the ONE boolean
+ * connective of four that did not recurse into its operands. The same held for every other
+ * container: `Case`, `List`, `Record`, `MapLit`, `Field`, `Index`.
+ *
+ * MEASURED, before the fix, on a fixture where the faulting node has no outgoing edge:
+ *
+ *     Xor(raising, safe)                 pushed below hop  raw 1 row   optimized PANIC
+ *     Case branch value                  pushed below hop  raw 0 rows  optimized PANIC
+ *     Compare over a List holding it      pushed below hop  raw 0 rows  optimized PANIC
+ *     Compare over a Record holding it    pushed below hop  raw 0 rows  optimized PANIC
+ *     Compare over a MapLit holding it    pushed below hop  raw 0 rows  optimized PANIC
+ *
+ * while `And`, `Or` and `Not` wrapping the SAME predicate all declined correctly. Five shapes where
+ * optimizing turns an answer into an error — item 69's bug, through the siblings its fix missed.
+ *
+ * `rewrite_fuzz` cannot see this and item 69 says why: it compares row MULTISETS, and the optimized
+ * plan produces no rows to compare. That is what makes a table like this the instrument.
+ *
+ * `Case otherwise` is NOT in the table: the RAW plan faults there too, so it was never a divergence
+ * — printing the raw column is what distinguished it from the five that were.
+ */
+#[test]
+fn a_raising_predicate_inside_any_container_is_not_pushed_below_a_hop() {
+    // The faulting node (`x = 0`, so `2 % x` raises) has NO outgoing edge, so the hop removes it:
+    // above the hop the predicate never sees it, below the hop it does. That is the whole fixture.
+    let store = {
+        let mut b = Builder::default();
+        let alice = b.node(&["Person"], &[("x", n(2.0))]);
+        let bob = b.node(&["Person"], &[("x", n(4.0))]);
+        b.node(&["Person"], &[("x", n(0.0))]);
+        b.edge(alice, bob, "KNOWS");
+        b.build()
+    };
+
+    let raising = cmp(
+        CompareOp::Eq,
+        Expr::Arith {
+            op: crate::ir::ArithOp::Rem,
+            left: Box::new(Expr::Lit(n(2.0))),
+            right: Box::new(prop(0, "x")),
+        },
+        Expr::Lit(n(1.0)),
+    );
+    let safe = cmp(CompareOp::Ne, prop(0, "x"), Expr::Lit(n(-1.0)));
+
+    let containers: Vec<(&str, Expr)> = vec![
+        ("a bare raising predicate", raising.clone()),
+        (
+            "And, which already recursed",
+            Expr::And(Box::new(raising.clone()), Box::new(safe.clone())),
+        ),
+        (
+            "Or, which already recursed",
+            Expr::Or(Box::new(raising.clone()), Box::new(safe.clone())),
+        ),
+        (
+            "Not, which already recursed",
+            Expr::Not(Box::new(raising.clone())),
+        ),
+        (
+            "Xor, the sibling that did not",
+            Expr::Xor(Box::new(raising.clone()), Box::new(safe.clone())),
+        ),
+        (
+            "a Case branch value",
+            Expr::Case {
+                branches: vec![(safe.clone(), raising.clone())],
+                otherwise: None,
+            },
+        ),
+        (
+            "a List element",
+            cmp(
+                CompareOp::Eq,
+                Expr::List {
+                    items: vec![raising.clone()],
+                },
+                Expr::Lit(n(1.0)),
+            ),
+        ),
+        (
+            "a Record field",
+            cmp(
+                CompareOp::Eq,
+                Expr::Record {
+                    fields: vec![("k".into(), raising.clone())],
+                },
+                Expr::Lit(n(1.0)),
+            ),
+        ),
+        (
+            "a MapLit entry",
+            cmp(
+                CompareOp::Eq,
+                Expr::MapLit {
+                    entries: vec![("k".into(), raising.clone())],
+                    omit_absent: false,
+                },
+                Expr::Lit(n(1.0)),
+            ),
+        ),
+        (
+            "a Field base",
+            cmp(
+                CompareOp::Eq,
+                Expr::Field {
+                    base: Box::new(raising.clone()),
+                    key: "k".into(),
+                },
+                Expr::Lit(n(1.0)),
+            ),
+        ),
+    ];
+
+    for (tag, pred) in containers {
+        let plan = Plan::Scan {
+            label: Some("Person".into()),
+        }
+        .expand(0, Dir::Out, &["KNOWS".to_string()])
+        .filter(pred);
+
+        // `assert_rows_preserved` would panic on the FAULT rather than report it, so the shape is
+        // asserted directly: a Filter still on top means the predicate did not move below the hop.
+        let opt = optimize(plan.clone());
+
+        assert!(
+            matches!(opt, Plan::Filter { .. }),
+            "{tag}: a raising predicate was pushed below the hop, where it sees rows the hop \
+             removes — item 69's defect. Optimized plan: {opt:?}",
+        );
+
+        // And the answer is unchanged, which is the contract the shape protects.
+        assert_eq!(
+            bag(&run(&plan, &store)),
+            bag(&run(&opt, &store)),
+            "{tag}: optimizing changed the answer",
+        );
+    }
+}
+
+/// The control for the test above: pushdown still WORKS. Without this, making `can_raise` return
+/// `true` for everything would pass — the fix would be indistinguishable from disabling the rule.
+#[test]
+fn a_safe_predicate_in_the_same_shape_still_pushes_below_the_hop() {
+    let store = social();
+    let plan = Plan::Scan {
+        label: Some("Person".into()),
+    }
+    .expand(0, Dir::Out, &["KNOWS".to_string()])
+    .filter(cmp(CompareOp::Eq, prop(0, "name"), Expr::Lit(s("alice"))));
+
+    let opt = assert_rows_preserved(&plan, &store);
+
+    assert!(
+        matches!(opt, Plan::Expand { .. }),
+        "a non-raising predicate must still push below the expand, or item 2548's fix has \
+         disabled pushdown rather than scoped it: {opt:?}",
+    );
+}

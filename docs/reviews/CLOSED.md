@@ -132807,3 +132807,77 @@ than a missing one (rule xxxviii); it stays a calibration knob verified by hand,
 
 GATES. `cargo fmt` 0; clippy 0 in BOTH configurations; Rust **default 1369 + 4 + 13 + 725** (+3) and
 **capi 1385 + 4 + 13**, 0 failed; `bun run fmt`/`check` 0. Tests-only, so no fuzz run owed.
+
+## Item 2548 — **A WRONG ANSWER: optimizing turns rows into an error for FIVE expression shapes.** Item 69's defect, alive through the containers its fix did not recurse into — found by sweeping for answer-equivalent route choosers and landing on one that was NOT answer-equivalent
+
+### HOW IT WAS FOUND
+
+Item 2547 established that an answer-equivalent route chooser is invisible to every test, so this item
+swept for the rest of the class. The predicate (`prefer_*`/`should_*`/`can_*`/`try_*` returning
+`bool`/`Option`) found 35 candidates. **My first bucketing was a false read** — `assert!(name(` cannot
+see an `Option`-returning rung, and the corrected predicate showed 20 of 26 `try_*` rungs ARE named in
+tests. What was genuinely untested was three `bool` gates, and one of them was not answer-equivalent at
+all: **`can_raise` in `opt.rs`, zero test mentions.** (Its "13 call sites" were also a miscount — 4 real
+sites, the rest its own recursion.)
+
+### THE DEFECT
+
+Item 69 (2026-09-30) found that per-conjunct pushdown could move a RAISING predicate below a hop,
+where it sees rows the hop removes: `MATCH (n:T)-[:E]->(m) WHERE ((2 % n.x) IS NOT TRUE)` gave 2 rows
+raw and `E_INVALID_VALUE` optimized. It fixed that with `can_raise`, consulted by one `pushable` rule.
+
+`can_raise` names 8 of `Expr`'s 35 variants and sends 27 to `_ => false`. **Most of that is deliberate
+and item 69 says why** — a bare `Compare` is not claimed safe, because blocking comparisons from
+pushdown would block index seeding, which is what pushdown is for. So the `_` arm is not per se a bug.
+
+**But `Xor` is not that case.** It is the structural twin of `And`/`Or` — `Xor(Box<Expr>, Box<Expr>)` —
+it is ISO GQL surface syntax the parser builds (6 sites in `gql.rs`), and it was the ONE boolean
+connective of four that did not recurse. Measured on a fixture whose faulting node has no outgoing
+edge:
+
+```text
+      bare raising                      pushed=false   raw 0 rows   optimized 0 rows
+      CONTROL And(raising, safe)        pushed=false   raw 0 rows   optimized 0 rows
+      CONTROL Or(raising, safe)         pushed=false   raw 1 row    optimized 1 row
+      CONTROL Not(raising)              pushed=false   raw 1 row    optimized 1 row
+      Xor(raising, safe)                pushed=TRUE    raw 1 row    optimized PANIC
+      Case branch value                 pushed=TRUE    raw 0 rows   optimized PANIC
+      Compare over a List holding it    pushed=TRUE    raw 0 rows   optimized PANIC
+      Compare over a Record holding it  pushed=TRUE    raw 0 rows   optimized PANIC
+      Compare over a MapLit holding it  pushed=TRUE    raw 0 rows   optimized PANIC
+      CONTROL safe only                 pushed=true    raw 1 row    optimized 1 row
+```
+
+**Five shapes where optimizing turns an answer into an error** — a direct violation of the optimizer's
+stated contract, in the engine, reachable from GQL surface syntax.
+
+`Case otherwise` is deliberately NOT in that list: the RAW plan faults there too, so it was never a
+divergence. Printing the raw column is what separated it from the five that were.
+
+**`rewrite_fuzz` cannot see any of this, and item 69 already said why**: it compares row MULTISETS, and
+the optimized plan produces no rows to compare. A 500000-seed sweep is silent on it.
+
+### THE FIX
+
+`can_raise` now recurses into every CONTAINER: `Xor`, `Case` (branch conditions, branch values and
+`otherwise`), `List`, `Record`, `MapLit`, `Field` (its base) and `Index` (base and index). These are
+containers, not leaf predicates, so this costs none of the index-seeding latitude item 69 kept for a
+bare `Compare` — and being more conservative can only DECLINE a rewrite, never enable a wrong one.
+
+**The common dotted case is unaffected, and an existing test proves it**: `Field`'s base in `n.m.k` is
+a `Prop`, which is not raising, so `dotted_field_eq_seeds_index_both_spellings` still passes.
+
+```text
+      M1  revert ONLY the Xor arm (item 69's exact miss)        1 FAIL
+      M2  revert ONLY the List arm                             1 FAIL
+      M3  can_raise always true — the fix as a DISABLE         13 FAIL
+```
+
+M3 is the grading that matters: the lazy version of this fix breaks 13 tests, so what shipped is scoped
+rather than a blanket decline. M1 and M2 each kill exactly one test, so every arm is independently
+covered. The second new test is the productive control — a safe predicate in the same shape still
+pushes below the hop — without which M3 would have passed.
+
+GATES. `cargo fmt` 0; clippy 0 in BOTH configurations; **`LENKE_OPT_FUZZ_SEEDS=500000 rewrite_fuzz` 10
+passed in 102 s**; Rust **default 1371 + 4 + 13 + 725** (+5) and capi equivalent, 0 failed; `bun run
+fmt`/`check` 0; `bun run fuzz` **57 pass, 0 fail**.

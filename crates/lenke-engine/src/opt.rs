@@ -3127,8 +3127,27 @@ fn prune_or_branches(e: Expr, bounds: &[(usize, String, CompareOp, f64)]) -> Exp
 fn can_raise(e: &Expr) -> bool {
     match e {
         Expr::Arith { .. } | Expr::Call { .. } | Expr::Cast { .. } => true,
-        Expr::And(a, b) | Expr::Or(a, b) => can_raise(a) || can_raise(b),
+        Expr::And(a, b) | Expr::Or(a, b) | Expr::Xor(a, b) => can_raise(a) || can_raise(b),
         Expr::Not(a) => can_raise(a),
+        // Item 2548: every CONTAINER must be transparent, or a raiser hides inside it and a
+        // rewrite relocates it. `Xor` was the tell — the structural twin of `And`/`Or`, and the
+        // only one of the four boolean connectives that did not recurse. Measured: five shapes
+        // turned rows into a fault. These are containers, not leaf predicates, so recursing costs
+        // none of the index-seeding latitude item 69 deliberately kept for a bare `Compare`.
+        Expr::Case {
+            branches,
+            otherwise,
+        } => {
+            branches
+                .iter()
+                .any(|(when, then)| can_raise(when) || can_raise(then))
+                || otherwise.as_deref().is_some_and(can_raise)
+        }
+        Expr::List { items } => items.iter().any(can_raise),
+        Expr::Record { fields } => fields.iter().any(|(_, e)| can_raise(e)),
+        Expr::MapLit { entries, .. } => entries.iter().any(|(_, e)| can_raise(e)),
+        Expr::Field { base, .. } => can_raise(base),
+        Expr::Index { base, index, .. } => can_raise(base) || can_raise(index),
         Expr::Compare { left, right, .. } => can_raise(left) || can_raise(right),
         Expr::In { needle, haystack } => can_raise(needle) || can_raise(haystack),
         _ => false,
