@@ -126600,7 +126600,7 @@ why it needs rejecting: `hop1order` is a FULL SORT of 200,000 rows reading **les
 projection with no sort at all, and that is impossible. A resolution limit is the only consistent
 explanation, and it is established by an impossible row rather than assumed.
 
-A 4x wider sweep (`SIZES=200000,800000`) is running so a linear term moves 16 → 64 MiB and clears the
+~~[LANDED at item 2460: both controls hold (count 8->8, hop1 16->47) and `LIMIT 10` reads 23 against a full sort's 39 at 800k — but `MECH=cap` measures GC HEADROOM, not the live set, so it CANNOT verify the `skip + limit` bound. That rests on item 2459's structural reading.]~~ A 4x wider sweep (`SIZES=200000,800000`) is running so a linear term moves 16 → 64 MiB and clears the
 step. Until it lands, **item 2148's bound remains unverified in memory, not confirmed.**
 
 ~~[PARTLY ANSWERED BY STRUCTURE at item 2459: `projection.ts:1044` calls `boundedTopK` with a cap of `(skipBound ?? 0) + limitBound`, so the bound is the WINDOW (`skip + limit`), not N. The cap-sweep numbers are still wanted, but the shape of the bound is no longer in doubt.]~~
@@ -126677,3 +126677,91 @@ against a full sort's `n log n` (~61,500 at n = 5,000).
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
 **5,515 tests 0 fail** including the 13 new ones. No engine change — a test file only.
 `projection.ts` restored and verified byte-identical after both mutant passes.
+
+## Item 2460 — **A COVERAGE MAP: 37 of 93 ROUTE-GATE exports are named in no test, 18 of them `detect*` route detectors** — the one class where a mutant survives every differential suite by construction. **And my first run of the survey was WRONG (it said 42 and 364): it collected test files only from the package the SOURCE lives in, so it missed `packages/native/src`, where `valueCannotRaise`'s tests actually are.** Plus: `MECH=cap` is dominated by GC HEADROOM, so it cannot verify the `skip + limit` bound
+
+### THE SURVEY BUG, which I caught by checking a specific name rather than trusting the list
+
+The survey walked `packages/gql/src` and `packages/gremlin/src` and searched for each exported symbol
+in the test files **of those same two trees**. But tests for GQL symbols also live in
+`packages/native/src` — `and-short-circuit-conformance.test.ts` names `valueCannotRaise` twice — so
+every symbol tested only from there was reported as untested.
+
+```text
+                              broken survey   corrected
+      test files scanned            ~?            800
+      ALL exports, no test          364           339
+      ROUTE GATES, no test           42            37
+```
+
+**What saved it was picking one name off the list and reading it**, not re-reading the script.
+`valueCannotRaise` looked like the most consequential entry (the file header calls
+`cannotFault`/`truthCannotRaise`/`valueCannotRaise` a trio that "decide whether a conjunct is safe to
+evaluate ahead of a faulting one, which is what licenses reordering a `WHERE` at all"), so it got
+looked up first — and it was tested. Item 2459's `boundedTopK` finding is unaffected: that search
+walked all of `packages`, which is why it is still correct.
+
+### THE MAP, corrected
+
+Most of the 339 untested-by-name exports are NOT a gap: `runSet`, `mapStep`, `runDelete` and their
+kind are exercised through behavioural queries. **The significant subset is route gates, because a
+route choice is ANSWER-EQUIVALENT** — the fast arm and the general arm return the same rows, so no
+differential, fuzz or conformance test can see a mutant in an admission condition. That is
+`perf-gate-needs-its-own-test`, and item 2459 is the worked example.
+
+```text
+    18 detect* route detectors with no test by name
+      detectChainDistinctLevels      detectChainFoldLevels       detectChainGroupedLevels
+      detectChainOrderedProjection   detectChainPagedProjection  detectChainStarCount
+      detectForCount                 detectForProjection         detectHop2GroupedCount
+      detectHop2OrderedProjection    detectHop2PagedProjection   detectHopDistinctProjection
+      detectNodeDistinctProjection   detectOptionalGroupedHopCount
+      detectOptionalOrderedProjection detectShortestEndpointCount detectVarLengthCount
+      (and csrEligible, which gates the CSR arm)
+
+    19 predicates with no test by name — the load-bearing ones
+      quantifierServed  trailMinAdmissible  isAcyclicMode     (var-length semantics)
+      tailIsOrderFree   tailIsOrderFreeFrom isSliceable       (order/slice licences)
+      isMemoUncorrelated isConstExpr        isKnownScalarFn
+```
+
+The var-length three are the ones to take first: `ACYCLIC`/`TRAIL` admission is where this repo has
+already SHIPPED a wrong answer (the zero-length path omission, shipped at 2002 and caught at 2005 by
+a fuzzer, not by a unit test). **Two caveats before writing any of them**, both already paid for:
+`gate-returning-a-value` (asserting "it returned something" let three wrong residuals through — assert
+the VALUE's content) and `rung-precedence-hides-the-code-under-test` (13 passing tests exercised none
+of a new path because a rung above answered every shape — delete the key line and see whose ANSWER
+changes).
+
+### AND `MECH=cap` CANNOT VERIFY THE `skip + limit` BOUND — it measures HEADROOM, not the live set
+
+The 4x sweep item 2458 started, with both controls holding:
+
+```text
+    MECH=cap, query-only MiB above a graph-only arm
+      shape                                    N=200,000   N=800,000
+      hop1count   [control: constant]               8           8     PASS
+      hop1        [control: grows]                 16          47     PASS
+      hop1order        (full sort)                  8          39
+      hop1orderlimit   (LIMIT 10)                   8          23
+      hop1orderdeepskip (SKIP 150000 LIMIT 10)      8          39
+```
+
+`LIMIT 10` needs LESS than the full sort (23 against 39) — so the bounded route is visible — **but it
+is not CONSTANT, and a ten-element heap should need kilobytes.** That is not a defect in the bound. It
+is what `MECH=cap` measures: the smallest heap in which the process COMPLETES, and a collector needs
+headroom above the live set. A query that streams while churning still demands heap proportional to
+its churn, which is exactly item 2457's finding (the walk retains ~0.1 B/row while churning ~116).
+
+**So three mechanisms now have a stated domain**: `rss` refuted by its own controls, `highwater`
+unfit for growth (item 2458), and `cap` answering "how much heap does this shape need" — the
+practical OOM question — while conflating churn headroom with retention, so it cannot isolate a live
+set. The `skip + limit` bound rests on item 2459's structural reading (`projection.ts:1044` passes
+`(skipBound ?? 0) + limitBound` as the cap), which is not a measurement and does not need to be.
+
+The deep-skip arm reads equal to the full sort (39 = 39), which the structural reading predicts: a cap
+of 150,010 against 800,000 rows is a large fraction of a full sort, and the 8 MiB step cannot resolve
+the rest.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change,
+no new probe — a survey, a correction, and the sweep item 2458 left running.
