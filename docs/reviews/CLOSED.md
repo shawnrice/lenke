@@ -126603,5 +126603,77 @@ explanation, and it is established by an impossible row rather than assumed.
 A 4x wider sweep (`SIZES=200000,800000`) is running so a linear term moves 16 → 64 MiB and clears the
 step. Until it lands, **item 2148's bound remains unverified in memory, not confirmed.**
 
+~~[PARTLY ANSWERED BY STRUCTURE at item 2459: `projection.ts:1044` calls `boundedTopK` with a cap of `(skipBound ?? 0) + limitBound`, so the bound is the WINDOW (`skip + limit`), not N. The cap-sweep numbers are still wanted, but the shape of the bound is no longer in doubt.]~~
+
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0. No engine change — three probe
 shapes, the PROBES.md section, and the correction to item 2457's entry.
+
+## Item 2459 — **`boundedTopK` HAD NO UNIT TEST, and it is the function that makes `ORDER BY … SKIP s LIMIT n` bounded in MEMORY: `projection.ts` calls it with a cap of `s + n`, so the live set is `s + n` and never the walk.** 13 tests, 5 of 6 mutants caught — and **the survivor is SEMANTICALLY EQUIVALENT, established by a 4,000-trial differential against an independent reference rather than assumed**
+
+### THE GAP, and why no existing suite could cover it
+
+`boundedTopK` is an exported pure function in `packages/gql/src/executor/projection.ts` — a bounded
+max-heap with an arrival-index tiebreak. **No test file referenced it.** Its sibling
+`boundedTopKeyed` is unit-tested in `topk-node-scan.test.ts`, which states the reason in its own
+header: the route is ANSWER-EQUIVALENT, so a mutant that flips a condition survives every
+differential test, and the admission rule therefore gets a direct unit test
+(`perf-gate-needs-its-own-test`). `boundedTopK` itself never got the same treatment.
+
+**And it answers the question item 2458 left open by STRUCTURE rather than measurement.** Line 1044
+is `boundedTopK(keyed, (skipBound ?? 0) + limitBound, cmp)`: the cap is `skip + limit`. So
+`LIMIT 10` keeps a heap of ten and `SKIP 150000 LIMIT 10` keeps 150,010 — bounded by the WINDOW, not
+by N, which is exactly what the engine should do. Item 2148 inferred that from time (`LIMIT 10`
+cheaper than a full scan) and item 2458's first memory table was below resolution; reading the call
+site settles the shape of the bound, and the tests now pin it.
+
+### THE CONTRACT, read off the code rather than guessed
+
+- `cap <= 0` short-circuits to `[]` **before touching the input** — load-bearing, because the
+  eviction branch reads `heap[0]` and an empty heap would make that `undefined`.
+- keeps the `cap` smallest by `cmp`, ties broken by ARRIVAL INDEX.
+- the final `heap.sort` means the result is ASCENDING and STABLE, not heap-array order.
+- the subtle one: an incoming element that compares EQUAL to the worst kept is **refused**, because
+  `less` falls through to `a.i < b.i` and the incoming index is always larger. **Earlier arrival
+  wins a tie.** Flipping that keeps the same multiset of KEYS and changes only which equal-keyed
+  rows survive — invisible to any test that asserts keys, and item 605 records tie order as
+  observable between the engines.
+
+### THE MUTANTS, which is the only reason the above is believable
+
+```text
+    baseline                                        13 pass  0 fail
+      cap-guard-off-by-one    (<= 0  ->  < 0)       CAUGHT  12 pass  1 fail
+      stability-tiebreak-flip (a.i < b.i  ->  >)    CAUGHT  10 pass  3 fail
+      comparator-reversed     (c < 0  ->  c > 0)    CAUGHT   4 pass  9 fail
+      push-bound-off-by-one   (< cap  ->  <= cap)   CAUGHT   5 pass  8 fail
+      admission-inverted      (less(e,h0) swapped)  CAUGHT   5 pass  8 fail
+      final-sort-neutered     (? 1 : 0  ->  0)      *** SURVIVED ***
+```
+
+**The survivor is not a test gap.** `return less(b, a) ? 1 : 0` neutered to `return 0` leaves a
+comparator that answers −1 or 0 and never a positive, and a differential against an independent
+reference (stable sort + slice, sharing no code with the heap) found **no mismatch in 4,000 random
+(input, cap) trials**. The reason is real: a stable sort decides a swap by asking
+`cmp(b, a) < 0`, so knowing "is the later element strictly less than the earlier one" is sufficient
+and the positive branch is never consulted.
+
+So this is a REDUNDANT branch, not an untested one — the same verdict this very file already records
+for its `!proj.aggregating` guard ("REDUNDANT and kept, which mutation established rather than my
+reading it"). **The explicit `1` stays**: relying on V8's comparison ORDER rather than on a
+well-formed comparator would be a fragile thing to depend on, and the cost is one branch.
+
+**The distinction matters because the default reading of a survivor is "weak test".** Four thousand
+trials against a reference is what separates "my fixture was too small" — the verdict at item 2454,
+where two survivors were genuine fixture gaps — from "this code cannot be observed to matter".
+
+### ONE OF MY OWN ASSERTIONS WAS UNMEASURABLE, AND THE TEST CAUGHT IT
+
+The boundedness test first counted the DISTINCT elements the comparator saw and asserted it stayed
+below `n`. **It can only ever equal `n`** — every incoming element is compared against the root at
+least once — so the assertion was not loose, it was impossible, and it failed on the first run. The
+count of CALLS is the observable; the set of elements is not. It now asserts comparisons under `4n`
+against a full sort's `n log n` (~61,500 at n = 5,000).
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
+**5,515 tests 0 fail** including the 13 new ones. No engine change — a test file only.
+`projection.ts` restored and verified byte-identical after both mutant passes.
