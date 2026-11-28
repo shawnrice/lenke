@@ -1307,12 +1307,29 @@ export const valueCannotRaise = (e: Expr): boolean =>
   // comparison arm was widened, all of them this. Only a numeric LITERAL: `-n.s` negates a
   // string and faults, which is why this is not `neg` of anything value-safe.
   (e.kind === 'neg' && e.expr.kind === 'lit' && typeof e.expr.value === 'number') ||
-  // A DOTTED FIELD ACCESS (`n.m.k`), unconditionally and WITHOUT recursing into the base, because
-  // that is exactly what the engine does: `can_raise` lists `Arith | Call | Cast` as raising and
-  // recurses through `And`/`Or`/`Not`/`Compare`/`In`, so `Expr::Field` falls into its `_ => false`
-  // however its base is built. The ordering key has to be the SAME key on both sides — the lesson
-  // the `compare` and `isTruth` arms above were each billed for — and a narrower key here is not
-  // caution, it is disagreement.
+  // A DOTTED FIELD ACCESS (`n.m.k`), unconditionally and WITHOUT recursing into the base.
+  //
+  // ⚠️ THE ENGINE NO LONGER MATCHES THIS, AS OF ITEM 2548. This arm used to be justified by "that
+  // is exactly what the engine does: `Expr::Field` falls into `can_raise`'s `_ => false` however
+  // its base is built". That stopped being true: `can_raise` now recurses into every CONTAINER,
+  // `Field`'s base included, because NOT doing so was a WRONG ANSWER — a `Field` over arithmetic
+  // was pushed below a hop and the optimized plan faulted where the raw one returned rows (five
+  // such shapes measured at 2548, `Field` itself at 2549).
+  //
+  // This arm is LEFT AS IT IS, deliberately, and the reason is the owner policy in
+  // `conjunct-order-chosen-for-speed`: each engine picks its own conjunct order, and an error one
+  // engine raises where the other short-circuits is ACCEPTED. A cross-engine table at item 2549
+  // measured the shapes this could reach — a dotted access over arithmetic, alone and beside a
+  // raising sibling, and a subscript over arithmetic — and BOTH engines answered 0 rows with no
+  // fault on every one, so nothing observable rides on the difference today.
+  //
+  // What is no longer available is the old justification. If this arm is ever widened or narrowed,
+  // it has to be argued on THIS engine's terms (what a dotted access does here), not by appeal to
+  // what `can_raise` does.
+  //
+  // MEASURED, not reasoned: a field access on a record, on a NUMBER, on a STRING, on an absent key
+  // and three levels deep on a number all answer `null` in BOTH engines and raise in neither, so
+  // classifying the ACCESS itself non-raising is true of this engine on its own terms.
   //
   // MEASURED, not reasoned: a field access on a record, on a NUMBER, on a STRING, on an absent
   // key and three levels deep on a number all answer `null` in BOTH engines and raise in neither,

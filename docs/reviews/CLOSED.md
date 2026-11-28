@@ -132881,3 +132881,69 @@ pushes below the hop — without which M3 would have passed.
 GATES. `cargo fmt` 0; clippy 0 in BOTH configurations; **`LENKE_OPT_FUZZ_SEEDS=500000 rewrite_fuzz` 10
 passed in 102 s**; Rust **default 1371 + 4 + 13 + 725** (+5) and capi equivalent, 0 failed; `bun run
 fmt`/`check` 0; `bun run fuzz` **57 pass, 0 fail**.
+
+## Item 2549 — **Auditing item 2548's own fix: two of its seven arms were added by ANALOGY, never measured.** One turned out to be a SIXTH wrong answer; the other is still analogy and now says so. Plus the TS comment that justified the old behaviour is false, and the cross-engine table that proves nothing observable rides on it
+
+### THE SELF-AUDIT
+
+Item 2548 made `can_raise` recurse into seven containers. **Five were measured** (`Xor`, a `Case`
+branch value, a `Compare` over `List`/`Record`/`MapLit`). **`Field` and `Index` were not** — they were
+added because a container that holds an expression *should* be transparent. That is exactly the
+reasoning this repo's rules forbid, and it was mine, one tick old.
+
+Reverting just those two arms and re-running the end-to-end table:
+
+```text
+      Field base = raising      pushed=true    raw 0 rows   optimized PANIC
+      CONTROL bare raising      pushed=false   raw 0 rows   optimized 0 rows
+```
+
+**So `Field` belongs — it is a SIXTH wrong-answer shape, and the evidence arrived a tick late.**
+`Index` remains unmeasured; it is kept for the structural reason and the test comment now says so
+explicitly rather than implying a measurement that does not exist.
+
+### THE TS SIDE HAS NO SUCH BUG, AND ITS COMMENT IS NOW FALSE
+
+The TS classifiers are ALLOWLISTS (`valueCannotRaise` is a disjunction of `e.kind === …`), so an
+unlisted container returns `false` = "may raise" = the CONSERVATIVE answer. **The Rust bug's shape
+cannot occur there** — a clean null with a structural reason.
+
+But `valueCannotRaise`'s dotted-access arm justified itself like this:
+
+> "WITHOUT recursing into the base, because that is exactly what the engine does … The ordering key
+> has to be the SAME key on both sides … a narrower key here is not caution, it is disagreement."
+
+**Item 2548 falsified that.** The arm is LEFT AS IT IS — `conjunct-order-chosen-for-speed` is owner
+policy: each engine orders conjuncts for its own speed and an error one raises where the other
+short-circuits is ACCEPTED — but the justification is gone, and the comment now says so, says what
+replaced it, and says that any future change to that arm must be argued on the TS engine's own terms.
+
+A cross-engine table measured every shape the disagreement can reach — a dotted access over
+arithmetic, the same beside a raising sibling, and a subscript over arithmetic — and **both engines
+answered 0 rows with no fault on all three**. Accepted is not unmeasured, so that table is now a
+test (`packages/native/src/field-base-2549.test.ts`).
+
+### TWO INSTRUMENT BUGS, BOTH CAUGHT BY THE CONTROLS
+
+The first run showed both CONTROL rows diverging, which is an instrument bug by rule (i), and it was
+two of them stacked:
+
+- the NDJSON node discriminator is **`node`, not `vertex`**, and an edge's type lives in `labels` —
+  and spreading the edge object AFTER `type: 'edge'` silently **overwrote the discriminator**, so the
+  native graph ingested NOTHING;
+- **`queryJson` returns `{columns, rows}`, not a bare array**, so counting `Array.isArray` reported
+  0 rows for every native answer.
+
+Either one alone would have read as a cross-engine divergence. The test now asserts the ingested
+counts and reads the row shape, and both mutants are caught (D1 native fixture empty: 2 FAIL;
+D2 reader swallows the object: 1 FAIL). It also asserts the controls are PRODUCTIVE, because a table
+of all-zeroes would pass the agreement row while testing nothing.
+
+### AND FIVE API LOOKUPS I SHOULD HAVE DONE FIRST
+
+`runGql` → `query`; `loadBackend` → `nativeBackend`; `backend.open` → `graphFromNdjson(Uint8Array)`;
+`backend.close` → `graphFree`; `graph.addEdge({from, to})` takes **Vertex objects**, not ids. Each was
+a guess where a lookup was available.
+
+GATES. `cargo fmt` 0; clippy 0 in BOTH configurations; Rust **1371 + 4 + 13 + 725**, 0 failed;
+`bun run fmt`/`check` 0; `packages/native` **1441 pass** (+3), 0 fail.

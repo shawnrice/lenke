@@ -3902,6 +3902,14 @@ fn an_indexed_bool_seek_declines_at_its_own_measured_break_even() {
  *     Compare over a List holding it      pushed below hop  raw 0 rows  optimized PANIC
  *     Compare over a Record holding it    pushed below hop  raw 0 rows  optimized PANIC
  *     Compare over a MapLit holding it    pushed below hop  raw 0 rows  optimized PANIC
+ *     Field whose BASE is raising         pushed below hop  raw 0 rows  optimized PANIC
+ *
+ * (The `Field` row was measured at item 2549, not 2548: 2548 added the `Field` and `Index` arms by
+ * ANALOGY with the five it had measured, which is the thing this repo's rules forbid. Reverting
+ * just those two arms and re-running the table confirmed `Field` belongs — so the arm was right and
+ * the evidence arrived a tick late. `Index`'s arm is still analogy: no shape has been measured for
+ * it, and it is kept because a container that holds an expression should be transparent, not
+ * because a divergence was shown.)
  *
  * while `And`, `Or` and `Not` wrapping the SAME predicate all declined correctly. Five shapes where
  * optimizing turns an answer into an error — item 69's bug, through the siblings its fix missed.
