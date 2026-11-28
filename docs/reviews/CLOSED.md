@@ -133087,3 +133087,78 @@ commit.** This item did it in that order.
 
 GATES. `cargo fmt` 0; clippy 0 in BOTH configurations; Rust **default 1373 + 4 + 13 + 725** (+2);
 `bun run fmt`/`check` 0, run AFTER this entry was written.
+
+## Item 2552 — **A WHOLE CRATE was outside every sweep this session ran**, and its central module — "the one batch type every operator produces and consumes", 584 lines — had ZERO tests. Found by chasing a type name
+
+### THE SCOPE ERROR, WHICH IS THE REAL FINDING
+
+Every survey from item 2532 onward was scoped to `crates/lenke-engine/src`. Chasing
+`try_distinct_typed(batch: &Batch)` to its definition found `Batch` declared **nowhere** in that
+tree, because of one line in `lib.rs`:
+
+```rust
+pub use lenke_engine_core::{batch, error_codes, gstr, temporal, value};
+```
+
+**`crates/lenke-engine-core` is a separate crate, 3,676 lines across 8 files, and I had never looked
+at it.** It IS in CI (7 mentions in `ci.yml`), so this is not item 2542's blind spot — it is mine.
+
+Its test distribution, with the sibling-module rule from 2541 applied:
+
+```text
+      temporal.rs    1014 lines   10 in-file tests
+      value.rs        653          0 in-file — but value/tests.rs has 20
+      batch.rs        584          0, AND NO SIBLING          <-- the gap
+      json_fmt.rs     498          2
+      gstr.rs         385          5
+      error_codes.rs   94          0 (constants)
+```
+
+### WHY `batch.rs` WAS THE RIGHT FIRST TARGET
+
+Two reasons, both from this repo's own history rather than from the line count.
+
+**`gather` is written once per `Col` variant** — six near-identical arms — and it is how every
+filter, distinct and sort operator subsets a batch. Six copies of an indexing loop is where an
+off-by-one lives.
+
+**`value_at` carries the `u32::MAX` OPTIONAL-MATCH null sentinel, and that sentinel has already
+shipped a wrong answer here**: `hash_join` placed it in a bucket a real node id could reach and
+invented rows, found only by a 500,000-seed `rewrite_fuzz` sweep (audit items 1148-1150). A sentinel
+with that history, in a module with no tests, is what to pin first — including that it SURVIVES a
+`gather`, because a join's build side gathers before it probes.
+
+### THE TESTS, AND WHAT THEY CATCH
+
+Seven tests, every expectation measured by printing the matrix first: `gather` as select-by-index
+over all six variants against four index shapes (reorder, subset, repeat, empty); the sentinel
+reading NULL in BOTH element variants and surviving a gather; `is_null_at` agreeing with `value_at`
+on every variant including a `Gen` column holding a real `Value::Null`; a batch gathering every slot
+in parallel; and `Lineage::gather` moving paths in step with the slots.
+
+```text
+      D1  the EDGES half of the u32::MAX sentinel removed    2 FAIL
+      D2  Num::value_at off by one                           1 FAIL
+```
+
+D1 is the one that matters: removing only the `Edges` arm of the sentinel — leaving `Nodes` correct —
+fails two tests. That per-variant granularity is the 1148-1150 shape.
+
+### ONE BEHAVIOUR CHECKED BEFORE BEING CALLED A BUG
+
+`Lineage::seed_edges(&[4, 5])` leaves `edges_at(0)` EMPTY and `edge_count_at(0)` at 0, while
+`Lineage::seed` populates its node path. That reads like an omission; it is not. The docstring says
+"the node/edge path stays empty (GQL does not read an edge-sourced lineage)", and the edge is kept in
+the Gremlin STEP history instead. Filling `edges` would make `E().path()` report a traversal that
+never happened, so the asymmetry is now pinned WITH its reason.
+
+### THE TWO RUNGS THIS TICK SET OUT TO PIN
+
+`try_all_values_bodies` is a `&mut self` method on the Gremlin PARSER (reached by
+`coalesce(values('a'), values('b'))`, with the resulting `Plan` as the observable marker), and
+`try_distinct_typed` is a pure function of `&Batch`. Both are therefore pinnable, and neither was
+pinned this tick — the scope error outranked them. They stay named as open.
+
+GATES. `cargo fmt` 0; clippy 0 in BOTH configurations; **`lenke-engine-core` 44 tests** (37 + 7);
+engine **default 1373 + 4 + 13 + 725** unchanged; `bun run fmt`/`check`/`fmt:check` 0, run AFTER this
+entry was written.

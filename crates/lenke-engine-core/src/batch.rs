@@ -582,3 +582,206 @@ impl Batch {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /*
+     * Item 2552: `batch.rs` is "the one batch type every operator produces and consumes" — 584
+     * lines — and it had ZERO tests. It was also outside every sweep this session ran, because
+     * those were scoped to `crates/lenke-engine/src` and this module lives in a SEPARATE crate,
+     * re-exported by one line of `lib.rs`:
+     *
+     *     pub use lenke_engine_core::{batch, error_codes, gstr, temporal, value};
+     *
+     * It was found by chasing `try_distinct_typed(batch: &Batch)` to its type.
+     *
+     * ## WHY THESE PROPERTIES
+     *
+     * `gather` is how every filter, distinct and sort operator subsets a batch, and it is written
+     * once per `Col` variant — six near-identical arms, which is where an off-by-one or a swapped
+     * index lives. So it is pinned as SELECT-BY-INDEX over all six.
+     *
+     * And `value_at` carries the `u32::MAX` OPTIONAL-MATCH null sentinel. This repo has already
+     * shipped one WRONG ANSWER from that sentinel: `hash_join` put it in a bucket a real node id
+     * could reach, inventing rows, and only a 500,000-seed `rewrite_fuzz` sweep found it (audit
+     * items 1148-1150). A sentinel with that history, in a module with no tests, is the thing to
+     * pin first — including that it SURVIVES a gather, since gather is what a join's build side
+     * runs on.
+     *
+     * Every expectation was measured by printing the matrix first.
+     */
+    fn all_six() -> Vec<(&'static str, Col)> {
+        vec![
+            // The sentinel sits at index 1 in both element variants, deliberately.
+            ("Nodes", Col::Nodes(vec![7, u32::MAX, 9])),
+            ("Edges", Col::Edges(vec![7, u32::MAX, 9])),
+            ("Num", Col::Num(vec![1.0, 2.0, 3.0])),
+            ("Bool", Col::Bool(vec![true, false, true])),
+            (
+                "Str",
+                Col::Str(vec![GStr::from("a"), GStr::from("b"), GStr::from("c")]),
+            ),
+            (
+                "Gen",
+                Col::Gen(vec![Value::Num(1.0), Value::Null, Value::Bool(true)]),
+            ),
+        ]
+    }
+
+    #[test]
+    fn gather_is_select_by_index_for_every_column_variant() {
+        // A reorder, a subset, a repeat and an empty selection — `gather` is not a permutation.
+        for idx in [vec![2, 1, 0], vec![2, 0], vec![1, 1, 1], Vec::new()] {
+            for (tag, col) in all_six() {
+                let got = col.gather(&idx);
+
+                assert_eq!(
+                    got.len(),
+                    idx.len(),
+                    "{tag}: gather({idx:?}) must produce exactly one row per index",
+                );
+
+                for (k, &src) in idx.iter().enumerate() {
+                    assert_eq!(
+                        format!("{:?}", got.value_at(k)),
+                        format!("{:?}", col.value_at(src)),
+                        "{tag}: gather({idx:?})[{k}] must be the original row {src}",
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_optional_match_sentinel_reads_null_in_both_element_variants_and_survives_a_gather() {
+        for (tag, col) in all_six() {
+            if tag != "Nodes" && tag != "Edges" {
+                continue;
+            }
+
+            assert!(
+                !col.is_null_at(0) && !col.is_null_at(2),
+                "{tag}: a real dense id must not read as NULL",
+            );
+            assert!(
+                col.is_null_at(1),
+                "{tag}: u32::MAX is the OPTIONAL-MATCH sentinel and must read as NULL",
+            );
+            assert_eq!(format!("{:?}", col.value_at(1)), "Null", "{tag}");
+
+            // The join build side gathers before probing, so the sentinel has to survive it —
+            // this is the shape of audit items 1148-1150.
+            let moved = col.gather(&[1, 0]);
+
+            assert!(
+                moved.is_null_at(0),
+                "{tag}: the sentinel stopped reading as NULL after a gather moved it",
+            );
+            assert!(
+                !moved.is_null_at(1),
+                "{tag}: a real id became NULL after a gather"
+            );
+        }
+    }
+
+    /// `is_null_at` must agree with `value_at` on every variant, including a `Gen` column holding
+    /// a real `Value::Null` — which is a PRESENT value under this repo's null policy, not an
+    /// absent one, and still reads as null here.
+    #[test]
+    fn is_null_at_agrees_with_value_at_on_every_variant() {
+        for (tag, col) in all_six() {
+            for i in 0..col.len() {
+                let is_null_value = format!("{:?}", col.value_at(i)) == "Null";
+
+                assert_eq!(
+                    col.is_null_at(i),
+                    is_null_value,
+                    "{tag}[{i}]: is_null_at disagrees with value_at ({:?})",
+                    col.value_at(i),
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_batch_gathers_every_slot_in_parallel() {
+        let batch = Batch::of(vec![
+            Col::Num(vec![1.0, 2.0, 3.0]),
+            Col::Bool(vec![true, false, true]),
+        ]);
+
+        assert_eq!(batch.rows(), 3);
+
+        let got = batch.gather(&[2, 0]);
+
+        assert_eq!(got.rows(), 2, "the gathered batch has one row per index");
+        // Both slots must move together, or a row's columns come from different source rows —
+        // which no row-level assertion elsewhere would catch.
+        assert_eq!(format!("{:?}", got.slot(0)), "Num([3.0, 1.0])");
+        assert_eq!(format!("{:?}", got.slot(1)), "Bool([true, true])");
+    }
+
+    #[test]
+    fn a_single_column_batch_is_one_slot_wide() {
+        let batch = Batch::single(Col::Num(vec![1.0, 2.0]));
+
+        assert_eq!(batch.rows(), 2);
+        assert!(!batch.is_empty());
+        assert!(
+            Batch::of(Vec::new()).is_empty(),
+            "no slots is an empty batch"
+        );
+    }
+
+    /// `Lineage::gather` must move paths in step with the slot gather, or a row's path belongs to
+    /// a different row.
+    #[test]
+    fn lineage_gather_reorders_paths_in_step_with_the_slots() {
+        let lineage = Lineage::seed(&[1, 2, 3]);
+
+        assert_eq!(format!("{:?}", lineage.path_at(0)), "[Num(1.0)]");
+        assert_eq!(
+            lineage.node_count_at(0),
+            1,
+            "a seed path holds its own node"
+        );
+        assert_eq!(
+            lineage.edge_count_at(0),
+            0,
+            "a seed path has traversed no edge"
+        );
+
+        let got = lineage.gather(&[2, 0]);
+
+        assert_eq!(format!("{:?}", got.path_at(0)), "[Num(3.0)]");
+        assert_eq!(format!("{:?}", got.path_at(1)), "[Num(1.0)]");
+    }
+
+    /// An EDGE-sourced lineage leaves the node/edge PATH empty on purpose, and keeps the edge in
+    /// the Gremlin STEP history instead — `seed_edges`'s docstring says "GQL does not read an
+    /// edge-sourced lineage". Measured and pinned here so the asymmetry is not read as a bug and
+    /// "fixed": filling `edges` would make `E().path()` report a traversal that never happened.
+    #[test]
+    fn an_edge_seeded_lineage_keeps_the_edge_in_the_step_history_not_the_edge_path() {
+        let lineage = Lineage::seed_edges(&[4, 5]);
+
+        assert_eq!(
+            format!("{:?}", lineage.edges_at(0)),
+            "[]",
+            "the edge PATH stays empty for an edge-sourced lineage",
+        );
+        assert_eq!(lineage.edge_count_at(0), 0, "and so does the hop count");
+
+        // The edge is not lost — it is the row's single step, tagged as an edge.
+        let (vals, tags) = lineage.steps_at(0);
+
+        assert_eq!(
+            format!("{vals:?}"),
+            "[Num(4.0)]",
+            "the edge IS the step history"
+        );
+        assert_eq!(tags.len(), 1, "one step, tagged");
+    }
+}
