@@ -126513,7 +126513,7 @@ exceed the streaming arms by 10x, and the probe exits 1 otherwise. Verified to f
 
 - **The untyped/multi-label byte residual is CLOSED**: ~3.4% time ceiling (item 2097), and zero
   headroom cost (above). Do not re-nominate generator fusion; this is the third time.
-- `alloc:retained` is wired as a script and generalizes beyond this question — it is the probe for
+- ~~[its arms were only hop walks until item 2473 aimed it at the buffering steps, where it reported `fold()` as FREE because a ONE-ROW output never reaches a row-interval sampler]~~ `alloc:retained` is wired as a script and generalizes beyond this question — it is the probe for
   "does shape X stream, or does it buffer?", which nothing else here answered.
 - The typed arm's floor is unchanged at 31.1 B/row, still item 2450's hand floor.
 
@@ -127676,3 +127676,71 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check`
 lost. 6 of 6 mutants caught against the MERGED file (`isReserved` case-sensitive, always-false,
 always-true; `quoteIdent` ignoring reserved words, ignoring the bare-shape test, dropping the
 backtick escape). `lexer.ts` restored and verified byte-identical. Scratch probes removed.
+
+## Item 2473 — **TWO MEMORY CLASSES AMONG GREMLIN'S BUFFERING STEPS, separated by a CARDINALITY sweep rather than a size one: `order()` and `fold()` hold O(N) regardless of distinct count, while `dedupe()` and `groupCount()` hold O(DISTINCT) and are ~0 on a low-cardinality stream.** And the instrument reported `fold()` as FREE until I noticed it had **taken zero samples** — a one-row output never reaches a row-interval sampler
+
+`alloc:retained` was built at item 2457 to ask "does shape X stream or buffer?" and then only ever
+aimed at hop walks, which stream. These are the shapes it was for. The GQL side was already covered
+(`alloc:peak` carries `hop1collect`/`hop1distinct`, and items 2419-2424 worked that ground); the
+GREMLIN buffering steps had no memory row at all.
+
+### THE SAMPLER HAD A HOLE THAT ONLY A FOLDING SHAPE REVEALS
+
+First run, `STEP = 16384` rows:
+
+```text
+    arm                rows   samples   verdict as printed
+      order()         200000     12      2.00 MiB   -- real
+      dedupe()            97      0      0.00 MiB   -- NOT A MEASUREMENT
+      fold()               1      0      0.00 MiB   -- NOT A MEASUREMENT
+      groupCount()         1      0      0.00 MiB   -- NOT A MEASUREMENT
+```
+
+`fold()` emits ONE row, so `n % STEP === 0` never fired and the probe printed 0.00 MiB for a step
+that must hold every value. **A zero from an instrument that never sampled is not a measurement**,
+and nothing in the output said so until the sample count was printed.
+
+The fix is a second quantity, not a smaller interval: an unconditional reading taken with the LAST
+row still reachable. For a folding shape that IS the peak — the accumulator itself — and for a
+streaming shape it is one row, so it stays near zero. `samples` is now printed so a zero can be told
+apart from an unsampled arm.
+
+### THE TWO CLASSES, and the sweep that separates them
+
+Varying CARDINALITY at fixed N = 200,000 — because `order`/`fold` hold rows while `dedupe`/
+`groupCount` hold keys:
+
+```text
+    arm                          CARD=97    CARD=50000     scales with
+      streaming values() [ctrl]   0.03        0.03          -- flat
+      order()      (during)       2.00        2.00          N
+      fold()       (result)       1.97        1.97          N
+      dedupe()     (during)       0.00        1.26          DISTINCT
+      groupCount() (result)       0.01        1.76          DISTINCT
+      CALIBRATION                 1.98        1.98          -- flat
+```
+
+Both controls stay flat across a 500x cardinality change, which is what makes the two moving rows
+readable. **`dedupe()` and `groupCount()` are safe on an arbitrarily long stream whose cardinality is
+small** — grouping by a status, a type, a label, the common case — while `order()` and `fold()` are
+bounded by N whatever the data looks like.
+
+**And WHERE the peak sits differs between the two O(N) steps**, which matters to a caller:
+`order()`'s cost is DURING the walk and released after (result 0.01), so an ordered stream can be
+consumed lazily; `fold()`'s cost IS the result it hands back (1.97), so the caller holds it as long
+as the value lives.
+
+### A CORRECTION TO ITEM 2457's OWN TEETH-CHECK
+
+2457 documented the gate as verified by "set `RET_STEP` so large that no sample is taken, and every
+arm reads 0, and the probe exits 1". **The result reading defeats that**: with zero samples the gate
+now measures 256.8x and PASSES. That is the instrument getting harder to blind, not a regression —
+but the documented check is stale, so the header now says so and names the replacement: make the
+CALIBRATION arm stop holding. Verified to fire that way — ratio collapses to **1.8x**, prints
+`INSTRUMENT BLIND`, exits 1.
+
+A teeth-check is a claim about the instrument's CURRENT shape, and it expires when the instrument
+changes.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
+instrument only. `retained-2457.mjs` restored and verified byte-identical after the teeth check.

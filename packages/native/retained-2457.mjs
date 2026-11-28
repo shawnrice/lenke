@@ -16,8 +16,15 @@
  * THE CALIBRATION ARM IS NOT OPTIONAL. It holds every row, so it MUST read far above the
  * streaming arms; if it does not, the sampler is blind and the zeros below mean nothing. This is
  * the "calibrate a new instrument against a known quantity" rule, as an assertion rather than a
- * note — the probe fails loudly instead of printing a reassuring zero. Verified to fire: with
- * `RET_STEP` large enough that no sample is ever taken, every arm reads 0 and the probe exits 1.
+ * note — the probe fails loudly instead of printing a reassuring zero.
+ *
+ * ⚠️ THE OLD TEETH-CHECK NO LONGER BLINDS IT, and that is a correction rather than a regression
+ * (item 2473). At item 2457 the check was "set `RET_STEP` so large that no sample is taken, and
+ * every arm reads 0". Adding the unconditional RESULT reading defeats that: with no samples at all
+ * the gate still measures 256.8x and passes, because the result reading is always taken. The
+ * instrument is harder to blind than it was, and the documented check is simply stale — to verify
+ * the gate still fires, make the CALIBRATION arm stop holding (`hold` -> false) and confirm the
+ * ratio collapses below 10x.
  *
  *   RET_N=200000 RET_DEG=1 bun run alloc:retained
  *
@@ -25,7 +32,7 @@
  * than silently reporting occupancy.
  */
 import { Graph } from '@lenke/core';
-import { V, out, run, traversal, values } from '@lenke/gremlin';
+import { V, dedupe, fold, groupCount, order, run, traversal, values } from '@lenke/gremlin';
 
 if (typeof global.gc !== 'function') {
   console.error('retained-2457: needs --expose-gc (node --expose-gc retained-2457.mjs)');
@@ -36,8 +43,15 @@ const N = Number(process.env.RET_N ?? 200000);
 const DEG = Number(process.env.RET_DEG ?? 1);
 const STEP = Number(process.env.RET_STEP ?? 16384);
 const REPS = Number(process.env.RET_REPS ?? 3);
+/*
+ * CARDINALITY is a SECOND axis, and the one that separates the buffering shapes (item 2473).
+ * `order` and `fold` must hold every ROW, so they scale with N. `dedupe` and `groupCount` hold a
+ * key set / a map, so they scale with the number of DISTINCT values and should be flat in N. Vary
+ * this, not RET_N, to tell the two apart.
+ */
+const CARD = Number(process.env.RET_CARD ?? 97);
 
-console.log(`retained-2457: N=${N} DEG=${DEG} STEP=${STEP} REPS=${REPS}`);
+console.log(`retained-2457: N=${N} DEG=${DEG} STEP=${STEP} REPS=${REPS} CARD=${CARD}`);
 
 const median = (xs) => {
   const sorted = [...xs].sort((a, b) => a - b);
@@ -49,7 +63,7 @@ const graph = new Graph();
 const vs = [];
 
 for (let i = 0; i < N; i += 1) {
-  vs.push(graph.addVertex({ id: `v${i}`, labels: ['P'], properties: { k: i % 97 } }));
+  vs.push(graph.addVertex({ id: `v${i}`, labels: ['P'], properties: { k: i % CARD } }));
 }
 
 for (let d = 0; d < DEG; d += 1) {
@@ -64,6 +78,20 @@ for (let d = 0; d < DEG; d += 1) {
   }
 }
 
+/*
+ * TWO QUANTITIES, because sampling by OUTPUT ROW has a hole that only a folding shape reveals
+ * (item 2473). `fold()` and `groupCount()` emit ONE row and `dedupe()` emitted 97, all far below
+ * `STEP`, so the in-loop sampler never fired once and reported 0.00 MiB for a `fold()` that must
+ * hold every value. A zero from an instrument that never sampled is not a measurement.
+ *
+ *   peak    the maximum live set observed DURING the walk, sampled every STEP rows. Meaningful for
+ *           a shape that emits many rows; blind to one that emits few.
+ *   result  the live set while the LAST row is still referenced, read after the walk. For a folding
+ *           shape that IS the peak — the fold's own accumulator — and for a streaming shape it is
+ *           one row, so it stays near zero.
+ *
+ * `samples` is reported so a zero can be told apart from an unsampled arm.
+ */
 const peakRetained = (plan, hold) => {
   global.gc();
 
@@ -71,9 +99,12 @@ const peakRetained = (plan, hold) => {
   const keep = hold ? [] : undefined;
   let peak = 0;
   let n = 0;
+  let samples = 0;
+  let lastRow;
 
   for (const row of run(plan, graph)) {
     n += 1;
+    lastRow = row;
 
     if (hold) {
       keep.push(row);
@@ -83,6 +114,8 @@ const peakRetained = (plan, hold) => {
       // A full collection BEFORE the reading is what makes this retention, not occupancy.
       global.gc();
 
+      samples += 1;
+
       const used = process.memoryUsage().heapUsed - base;
 
       if (used > peak) {
@@ -91,22 +124,46 @@ const peakRetained = (plan, hold) => {
     }
   }
 
+  // Always read once with the last row still reachable, so a one-row arm is measured at all.
+  global.gc();
+
+  const result = process.memoryUsage().heapUsed - base;
+
   if (hold && keep.length !== n) {
     throw new Error(`calibration arm lost rows: kept ${keep.length} of ${n}`);
   }
 
-  return { peak, n };
+  if (lastRow === undefined && n > 0) {
+    throw new Error('lastRow was dropped, so the result reading is meaningless');
+  }
+
+  return { peak, n, samples, result };
 };
 
 const CALIBRATION = 'CALIBRATION (holds every row)';
+/*
+ * THE BUFFERING ARMS (item 2473). This probe was built at item 2457 to ask "does shape X stream or
+ * buffer?" and then only ever aimed at hop walks, which stream. These are the shapes it was for.
+ *
+ * The GQL side of the question is already covered — `alloc:peak`'s shape table carries `hop1collect`
+ * and `hop1distinct`, and items 2419-2424 worked that ground. The GREMLIN buffering steps had no
+ * memory row at all, and this probe is a Gremlin instrument (it drives `run(plan, graph)`).
+ *
+ * `dedupe` is the interesting prediction rather than the obvious one: its live set is a key SET, so
+ * it should be bounded by the number of DISTINCT values (97 on this fixture) and therefore FLAT in N,
+ * while `order` and `fold` must hold every row.
+ */
 const arms = [
-  ['untyped out()', traversal(V(), out(), values('k')), false],
-  ['typed   out(E)', traversal(V(), out('E'), values('k')), false],
-  [CALIBRATION, traversal(V(), out('E'), values('k')), true],
+  ['streaming values()  [control]', traversal(V(), values('k')), false],
+  ['order()', traversal(V(), values('k'), order()), false],
+  ['dedupe()', traversal(V(), values('k'), dedupe()), false],
+  ['fold()', traversal(V(), values('k'), fold()), false],
+  ['groupCount()', traversal(V(), values('k'), groupCount()), false],
+  [CALIBRATION, traversal(V(), values('k')), true],
 ];
 const measured = new Map();
 
-console.log('  arm                              rows   PEAK RETAINED   B/row retained');
+console.log('  arm                              rows  smpl   during    result    WORST');
 
 for (const [name, plan, hold] of arms) {
   for (let i = 0; i < 2; i += 1) {
@@ -119,13 +176,14 @@ for (const [name, plan, hold] of arms) {
 
   const runs = [...Array(REPS)].map(() => peakRetained(plan, hold));
   const peak = median(runs.map((r) => r.peak));
-  const rows = runs[0].n;
-  const mib = (peak / 1024 / 1024).toFixed(2).padStart(9);
+  const result = median(runs.map((r) => r.result));
+  const [{ n: rows, samples }] = runs;
+  const worst = Math.max(peak, result);
 
-  measured.set(name, peak / rows);
+  measured.set(name, worst / Math.max(rows, 1));
 
   console.log(
-    `  ${name.padEnd(31)}${String(rows).padStart(8)}   ${mib} MiB   ${(peak / rows).toFixed(1).padStart(10)}`,
+    `  ${name.padEnd(31)}${String(rows).padStart(8)} ${String(samples).padStart(4)}  ${(peak / 1024 / 1024).toFixed(2).padStart(8)}  ${(result / 1024 / 1024).toFixed(2).padStart(8)}  ${(worst / 1024 / 1024).toFixed(2).padStart(7)} MiB`,
   );
 }
 
@@ -135,7 +193,7 @@ for (const [name, plan, hold] of arms) {
  * meaningless — fail rather than report it.
  */
 const calibration = measured.get(CALIBRATION);
-const streaming = Math.max(measured.get('untyped out()'), measured.get('typed   out(E)'));
+const streaming = measured.get('streaming values()  [control]');
 const ratio = calibration / Math.max(streaming, 0.001);
 
 console.log(`\n  calibration / streaming = ${ratio.toFixed(1)}x  (must exceed 10x)`);
