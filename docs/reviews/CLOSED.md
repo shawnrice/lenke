@@ -124811,10 +124811,96 @@ wrong; they measure different workloads. `askpolicy-2438.mjs` fixes its warmup a
 - **`hopRows`'s ~5x after-write cost is not recoverable by building earlier.** The fallback walk is
   genuinely the cheaper arm at this ratio. Recovering it needs a cheaper BUILD (the `off`/`nbr` fill,
   which items 2435/2436 showed is unbuildable incrementally in a packed layout) or a cheaper
-  FALLBACK, which is a separate target nobody has priced.
+  FALLBACK, which is a separate target nobody has priced. ~~[PRICED at item 2439: the fallback is 9.26 ms walk + 2.84 label test + 2.98 literal rows against a 36.6 ms read, so ~58% is codegen-bounded projection machinery. The iteration is CLOSED (an array swap is 6%).]~~
 
 Wired as `bun run alloc:askpolicy`. Knobs: `CASE` (interleave / coldOneShot / readHeavy), `ASK_N`,
 `ASK_REPS`.
 
 GATES. No engine change: `csr-cache.ts` restored from `target/LIVE-csrcache-2436.ts`, FORCE marker
 count 0, `diff -q` byte-identical, dist rebuilt. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0.
+
+## Item 2439 — **THE FALLBACK WALK IS NOT THE TERM: its iteration plus bucket lookup is 9.26 ms of a 36.6 ms read, and swapping the `Map` iterator for item 2436's already-maintained `order` ARRAY saves 2.25 ms — 6%, under the noise floor.** The engine is **2.43x its literal-row hand floor on THIS fixture**, and **item 1895's recorded "1.09x, no delegation left to remove" does NOT transfer here** because it was measured at 1M edges where row construction dominates. One live asymmetry found: the fallback tests the far label UNCONDITIONALLY where the CSR arm gates it behind `testFarLabel`
+
+Item 2438 left the fallback as the only remaining lever on `hopRows`'s after-write cost: building the
+CSR earlier is 1.40x slower, and the `off`/`nbr` fill is unbuildable incrementally in a packed layout.
+Nobody had priced the fallback's parts.
+
+### WHAT THE ITERATION COSTS, and it is not much
+
+```text
+    N=200,000, median of 11, standalone
+      A  map.values() iteration only                   0.38 ms
+      B  cached array iteration only                   0.02 ms      15.5x faster, and 0.36 ms
+      C  map.values() + adjTo.get(type)                8.70
+      D  cached array + adjTo.get(type)                6.45         1.35x
+```
+
+**The 15.5x on iteration alone is an absolute 0.36 ms** — the kind of ratio that looks like a lever
+and is not. With the per-vertex `adjTo.get(type)` the whole walk is 8.70 ms against a 36.6 ms read, so
+the array swap is worth **2.25 ms, about 6%**. That is under the ~10% noise floor, and
+[[executor-edits-perturb]] measures an edit to a walk like this costing UNRELATED rows up to 16%.
+**Declined.**
+
+It would also have been free in build terms, which is what made it worth checking: item 2436 already
+maintains `order` across edge writes, so the fallback could have had an array with no new invalidation.
+The structure was available; the saving is not there.
+
+### THE DECOMPOSITION, as HAND FLOORS
+
+Each row adds one part of what the engine's loop does, so each delta is the hand cost of that part —
+which bounds from BELOW what removing it could save in the engine, not from above:
+
+```text
+      walk + adjTo.get(type), no label test           9.26 ms
+      + a labels.has test per far vertex             12.10      the label test:      2.84 ms
+      + one LITERAL row object per far vertex        15.08      row construction:    2.98 ms
+      ------------------------------------------------------
+      the engine's fallback                          36.6       2.43x the hand total
+```
+
+**~21 ms of the 36.6 is neither the walk, nor the label test, nor the row objects.** It is the general
+projection machinery — `binding.set`, `projectRow` reading a projection spec, the spread-clone path —
+and that is item 1895's own "building each row as a LITERAL 14.89 against the engine's 75.13", a gap
+[[no-runtime-codegen]] closes as FIRM policy. Items 1951 and 2431 price the same residual from the
+other side.
+
+### A RECORDED FLOOR THAT DOES NOT APPLY HERE, and that is the finding worth keeping
+
+Item 1895's comment states the shape is already at its hand floor: _"the same far-driven walk BY HAND
+68.83 against the engine's 75.13 — 1.09x: there is no delegation left to remove."_ **That was measured
+at 200,000 vertices / 1,000,000 edges.** At five edges per vertex the row count is 1M and row
+construction swamps the per-vertex overhead, so the ratio is tight by construction. On a 1:1
+edge:vertex fixture the rows are 200,000 and the per-vertex terms are proportionally five times more
+visible — and the engine measures **2.43x** its hand floor, not 1.09x.
+
+Neither number is wrong. The lesson is the one CLAUDE.md states as "match the fixture to the claim":
+**a floor measured at one edge:vertex ratio is not a floor at another**, and "already at its hand
+floor" was the sentence that would have stopped this item before it started.
+
+### THE ONE LIVE ASYMMETRY, deliberately left for an in-situ measurement
+
+The fallback applies the far-label test unconditionally:
+
+```ts
+if (farLabel !== undefined && !matchesLabel(far, farLabel)) {
+```
+
+while the CSR arm reads a `testFarLabel` flag (item 1941) precisely so a VACUOUS label — one that
+excludes nothing, which `:P` is on this fixture — can be skipped. So the two arms of one question
+differ in whether they pay for a test that cannot change the answer.
+
+Its hand cost is 2.84 ms, 7.8% of the read. **That is a LOWER bound, not an upper one**: the engine
+calls `matchesLabel`, where the hand version inlines `labels.has`, so the engine's term may be
+larger. 7.8% is under the bar on its own and plausibly over it in situ, which is exactly the case my
+own note at item 2438 says must be re-derived IN SITU rather than decided from a standalone number.
+**Not taken here, and not declined either** — it needs the ablation A/B, which is the next tick.
+
+### WHAT THIS CLOSES
+
+- **The fallback's ITERATION is closed.** 9.26 ms of 36.6, and the array swap is 6%. Do not
+  re-attempt it; the structure is already maintained and the saving still is not there.
+- **The ~58% residual is codegen-bounded** and behind a FIRM refusal, same as items 1951/2431.
+- **Item 1895's 1.09x is scoped** to its own 5:1 fixture in this entry.
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `git diff` clean for
+`packages/gql` and `packages/core`.
