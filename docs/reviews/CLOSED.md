@@ -130553,7 +130553,84 @@ item 2499, caught here by the mutant rather than by reading.
 
 `validate.ts` is byte-identical to its pre-item state — a test-only change, verified.
 
-OPEN — **`gremlin` survives all three mutants and no Gremlin test writes an invalid label/key.** The
+~~OPEN — **`gremlin` survives all three mutants and no Gremlin test writes an invalid label/key.**~~ **ANSWERED AT ITEM 2515, AND IT WAS A DEFECT: `addV('')` created an UNLABELLED vertex because `label ? [label] : []` treats `''` as "no argument". Fixed, 5 tests added, mutation CAUGHT.** The
 core API is wired (verified above), but whether the Gremlin `property()`/`addV` surface reaches the
 boundary is unverified, and it is the same question this item answered for GQL. `native` surviving is
 expected: the Rust engine has its own `validate_label`/`validate_prop_key` mirror.
+
+## Item 2515 — **A REAL DEFECT, FIXED: `addV('')` created an UNLABELLED VERTEX because `label ? [label] : []` treats `''` as "no argument".** Four references said reject, `GAPS.md`'s own wording named the gap, and nothing pinned the old behaviour
+
+### THE DEFECT
+
+`addVStep` in `mutation.ts` built its labels with a TRUTHINESS test:
+
+```ts
+      labels: label ? [label] : [],        // '' is falsy -> the empty label is DROPPED
+```
+
+So `addV('')` took the `[]` branch, `Graph.addVertex` never saw an empty label to refuse, and an
+unlabelled vertex entered the model. The fix distinguishes "no label ARGUMENT" from "an EMPTY label",
+which truthiness conflates:
+
+```ts
+      labels: label === undefined ? [] : [label],
+```
+
+### FOUR REFERENCES AGREED ON REJECTING — AND NOTHING PINNED IT
+
+```text
+      addV('')                     TS (before)   OK, vertex with labels=[]
+                                   TS (after)    THREW "a label / edge type must be non-empty"
+                                   RUST engine   THREW "a vertex label must not be empty"
+                                   TinkerPop     RAISES "Label can not be empty", NO vertex (count 6)
+      addV('Q')  CONTROL           TS OK ["Q"]   RUST OK ["Q"]
+      property('', 1)              TS THREW      RUST THREW      TinkerPop RAISES
+      addVertex({labels:['']})     TS THREW (the core API always did)
+```
+
+So TinkerPop, lenke's own Rust engine, lenke's own TS core API, and lenke's own `property('')` on
+the very same surface all rejected; only TS `addV` did not. **Checked for a pin first (the item 2493
+lesson): no `addV('')` or `addV("")` literal exists anywhere in the repo**, so unlike the stored-null
+case this is a defect rather than a fifth owner decision.
+
+### `GAPS.md` DECLARED THE RULE AND ITS OWN WORDING NAMED THE GAP
+
+> A **label / edge type** must be non-empty and free of `::` … Enforced identically in the Rust core
+> (`validate_label` / `validate_prop_key`, at codec ingestion + **`addV`/`addE`/`property`**) and the
+> TS core (`validateLabel` / `validatePropertyKey`, at
+> **`addVertex`/`addEdge`/`addLabelTo*`/`setProperty`**).
+
+`addV` is in the Rust enforcement list and **absent from the TS one** — which is exactly where the
+hole was. The doc asserted "enforced identically" and that was the testable claim.
+
+`addE` was already correct: it passes `[step.label]` unconditionally, so an empty edge label always
+reached the validator. Only `addV` had the falsy branch, and it occurs once.
+
+### THE REGRESSION THIS COULD HAVE CAUSED, AND THE TEST THAT GUARDS IT
+
+`addV()` with NO argument must still produce an unlabelled vertex — not an error, and not a vertex
+labelled `''`. That is precisely what `=== undefined` preserves and what a careless `label !== ''`
+would have broken, so it has its own row. (TinkerPop's `addV()` defaults to the label `vertex`;
+lenke's produces no labels — a separate pre-existing surface difference this item does not touch.)
+
+Five rows added, including the `a::b` case (rejected by lenke, **ACCEPTED by TinkerPop** — a
+deliberate GraphSON round-trip extension documented in `GAPS.md`, labelled in the test so it is not
+later mistaken for a conformance defect).
+
+### GATES
+
+```text
+      bun run fmt / lint / check     0 / 0 / 0
+      packages/core                   497 pass, 0 fail
+      packages/gremlin               2920 pass, 0 fail   (+5)
+      packages/gql                   5666 pass, 0 fail
+      packages/native                1438 pass, 0 fail
+      bun run fuzz                     57 pass, 0 fail
+      MUTATION                       reverting to `label ? [label] : []` => CAUGHT (1 failing),
+                                     live baseline 0 read first, restore verified
+```
+
+This closes item 2514's open question. The new probe `addv-label-2515.ts` runs all the shapes on BOTH
+engines with a valid control on each — an earlier attempt at it had the control FAILING because shell
+quoting mangled the argument, which is the "an arm wrong for a case you already know is an instrument
+bug" rule catching a probe rather than an engine.

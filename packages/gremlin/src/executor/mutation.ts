@@ -35,7 +35,26 @@ export const addVStep = function* (
   // oxlint-disable-next-line unicorn/no-useless-spread -- snapshot the live source before mutating
   for (const t of [...stream]) {
     const v = graph.addVertex({
-      labels: label ? [label] : [],
+      /*
+       * `=== undefined`, NOT A TRUTHINESS TEST (item 2515). The distinction is `addV()` — no label
+       * argument, which means "no labels" — against `addV('')`, an EMPTY label, which must be
+       * REJECTED. `label ? [label] : []` conflates them because `''` is falsy: it silently dropped
+       * the empty label and `addVertex` never saw one to refuse, so `addV('')` created an
+       * unlabelled vertex.
+       *
+       * Four references disagreed with that and nothing pinned it:
+       *   - TinkerPop 3.7.3 raises `IllegalArgumentException("Label can not be empty")` and creates
+       *     NO vertex (vertex count unchanged).
+       *   - lenke's own RUST engine raises "a vertex label must not be empty" for the same text.
+       *   - lenke's own TS core API raises via `validateLabel` for `addVertex({ labels: [''] })`.
+       *   - lenke's own TS `property('')` on this very surface raises for the key equivalent.
+       *
+       * `GAPS.md` also declares the rule "enforced identically in the Rust core … at codec
+       * ingestion + `addV`/`addE`/`property`" — and its TS list names only the core API, which is
+       * exactly where the gap was. `addE` was already correct: it passes `[step.label]`
+       * unconditionally, so an empty edge label always reached the validator.
+       */
+      labels: label === undefined ? [] : [label],
       properties: {},
     });
 
