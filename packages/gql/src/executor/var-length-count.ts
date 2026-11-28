@@ -1184,6 +1184,17 @@ export const detectVarLengthCount = (
   // run time (item 1399). `undefined` means "the general clause loop must run", which is the
   // contract `fastPath` already documented for a rung that does not exist at all.
 ): ((graph: Graph, params: Params) => Row[] | undefined) | null => {
+  /*
+   * CONDITIONALLY REDUNDANT AND KEPT (item 2465). Relaxed to `< 2`, a three-clause shape such as
+   * `[match, for, return]` is still refused — the destructure below takes the FIRST TWO clauses, so
+   * `ret` becomes the `for` and the kind check rejects it. Measured, not reasoned: with only this
+   * guard relaxed, `MATCH (a:P)-[:E]->{1,2}(x:P) FOR y IN [1] RETURN count(*)` still answers `null`.
+   *
+   * It stays because the two guards refuse for DIFFERENT reasons. This one means "the shape is not a
+   * bare MATCH + RETURN"; the kind check means "these two clauses are not a match and a return". A
+   * future linear form with a trailing clause after the `RETURN` would make the second check pass on
+   * the first two clauses while this one correctly refuses.
+   */
   if (clauses.length !== 2) {
     return null;
   }

@@ -126711,6 +126711,8 @@ differential, fuzz or conformance test can see a mutant in an admission conditio
 
 ```text
     18 detect* route detectors with no test by name
+      [item 2465 TOOK detectVarLengthCount: 13 tests, 7 of 8 mutants; the mirror guard
+       is a POLICY not a correctness barrier — dropping it answers CORRECTLY.]
       [item 2464 TOOK detectForCount + detectForProjection: 13 tests, 6 of 7 mutants;
        FOUR admission mutants survived the first cut — a genuine FIXTURE GAP.]
       detectChainDistinctLevels      detectChainFoldLevels       detectChainGroupedLevels
@@ -127082,3 +127084,78 @@ after `isConstExpr` / `cheapPureExpr` at item 2463. A change to one does not rea
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
 **5,555 tests 0 fail** including the 13 new ones. `for-unwind.ts` restored and verified
 byte-identical after both batteries; the only change to it is the comment.
+
+## Item 2465 — **`detectVarLengthCount`, the richest detector yet: a six-guard chain and the ONLY one returning `Row[] | undefined`.** 13 tests, 7 of 8 mutants caught. Three survivors were FIXTURE GAPS and each distinguishing shape was found by **applying the mutant and looking for an admission that FLIPS**, not by guessing. One finding is a policy, not a bug: **`mirrorAdmissible` refuses an inward `{0,1}` that the fast arm would answer CORRECTLY** — a deliberate narrowing, now pinned so widening it has to be intentional
+
+Item 2460's map listed this with eighteen `CLOSED.md` entries behind it and no test.
+
+### THE CONTRACT HAS THREE OUTCOMES, NOT TWO
+
+Uniquely among the detectors it returns `Row[] | undefined`: "a depth-4 trail's endpoint label may be
+VACUOUS, which only the graph can say, so this rung is admitted at compile time and declines at RUN
+time" (item 1399). So `null` (never admitted), `undefined` from the returned function (admitted, then
+declined) and rows are three distinct states. **The run-time `undefined` path was NOT reached by any
+fixture here** — a depth-4 query over an all-`P` graph, where the endpoint label IS vacuous, still
+returned rows. Recorded as uncovered rather than claimed.
+
+### SEVEN OF EIGHT, AND THE THREE SURVIVORS WERE FOUND BY FLIPPING
+
+```text
+    first cut (10 tests)                 after (13 tests)
+      len-guard-relaxed       SURVIVED     SURVIVED  (conditionally redundant, below)
+      admits-non-return-tail  SURVIVED     CAUGHT  12/1
+      admits-unbounded-mirror SURVIVED     CAUGHT  12/1
+      admits-OPTIONAL         CAUGHT       CAUGHT  12/1
+      admits-many-patterns    CAUGHT       CAUGHT  12/1
+      ignores-ORDER-BY        CAUGHT       CAUGHT  12/1
+      ignores-count-column    CAUGHT       CAUGHT  12/1
+      admits-any-shape        CAUGHT       CAUGHT  12/1
+```
+
+**The technique is the keeper.** Rather than guess which shape each survivor needed, I applied the
+mutant and ran a candidate list through `compileLinear`, printing whether `varLengthCount` was
+admitted in each arm. The shape whose verdict FLIPS is the fixture:
+
+- `MATCH (a:P)-[:E]->{1,2}(x:P) SET x.k = 2` — post-pass `[match, set]`. Live: `null`. Mutant:
+  THROWS. That is the return-kind guard.
+- `MATCH (a:P)<-[:E]-{0,1}(x:P) RETURN count(*)` — live `null`, mutant ADMITTED. The mirror guard.
+- the inward UNBOUNDED `<-[:E]-*` I had tried first declines in BOTH arms, so it proves nothing
+  about that guard — which is exactly the trap this method avoids.
+
+### THE MIRROR GUARD IS A POLICY, AND THAT IS MEASURED
+
+`mirrorAdmissible` is `!inward || (max !== null && max >= 2)`, so an inward `{0,1}` is refused while
+an inward `{1,2}` is served. **With the guard dropped, the refused shape is admitted and computes 9 —
+the same answer the general path gives.** So this is not a correctness barrier; the source says it
+"keeps a shallow or unbounded mirror on the route it has always taken, rather than letting a relaxed
+bound meet arithmetic that was not relaxed with it — the mistake items 692 and 699 both made one
+depth down."
+
+The assertion's value is therefore not "the answer would be wrong" but **"a future widening must be
+deliberate"**: it fails loudly instead of drifting. Stating that distinction in the test matters,
+because a reader who assumes correctness is at stake will not dare to widen it when the arithmetic
+IS extended.
+
+### THE SURVIVOR IS CONDITIONALLY REDUNDANT, AGAIN MEASURED
+
+Relaxing `clauses.length !== 2` to `< 2` leaves all 13 green, and with ONLY that mutant applied the
+three-clause shape still answers `null`: the destructure takes the first two clauses, so `ret`
+becomes the `for` and the KIND check rejects it. It stays because the two guards refuse for different
+reasons — this one means "not a bare MATCH + RETURN", the kind check means "these two clauses are not
+a match and a return" — and a future linear form with a clause after the `RETURN` would pass the
+second while this one correctly refuses. That is the third conditionally-redundant guard this survey
+has documented (2461, 2464, here), each with the counterfactual at the clause.
+
+### TWO OF MY OWN COUNTS WERE WRONG AND THE TEST CAUGHT THEM
+
+I wrote 14 for the unbounded `*` (it is 15 — five zero-length paths plus ten of length 1-4) and 6 for
+the two-segment decline (it is 5). Both were arithmetic I did in my head after measuring a DIFFERENT
+fixture size. The expected values now come from the engine, with the derivation in a comment.
+
+Also: a probe placed in the scratchpad cannot resolve `@lenke/*` and must live in the package — and I
+wrote one with `cat >`, which this repo's rules forbid in favour of the file tools.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
+**5,568 tests 0 fail** including the 13 new ones. `var-length-count.ts` restored and verified
+byte-identical after four separate mutant applications; the only change to it is the comment. Both
+scratch probes removed.
