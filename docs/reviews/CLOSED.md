@@ -124441,7 +124441,7 @@ retaining old copies, not about updating one in place, so it does not block this
 What a build costs, from item 2432's instrument: **+4.21 MiB of churn** per rebuild, and 97-121 ms at
 200,000 elements. Not attempted here — it is a design change in two separate builders, and the
 `order` array's construction is the part that has to be shown to be incrementally maintainable at
-all.
+all. ~~[ANSWERED at item 2435: `order` and `idx` are INVARIANT under an edge write (41% of the build) and reusable byte-identically via a two-line vertex counter; `off`/`nbr` are the part that CANNOT be maintained in a packed layout.]~~
 
 **Priced, localized, and left open deliberately.** The native side's twin is item 680, where nothing
 re-arms `csr_fresh` and a selective edge type costs 24.07x; this is the same shape measured on the TS
@@ -124450,3 +124450,87 @@ side with the mechanism now named.
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0.
 `chain-fold-levels.ts` restored from `target/pristine-cfl-2434.ts`, the ablation marker verified
 absent, `git status` clean for `packages/gql`, dist rebuilt.
+
+## Item 2435 — **41% OF THE CSR REBUILD IS INVARIANT UNDER AN EDGE WRITE AND IS THROWN AWAY ANYWAY.** `order` (3.49 ms) and the `idx` Map over |V| object keys (12.38 ms) are derived from `verticesById`, which an `addEdge` does not touch — only the `off`/`nbr` fill (22.70 ms) is actually dirty. **And exactly TWO of `topologyVersion`'s SIX bump sites are vertex-structural**, so the split is a two-line counter, not a redesign. The other 59% is blocked by CSR packing, which is the honest bound
+
+Item 2434 localized the write-then-read penalty to an O(|V| + |E|) CSR rebuild. This prices the
+rebuild's PARTS, which is what decides whether anything is buildable.
+
+### THE PHASE SPLIT, standalone at 200,000, nine reps each
+
+```text
+    buildCsr's three phases            median     dirtied by an addEdge?
+      1  order = [...verticesById]      3.49 ms    NO  — no vertex was added
+      2  idx Map (|V| object keys)     12.38 ms    NO  — same keys, same positions
+      3  off/nbr fill                  22.70 ms    yes — one vertex's slice changed
+                                       --------
+                                        38.57 ms   41% of it is invariant
+```
+
+The sum is consistent with the in-engine figure: item 2434 measured `buildCsr` at 97 ms and `csrFor`
+at 56 ms over five reads — ~30 ms per rebuild against this 38.6 ms standalone, the difference being
+that phase 3 here iterates `adjFrom` raw where the engine goes through `edgesOfTypes`.
+
+**Phase 2 is the surprise.** A `Map` keyed on 200,000 `Vertex` OBJECTS costs 12.38 ms to populate —
+3.5x the array copy — and it is rebuilt on every edge write even though every key and every value is
+identical to the one just discarded.
+
+### THE COUNTER THAT MAKES IT SAFE ALREADY HAS ITS SITES IDENTIFIED
+
+`csr-cache.ts` keys on `topologyVersion`, which the module's own comment says bumps on "vertex adds
+and removes, edge adds and removes, AND edge-LABEL writes". Six sites in `Graph.ts`, and only two of
+them can change `order` or `idx`:
+
+```text
+    line 1788   verticesById.set(vertex.id, vertex)      VERTEX-STRUCTURAL
+    line 1864   verticesById.delete(vertex.id)           VERTEX-STRUCTURAL
+    line 2153   edgesById.set(edge.id, edge)             edge only
+    line 2279   edgesById.delete(edge.id)                edge only
+    line 4639   indexEdgeLabel                           edge only
+    line 4685   deIndexEdgeLabel                         edge only
+```
+
+So a `vertexVersion` bumped at 1788 and 1864 only, with `csr-cache.ts` holding
+`{vv, order, idx}` beside `{tv, byShape}`, reuses phases 1 and 2 across every edge-only write.
+
+**AND IT IS BYTE-IDENTICAL BY CONSTRUCTION, not by tolerance.** `order` is
+`[...graph.verticesById.values()]` and `Map` iteration is insertion order, so with no vertex added or
+removed the array is element-for-element what a full rebuild produces, and `idx` is the same keys
+mapped to the same positions. This is the one case where reuse does not have to argue about f64
+re-association or walk order.
+
+The existing design note is NOT a refusal of this. It says a stale generation is dropped whole
+because "every shape built from the old topology is equally invalid, and keeping the map would leak
+one entry per shape per write" — an argument about retaining old `nbr` arrays PER SHAPE. `order` and
+`idx` are shape-INDEPENDENT (one copy, not one per direction/type set), so there is nothing to leak.
+
+### WHAT IS NOT BUILDABLE, and this is the honest bound
+
+Phase 3, the other 59%, cannot be maintained incrementally in this layout. A packed CSR stores
+vertex `i`'s neighbours at `nbr[off[i] .. off[i+1])` with no slack, so inserting one neighbour shifts
+every later entry — O(|E|), which is what a rebuild already costs. Making it incremental needs
+per-vertex slack or a chunked layout, and that changes what every downstream consumer reads: the
+module header records that `nbr` is read POSITIONALLY by the depth-3/4 trail corrections via
+`pairMultiplicities`, so a layout change is a correctness question across the whole route, not a
+local one.
+
+**So the realistic prize is phase 1 + 2, not the whole penalty**: ~15.9 ms off a rebuild that turns a
+12.7 ms read into 48.6 ms. That is ~1.3x on the after-write read, and nothing at all on a warm one.
+Worth building, and worth saying plainly that it does not remove the cliff — item 2434's 3.36-4.37x
+becomes roughly 2.6-3.3x.
+
+### A RECORDED TRAP EARNED ITSELF AGAIN
+
+`grep -rn 'topologyVersion' packages/core/src` returns NOTHING, while the string occurs SEVEN times
+in `Graph.ts` — the file contains Unicode, so grep skips it silently, and the built `.d.ts` is the
+only hit. [[grep-silently-skips-unicode]] records exactly this ("grep returns NO output for strings
+that DO exist in Graph.ts; verify absence with python `str.count`"), and without it the conclusion
+here would have been "core has no such counter and this needs a redesign". Both the occurrence count
+and the six line numbers above come from `str.count` and a line scan.
+
+A second technique failed in passing and is worth noting: attributing each bump site to its enclosing
+method with a regex walking BACKWARDS matched `validateElementNames` for two sites and nothing for
+two more, because it stops at the first declaration-shaped line rather than the enclosing one.
+Printing five lines of context around each site answered it immediately and unambiguously.
+
+GATES. No engine change this item: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0.
