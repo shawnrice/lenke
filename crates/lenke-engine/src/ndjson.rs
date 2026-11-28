@@ -1234,6 +1234,23 @@ impl<'a> JsonParser<'a> {
                     self.i += 1;
                     run = self.i;
                 }
+                /*
+                 * Item 2535: RFC 8259 s7 spells the legal unescaped set as
+                 *     unescaped = %x20-21 / %x23-5B / %x5D-10FFFF
+                 * so every byte BELOW 0x20 must be escaped. The catch-all here used to step over
+                 * one, which let a raw TAB, 0x01 or 0x1f sit inside a string — measured, native
+                 * ACCEPTED four such documents that the TS codec (`JSON.parse`) refuses, in a KEY
+                 * as well as a value. A raw newline cannot survive NDJSON line-splitting, but a
+                 * raw tab inside a line can, so this was reachable.
+                 *
+                 * 0x20 (space) is the first LEGAL byte and must keep passing — it is the control
+                 * row that proves the bound is in the right place.
+                 */
+                Some(&c) if c < 0x20 => {
+                    return Err(format!(
+                        "control character {c:#04x} in string, must be escaped"
+                    ));
+                }
                 Some(_) => self.i += 1,
             }
         }
@@ -2532,5 +2549,114 @@ mod tests {
             ),
             other => panic!("expected a number at the storage layer, got {other:?}"),
         }
+    }
+
+    /*
+     * Item 2535: a brute-force STRUCTURAL differential over the whole JSON acceptance surface,
+     * not one condition at a time. 49 documents chosen to decide the shapes RFC 8259 rules on —
+     * duplicate keys, trailing/leading/double commas, single quotes, unquoted keys, missing colon
+     * and comma, unclosed and over-closed brackets, trailing content, JS comments, the bare `NaN`
+     * / `Infinity` / `undefined` literals, miscapitalized keywords, a BOM, a top-level scalar, an
+     * unterminated string, unknown escapes, a NUL escape in a KEY, a huge integer, `-0`.
+     *
+     * 46 of the 49 already agreed with `serde_json`. The 3 that did not were one class: an
+     * UNESCAPED CONTROL CHARACTER inside a string (raw newline, raw tab, raw 0x01), which this
+     * parser accepted. Confirmed cross-engine — the TS codec refuses all of them, in a key as well
+     * as a value — and fixed in `string_cow`.
+     *
+     * This is kept as a test rather than a probe because every row is a VERDICT comparison against
+     * an independent implementation of the same RFC, so it needs no hand-typed expectation and
+     * stays meaningful as the parser changes.
+     *
+     * ONE ROW IS EXCLUDED FROM THE AGREEMENT CLAIM, and the reason is a limit of the oracle rather
+     * than of either parser: nesting depth. `MAX_JSON_DEPTH` is 128 here and serde_json's default
+     * recursion limit is also 128, but the two count frames slightly differently, so a document
+     * near the boundary can legitimately differ. `deeply_nested_json_rejects_instead_of_overflowing_the_stack`
+     * pins our own limit directly; it is not a conformance question.
+     */
+    #[test]
+    fn the_json_structural_surface_agrees_with_serde_json() {
+        let corpus: &[(&str, &str)] = &[
+            // Well-formed. If one of these ever rejects, the parser broke the ordinary path.
+            ("plain object", r#"{"a":1}"#),
+            ("plain array", r#"[1,2,3]"#),
+            ("nested", r#"{"a":{"b":[1,{"c":null}]}}"#),
+            ("empty object", r#"{}"#),
+            ("empty array", r#"[]"#),
+            ("true/false/null", r#"[true,false,null]"#),
+            ("array at top level", r#"[{"a":1}]"#),
+            ("scalar at top level", "42"),
+            ("string at top level", r#""hi""#),
+            ("null at top level", "null"),
+            ("key with escapes", r#"{"a\"b":1}"#),
+            ("escaped newline", r#"{"a":"x\ny"}"#),
+            ("escaped tab", r#"{"a":"x\ty"}"#),
+            ("NUL escape in a value", r#"{"a":"x\u0000y"}"#),
+            ("NUL escape in a KEY", r#"{"a\u0000b":1}"#),
+            ("a literal space is legal", r#"{"a":"x y"}"#),
+            ("huge integer", r#"{"a":123456789012345678901234567890}"#),
+            ("negative zero", r#"{"a":-0}"#),
+            ("exponent, no fraction", r#"{"a":1e2}"#),
+            // DUPLICATE KEYS are legal JSON and both accept them; `a_repeated_labels_or_properties_key_is_last_wins`
+            // pins which value survives, which the RFC leaves to the implementation.
+            ("duplicate keys", r#"{"a":1,"a":2}"#),
+            // Malformed.
+            ("trailing comma in an object", r#"{"a":1,}"#),
+            ("trailing comma in an array", r#"[1,2,]"#),
+            ("leading comma", r#"[,1]"#),
+            ("double comma", r#"[1,,2]"#),
+            ("single-quoted key", r#"{'a':1}"#),
+            ("unquoted key", r#"{a:1}"#),
+            ("missing colon", r#"{"a" 1}"#),
+            ("missing comma", r#"{"a":1 "b":2}"#),
+            ("unclosed object", r#"{"a":1"#),
+            ("unclosed array", r#"[1,2"#),
+            ("one bracket too many", r#"{"a":1}}"#),
+            ("a second document after the first", r#"{"a":1} {"b":2}"#),
+            ("trailing garbage", r#"{"a":1}x"#),
+            ("empty input", ""),
+            ("whitespace only", "   "),
+            ("bare NaN", r#"{"a":NaN}"#),
+            ("bare Infinity", r#"{"a":Infinity}"#),
+            ("bare -Infinity", r#"{"a":-Infinity}"#),
+            ("bare undefined", r#"{"a":undefined}"#),
+            ("TRUE uppercased", r#"{"a":TRUE}"#),
+            ("Null capitalized", r#"{"a":Null}"#),
+            ("a block comment", r#"{"a":1 /*c*/}"#),
+            ("a line comment", "{\"a\":1 //c\n}"),
+            ("a byte-order mark", "\u{feff}{\"a\":1}"),
+            ("unknown escape \\x", r#"{"a":"\x41"}"#),
+            ("unterminated string", r#"{"a":"x}"#),
+            ("a numeric key", r#"{1:2}"#),
+            // THE ROWS THIS SWEEP FOUND. Each is a control character that must be escaped.
+            ("RAW newline in a string", "{\"a\":\"x\ny\"}"),
+            ("RAW tab in a string", "{\"a\":\"x\ty\"}"),
+            ("RAW 0x01 in a string", "{\"a\":\"x\u{1}y\"}"),
+            ("RAW 0x1f in a string", "{\"a\":\"x\u{1f}y\"}"),
+            ("RAW tab in a KEY", "{\"a\tb\":1}"),
+        ];
+
+        let mut mismatches: Vec<String> = Vec::new();
+
+        for (label, text) in corpus {
+            let ours = super::parse_json(text).is_ok();
+            let oracle = serde_json::from_str::<serde_json::Value>(text).is_ok();
+
+            if ours != oracle {
+                mismatches.push(format!(
+                    "{label}: lenke {} / serde_json {}",
+                    if ours { "ACCEPTED" } else { "rejected" },
+                    if oracle { "ACCEPTED" } else { "rejected" },
+                ));
+            }
+        }
+
+        assert!(
+            mismatches.is_empty(),
+            "the JSON acceptance surface diverged from serde_json on {} of {} documents:\n  {}",
+            mismatches.len(),
+            corpus.len(),
+            mismatches.join("\n  "),
+        );
     }
 }

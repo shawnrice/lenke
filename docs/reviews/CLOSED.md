@@ -131872,3 +131872,75 @@ printed a loud SKIP** rather than a silent pass — the sixth time that guard ha
 GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0; Rust **1360 + 13 + 725** (+2), 0
 failed; `bun run fuzz` **57 pass 0 fail**; `bun run fmt`/`lint`/`check` 0; serialization 144 / core 511
 / native 1438 / gql 5672 / cli 46, 0 failed. No existing fixture anywhere relied on the lax forms.
+
+## Item 2535 — **a BRUTE-FORCE STRUCTURAL DIFFERENTIAL over the whole JSON acceptance surface (a new instrument), and it found the third hole in the same parser: an UNESCAPED CONTROL CHARACTER inside a string.** 46 of 49 rows already agreed; the 3 that did not were one class. Fixed, and the sweep is now a permanent test
+
+### THE INSTRUMENT
+
+Items 2533 and 2534 each fixed ONE condition in this hand-rolled parser, found by reading. That does not
+scale and it cannot say what is left. So this tick built the sweep instead of another single probe: 49
+JSON documents chosen to decide the shapes RFC 8259 rules on, each compared by VERDICT against
+`serde_json` — duplicate keys, trailing / leading / double commas, single quotes, unquoted keys, missing
+colon and comma, unclosed and over-closed brackets, trailing content, a second document on the line, JS
+block and line comments, the bare `NaN` / `Infinity` / `-Infinity` / `undefined` literals,
+miscapitalized keywords, a BOM, a top-level scalar / string / null, an unterminated string, an unknown
+`\x` escape, a NUL escape in a KEY, a 30-digit integer, `-0`.
+
+**46 of the 49 already agreed.** That is the useful half of the result: trailing commas, comments, bare
+`NaN`, single quotes and the rest are all handled correctly, and duplicate keys are legal JSON that both
+accept (`a_repeated_labels_or_properties_key_is_last_wins` pins which value survives, which the RFC
+leaves to the implementation).
+
+### THE THREE THAT DID NOT, AND THEY ARE ONE CLASS
+
+```text
+      DOCUMENT                     lenke      serde_json
+      raw newline in a string      ACCEPTED   rejected
+      raw tab in a string          ACCEPTED   rejected
+      raw 0x01 in a string         ACCEPTED   rejected
+```
+
+RFC 8259 s7: `unescaped = %x20-21 / %x23-5B / %x5D-10FFFF` — **every byte below 0x20 must be escaped.**
+`string_cow`'s catch-all arm stepped over one instead. Confirmed cross-engine, and it is REACHABLE: a raw
+newline cannot survive NDJSON line-splitting, but a raw TAB inside a line can.
+
+```text
+      INPUT                      ts (before)   native (before)   after
+      escaped \t  (CONTROL)      ACCEPT        ACCEPT            both ACCEPT
+      a literal space (CONTROL)  ACCEPT        ACCEPT            both ACCEPT
+      RAW tab 0x09               reject        ACCEPT            both reject
+      RAW 0x01                   reject        ACCEPT            both reject
+      RAW 0x1f                   reject        ACCEPT            both reject
+      RAW tab in the KEY         reject        ACCEPT            both reject
+```
+
+Same direction as 2534 — native lax, TS strict, so four more documents this engine loaded and the other
+refuses. All 7 rows agree now and both controls are unmoved.
+
+### THE BOUND IS EARNED, NOT ASSUMED
+
+0x20 (space) is the first LEGAL byte, so it is the control row that proves the bound sits in the right
+place. Three graded mutants, each caught:
+
+```text
+      C1  the check removed (the original bug)        1 FAIL
+      C2  bound 0x21 — rejects the legal space        1 FAIL
+      C3  bound 0x09 — lets a raw TAB through         1 FAIL
+```
+
+### ONE ROW EXCLUDED, AND WHY IT IS THE ORACLE'S LIMIT
+
+Nesting depth is NOT in the agreement claim. `MAX_JSON_DEPTH` is 128 here and serde_json's default
+recursion limit is also 128, but the two count frames differently, so a document near the boundary can
+legitimately differ. `deeply_nested_json_rejects_instead_of_overflowing_the_stack` pins our own limit
+directly; it is a stack-safety choice, not a conformance question. This is rule (xxix)'s caveat again,
+the one 2534 earned: **verify the oracle on the row** — serde was stricter than the RFC on `1e999`, and
+it is differently-bounded here.
+
+The sweep is kept as a TEST rather than a probe: every row is a verdict comparison against an
+independent implementation of the same RFC, so it needs no hand-typed expectation and stays meaningful
+as the parser changes. It is now the thing that answers "what is left on this surface".
+
+GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0; Rust **1361 + 13 + 725** (+1), 0
+failed; `bun run fuzz` **57 pass 0 fail**; `bun run fmt`/`lint`/`check` 0; serialization 144 / core 511 /
+native 1438 / gql 5672 / cli 46 / mcp 14, 0 failed.
