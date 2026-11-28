@@ -84,6 +84,13 @@ const NODES = Number(process.env.NODES ?? 400_000);
 const REPS = Number(process.env.REPS ?? 9);
 const WARMUP = Number(process.env.WARMUP ?? 3);
 const DEPTHS = (process.env.DEPTHS ?? '1,2,3,4,5').split(',').map(Number);
+/*
+ * NOTE (item 2431): the `where` row's PAIR flag is EXPLAINED, so do not re-derive it. Against the
+ * bare `rows` cell a clause `WHERE` reads 3.2x; against item 698's HONEST floor (the row form plus
+ * the filter's own work over the engine's own rows, ~2-3 ms) it is **1.65x** — and that residual is
+ * item 1951's, recorded there as "`projectRow` per row, which no-runtime-codegen bounds". A third of
+ * the apparent gap is the wrong reference and the rest is behind a firm refusal.
+ */
 /** Flag a pair gap at this multiple of the depth's own `rows` cell. */
 const PAIR_FLAG = Number(process.env.PAIR_FLAG ?? 2.5);
 /** Flag non-monotonicity when a shallower depth costs this multiple of a deeper one. */

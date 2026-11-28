@@ -196,6 +196,14 @@ const FLOOR = {
   },
   'distinct-floor': (rows) => new Set(rows.map((r) => r.k)).size,
   'countdist-floor': (rows) => new Set(rows.map((r) => r.k)).size,
+  /*
+   * THE HONEST FLOOR FOR A CLAUSE `WHERE` (item 698's rule, applied at item 2431). The screen flags
+   * `where` at 3.2x its own ROWS cell, and item 698 measured exactly that error on the sorted hop:
+   * 0.86x of the honest floor where the bare-rows reference claimed 1.9x worse. A predicate really
+   * costs something, so the reference is the row form PLUS the filter's own work over the engine's
+   * own rows.
+   */
+  'where-floor': (rows) => rows.filter((r) => r.k > 44).length,
   'collect-floor': (rows) => {
     const out = [];
 

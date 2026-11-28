@@ -123984,7 +123984,7 @@ refuted here for want of an immune sibling.
 
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
 
-## Item 2429 — **THE SCREEN'S FIRST FULL-DEPTH RUN IN THE REALISTIC LABEL MODE, and its target list is now measured rather than stale: TWO flags, both outside everything closed.** `where` at one hop is 3.2x its own rows cell; ~~a SECOND COLUMN's marginal cost is 4.8 ms at depth 1 and 29.7-33.2 ms at depths 2-4 — 6.2-6.9x, the signature of a route lost at some width.~~ **THAT FLAG IS AN ARTIFACT, REFUTED AT ITEM 2430: isolated, the depth-1 marginal is 19.6-20.1 ms rather than 4.8, so the ratio collapses to 0.5-1.9x and the marginal does not grow monotonically (20 / 10 / 37 across depths 1-3). The JUMP_FLAG is a DIFFERENCE of in-sweep cells and a difference amplifies in-sweep bias where the two ratio flags cancel it.** **And the shapes items 2421-2424 fixed are now the FASTEST cells in the grid**
+## Item 2429 — **THE SCREEN'S FIRST FULL-DEPTH RUN IN THE REALISTIC LABEL MODE, and its target list is now measured rather than stale: TWO flags, both outside everything closed.** ~~`where` at one hop is 3.2x its own rows cell;~~ **EXPLAINED AT ITEM 2431: 1.65x against item 698's honest floor, and that 1.65x is item 1951's known residual (`projectRow` per row, bounded by no-runtime-codegen) — so BOTH of this item's flags are resolved and the screen has no live flags left at this size and label mode;** ~~a SECOND COLUMN's marginal cost is 4.8 ms at depth 1 and 29.7-33.2 ms at depths 2-4 — 6.2-6.9x, the signature of a route lost at some width.~~ **THAT FLAG IS AN ARTIFACT, REFUTED AT ITEM 2430: isolated, the depth-1 marginal is 19.6-20.1 ms rather than 4.8, so the ratio collapses to 0.5-1.9x and the marginal does not grow monotonically (20 / 10 / 37 across depths 1-3). The JUMP_FLAG is a DIFFERENCE of in-sweep cells and a difference amplifies in-sweep bias where the two ratio flags cancel it.** **And the shapes items 2421-2424 fixed are now the FASTEST cells in the grid**
 
 Item 2415 gave `rung-gap-screen.mjs` its `MIXED` knob and ran it only at depths 1-2. Items
 2421/2423/2424 then moved four shapes onto the level passes, so the flag list every later item would
@@ -124119,3 +124119,74 @@ applies to a FRESH flag: a screen nominates, the per-shape instrument decides.
 
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
 `onehopfam-2415.mjs` gained a `twocol` shape, which is what made the verification one command.
+
+## Item 2431 — **THE SCREEN'S `where` FLAG IS 3.2x AGAINST THE BARE ROWS CELL AND 1.65x AGAINST ITEM 698's HONEST FLOOR — and that 1.65x is item 1951's KNOWN RESIDUAL, `projectRow` per row, which [[no-runtime-codegen]] bounds.** So both of item 2429's flags are now resolved, and **the screen at 400,000 in the realistic label mode has NO live flags left**
+
+Item 2429 recorded two flags from the first realistic-mode grid. Item 2430 killed `twocol` as an
+artifact of the JUMP flag's difference arithmetic. This is the other one.
+
+### THE HONEST FLOOR HALVES IT, which is item 698's rule doing its job
+
+The screen compares a modifier against its own `rows` cell, and item 698 measured exactly the error
+that produces: the sorted hop read 1.9x worse against the bare row form and **0.86x against the
+honest floor** (the row form PLUS a sort of its own rows). A predicate really costs something, so the
+reference is the row form plus the filter's own work. Isolated, one shape per process, two readings:
+
+```text
+    N=400,000, MIXED=1, depth 1        rows out        median
+      rows                              400,000         62.80 / 61.72
+      where                             214,420        107.15 / 107.49
+      where-floor (rows + JS filter)    214,420         64.99 / 64.68
+```
+
+**The filter's own work is ~2-3 ms** (64.99 against 61.72), so the honest floor sits barely above the
+bare cell — and `where` lands at **1.65x of it**, not the screen's 3.2x. Halved by the correct
+reference, and still real: the engine returns FEWER rows (214,420 against 400,000) and takes 1.65x
+longer than materialising all of them and filtering in JS.
+
+### AND THAT 1.65x IS ALREADY PRICED, AND ALREADY PARTLY TAKEN
+
+Item 1949 priced `FILTER` after a hop isolated at **5.02x** and called it "the largest confirmed
+realistic-graph gap left". Item 1950 unblocked it. **Item 1951 took 1.39x of it** and recorded what
+was left, in its own words: _"the residual is `projectRow` per row, which [[no-runtime-codegen]]
+bounds"_ — and that same entry corrects item 1949's ceiling as the WRONG ARM, because "a hand edge
+pass under-rewards the route that evaluates the predicate fewer times, so it mis-ranks the
+candidates".
+
+So the surviving 1.65x is a per-row row-build term behind a FIRM refusal: no `new Function`, no
+`eval`, because it would force `unsafe-eval` into every embedder's CSP. [[closure-dispatch-is-cheap-keyed-loads-are-not]]
+measures the shape of that term from the other side — the indirect call is ~3 ns and free, while
+`obj.properties[key]` with a variable key costs 1.41x over a literal, so "inline the predicate"
+targets the wrong thing and the real one needs codegen.
+
+**Nothing to build.** The flag is explained: a third of the screen's apparent 3.2x is the wrong
+reference, and the rest is a known, bounded residual.
+
+### THE SCREEN NOW HAS NO LIVE FLAGS AT 400,000 IN THE REALISTIC MODE
+
+```text
+    item 2429's flags        verdict
+      twocol depth2-4         ARTIFACT (item 2430) — the JUMP flag's difference amplifies in-sweep bias
+      where depth1            EXPLAINED (here) — 1.65x against the honest floor, item 1951's bounded residual
+```
+
+That is worth stating plainly rather than leaving implicit: the instrument that drove items
+2414-2431 is, at this size and in this label mode, quiet. Its remaining value is as a REGRESSION
+screen — the fixed shapes now sit at 28-60 ms across five depths where `rows` climbs to 643, and a
+future change that loses one of those routes would show up here immediately.
+
+A note has been added beside the `where` row of the screen's own flag list so the next reader does
+not re-derive the floor correction or the residual.
+
+### WHAT THIS LEAVES, and the next tick should start from an instrument gap rather than this grid
+
+Both remaining candidates are coverage gaps rather than flagged shapes:
+
+- **the WRITE path has no memory coverage at all** — churn, retained, peak and cap all measure reads,
+  and item 680 recorded that one `add_edge` clears `csr_fresh` with nothing to re-arm it, demoting
+  every later read for the session;
+- **the Gremlin surface has no allocation or peak coverage** — `bench:gremlin` and
+  `spelling:gremlin` exist, and none of items 2416-2425's instruments point at it.
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
+`onehopfam-2415.mjs` gained a `where-floor` arm, which is what made the floor comparison one command.
