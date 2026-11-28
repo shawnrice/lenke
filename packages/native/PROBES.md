@@ -3345,3 +3345,34 @@ one-shape-per-process can.
 
 WARN It also explains the `path()` inversion: `path()` sets `readsPath = true` and takes a route that
 does not build the structure (0.14 MiB at 3 hops). The two arms were never the same walk.
+
+## `csr-deletion-2505.mjs` — name a cost by DELETION (item 2505)
+
+```
+cd packages/native && node csr-deletion-2505.mjs
+SWAP_N=200000 node csr-deletion-2505.mjs
+```
+
+Nine TWO-hop shapes, one per process, each differing in one thing that may disqualify the multi-hop
+chain route. Built to test whether item 2504's one-time ~73 B/vertex is the CHAIN CSR
+(`chainCsrFor(graph, fwd, [t])` in `hop-chain-values.ts`). **It is**: five independent disqualifiers
+all collapse to the 1-hop floor and only the plain chain pays.
+
+```
+      out,out        NEG ctl    14.56 MiB   PAYS
+      1 hop / out,values         0.08       floor
+      out,out,path() POS ctl     0.14       readsPath = true
+      out(),out()    untyped     0.18       no label => no chainCsrFor(…,[t])
+      out,out,simplePath()       0.14
+      out,where(values),out      0.28
+      out,dedupe,out             5.22       partial, unexplained
+      out('E'),out('NOSUCH')    25.90       PAYS ~2x, for ZERO rows
+```
+
+KEY The last row confirms the code's "one CSR per hop shape" arithmetically: two IDENTICAL labels
+share one slot numbering (14.56), two DIFFERENT labels build two CSRs (~2x).
+
+WARN **A typo'd edge label in a chain is the most expensive shape in this family** — 25.90 MiB for 0
+rows, because the CSRs are built before the engine can know the label is empty.
+
+The structure itself is a one-time bounded topology index and is CORRECT; there is no lever here.

@@ -129868,7 +129868,74 @@ and bounded rather than per-row, so it is a floor to plan for and not a leak.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instruments and comments only.
 
-OPEN — **what IS the structure?** Its size (~73 B/vertex), its trigger (the second hop), its
+~~OPEN — **what IS the structure?**~~ **NAMED AT ITEM 2505: the CHAIN CSR that `hop-chain-values.ts` builds via `chainCsrFor(graph, fwd, [t])`, confirmed by deletion across FIVE disqualifiers (untyped `out()`, `path()`, `simplePath()`, a mid-chain `where`, and a 1-hop tail all collapse to the floor). Correct as designed; not a lever.** Its size (~73 B/vertex), its trigger (the second hop), its
 flatness in depth and its absence on the `readsPath` route all point at an adjacency index built by
 the multi-hop route. Naming it needs a heap snapshot or a read of the `readsPath = false` hop source,
 and the number is useful without it.
+
+## Item 2505 — **NAMED, BY DELETION ACROSS FIVE DISQUALIFIERS: item 2504's one-time O(|V|) cost is the CHAIN CSR** that `hop-chain-values.ts` builds for the multi-hop route. Correct as designed — and the deletion sweep turned up one oddity: a chain whose second label matches NOTHING pays ~2x for ZERO rows
+
+### THE CANDIDATE, FROM THE CODE
+
+`hop-chain-values.ts` is the `readsPath = false` multi-hop route and it does:
+
+```ts
+// One CSR per hop shape. They share a slot numbering because every one numbers by …
+const csrs = hops.map(([t, fwd]) => chainCsrFor(graph, fwd, [t]));
+```
+
+which would explain all three of item 2504's signatures at once: built per CHAIN (so a single hop
+never builds one), shared across hops (so flat in depth), topology-only (so blind to whether the tail
+emits elements or scalars).
+
+### BUT READING THE CODE IS NOT EVIDENCE, SO: DELETION
+
+`csr-deletion-2505.mjs`, N=200,000, one shape per process. Every arm is a TWO-hop walk differing in
+one thing that may disqualify the chain route:
+
+```text
+      shape                       rows      MiB   verdict
+      out,out        NEG ctl    200000    14.56   PAYS
+      1 hop                     200000     0.08   floor
+      out,values     (1 hop)    200000     0.08   floor
+      out,out,path() POS ctl    200000     0.14   disqualified — readsPath = true
+      out(),out()    untyped    200000     0.18   disqualified — no label, so no chainCsrFor(…,[t])
+      out,out,simplePath()      200000     0.14   disqualified
+      out,where(values),out     200000     0.28   disqualified
+      out,dedupe,out            200000     5.22   partial
+      out('E'),out('NOSUCH')         0    25.90   PAYS ~2x, FOR NOTHING
+```
+
+**Five independent disqualifiers all collapse to the 1-hop floor (0.08-0.28 MiB) and only the plain
+chain pays.** The untyped arm is the cleanest of them: `out()` carries no label, `chainCsrFor` takes
+`[t]`, no CSR is built, and the cost vanishes. That is the mechanism named rather than inferred, and
+it is five tests rather than the one (`path()`) that was already in hand.
+
+### AND THE LAST ROW CONFIRMS THE COMMENT QUANTITATIVELY
+
+`out('E'),out('NOSUCH')` retains **25.90 MiB** against the plain chain's 14.56 — about DOUBLE — which
+is exactly what "one CSR per hop shape … they share a slot numbering" predicts: two IDENTICAL labels
+share one numbering and cost 14.56; two DIFFERENT labels build two CSRs and cost ~2x. The code
+comment is not just plausible, it is arithmetically right.
+
+### THE VERDICT: CORRECT, AND NOT A LEVER
+
+A one-time topology index, O(|V|), bounded, flat in depth, amortized over every row the chain
+produces. That is the right design for a multi-hop walk and there is nothing here to optimize. Saying
+so plainly is the honest end of this thread — the headroom number from item 2504 (~73 B/vertex, ~700
+MB at 10M vertices, a floor to plan against) is the useful output, and now it has a name.
+
+### ONE ODDITY WORTH ITS OWN LINE
+
+**A chain whose later label matches nothing pays MORE than a productive chain and returns zero rows**
+— 25.90 MiB for 0 rows against 14.56 for 200,000. The CSRs are built before the engine can know the
+label is empty, so `out('E'),out('TYPO')` is the worst cost-per-row in the family by an unbounded
+margin. Not a correctness issue and not obviously fixable without a label-existence check ahead of
+the build (the schema knows the edge labels; `dump_schema` exists), but worth knowing: **a typo'd
+edge label in a chain is not a cheap no-op, it is the most expensive shape here.**
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instruments only.
+
+OPEN — **`out,dedupe,out` at 5.22 MiB is neither floor nor full chain.** `dedupe` splits the chain,
+so one side may still build a CSR while the other does not. Partial and unexplained; small enough to
+leave, recorded so it is not re-found.
