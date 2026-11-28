@@ -130902,3 +130902,77 @@ check converted a mangled needle into a loud failure.)
 
 GATES. `bun run build` 0; `fmt` 0; `lint` 0; `check` 0; core 497 / gremlin 2927 / gql 5666 / mcp
 **14** (+4) / errors 6 / cli **46** (+2) / serialization 144 / native 1438, all 0 fail.
+
+## Item 2520 — **`GraphContext` hands every provider-less component ONE SHARED module-level `Graph`**, so a write through one leaks into an unrelated other, while its two sibling contexts THROW on a missing provider and say in their own comments that silence is wrong. 4 tests pin it; making it throw costs exactly 3 rows. **TENTH OWNER DECISION**
+
+### FIRST, A CORRECTION I MADE ON MYSELF
+
+`bun test` in `packages/react` reports **19 of 22 tests failing** with `document is not defined`. That
+is not a broken suite — **`bun test` is the wrong runner for that package.** Its script is
+`vitest run`, and `vite.config.ts` sets `environment: 'happy-dom'` with a comment saying exactly why
+("the hook tests need a DOM"). Run correctly, react is **22/22 green** and always was; it is covered
+by `nx run-many -t test`. My first reading was a false red I generated myself, and the standing suite
+numbers for this session simply never listed react because it does not use bun's runner.
+
+So: **a package's `test` script is the contract for how to run its tests.** `bun test` is not
+universal in this monorepo.
+
+### THE REAL FINDING
+
+Three React contexts, two contracts. `StoreContext` and `SyncClientContext` throw when their provider
+is missing, and `StoreContext` states the rationale:
+
+> a missing provider is a wiring error, so it fails loudly with an actionable message rather than
+> silently doing nothing.
+
+`GraphContext` does the silent thing, with no comment justifying the difference:
+
+```ts
+const defaultGraph = new Graph();
+export const GraphContext = React.createContext<GraphState>({ graph: defaultGraph });
+```
+
+`defaultGraph` is created **once per module**, so it is a process-wide singleton. Measured in
+`graph-context-default-2520.test.tsx` (4 rows, all passing against live code):
+
+```text
+      a graph hook outside a provider           does NOT throw      (silent)
+      useStore outside its provider             THROWS /StoreProvider/   <- the sibling contract
+      two provider-less hooks                   share ONE graph; a write through the first is
+                                                VISIBLE through the second
+      inside a provider [CONTROL]               each tree sees its OWN graph, not the default
+```
+
+So a component that forgets `<GraphProvider>` does not fail — it silently reads an empty graph, and
+**shares that graph's mutable state with every other provider-less component in the process.** Tests
+in one file can leak state into their neighbours through it (the singleton row restores what it adds,
+for exactly that reason).
+
+### MUTATION — TEETH IN BOTH DIRECTIONS, AND THE DECISION'S PRICE
+
+```text
+      MUTANT A  per-subscriber default (no sharing)   1 FAIL / 25 pass   <- the singleton row alone
+      MUTANT B  throw, like the siblings              3 FAIL / 23 pass
+      RESTORED                                        26 pass
+```
+
+Mutant A localizes to exactly the sharing claim. **Mutant B is the useful number: choosing to throw
+changes 3 test rows and nothing else.**
+
+### WHY THIS IS A DECISION AND NOT A FIX
+
+A default context value is a legitimate React pattern, so "loud vs silent" is a judgement about the
+public surface, not a bug — and `nan-comparison-policy`-style owner calls are not mine to make.
+Nothing pins the current behaviour (no literal `defaultGraph` or "without a provider" in any doc; every
+doc mention of `GraphProvider` assumes you wrap your app), so it is undocumented rather than
+deliberate. Three self-consistent answers:
+
+1. **Throw, like the siblings** — uniform, matches `StoreContext`'s stated rationale, costs 3 rows.
+2. **Keep the default but make it per-subscriber**, removing the cross-component leak while keeping
+   provider-less use working (mutant A, 1 row).
+3. **Keep it exactly as is and document it**, including the sharing, so it stops looking accidental.
+
+The SHARING is hazardous under either of (1) or (3) as written; (2) is the narrow fix if the
+convenience is wanted. Tests ship now so the choice is made deliberately rather than discovered.
+
+GATES. `fmt` 0; `lint` 0; `check` 0; react **26** (+4, via vitest), all 0 fail.
