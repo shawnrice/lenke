@@ -126274,9 +126274,78 @@ target row appeared to move only ~6% because it was never the target row.
 The second is a **5.3x TS-against-native gap this bench could not previously see** — independent of
 this item's optimization, and the same sentence the file already carries about `hopbothyield`:
 _"`bench:gremlin` had NO ROW for this shape, which is why the TS/native gap on it was never seen."_
-That 5.3x is now a visible, unpriced target rather than a blind spot.
+That 5.3x is now a visible, unpriced target rather than a blind spot. ~~[NOT comparable as stated — item 2455: the bare untyped row's NATIVE arm reads 60.68 ms against the values row's 6.37, so the two rows' native arms do not measure comparable work and the ratio needs its own item.]~~
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; build 0. `packages/gremlin` 2,863 tests
 0 fail plus the 7 new ones; `packages/core` 490 0 fail; `bun run fuzz` 57 pass 0 fail exit 0;
 `bun run fuzz gremlin` 45 tests 0 fail. `hop-values.ts` restored to the CHANGED arm after the mutant
 battery and verified byte-identical.
+
+## Item 2455 — **ITEM 2454 LEFT A RESIDUAL AND IT IS PRICED, NOT EXPLAINED: the untyped hop is still 2.07x the typed one in time and 2.42x in bytes at degree 5 (104.7 ms / 75.8 B/row against 50.6 / 31.3), and the typed arm sits exactly on the hand floor (31.3 against item 2450's 31.0).** Two instrument failures are the keeper: **the CPU profiler SWAPPED the two arms**, and a frame at **0.0 ms is a DECLINING call, not a route** — I nearly reported a shortcut the untyped arm "misses" that declines for both
+
+Item 2454 shipped the untyped hop's hand walk and closed `spelling:gremlin`'s group from 2.4x to
+1.2x. This asks what is left, and the answer is "a measured gap with no mechanism yet".
+
+### THE RESIDUAL, measured profiler-free
+
+```text
+    N=200,000, out-degree 5, 1,000,000 rows, median of 7, churn median of 5
+      arm                  time        churn       B/row
+      untyped out()      104.7 ms    72.3 MiB      75.8
+      typed   out('E')    50.6       29.9          31.3
+                           2.07x      2.42x
+```
+
+**The typed arm is AT THE FLOOR.** Item 2450 hand-wrote a far-driven walk over the same adjacency maps
+and measured 31.0 B/row; `out('E')` measures 31.3. So the residual is not a layout cost the engine
+cannot avoid — it is 2.4x above a floor the engine demonstrably reaches on a neighbouring spelling.
+
+The extra is **44.5 B/row**, which over 1,000,000 edges and 200,000 vertices is either ~44 B per EDGE
+or ~222 B per VERTEX. Which of those it is decides whether the fix is in the inner loop or the
+per-vertex setup, and **this item does not establish it.** Both arms are `*[Symbol.iterator]()`
+generators over bucket `Set`s doing `pick(forward ? edge.to : edge.from)` per edge; nothing in the
+source reading accounts for 2.4x, which is exactly why a reading is not a measurement.
+
+### THE PROFILER IS THE WRONG INSTRUMENT HERE, and it said so loudly
+
+```text
+    CPU profile, 5 reads each, same fixture
+      untyped   engine total 588 ms    pick 47.1%   drain 31.6%   GC  1.0%
+      typed     engine total 761 ms    pick 35.8%   GC 31.5%      drain 2.8%
+```
+
+**The arms SWAP under profiling** — the untyped shape reads FASTER (588 against 761) where isolated
+timing has it 2.07x SLOWER. And the GC share moves from 1.0% to 31.5% between two arms of the same
+query. A sampling profiler that changes garbage-collection behaviour by thirty percentage points
+cannot rank two arms whose difference is allocation. The churn figures above are the usable
+instrument; the profile is not.
+
+### A 0.0 ms FRAME IS A DECLINING CALL, NOT A ROUTE
+
+The typed profile listed `valuesTailShortcut` at **0.0 ms, 0.0%** — a frame absent from the untyped
+one. That reads as "the typed arm reaches a shortcut the untyped arm misses", which would have been a
+clean, wrong finding. `valuesTailShortcut` matches `V().values(k).tail(n)`: a THREE-step plan ending
+in `tail`. Neither of these shapes has a `tail`, so it **declines both** — it appears in one profile
+and not the other because a 0 ms frame is at the mercy of sampling.
+
+**A frame's PRESENCE means it was called. Only a non-trivial self time means it did anything.** The
+rule this repo already carries for shares ([[frame-attribution-trap]]: a field read or getter frame is
+attribution until a deletion test says otherwise) extends to the bottom of the table: a 0.0 ms entry
+is evidence of a CALL, and for a function whose job is to return `undefined`, that is evidence of a
+DECLINE.
+
+### WHAT THIS LEAVES
+
+- **The residual is real, priced at 2.07x time / 2.42x bytes at degree 5, and unexplained.** The next
+  instrument is `alloc:count`'s allocation SITES on both spellings — it counts rather than times, so
+  it is not subject to the perturbation above — and the question it must answer first is whether the
+  44.5 B/row is per-edge or per-vertex.
+- **Item 2454's shipped win is unaffected**: it was measured on the spelling probe's fixture (2.06x on
+  `out()` itself) and by the degree sweep, both profiler-free.
+- The `5.3x` ts/native figure from item 2454's new bench rows is **not quoted here as a target**: the
+  bare untyped row's native arm reads 60.68 ms against the values row's 6.37, so those two rows'
+  native arms are not measuring comparable work and the ratio needs its own item before it means
+  anything.
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `git diff` clean for
+`packages/gremlin`, `packages/gql` and `packages/core`.
