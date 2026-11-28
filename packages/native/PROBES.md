@@ -3202,3 +3202,19 @@ watching: its name most invites the vacuous-negation reading and it is correct.
 (3 rows) while its `not(has(k, eq(v)))` admits absence (5 rows), and lenke returns the 5 for BOTH. So
 lenke cannot express the first form at all — and callers who want today's behaviour already have
 `not(has(k, eq(v)))`, which is why the fix is lower-risk than item 2488 assumed.
+
+### `null-3vl-probe-2490.ts` — GQL's three-valued logic against ISO (no console exists)
+
+`cd packages/gql && bun null-3vl-probe-2490.ts`. 13 `WHERE` clauses over a deliberately SPARSE
+fixture (two of four vertices carry `k`). Currently **13 agree, 0 DIFFER.**
+
+**The oracle is ISO/IEC 39075, not a console** — there is no GQL console. A comparison with NULL is
+UNKNOWN and a `WHERE` keeps only TRUE, so a vertex lacking `k` is excluded from both `k = 'x'` and
+`k <> 'x'`. The AND/OR rows are the ones that matter: UNKNOWN AND TRUE filters out, UNKNOWN OR TRUE
+is kept — the part a two-valued implementation gets wrong first.
+
+⚠️ **`v.k <> 'x'` is the row lenke's GREMLIN surface gets WRONG** (items 2488/2489): `has('k',
+neq('x'))` there includes the vertices lacking `k`. So the two surfaces of one engine disagree, and
+the GQL side is the one matching both ISO and TinkerPop. GQL also expresses the OTHER meaning
+(`WHERE k IS NULL OR k <> 'x'`), which is what TinkerPop spells `not(has(k, eq(v)))` — both languages
+have both meanings; only lenke's Gremlin collapses them.

@@ -128728,7 +128728,7 @@ surface and the cross-engine contract covers values, not row counts, only by imp
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
 one probe added, `empty-window-probe-2487.ts`, documented in `PROBES.md`.
 
-## Item 2488 — **A WRONG ANSWER IN A VERY COMMON SHAPE: `has(k, neq(v))` and `has(k, without(…))` INCLUDE elements that lack `k` entirely, where TinkerPop EXCLUDES them.** `has('age', neq(29))` returns `lop` and `ripple`, which have no `age` at all. **And a source comment in `gremlin.rs` asserts TinkerPop behaves the way lenke does — the console says it does not.** FOURTH owner decision, because both engines implement the comment (**NARROWED AT ITEM 2489: the defect is EXACTLY `neq` and `without` — every ORDERING predicate agrees — and it is a CONFLATION with `not(has(k, eq(v)))`, which already gives TinkerPop's answer, so existing callers have a spelling that keeps working and the fix is LOWER-RISK than stated here**)
+## Item 2488 — **A WRONG ANSWER IN A VERY COMMON SHAPE: `has(k, neq(v))` and `has(k, without(…))` INCLUDE elements that lack `k` entirely, where TinkerPop EXCLUDES them.** `has('age', neq(29))` returns `lop` and `ripple`, which have no `age` at all. **And a source comment in `gremlin.rs` asserts TinkerPop behaves the way lenke does — the console says it does not.** FOURTH owner decision, because both engines implement the comment (**AND ITEM 2490 SETTLES WHAT IT IS: the GQL surface is ISO-CORRECT on all 13 rows, so the two surfaces of one engine DISAGREE — `WHERE k <> 'x'` excludes vertices lacking `k` while `has(k, neq(x))` includes them. Not a semantics choice; an internal inconsistency where ISO and TinkerPop both agree with the GQL side.** NARROWED AT ITEM 2489: the defect is EXACTLY `neq` and `without` — every ORDERING predicate agrees — and it is a CONFLATION with `not(has(k, eq(v)))`, which already gives TinkerPop's answer, so existing callers have a spelling that keeps working and the fix is LOWER-RISK than stated here**)
 
 ### HOW THIS WAS REACHED, which is not where I was looking
 
@@ -128856,3 +128856,76 @@ matters, and do not put a decorative command in front of the one doing the work.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No engine change — one probe added,
 `missing-key-probe-2489.ts`, documented in `PROBES.md`.
+
+## Item 2490 — **THE GQL SURFACE IS ISO-CORRECT ON ALL 13 ROWS, SO THE TWO SURFACES OF ONE ENGINE DISAGREE WITH EACH OTHER: `WHERE v.k <> 'x'` EXCLUDES vertices lacking `k` while `has('k', neq('x'))` INCLUDES them.** That settles decision (4): it is not a semantics choice, it is an internal inconsistency where one surface already implements what ISO AND TinkerPop both specify
+
+### THE ORACLE, STATED BECAUSE THERE IS NO CONSOLE FOR IT
+
+There is no GQL console to run, so the oracle is ISO/IEC 39075's three-valued logic: a comparison
+with NULL evaluates to UNKNOWN, and a `WHERE` keeps only rows whose condition is TRUE. A vertex
+lacking `k` is therefore excluded from BOTH `k = 'x'` and `k <> 'x'`. The repo's own
+`filter-order-is-unobservable` note states the implementation side of the same rule — a FILTER keeps
+only clean TRUE, so UNKNOWN settles out — which is what made this worth testing rather than assuming.
+
+### THIRTEEN ROWS, ALL CORRECT
+
+Fixture deliberately SPARSE: `a` and `b` carry `k`, `c` and `d` lack it entirely (item 2483 — a dense
+fixture makes every row agree for the wrong reason).
+
+```text
+      WHERE clause                      lenke        ISO       verdict
+      v.k = 'x'                         a            a         agree
+      v.k <> 'x'                        b            b         agree   <- GREMLIN GETS THIS WRONG
+      NOT (v.k = 'x')                   b            b         agree
+      v.k IS NULL                       c,d          c,d       agree
+      v.k IS NOT NULL                   a,b          a,b       agree
+      v.k > 'w'                         a,b          a,b       agree
+      v.k IN ['x']                      a            a         agree
+      NOT (v.k IN ['x'])                b            b         agree
+      (no WHERE)                        a,b,c,d      a,b,c,d   agree
+      v.k IS NULL OR v.k <> 'x'         b,c,d        b,c,d     agree
+      NOT PROPERTY_EXISTS(v, k)         c,d          c,d       agree
+      v.k <> 'x' AND v.n <> 'zz'        b            b         agree   <- UNKNOWN AND TRUE -> filtered
+      v.k = 'x' OR v.n = 'c'            a,c          a,c       agree   <- UNKNOWN OR TRUE  -> kept
+      13 agree, 0 DIFFER
+```
+
+The AND/OR rows matter most: UNKNOWN propagates correctly in both directions, which is the part a
+two-valued implementation gets wrong first.
+
+### THE CROSS-SURFACE PICTURE, WHICH IS WHAT THIS TICK ADDS
+
+Both meanings exist, and both languages can express both — except lenke's Gremlin, which collapses
+them:
+
+```text
+      meaning                     GQL (lenke)                        TinkerPop        lenke Gremlin
+      "differs, KEY REQUIRED"     WHERE k <> 'x'        -> b     ✓   3 rows      ✓    has(k,neq(x))
+                                                                                      -> b,c,d     ✗
+      "LACKS the key, or differs" WHERE k IS NULL                    5 rows      ✓    not(has(k,
+                                     OR k <> 'x'        -> b,c,d ✓                      eq(x)))
+                                                                                      -> b,c,d     ✓
+```
+
+`NOT (v.k = 'x')` in GQL is NOT the second meaning — `NOT UNKNOWN` is UNKNOWN, so it still excludes
+`c`/`d`. TinkerPop's `not(has(...))` IS the second meaning because it is a TRAVERSAL negation ("the
+inner traversal produced nothing"). Different constructs, not a contradiction, and GQL spells the
+traversal form as `IS NULL OR k <> 'x'`.
+
+### WHAT THIS DOES TO DECISION (4)
+
+Item 2488 recorded it as a conformance deviation against TinkerPop; item 2489 narrowed it to `neq`
+and `without` and found it was a conflation. This removes the last reason to treat it as a judgment
+call: **the correct rule is already implemented in this engine, on the other surface, and the two
+independent authorities — ISO 39075 and TinkerPop 3.7.3 — agree with each other and with the GQL
+side.** So (4) is no longer "which semantics do we want" but "Gremlin collapses a distinction that
+GQL keeps".
+
+Still not touched, because it changes a shipped surface's answers and that is the owner's to call.
+But the case is now: 2 predicates, 11 Gremlin conformance rows with 9 that must not move
+(`missing-key-probe-2489.ts`), 13 GQL rows that already pass (`null-3vl-probe-2490.ts`), a ready
+migration path for existing callers (`not(has(k, eq(v)))`), and a `gremlin.rs` comment that asserts
+the opposite of both authorities and needs correcting either way.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No engine change — one probe added,
+`null-3vl-probe-2490.ts`, documented in `PROBES.md`.
