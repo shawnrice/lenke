@@ -93,11 +93,16 @@ describe('serialization error codes', () => {
     expect(() => deserialize(serialize(g, 'graphson'), 'graphson', new Graph())).toThrow();
   });
 
-  test('a lone UTF-16 surrogate is rejected (match native serde)', () => {
-    // A `\uD800` escape survives JSON.parse in JS but the native UTF-8 store
-    // can't hold a lone surrogate — its serde JSON decoder rejects it at ingest.
-    // The value boundary rejects it too so both engines accept/reject the same
-    // documents. Valid pairs (astral chars) still pass.
+  test('a lone UTF-16 surrogate is rejected, and a well-formed pair is not', () => {
+    // A `\uD800` escape survives JSON.parse in JS but the native UTF-8 store can't hold a lone
+    // surrogate — the native NDJSON decoder rejects it at ingest. The value boundary rejects it
+    // too, so both engines accept/reject the same documents.
+    //
+    // That decoder is HAND-ROLLED, not serde (the engine crate is dependency-free; serde_json is
+    // a dev-dependency used only as a test oracle). This comment used to credit serde, and item
+    // 2533 is why the distinction matters: assuming a spec-complete decoder is there is exactly
+    // how the astral-escape bug below went unnoticed. serde's own behaviour is now asserted
+    // against it directly, in `ndjson.rs`'s differential test.
     const caught = (fn: () => void): unknown => {
       try {
         fn();
@@ -129,6 +134,26 @@ describe('serialization error codes', () => {
         ErrorCode.InvalidJson,
       ),
     ).toBe(true);
+
+    /*
+     * THE POSITIVE HALF, which was missing (item 2533). The rows above pin that a LONE surrogate
+     * is refused and that a raw `😀` LITERAL survives `normalizeValue` — neither says anything
+     * about an ESCAPED PAIR arriving through the decoder, which is the form RFC 8259 defines for a
+     * non-BMP character and the form Python's `json.dumps` emits by default.
+     *
+     * The native parser rejected it outright ("bad code point") until item 2533, so this engine
+     * being right was unverified on this side too. Asserted for both halves of the astral range.
+     */
+    const astral = (escaped: string): unknown =>
+      deserialize(
+        `{"type":"node","id":"a","labels":["U"],"properties":{"k":"${escaped}"}}`,
+        'ndjson',
+        new Graph(),
+      ).verticesById.get('a')?.properties.k;
+
+    expect(astral(String.raw`\ud83d\ude00`)).toBe('😀');
+    expect(astral(String.raw`\ud800\udc00`)).toBe('\u{10000}');
+    expect(astral(String.raw`\udbff\udfff`)).toBe('\u{10FFFF}');
   });
 
   test('a NESTED-list property is a coded error for pg-text, not a raw TypeError', () => {

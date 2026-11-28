@@ -1181,16 +1181,53 @@ impl<'a> JsonParser<'a> {
                         Some(b'b') => buf.push(0x08),
                         Some(b'f') => buf.push(0x0c),
                         Some(b'u') => {
-                            let hex = self
-                                .b
-                                .get(self.i + 1..self.i + 5)
-                                .and_then(|h| core::str::from_utf8(h).ok())
-                                .ok_or_else(|| "bad \\u escape".to_string())?;
-                            let cp = u32::from_str_radix(hex, 16)
-                                .map_err(|_| "bad \\u escape".to_string())?;
-                            let ch = char::from_u32(cp).ok_or("bad code point")?;
-                            buf.extend_from_slice(ch.encode_utf8(&mut [0u8; 4]).as_bytes());
+                            /*
+                             * A non-BMP character is escaped in JSON as a UTF-16 SURROGATE PAIR
+                             * (`\\ud83d\\ude00` for U+1F600), per RFC 8259 s7. Each half alone is
+                             * not a Unicode scalar, so decoding them independently rejects every
+                             * astral character — and the paired form is what ASCII-escaping writers
+                             * emit, including Python's `json.dumps` BY DEFAULT. Measured at item
+                             * 2533: this parser answered `bad code point` where the TS codec
+                             * (`JSON.parse`) read the emoji, so an ordinary snapshot would not load.
+                             *
+                             * A LONE surrogate stays an error, which matches the TS side's explicit
+                             * policy ("not a valid Unicode scalar in the LPG string model").
+                             */
+                            fn hex4(b: &[u8], at: usize) -> Result<u32, String> {
+                                let h = b
+                                    .get(at..at + 4)
+                                    .and_then(|h| core::str::from_utf8(h).ok())
+                                    .ok_or_else(|| "bad \\u escape".to_string())?;
+
+                                u32::from_str_radix(h, 16).map_err(|_| "bad \\u escape".to_string())
+                            }
+
+                            let cp = hex4(self.b, self.i + 1)?;
                             self.i += 4;
+
+                            let ch = if (0xD800..=0xDBFF).contains(&cp) {
+                                if self.b.get(self.i + 1) != Some(&b'\\')
+                                    || self.b.get(self.i + 2) != Some(&b'u')
+                                {
+                                    return Err("bad code point".to_string());
+                                }
+
+                                let lo = hex4(self.b, self.i + 3)?;
+
+                                if !(0xDC00..=0xDFFF).contains(&lo) {
+                                    return Err("bad code point".to_string());
+                                }
+
+                                self.i += 6;
+
+                                let scalar = 0x1_0000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+
+                                char::from_u32(scalar).ok_or("bad code point")?
+                            } else {
+                                char::from_u32(cp).ok_or("bad code point")?
+                            };
+
+                            buf.extend_from_slice(ch.encode_utf8(&mut [0u8; 4]).as_bytes());
                         }
                         other => return Err(format!("bad escape {other:?}")),
                     }
@@ -2156,5 +2193,136 @@ mod tests {
         }
         // The serial `from_ndjson` wrapper agrees too.
         assert_eq!(reference, to_ndjson_threads(&from_ndjson(&doc).unwrap(), 1));
+    }
+
+    /*
+     * Item 2533: the hand-rolled JSON string decoder had NO surrogate-pair handling, so EVERY
+     * non-BMP character written in escaped form was rejected with `bad code point`. Measured
+     * before the fix, against the TS codec on the same line:
+     *
+     *     INPUT                              ts (JSON.parse)     rust (this parser)
+     *     "é"            (BMP)          OK  "e-acute"       OK
+     *     "😀"      (U+1F600)      OK  emoji           THREW bad code point
+     *     "\ud83d"            (lone half)    THREW (policy)      THREW
+     *
+     * The paired form is not exotic: RFC 8259 s7 defines it as THE way to escape a non-BMP
+     * character, and Python's `json.dumps` emits it BY DEFAULT (`ensure_ascii=True`). So an
+     * ordinary snapshot written by a standard JSON writer could not be loaded, while the same
+     * graph written with raw UTF-8 loaded fine.
+     *
+     * ## THE INSTRUMENT: A DIFFERENTIAL AGAINST serde_json
+     *
+     * Item 2528 found one brute-force differential catching three corruptions nobody enumerated,
+     * and item 2530 sharpened it: a round-trip or cross-implementation check counts as a real
+     * oracle when BOTH SIDES FOLLOW A SPEC rather than each other. `serde_json` is a
+     * dev-dependency here and implements the same RFC 8259, so it is an independent decoder —
+     * not a copy of this one's assumptions, which is what a hand-typed expectation would be.
+     *
+     * Every row below is therefore checked against serde_json rather than against a literal I
+     * chose, INCLUDING the negative rows: a lone surrogate must be rejected by both.
+     */
+    #[test]
+    fn escaped_strings_decode_exactly_as_serde_json_decodes_them() {
+        // Each entry is the INNER body of a JSON string, as it appears between the quotes.
+        let escaped = [
+            // Already-covered ground, kept as CONTROLS: if these move, the change broke the
+            // ordinary path and not just the surrogate one.
+            "plain",
+            r"a\tb",
+            r"a\nb",
+            r#"q\"q"#,
+            r"back\\slash",
+            r"A",
+            r"é",
+            r"中",
+            r"\u0000",
+            r"￿",
+            // SURROGATE PAIRS — the whole point. Boundaries of the astral range plus a few
+            // ordinary ones.
+            r"😀", // U+1F600, the measured case
+            r"𐀀",  // U+10000, the FIRST non-BMP scalar
+            r"􏿿",  // U+10FFFF, the LAST
+            r"🎉", // U+1F389
+            r"𝄞",  // U+1D11E
+            // A pair with ordinary text and escapes around it, so the index arithmetic after a
+            // 12-byte escape is exercised mid-string rather than only alone.
+            r"a😀b",
+            r"😀😀",
+            r"\t😀é",
+            // Mixed case in the hex digits: RFC 8259 allows either.
+            r"😀",
+        ];
+
+        for body in escaped {
+            let want: String = serde_json::from_str(&format!("\"{body}\""))
+                .unwrap_or_else(|e| panic!("the ORACLE rejected {body:?}: {e}"));
+
+            let line = format!(
+                "{{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"N\"],\"properties\":{{\"k\":\"{body}\"}}}}"
+            );
+            let st = from_ndjson(&line).unwrap_or_else(|e| panic!("lenke rejected {body:?}: {e}"));
+            let n = st.node_by_ext("a").expect("the node exists");
+
+            match st.prop(n, "k") {
+                Value::Str(got) => assert_eq!(
+                    got.as_ref(),
+                    want.as_str(),
+                    "decoded {body:?} differently from serde_json",
+                ),
+                other => panic!("{body:?} did not decode to a string: {other:?}"),
+            }
+        }
+    }
+
+    /*
+     * The negative half, also differential. A lone surrogate is not a Unicode scalar, so neither
+     * decoder may accept it — and this is the row that keeps the fix from being "accept anything
+     * that looks like hex". The TS codec rejects these with its own explicit message ("not a valid
+     * Unicode scalar in the LPG string model"), so all three implementations agree.
+     */
+    #[test]
+    fn a_lone_surrogate_is_rejected_by_this_parser_and_by_the_oracle() {
+        let bad = [
+            r"\ud83d",       // a high half with nothing after it
+            r"\ud83dx",      // a high half followed by ordinary text
+            r"\udc00",       // a LOW half on its own
+            r"\ud83dA",      // a high half followed by a non-surrogate escape
+            r"\ud83d\ud83d", // two HIGH halves
+            r"\udc00\udc00", // two LOW halves
+        ];
+
+        for body in bad {
+            assert!(
+                serde_json::from_str::<String>(&format!("\"{body}\"")).is_err(),
+                "the ORACLE accepted {body:?}, so this row proves nothing",
+            );
+
+            let line = format!(
+                "{{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"N\"],\"properties\":{{\"k\":\"{body}\"}}}}"
+            );
+
+            assert!(
+                from_ndjson(&line).is_err(),
+                "lenke accepted the lone surrogate {body:?}"
+            );
+        }
+    }
+
+    /*
+     * And the round trip, which is the property the file's other tests already rely on: a decoded
+     * astral character must re-encode to something that decodes back to the same string. This is
+     * what a future change to `encode_string` would break without touching the decoder.
+     */
+    #[test]
+    fn an_astral_character_survives_a_full_ndjson_round_trip() {
+        let line = "{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"N\"],\"properties\":{\"k\":\"\\ud83d\\ude00\"}}";
+        let st = from_ndjson(line).expect("decodes");
+        let again = from_ndjson(&to_ndjson(&st)).expect("re-decodes what we just encoded");
+        let n = again.node_by_ext("a").expect("the node survived");
+
+        match again.prop(n, "k") {
+            Value::Str(got) => assert_eq!(got.as_ref(), "\u{1F600}"),
+            other => panic!("not a string after the round trip: {other:?}"),
+        }
     }
 }

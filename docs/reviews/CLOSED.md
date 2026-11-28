@@ -131740,3 +131740,71 @@ directly (rule xxvii).
 GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0; Rust **1355 + 13 + 725** (+5), 0
 failed; `bun run fmt`/`lint`/`check` 0. Tree clean apart from the new tests (111 insertions, no src
 change).
+
+## Item 2533 — **A REAL WRONG-ANSWER BUG ON THE RUST SIDE: the hand-rolled JSON decoder rejected EVERY escaped non-BMP character, so a snapshot from any ASCII-escaping JSON writer would not load.** Found by a static read, confirmed cross-engine, fixed, and pinned by a `serde_json` differential
+
+### THE STATIC READ THAT FOUND IT
+
+Item 2532's recipe, applied to `ndjson.rs`. Its 27 in-file tests are good — `round_trip_is_identity_gap_free`,
+`encode_is_byte_identical_across_thread_counts`, `value_kinds_round_trip` — so this was not a thin
+suite. What stood out was a CONDITION with no fixture on either side of it: the `\u` escape branch
+called `char::from_u32(cp)` on a single code unit, with **no surrogate-pair combining**, and the file
+turned out to hold a hand-rolled JSON parser rather than serde (serde_json is a dev-dependency; the
+runtime crate is dependency-free).
+
+RFC 8259 s7 defines a surrogate pair as THE way to escape a non-BMP character, and
+`char::from_u32(0xD83D)` is `None` — so the branch could only ever reject one.
+
+### MEASURED, BOTH ENGINES, BEFORE THE FIX
+
+```text
+      INPUT                               ts (JSON.parse)        rust (this parser)
+      "\u00e9"          BMP               OK  "é"                OK  "é"
+      "\u4e2d"          BMP CJK           OK  "中"               OK  "中"
+      raw UTF-8 emoji                      OK  "😀"               OK  "😀"
+      "\ud83d\ude00"    U+1F600 escaped   OK  "😀"               THREW bad code point   <== BUG
+      "\ud83d"          lone half         THREW (policy)         THREW                  (both right)
+```
+
+**The rejected form is not exotic.** `python3 -c 'import json; print(json.dumps({"k":"😀"}))'` emits
+`{"k": "\ud83d\ude00"}` — `ensure_ascii=True` is the DEFAULT. So a graph written by a standard JSON
+writer could not be loaded, while the same graph written with raw UTF-8 loaded fine. The lone-surrogate
+rows are CORRECT on both sides and stay rejected: the TS codec has an explicit policy for them ("not a
+valid Unicode scalar in the LPG string model").
+
+### THE FIX, AND THE INSTRUMENT THAT PINS IT
+
+The `\u` branch now combines a high half (`D800..=DBFF`) with a following `\uDC00..=\uDFFF`, and
+rejects anything else. Three graded mutants, each caught by exactly one test:
+
+```text
+      M1  pair combining disabled (the original bug)   1 FAIL
+      M2  low-half range check removed                 1 FAIL
+      M3  off-by-one in the scalar formula             1 FAIL
+```
+
+The test is a **differential against `serde_json`**, not hand-typed literals — rule (xxiv), sharpened at
+2530: a cross-implementation check is a real oracle when both sides follow a SPEC rather than each other.
+20 escaped bodies (controls, both ends of the astral range at U+10000 and U+10FFFF, pairs mid-string,
+mixed-case hex) are compared to serde's decoding, and **the 6 negative rows assert the ORACLE rejects
+them too**, so a row that proves nothing fails loudly.
+
+### THE TS SIDE HAD THE SAME HOLE, PLUS A COMMENT THAT CAUSED IT
+
+Per 2532, each implementation needs its own pin. TS was BEHAVING correctly but only pinned the lone
+surrogate and a RAW `😀` literal through `normalizeValue` — nothing asserted an ESCAPED pair through the
+decoder, the exact case Rust failed. Three rows added.
+
+And its comment read "match native serde … its serde JSON decoder rejects it at ingest". **The native
+NDJSON decoder is hand-rolled.** Crediting serde is how a reader concludes the spec is already handled —
+which is how this survived. Corrected in place, saying why the distinction matters (rule xiv).
+
+GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0; Rust **1358 + 13 + 725** (+3), 0 failed;
+`bun run fuzz` **57 pass 0 fail** (a codec change needs them); `bun run fmt`/`lint`/`check` 0;
+serialization 144 / core 511 / native 1438 / gql 5672, 0 failed.
+
+### CORRECTIONS
+
+My probe guessed a `Graph` accessor wrong TWICE (`getVertex`, then `getVertices`; it is `verticesById`).
+Both surfaced as a `TypeError` in my own harness, not as a false finding — but the second one cost a test
+run, and the fix was to LOOK THE API UP rather than guess a third time.
