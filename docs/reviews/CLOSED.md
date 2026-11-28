@@ -126725,6 +126725,8 @@ differential, fuzz or conformance test can see a mutant in an admission conditio
       quantifierServed  trailMinAdmissible  isAcyclicMode     (var-length semantics)
       tailIsOrderFree   tailIsOrderFreeFrom isSliceable       (order/slice licences)
       isMemoUncorrelated isConstExpr        isKnownScalarFn
+      [item 2463 TOOK isConstExpr and isKnownScalarFn: 9 tests, 5 of 7 mutants caught;
+       the 2 survivors are UNREACHABLE for the real input set, a fourth survivor verdict.]
 ```
 
 ~~[TAKEN at item 2461: 18 tests, 8 of 9 mutants caught; the survivor is redundant only CONDITIONALLY, via `null >= 2` coercing false while `null >= 0` is true.]~~ The var-length three are the ones to take first: `ACYCLIC`/`TRAIL` admission is where this repo has
@@ -126925,3 +126927,79 @@ whose ANSWER changes before trusting a green suite).
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
 `packages/gremlin` **2,890 tests 0 fail** including the 20 new ones; `bun run fuzz gremlin` 45 pass 0
 fail. All four mutated sources restored and verified byte-identical.
+
+## Item 2463 — **`isKnownScalarFn` IS NOT A PERF GATE: a false negative REJECTS A VALID QUERY at compile time.** 9 tests, 5 of 7 mutants caught, and the mutants corrected TWO claims I had written into the test: the `catch` branch I documented as load-bearing is **unreachable for every one of the 63 dispatch names** (a zero-arg probe RETURNS, it does not throw), and **`isKnownScalarFn('count')` is FALSE** because aggregates are not scalars. Also found: `isConstExpr`'s expression is **duplicated** in `cheapPureExpr`
+
+Continuing item 2460's coverage map after 2461 (var-length gates) and 2462 (six Gremlin gates).
+
+### THIS ONE IS NOT ANSWER-EQUIVALENT, which makes it worth MORE than a route detector
+
+Every gate taken so far was answer-equivalent in at least one direction. `isKnownScalarFn` is not:
+it backs eager compile-time rejection of unknown function names (`core.ts:1869`, guarded by
+`collectingUnknownFns()`), so a **false negative rejects a query the executor can answer** and a
+false positive lets a typo reach runtime. Both are user-visible.
+
+### THE TOTALITY PROPERTY, which is the test worth having
+
+The useful assertion is not a handful of examples but that **every name the engine dispatches is
+recognized** — union the keys of the nine name-keyed tables in `scalars.ts` plus `DATE_PART_FNS` and
+`TRIM_FNS`, 63 names, and assert recognition for all. It is self-maintaining: add a function to any
+table and this fails if the probe path cannot see it.
+
+`ARITH` and `BOOL3` are deliberately excluded — they are keyed by OPERATOR, not by a callable name.
+
+**And it carries a non-vacuity guard**, because without one a renamed table makes `Object.keys` yield
+nothing and the totality test passes by examining zero names. That is item 2453's failure exactly: a
+spelling group where both arms answered `[]` and still flagged, because an arm-against-arm check
+cannot tell that both are empty. The guard asserts `>= 60` names and two specific members.
+
+### THE MUTANTS CORRECTED MY OWN TEST, TWICE
+
+```text
+    baseline                                                   9 pass  0 fail
+      known-rejects-any-throw   (catch -> return false)        *** SURVIVED ***
+      known-accepts-everything  (catch -> return true)         CAUGHT  6/3
+      known-ignores-error-code  (drop the UnknownFunction test) *** SURVIVED ***
+      known-success-not-known   (success path -> false)        CAUGHT  6/3
+      const-drops-param                                        CAUGHT  8/1
+      const-drops-lit                                          CAUGHT  8/1
+      const-admits-list                                        CAUGHT  7/2
+```
+
+**First correction.** I had written a test asserting that an ARITY complaint counts as recognition —
+the function's own doc says "any other throw means the name DID resolve (its real per-row error, e.g.
+bad arity, still stands)". The two survivors say otherwise, and measurement confirms it: called with
+`FN_PROBE_ARGS` (which is `[]`), **all 63 dispatch names RETURN rather than throw**. `callScalar`
+answers a zero-arg probe instead of raising. So recognition runs entirely through the SUCCESS path —
+which `known-success-not-known` catching with 3 failures independently confirms — and **no input in
+the dispatch set reaches the error classification at all**. The two survivors are therefore
+defensive against a `callScalar` behaviour it does not currently have: kept, and labelled in the test
+rather than "fixed" with a fixture that does not exist. That is a fourth survivor verdict, distinct
+from 2454 (fixture gap), 2459 (semantically equivalent) and 2461 (conditionally redundant):
+**UNREACHABLE FOR THE REAL INPUT SET.**
+
+**Second correction.** Probing further found `callScalar('count', [], …)` raises
+`E_UNKNOWN_FUNCTION`, so **`isKnownScalarFn` is FALSE for every aggregate** — `count`, `sum`, `avg`,
+`min`, `max`, `collect`, `stddev_pop`. That reads like a defect, and it is not: the call site is
+reached only for a scalar position, and `compile-state.ts` collects names resolving to NEITHER a
+scalar nor an aggregate. **The gate alone cannot establish that, so the test asserts the
+consequence end to end**: `count(*)` returns 2 and `sum(p.k)` returns 3 over a two-vertex graph,
+while `nosuchfn(p.k)` throws. Without that pair, the aggregate assertion looks like a bug being
+pinned.
+
+(My first attempt at that end-to-end check called `query(text).run(graph)`; the signature is
+`query(graph, text)`. The error surfaced as `undefined is not an object` inside the LEXER, which
+reads like an engine fault rather than my argument order.)
+
+### A SEPARATE FINDING: `isConstExpr`'S EXPRESSION IS WRITTEN TWICE
+
+The mutant anchors failed with `ANCHOR x2` — `e.kind === 'lit' || e.kind === 'param'` appears at
+**line 815 inside `isConstExpr` and line 1443 inside `cheapPureExpr`**. The battery refused to guess
+which, which is the occurrence-counting rule working. Not changed here: `cheapPureExpr` has four test
+files naming it and its own semantics, so merging them is a judgement call rather than a cleanup —
+but a change to one does NOT propagate to the other, and that is now recorded.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
+**5,542 tests 0 fail** including the 9 new ones. Battery re-run against the committed file after
+`lint` objected to an unnecessary `as Expr`; same result. `expr-analysis.ts` restored and verified
+byte-identical.
