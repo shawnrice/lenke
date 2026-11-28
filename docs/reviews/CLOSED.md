@@ -125888,7 +125888,7 @@ the UNNAMED case, which is what a bare `out()` is, always pays.
 _"when `graph.multiTypeEdgeCount === 0` the union IS the sum, so not one membership test runs"_. The
 core maintains `multiTypeEdgeCount`; the Gremlin path does not consult it.
 
-So the shape of the fix is: when `multiTypeEdgeCount === 0`, `iterAllDeduped` yields from each bucket
+~~[REFUTED at item 2451, and already refuted TWICE before item 2450 was written: item 1413 declined the guard (-0.5% on target, -7.5% where it cannot help, two controls regressed) and a direct NO-SEEN ablation measured removing the Set at -0.4%. CLOSED.md says verbatim "`iterLabeled` and `iterAllDeduped` are NOT worth rewriting". The real byte term is `iterByLabel` at 93.08 MiB against the Set's 28.99.]~~ So the shape of the fix is: when `multiTypeEdgeCount === 0`, `iterAllDeduped` yields from each bucket
 with no `Set` and no membership test. **Not built here** — it needs the gate as a tested unit, mutants
 (a route choice is answer-equivalent, so the suites cannot see it break), `bun run fuzz`, and a check
 that `-[:A|B]->`-style multi-label edges still dedupe.
@@ -125919,3 +125919,97 @@ covers both surfaces; its calibration row still passes unchanged.
 
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. The Gremlin `out` step
 is imported as `outStep` because the bare name shadowed a local — caught by lint, not by me.
+
+## Item 2451 — **ITEM 2450's TARGET IS REFUTED AND WAS ALREADY REFUTED TWICE. I had "check CLOSED.md before pricing" in my own instructions and did not, and the entry is indexed under the exact function name I profiled.** A direct `NO-SEEN` ablation measured removing that `Set` at **−0.4%** ("the ranges overlap completely"), and CLOSED.md says verbatim _"`iterLabeled` and `iterAllDeduped` are NOT worth rewriting"_. **The new quantity does not flip it — and my own profile already named the real term: `iterByLabel` at 93.08 MiB against the `Set`'s 28.99**
+
+Item 2450 localized `out()`'s ~1046 B/row to a `Set<Edge>` allocated per vertex in `iterAllDeduped`
+and proposed gating it on `graph.multiTypeEdgeCount === 0`, citing GQL's precedent. Every part of
+that had been settled.
+
+### WHAT THE RECORD ALREADY HELD
+
+**Item 1413 declined the guard**, with the measurement in `multitype-dedupe-skip.test.ts`'s own
+header:
+
+```text
+      hopyieldmulti   ML=-1   58.72 -> 58.99   -0.5%    the target: NO WIN
+      hopyieldmulti   ML=3    60.77 -> 65.34   -7.5%    the dedupe still runs: REGRESSES
+      hopbare [CTRL]  ML=0    16.33 -> 16.89   -3.5%    a walk the change cannot reach
+      hopyieldsingle  ML=0    28.31 -> 29.94   -5.8%    likewise
+```
+
+and closes with _"do not re-attempt the skip without an isolated per-row instrument."_
+
+**And a separate entry refuted the Set itself by ABLATION**, which is stronger than refuting a guard
+— it removes the work entirely rather than paying to skip it:
+
+```text
+      arm        edgemulti p25   saving    control edgesingle   answer
+      BASE          201.337        —           0.0080          400000
+      NO-SEEN       202.208      -0.4%         0.0075          533334
+```
+
+`NO-SEEN`'s 533,334 is exactly 400,000 plus the 133,334 both-label edges, so the ablation provably
+did what it claimed — and the saving is nothing, ranges overlapping completely. Its conclusion:
+**"The same removal is 60.7% in GQL and 0% in Gremlin"**, because in GQL the dedupe sat in a lean
+bucket walk while here it sits beside a traverser pipeline emitting rows at ~495 ns each. That is
+item 1108's standing warning — _"the difference is what else the loop does"_ — confirmed a second
+time, and the entry exists specifically so the twin stops "looking like free money".
+
+**CLOSED.md mentions `iterAllDeduped` ten times and item 1413 thirty-five times.** One line reads
+_"So the cost is the per-vertex array scaffolding — not the dedupe (item 1413, −0.5%)"_. The index
+worked; I did not consult it.
+
+### THE PROCESS FAILURE, stated plainly
+
+My own loop instruction for the tick that produced item 2450 said "check CLOSED.md before pricing
+anything", and item 2450's write-up says "CLOSED.md must be checked for it" as FUTURE work rather
+than doing it. I searched the source for the mechanism and the memory notes for the claim, and never
+searched the index for the function name. **One `grep iterAllDeduped docs/reviews/CLOSED.md` would
+have ended the item before the profile ran.**
+
+CLAUDE.md names this exact failure — "Three passes in one session re-derived a closed target… Each
+pass searched something first and searched the wrong store" — and prescribes matching the store to
+the question: _"has this lever been tried?" → `CLOSED.md`_. I matched it to "where is the code?"
+instead.
+
+### DOES THE NEW QUANTITY CHANGE IT? NO, AND THAT IS WORTH BEING EXPLICIT ABOUT
+
+Item 2432 established that "a measured flat is flat only in the quantity measured" — item 2180's
+`SET` marginal was flat in TIME and 4x in MEMORY. So the fair question is whether item 2450's BYTES
+reopen a decline made on TIME.
+
+```text
+      the Set, per item 2450's site profile      28.99 MiB of 214.05     13.5% of CHURN
+      the same Set, per the NO-SEEN ablation     -0.4% of wall time      nothing
+```
+
+**13.5% of churn for zero time, and it is CHURN rather than PEAK.** Transient nursery garbage is
+collected; what bounds capability is the high-water mark, which the user's own framing singled out
+("if it needs to hold much more in memory to do a walk, that limits what the system can do before it
+OOMs"). A `Set<Edge>` per vertex is created and dropped inside one vertex's iteration, so it does not
+raise the peak. **Declined — and now declined in both quantities rather than one.**
+
+### THE REDIRECT MY OWN PROFILE ALREADY CONTAINED
+
+Reading item 2450's site table for what dominates BYTES rather than what looked familiar:
+
+```text
+      iterByLabel      400,000 allocs    93.08 MiB    43% of all bytes
+      Set              400,000 allocs    28.99 MiB    13.5%
+      next           1,400,337 allocs    53.45 MiB    7 per element
+```
+
+**`iterByLabel` is 3.2x the `Set` in bytes**, and `next` at seven allocations per element is the
+iterator protocol crossing two generator layers — `iterByLabel` `yield*`s into `iterAllDeduped`, so
+every edge pays both. The bytes are in the GENERATOR DELEGATION, not the dedup, which is also what
+[[gremlin-values-is-the-floor]] has said all along ("the reduce is free; the cost is the generator
+chain") and what item 1586 already took once by FUSING, for 1.90x.
+
+So the live question for this surface is whether `out()`'s two generator layers can collapse into one
+— and that note carries the constraint for it: a Gremlin fusion goes in `run`'s loop, NOT
+`applyPlanToStream`. **Not attempted here**, and the next attempt starts by grepping CLOSED.md for
+`iterByLabel` and for fusion, in that order.
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `git diff` clean for
+`packages/gremlin`, `packages/gql` and `packages/core`.
