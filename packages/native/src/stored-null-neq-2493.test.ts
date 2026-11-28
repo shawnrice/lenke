@@ -121,16 +121,37 @@ suite('item 2493: bisecting the 2492 divergence', () => {
    * stands, and the moment the TS engine is corrected these flip red and must be promoted to
    * ordinary tests. The agreeing rows around them are what keep the failure attributable.
    */
+  /*
+   * FIVE ROWS ARE `test.failing` AND THAT IS NOW A SETTLED STATE, NOT A TODO (item 2494).
+   *
+   * Item 2493 called this a DEFECT on the grounds that ISO 39075, lenke's GQL surface and lenke's
+   * Rust engine all exclude a stored null from `neq`, so "two of three in-house references already
+   * agree". **That was wrong.** The TS behaviour is DELIBERATE and TESTED:
+   * `specialize-predicate.test.ts` pins `matches(neq(1), null) === true` with the note "a
+   * specialization that added a presence guard (copying the ordering arms' shape) would flip this",
+   * and `far-filter-collapse.test.ts` pins "`e`'s present null does too". Adding the guard turns
+   * both of those red.
+   *
+   * So the TS engine is a THIRD in-house position with its own written rationale, and the
+   * cross-engine disagreement is an OWNER DECISION — the fifth — not a defect to fix. These rows
+   * stay `test.failing` to keep the divergence pinned and CI green; promote them only if the owner
+   * rules for the ISO/Rust reading, which also means retiring the two tests above.
+   *
+   * B2 IS among them, for MEMBERSHIP. A detour worth recording: while the (now reverted) guard was
+   * in place B2 was the ONE row that stayed red, and the cause was that it compared
+   * `JSON.stringify` of an array — the two engines emit the same six names in a different ORDER,
+   * which is not contracted. Fixing that to a multiset comparison is why it is correct now; with the
+   * guard gone its membership genuinely differs again.
+   */
   const FAILING = new Set([
     'B1 has(lang,neq lop) + count',
+    // B2 is here for MEMBERSHIP, not order: with the TS behaviour in place `vadas` is in its
+    // result and not in native's. It keeps the multiset comparison below so that if the owner ever
+    // rules for the ISO/Rust reading, it flips for the right reason rather than on walk order.
     'B2 has(lang,neq lop) + names',
     'B3 + order(local)',
     'B4 + order(local).dedup()',
     'B5 FULL (the 2492 plan)',
-    // C2 WAS MEANT AS A CONTROL AND IT DIVERGES TOO — same cause, another value: `vadas` carries
-    // the stored null, so `neq('java')` hits it exactly as `neq('lop')` does. Six rows diverge and
-    // only the PRESENCE control (C1) agrees, which is what pins the defect to the comparison rather
-    // than to key lookup.
     'C2 has(lang,neq java)',
   ]);
 
@@ -139,8 +160,20 @@ suite('item 2493: bisecting the 2492 divergence', () => {
 
     run(label, () => {
       const text = planToGremlin(plan as never);
-      const ts = JSON.stringify(toArray(plan as never, tsGraph));
-      const nat = JSON.stringify(nativeRun(text));
+      /*
+       * COMPARED AS A MULTISET. The first draft of this file `JSON.stringify`d both sides, and the
+       * `values('name')` row then stayed red after the fix landed — not because membership differed
+       * but because the two engines emit the same six names in a different ORDER, which is not
+       * contracted (decided 2026-11-22). Item 2486 paid for this rule once already; here it was the
+       * difference between "the fix is incomplete" and "my assertion is order-sensitive".
+       */
+      const canon = (rowsOut: readonly unknown[]): string =>
+        rowsOut
+          .map((r) => JSON.stringify(r))
+          .sort()
+          .join('|');
+      const ts = canon(toArray(plan as never, tsGraph));
+      const nat = canon(nativeRun(text) as readonly unknown[]);
 
       expect(ts).toBe(nat);
     });

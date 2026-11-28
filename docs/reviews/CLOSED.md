@@ -129071,7 +129071,7 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `gremlin-fuzz` 45 p
 revert; working tree clean of the change. No code shipped — a correction, a located divergence, and a
 named emitter gap.
 
-## Item 2493 — **LOCALIZED TO ONE STEP AND A STORED NULL: `has(k, neq(v))` where `k` holds a STORED NULL returns the row in the TS engine and not in Rust. `order(local)`/`dedup()`/`path()` were red herrings.** ISO 39075, lenke's own GQL surface and lenke's own Rust engine all agree the TS engine is WRONG — so this is a defect, not a decision. Pinned as six `test.failing` rows with two agreeing controls
+## Item 2493 — **LOCALIZED TO ONE STEP AND A STORED NULL: `has(k, neq(v))` where `k` holds a STORED NULL returns the row in the TS engine and not in Rust. `order(local)`/`dedup()`/`path()` were red herrings.** ISO 39075, lenke's own GQL surface and lenke's own Rust engine all agree the TS engine is WRONG — ~~so this is a defect, not a decision~~ **CORRECTED AT ITEM 2494: the TS behaviour is DELIBERATE and TESTED (two tests pin it, one warning against this exact change by name), so it is a THIRD in-house position and the FIFTH OWNER DECISION. The three-line fix is proven to work and is NOT shipped**. Pinned as six `test.failing` rows with two agreeing controls
 
 ### THE BISECT, AND WHAT IT KILLED
 
@@ -129138,3 +129138,75 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check`
 pass / 0 fail; `packages/native` **1438 pass / 0 fail**; `bun run fuzz` clean on three consecutive
 runs (the single failure seen once is the documented ~1-in-30 residual, present on the unmodified
 fuzzer at item 2492 and unrelated to a test-only addition).
+
+## Item 2494 — **THE FIX WORKS AND I AM NOT SHIPPING IT: a strict `!== null` guard at both `neq` sites takes the TS engine from `[7]` to `[6]`, matching Rust, GQL and ISO — but it turns red two existing tests that pin the stored-null behaviour DELIBERATELY, one of which warns against this exact change by name.** So item 2493's verdict was wrong: this is the FIFTH owner decision, not a defect
+
+### THE FIX, AND THAT IT WORKS
+
+`predicates.ts` has two `neq` arms and neither guards its operand, while the ORDERING arms
+immediately below do — with a comment saying why ("a missing OR incomparable value is filtered out
+(false), never an error"):
+
+```ts
+    case 'neq':
+      return !valueEq(value, pred.value);                      // no guard
+    case 'gt':
+      return value != null && predCmp(value, pred.value) > 0;  // guarded
+```
+
+Adding the same guard — **strict** `!== null`, so a MISSING key (`undefined`) keeps its separately
+decided behaviour — makes `g.V().has('lang', neq('lop')).count()` read `[6]` in TS, `vadas` drops out,
+and item 2493's five pinned rows flip. The strictness matters and item 1140 is why: a missing key
+reads `undefined` and a stored null reads `null`, so `!=` would have silently decided decision (4)
+as a side effect.
+
+### AND WHY IT CANNOT LAND AS A FIX
+
+Two existing tests go red, and they are not incidental:
+
+```text
+    specialize-predicate.test.ts   "`neq` is TRUE for a MISSING value, on both paths"
+      expect(matches(neq(1), null)).toBe(true);
+      // "Not `value != null && …` — `neq` has no presence guard … A specialization that added a
+      //  presence guard (copying the ordering arms' shape) would flip this."
+
+    executor/far-filter-collapse.test.ts   "`neq` ADMITS A MISSING KEY, and both branches must agree"
+      // "… `e`'s present null does too."
+```
+
+**The first comment describes the change I just made, as a thing not to do.** So the TS engine's
+treatment of a stored null under `neq` is deliberate, tested, and reasoned — a THIRD in-house
+position, not an oversight.
+
+Item 2493 concluded "two of the three references are in-house and already consistent, which is what
+makes this a defect to fix rather than a semantics choice to refer". **That was wrong**, and the error
+was not checking whether the TS behaviour was itself pinned before calling it a defect. Three
+authorities (ISO 39075, lenke's GQL, lenke's Rust) read one way; lenke's TS Gremlin reads the other
+way ON PURPOSE. Reconciling them means overriding a documented decision and retiring two tests, which
+is the owner's call.
+
+So: **engine change REVERTED**, and the divergence stays pinned as six `test.failing` rows in
+`packages/native/src/stored-null-neq-2493.test.ts`, now with the corrected rationale in the file. The
+fix is three lines and proven to work; what it needs is a ruling, not more evidence.
+
+### A DETOUR THAT WAS MY OWN TEST'S FAULT
+
+With the guard in place, five of the six rows flipped and **B2 stayed red**. It looked like an
+incomplete fix. It was not: B2 compares `values('name')` and my first draft `JSON.stringify`d the
+array, so it was comparing ORDER — and the two engines emit the same six names in a different order,
+which is not contracted. Item 2486 paid for that rule already. B2 now uses a per-level multiset
+comparison, which is why it is correct in BOTH directions: with the guard reverted its membership
+genuinely differs again, so it belongs in the failing set for that reason instead.
+
+### THE DIST TRAP, TWICE IN ONE TICK
+
+`packages/native` resolves `@lenke/gremlin` to its BUILT dist, so a `src` edit is invisible until
+`bun run build`. It bit once after APPLYING the fix (the pinned rows reported 8 pass / 0 fail, which
+for `test.failing` means the bodies still failed — reading that as "the fix did not work" was the
+first interpretation) and again after REVERTING it (the rows stayed flipped because the dist still
+held the fix). **`test.failing` inverts the signal, so "0 fail" is ambiguous and the row-level verdict
+is the thing to read.**
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; `packages/gremlin`
+**2907 pass / 0 fail**; `packages/native` **1438 pass / 0 fail**; `bun run fuzz` all seven **57 pass /
+0 fail**. Only the test file is modified — `predicates.ts` is back to its committed state.
