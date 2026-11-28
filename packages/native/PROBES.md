@@ -3525,3 +3525,31 @@ conformant and the inconsistency is lenke's own. ISO's paywalled Syntax Rules ma
 
 Resolution is the NINTH owner decision: reject at parse (like an empty property key), bind everywhere
 (one character: `name === undefined`), or leave it.
+
+## `dedupe-split-2517.mjs` — is the mid-chain dedupe cost O(distinct)? (item 2517)
+
+```
+cd packages/native && node dedupe-split-2517.mjs
+SPLIT_N=200000 SPLIT_DISTINCTS=1,100,10000,200000 node dedupe-split-2517.mjs
+```
+
+Holds |V|, edge count and walk shape FIXED and varies ONLY the distinct intermediate count, with
+`out,out` as a control that must stay flat (a chain CSR is O(|V|) whatever the topology).
+
+```
+      distinct   out,dedupe,out          out,out [CONTROL]   B/distinct
+             1      0.18 MiB (1 row)        14.55 MiB              —
+           100      0.18     (100 rows)     14.55                  —
+        10 000      0.37     (10k rows)     14.55               39.0
+       200 000      5.22     (200k rows)    14.55               27.3
+```
+
+**The 5.22 MiB is the DEDUPE SET, O(distinct) at ~27 B/entry.** The control did not move at any point,
+which is what makes the axis attributable.
+
+KEY `dedupe` disqualifies the chain-CSR route (item 2505), so it swaps a ~14.5 MiB O(|V|) index for an
+O(distinct) Set — **cheaper than the plain chain at every distinctness measured** (80x at 100 distinct,
+2.8x at full). The "in between" figure was a different structure, not an unexplained cost.
+
+The fixture uses `i % distinct` and ASSERTS the distinct endpoint count, because this repo has twice
+been burned by generators whose `(a*k+b) % N` form silently collapsed (702, 1516/1518).

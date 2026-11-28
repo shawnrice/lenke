@@ -129936,7 +129936,7 @@ edge label in a chain is not a cheap no-op, it is the most expensive shape here.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instruments only.
 
-OPEN — **`out,dedupe,out` at 5.22 MiB is neither floor nor full chain.** `dedupe` splits the chain,
+~~OPEN — **`out,dedupe,out` at 5.22 MiB is neither floor nor full chain.**~~ **EXPLAINED AT ITEM 2517: it is the MID-CHAIN DEDUPE SET, O(distinct intermediates) at ~27 B/entry — a different structure from the CSR, and CHEAPER than the chain it replaces at every distinctness measured.** `dedupe` splits the chain,
 so one side may still build a CSR while the other does not. Partial and unexplained; small enough to
 leave, recorded so it is not re-found.
 
@@ -130713,3 +130713,49 @@ name, which is a surface-semantics commitment rather than a bug fix. (1) rejects
 allows. So this is the **ninth owner decision**, with the measurement done.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Probe only, no code change.
+
+## Item 2517 — **EXPLAINED: `out,dedupe,out`'s 5.22 MiB is the MID-CHAIN DEDUPE SET, O(distinct intermediates) at ~27 B/entry.** It sits between the floor and the full chain because it is a DIFFERENT STRUCTURE — a Set sized by distinctness, not an index sized by |V| — and at low distinctness it is 80x CHEAPER than the chain it replaces
+
+### THE LAST UNEXPLAINED ROW FROM ITEM 2505
+
+Item 2505's deletion sweep dropped every chain-CSR-disqualified shape to the 1-hop floor except one:
+`out,dedupe,out` read 5.22 MiB, neither the 0.07 floor nor the 14.55 full chain. "It is disqualified"
+did not account for a number in between.
+
+### ONE AXIS, AND A CONTROL THAT MUST NOT MOVE
+
+Hold |V|, the edge count and the walk shape fixed; vary ONLY how many DISTINCT vertices the first hop
+can land on. A mid-chain `dedupe()` must hold what it has seen, so the hypothesis was O(DISTINCT).
+
+```text
+      distinct   out,dedupe,out              out,out [CONTROL]          B/distinct
+             1      0.18 MiB (      1 rows)     14.55 MiB (200000 rows)          —
+           100      0.18     (    100 rows)     14.55                            —
+        10 000      0.37     (  10000 rows)     14.55                         39.0
+       200 000      5.22     ( 200000 rows)     14.55                         27.3
+```
+
+- **The arm scales with distinctness** — 0.18 → 0.18 → 0.37 → 5.22 — and `B/distinct` CONVERGES to
+  ~27 B (39.0 at 10k, 27.3 at 200k), a plausible per-entry cost for a Set of references.
+- **The CONTROL is flat at 14.55 MiB at every distinct count.** That is the load-bearing half: a chain
+  CSR is O(|V|) whatever the topology, so a control that moved with the axis would have meant the
+  fixture was changing something else too. It did not move at all.
+- The ROW COUNT tracks distinct exactly (1 / 100 / 10000 / 200000), which is the `dedupe` doing its
+  job and confirms the axis is the one intended.
+
+The fixture asserts its own distinct endpoint count and refuses to report otherwise — this repo has
+been burned twice by a generator whose `(a*k+b) % N` form was invariant under `k -> k+N` and silently
+collapsed (items 702, 1516/1518), so `i % distinct` is used and the count is checked, not assumed.
+
+### SO IT IS CORRECT, AND IT IS ALSO A SAVING
+
+`dedupe` DISQUALIFIES the chain-CSR route (item 2505), so it replaces a ~14.5 MiB O(|V|) index with an
+O(distinct) Set. **At every distinct count measured the dedupe arm is CHEAPER than the plain chain** —
+80x cheaper at 100 distinct, and still 2.8x cheaper at full distinctness. The "in between" number was
+never a cost to explain away; it is a different and usually smaller structure.
+
+Nothing to fix: a dedupe that did not hold the distinct set could not dedupe.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Probe only.
+
+This closes the last open row from item 2505's sweep.
