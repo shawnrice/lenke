@@ -129795,7 +129795,80 @@ What needed striking was my own over-generalization one item ago, which is done 
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instrument only.
 
-OPEN — **why does a bare 3-hop walk retain 7 MiB when the same walk ending in `path()` retains
-0.14?** That is the one live question, it is stable across two sizes and two partners, and it is
+~~OPEN — **why does a bare 3-hop walk retain 7 MiB when the same walk ending in `path()` retains
+0.14?**~~ **ANSWERED AT ITEM 2504: a 2+-hop walk builds a ONE-TIME O(|V|) structure (~73 B/vertex, flat in hop count); `path()` sets `readsPath = true` and takes a route that does not build it. The question was why the BARE walk is expensive, not why `path()` is cheap.** That is the one live question, it is stable across two sizes and two partners, and it is
 about those two generator chains rather than about the instrument. A cap-style mechanism for Gremlin
 would price it independently.
+
+## Item 2504 — **ANSWERED: a walk of TWO OR MORE hops builds a ONE-TIME O(|V|) structure, ~73 B/vertex, FLAT in hop count.** Both of my hypotheses were wrong; the `path()` inversion is a ROUTE difference, and the shipped sweep under-reports every multi-hop arm after the first by ~13 MiB
+
+### THE MEASUREMENT
+
+`bare-hop-retain-2504.mjs`, one shape per process, `global.gc()` at every sample:
+
+```text
+      N=200,000      bare (Vertex)   values(k) scalar   bare/values
+      1 hop              0.08 MiB         0.09 MiB         0.88x
+      2 hops            14.56            14.57            1.00x
+      3 hops            14.57            14.57            1.00x
+      4 hops            14.69            14.79            0.99x
+
+      scaling of the 2-hop arm:   3.43 MiB @ 50k   7.02 @ 100k   14.56 @ 200k   => ~73 B/vertex
+      1-hop arm:                  0.10            0.08          0.08           => FLAT in N
+```
+
+So: **a one-time cost, paid on the step from ONE hop to TWO, linear in |V|, flat in hop count
+thereafter, and identical whether the walk yields elements or scalars.**
+
+### BOTH HYPOTHESES WERE WRONG
+
+- **Not the element yield.** `values('k')` emits a number where the bare walk emits a `Vertex`, keeps
+  `readsPath = false` and the same hops — and matches to **1.00x at every hop count**. Yielding
+  elements costs nothing.
+- **Not per-hop accumulation.** The shipped probe's 0.03-at-1-hop against 1.56-at-3-hops looked like a
+  slope and is not one: 2, 3 and 4 hops all read 14.57 at N=200,000.
+
+### IT EXPLAINS THE `path()` INVERSION THAT 2502/2503 LEFT OPEN
+
+The compiled plans differ in their route flag:
+
+```text
+      V>out>out>out          readsPath = false      14.57 MiB
+      V>out>out>out>path     readsPath = true        0.14 MiB
+```
+
+`path()` takes a DIFFERENT ROUTE, and that route does not build the structure. So the bare arm was
+never "the same walk plus path tracking", and the 50-156x gap is **one route building an O(|V|) index
+and the other not**. Reading it as "path tracking is free" had the mechanism backwards — the question
+was never why `path()` is cheap but why the bare walk is expensive.
+
+### AND A SECOND INSTRUMENT DEFECT, WHICH THE POSITION SWAP COULD NOT SEE
+
+`retained-2457.mjs` runs its whole sweep in ONE process and takes each arm's baseline just before
+that arm. So the FIRST multi-hop arm pays for the shared structure and every later one finds it in
+its own baseline. Two 3-hop shapes in that file's own output disagree ninefold:
+
+```text
+      repeat(out).times(3)        14.21 MiB     runs 2nd, builds it
+      3 hops, no path [control]    1.56 MiB     runs 9th, inherits it
+```
+
+14.21 is the honest figure and 1.56 is an artifact. **Item 2503's swap was structurally blind to
+this**: it compared each arm against itself in two positions with only the calibration arm for
+company, so the structure got built consistently in both runs and the swing read 1.00x. A SHARED
+ONE-TIME cost is invisible to a position swap and visible only to one-shape-per-process. That also
+retires the last of my over-generalizations in this arc — 2502 blamed the mechanism, 2503 blamed
+control selection, and the actual cause is sweep topology.
+
+### THE HEADROOM NUMBER, WHICH IS THE POINT
+
+A 2+-hop Gremlin traversal needs **~73 bytes per vertex** on top of the graph, once, no matter how
+deep. At 10M vertices that is ~700 MB before any rows are produced — worth knowing for an OOM budget,
+and bounded rather than per-row, so it is a floor to plan for and not a leak.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instruments and comments only.
+
+OPEN — **what IS the structure?** Its size (~73 B/vertex), its trigger (the second hop), its
+flatness in depth and its absence on the `readsPath` route all point at an adjacency index built by
+the multi-hop route. Naming it needs a heap snapshot or a read of the `readsPath = false` hop source,
+and the number is useful without it.

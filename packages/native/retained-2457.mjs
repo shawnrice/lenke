@@ -186,6 +186,32 @@ const CALIBRATION = 'CALIBRATION (holds every row)';
  *
  * This measures the GREMLIN surface. It is NOT a measurement of GQL's TRAIL/ACYCLIC modes, which
  * remain unresolved for want of a fine enough GQL-side instrument.
+ *
+ * ⚠️⚠️ **EVERY MULTI-HOP ARM AFTER THE FIRST ONE UNDER-REPORTS BY ~13 MiB, BECAUSE THIS SWEEP RUNS
+ * IN ONE PROCESS (item 2504).** A walk of TWO OR MORE hops builds a ONE-TIME structure that is
+ * O(|V|) — ~73 bytes per vertex, measured 3.43 / 7.02 / 14.56 MiB at N = 50k / 100k / 200k — and it
+ * is **FLAT in hop count** (2, 3 and 4 hops all read 14.57 at 200k) and **identical for element and
+ * scalar output** (`values('k')` matches to 1.00x). A ONE-hop walk never builds it: 0.08 MiB at
+ * every N.
+ *
+ * Each arm's baseline is taken just before that arm runs, so whichever multi-hop arm goes FIRST pays
+ * for the structure and every later one finds it already in its own baseline. That is visible in
+ * this file's own output at N=200,000, where two 3-hop shapes disagree ninefold:
+ *
+ *     repeat(out).times(3)        14.21 MiB     <- runs 2nd, pays to build it
+ *     3 hops, no path [control]    1.56 MiB     <- runs 9th, inherits it
+ *
+ * `bare-hop-retain-2504.mjs` measures the same `out>out>out` at 14.57 MiB in a process of its own,
+ * which is the honest figure. **Item 2503's position swap could not catch this** — it compared each
+ * arm against itself in two positions with only the calibration arm for company, so the structure
+ * was built consistently in both runs and the swing stayed at 1.00x. A shared one-time cost is
+ * invisible to a swap and visible only to one-shape-per-process.
+ *
+ * ⚠️ AND IT EXPLAINS THE `path()` INVERSION that items 2502/2503 left open. `path()` sets
+ * `readsPath = true` on the compiled plan and takes a DIFFERENT ROUTE — one that does not build the
+ * structure (1 hop 0.05 MiB, 3 hops 0.14). So the bare arm was never "the same walk plus path
+ * tracking": the 50-156x gap is one route building an O(|V|) index and the other not. Reading it as
+ * "path tracking is free" had the mechanism exactly backwards.
  */
 const arms = [
   ['streaming values()  [control]', traversal(V(), values('k')), false],

@@ -3313,3 +3313,35 @@ WARN This NARROWS item 2502: the sampler measures each arm fine. What is invalid
 against a BARE WALK as its control — `bare3` 7.03 MiB against `path3` 0.14 (50x, impossible
 direction) reproduces at a second size and with a different partner. Still do not read
 `path() = 0.01` as "path tracking is free".
+
+## `bare-hop-retain-2504.mjs` — what a multi-hop walk holds (item 2504)
+
+```
+cd packages/native && node bare-hop-retain-2504.mjs
+SWAP_N=200000 node bare-hop-retain-2504.mjs
+```
+
+One shape per process, `global.gc()` at every sample. Varies hop count 1..4 with and without a scalar
+tail, so per-hop accumulation shows as a slope and element-yield cost as a column gap. **Neither
+appears.**
+
+```
+      N=200,000      bare (Vertex)   values(k)   ratio
+      1 hop              0.08 MiB      0.09       0.88x
+      2 hops            14.56         14.57       1.00x
+      3 hops            14.57         14.57       1.00x
+      4 hops            14.69         14.79       0.99x
+      2-hop scaling: 3.43 @ 50k, 7.02 @ 100k, 14.56 @ 200k  => ~73 B/vertex
+```
+
+**A 2+-hop traversal needs ~73 bytes per vertex, once, flat in depth** — a floor to plan an OOM
+budget against. A 1-hop walk never pays it.
+
+WARN **This is why `retained-2457.mjs`'s later multi-hop arms under-report.** That sweep runs in ONE
+process with a per-arm baseline, so the first multi-hop arm builds the shared structure and the rest
+inherit it: `repeat(out).times(3)` reads 14.21 MiB and `3 hops, no path` reads 1.56 — same shape,
+ninefold apart, 14.21 being honest. A position swap CANNOT see a shared one-time cost; only
+one-shape-per-process can.
+
+WARN It also explains the `path()` inversion: `path()` sets `readsPath = true` and takes a route that
+does not build the structure (0.14 MiB at 3 hops). The two arms were never the same walk.
