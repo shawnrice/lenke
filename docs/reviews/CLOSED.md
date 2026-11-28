@@ -132603,3 +132603,74 @@ refuses it.
 
 GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0 in BOTH configurations; Rust
 **default 1364 + 4 + 13 + 725** and **capi 1378 + 4 + 13** (+3), 0 failed; `bun run check` 0.
+
+## Item 2545 — **`docs/abi.md` was referenced four times from three files and did not exist.** The C ABI's host-facing document was a dangling pointer; written from measured behaviour and guarded at COMPILE time
+
+### THE FINDING, WHICH ARRIVED SIDEWAYS
+
+I went to `schema_op.rs` expecting a coverage gap. Its header says the vocabulary is documented in
+`docs/abi.md`, so that was the independent spec to sweep against (rule xxix) — **and the file does
+not exist.**
+
+A sweep of every markdown path under `docs` referenced from Rust and TypeScript source: **29
+resolve, and the danglers are all this one file.**
+
+```text
+      crates/lenke-engine/src/schema_op.rs:2     "see `docs/abi.md`"
+      crates/lenke-engine/src/ffi.rs:4           "Design (see `docs/abi.md`)"
+      crates/lenke-engine/src/ffi.rs:819         "Apply one schema op described by JSON (see `docs/abi.md`)"
+      packages/native/src/backend-engine.ts:82   "mirroring the engine ABI (see crates/lenke-engine/docs/abi.md)"
+```
+
+Four references, **two different paths**, neither present. `docs/guides/native.md` exists but is a
+user-facing embedding guide — zero mentions of `lnk_`, `schema_apply`, `createIndex` or `"op"`. So
+the C ABI, the boundary every bun:ffi and wasm consumer crosses, had no reference document and four
+pointers claiming otherwise.
+
+### ONE CLAIM VERIFIED WHILE ANOTHER WAS REFUTED
+
+`ffi.rs`'s header says the ABI is "a deliberately small, flat exported surface (**16 symbols**)".
+Enumerated across `ffi.rs` and `ffi_error.rs`: **exactly 16.** The claim is TRUE, and rule (xiv)
+holds either way — a claim that survives still pays, because it is now a number the new test
+restates independently rather than a sentence nobody checked.
+
+### THE DOCUMENT
+
+Written from what items 2542-2544 **measured**, not from intent: the 16 symbols and their sentinels,
+the `begin()`/take-on-read error channel, every discriminant, the seven `lnk_command` names with the
+`E_FFI`-vs-`E_NOT_IMPLEMENTED` distinction ("you called it wrong" vs "this engine is older than your
+client"), the schema-DDL vocabulary with its six coded rejections, and the three contracts a host
+will otherwise get backwards — `lnk_config`'s boolean polarity, `lnk_stat`'s absent error channel,
+and `lnk_alloc`'s abort-on-failure.
+
+### THE GUARD IS `include_str!`, FOR THE REASON THE DOC ROTTED
+
+A prose pointer is exactly what failed here, so the test **embeds** the document:
+`include_str!` resolves at COMPILE time, so deleting or moving it breaks the build instead of
+decaying into another dangling reference. That is item 2536's trick, reused for the same reason.
+
+Existence alone is too weak, so the doc is also checked to **name every exported symbol** and to
+state the two counter-intuitive contracts. Three mutants:
+
+```text
+      D1  one symbol dropped from the doc                1 FAIL
+      D2  the `lnk_config` polarity warning softened      1 FAIL
+      D3  the doc deleted entirely                        BUILD FAILS ("couldn't read")
+```
+
+D3 is the one that matters: the failure is a compile error, not a test failure, which is what makes
+the pointer non-rottable.
+
+### A FIFTH REGEX NEAR-MISS, AND A NEW SPELLING OF AN OLD TRAP
+
+My docs sweep captured **3 of the 4** references — the TypeScript one spells the path with a crate
+prefix my proximity rule did not match. Reported as 3 before I counted the files directly; the
+honest number is 4.
+
+And writing this up, the first version did not compile: the comment contained the literal
+`` `docs/*.md` ``, whose `/` followed by `*` **opens a nested block comment** (Rust nests them) that
+never closes. That is the item-2516 trap — `packages/*` plus `/src` inside a block comment — in a new
+costume, and the second time this session a block comment I wrote failed to terminate.
+
+GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0 in BOTH configurations; Rust
+**default 1364 + 4 + 13 + 725** and **capi 1380 + 4 + 13** (+2), 0 failed; `bun run fmt`/`check` 0.

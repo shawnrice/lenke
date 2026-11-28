@@ -546,3 +546,89 @@ fn a_command_with_its_payload_succeeds_and_returns_a_document() {
     // SAFETY: `s` is live and freed exactly once.
     unsafe { super::lnk_close(s) };
 }
+
+/*
+ * Item 2544b: `docs/abi.md` is referenced FOUR times from three files —
+ * `ffi.rs` (twice), `schema_op.rs`, and `packages/native/src/backend-engine.ts` (which spells it
+ * `crates/lenke-engine/docs/abi.md`) — and **it did not exist**. A sweep of every markdown path under docs
+ * mentioned in source found 29 that resolve and these as the only danglers. For a C ABI that is
+ * the one document a host integrator goes looking for, so it was written from the behaviour items
+ * 2542-2544 measured.
+ *
+ * ## THE GUARD, AND WHY IT IS `include_str!`
+ *
+ * `include_str!` resolves at COMPILE time, so deleting or moving the doc breaks the build rather
+ * than rotting into another dangling reference — the same trick item 2536 used for the codec
+ * corpus, for the same reason: a prose pointer is exactly what rotted here.
+ *
+ * And existence alone is too weak. The doc is checked to NAME EVERY EXPORTED SYMBOL, against the
+ * live export list rather than a hand-typed one, so adding a 17th `lnk_*` without documenting it
+ * fails here. `ffi.rs`'s own header claims "16 symbols"; that claim was verified by enumeration at
+ * this item and is TRUE, so the count below is an independent restatement of it, not a copy.
+ */
+const ABI_DOC: &str = include_str!("../../../../docs/abi.md");
+
+#[test]
+fn the_abi_document_exists_and_names_every_exported_symbol() {
+    // The live list. Kept here rather than read from source because a test cannot parse its own
+    // crate — but every name is one this file already imports or calls, so a renamed export breaks
+    // compilation before it reaches this assertion.
+    let exported = [
+        "lnk_abi_version",
+        "lnk_alloc",
+        "lnk_clone",
+        "lnk_close",
+        "lnk_command",
+        "lnk_config",
+        "lnk_dealloc",
+        "lnk_encode",
+        "lnk_free",
+        "lnk_last_error_json",
+        "lnk_open",
+        "lnk_query",
+        "lnk_schema_apply",
+        "lnk_schema_dump",
+        "lnk_stat",
+        "lnk_tx",
+    ];
+
+    assert_eq!(
+        exported.len(),
+        16,
+        "`ffi.rs`'s header says the ABI is 16 symbols; keep this list and that claim together",
+    );
+
+    let undocumented: Vec<&str> = exported
+        .iter()
+        .copied()
+        .filter(|sym| !ABI_DOC.contains(sym))
+        .collect();
+
+    assert!(
+        undocumented.is_empty(),
+        "docs/abi.md does not mention {undocumented:?} — a host integrator reading it would not \
+         know those entries exist",
+    );
+}
+
+/*
+ * The two contracts most likely to be mis-read by a host must be stated in the doc, not just in
+ * the code. Both were pinned by measurement (2543) and both are the kind of thing a reader assumes
+ * from convention and gets backwards.
+ */
+#[test]
+fn the_abi_document_states_the_two_counter_intuitive_contracts() {
+    assert!(
+        ABI_DOC.contains("boolean, not errno"),
+        "the doc must say `lnk_config` returns 1-for-applied, because 0-means-OK is the habit a \
+         reader brings and it is wrong here",
+    );
+    assert!(
+        ABI_DOC.contains("no error channel"),
+        "the doc must say `lnk_stat` records nothing and that its 0 is ambiguous by construction",
+    );
+    assert!(
+        ABI_DOC.contains("E_NOT_IMPLEMENTED") && ABI_DOC.contains("E_FFI"),
+        "the doc must separate `this engine is older than your client` from `you called it wrong`",
+    );
+}
