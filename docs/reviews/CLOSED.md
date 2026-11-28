@@ -130148,8 +130148,72 @@ transaction, and a bulk property update is the expensive one.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instrument only; no engine change and no
 owner decision.
 
-OPEN — **is the per-write cost reducible?** Three structures each hold one entry per write and the
-numbers do not say whether they overlap in content. `txEvents` existing at all is a consequence of
+~~OPEN — **is the per-write cost reducible?**~~ **ANSWERED AT ITEM 2509: the three PARTITION the cost (sum = all-three to within 0.03 MiB), so each IS independently reducible — and `txTokens`, the one this entry predicted, is the CHEAPEST by 5-14x. `txUndo` dominates creates (105 of 183 B/write), `txEvents` dominates updates (145 of 284).** `txEvents` existing at all is a consequence of
 `events-observation-only` (notification is owed after commit), and `txTokens` at 2-per-create looks
 like the most compressible of the three. None of that is priced; this item establishes the floor, not
 a lever.
+
+## Item 2509 — **THE THREE TX STRUCTURES PARTITION THE COST (no shared references), so each IS independently reducible — and the one I predicted would be the target is the CHEAPEST by 5-14x.** `txUndo` dominates creates, `txEvents` dominates updates, `txTokens` is noise
+
+### THE METHOD
+
+`tx-attribute-2509.mjs`: run the writes inside a transaction, sample, clear ONE structure, force a
+collection, sample again. The drop is what it held. This breaks rollback on purpose — the probe
+measures bytes and never commits.
+
+**The all-three arm is what makes it readable.** If the individual drops SUM to the all-three drop the
+structures partition the cost and each is independently removable for its share; if all-three drops
+much MORE than the sum they hold references to the same objects and none is. That was item 2508's
+question (c) and it decides whether "reducible" means anything.
+
+```text
+      addVertex                                    setProperty
+      cleared     drop MiB   B/write               cleared     drop MiB   B/write
+      none           -0.00      -0.0               none           0.00       0.0
+      undo           10.04     105.3               undo          12.33     129.3
+      events          5.47      57.3               events        13.86     145.3
+      tokens          1.98      20.8               tokens         0.89       9.3
+      all            17.46     183.1               all           27.05     283.6
+      sum of three = 17.49 vs all 17.46            sum = 27.07 vs all 27.05
+```
+
+**They PARTITION it**, in both cases, to within 0.03 MiB. No shared references — so the shares are
+real and each structure's bytes would actually be freed by removing it. (The `none` control reading
+0.00 is the instrument's own null: clearing nothing frees nothing.)
+
+### MY HYPOTHESIS WAS WRONG, AND IT IS A USEFUL KIND OF WRONG
+
+Item 2508 flagged `txTokens` as "the most compressible" because it holds TWO entries per created
+vertex where the others hold one. **It is the CHEAPEST of the three by 5x on creates and 14x on
+updates** — 20.8 and 9.3 B/write, 11% and 3% of the total. Two short strings cost far less than one
+undo op or one buffered event, so **entry COUNT was the wrong proxy for bytes** and the structure I
+singled out is the one not worth touching.
+
+### WHERE THE MONEY ACTUALLY IS
+
+- **`txUndo` dominates CREATES** — 105.3 of 183.1 B/write, 57%. This is rollback itself: the inverse
+  op is the feature, and reducing it means changing what rollback can do.
+- **`txEvents` dominates UPDATES** — 145.3 of 283.6, 51%, and MORE than `txUndo`'s 129.3 on the same
+  arm. That is the single largest share anywhere in the table, and it is the one whose necessity is a
+  question rather than a definition: `Graph.ts` says events "buffer in `txEvents`, dispatched together
+  on commit, discarded on rollback", so the buffering exists to make them discardable, not to make
+  them deliverable.
+
+So the shape of any reduction is now specific: **could a buffered event be DERIVED at commit from the
+`txUndo` entry beside it, rather than stored?** `events-observation-only` is FIRM, so delivery is not
+negotiable — only eager storage is. And `TX_TOKENS`' own comment is the known obstacle: the tokens are
+"captured while the element is still live … instead of re-deriving from a possibly-evicted element",
+which says derivation at commit was already considered unsafe for the tokens and may be for the event
+too.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instrument only.
+
+NUMBERS NOTE: the all-three figures here (183.1 / 283.6 B/write) sit slightly above item 2508's
+with-vs-without deltas (162 / 273) because the baselines differ — 2508 compared two processes, this
+compares before-and-after inside one. Treat them as the same quantity measured two ways, agreeing to
+~12%, and quote 2508's for the headroom budget since it is the one with a true no-transaction control.
+
+OPEN — **an owner decision, the eighth: may a buffered transaction event be derived at commit instead
+of stored?** It is worth 145 B per update (51% of the per-write cost on that arm) and 57 B per create.
+It touches the event contract and `TX_TOKENS` documents a live-element capture problem that may
+generalize, so it is not mine to take.

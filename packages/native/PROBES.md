@@ -3433,3 +3433,38 @@ KEY **The transaction INVERTS which write kind is expensive.** Outside one, crea
 (57.14 vs 4.82 MiB at 100k) because they allocate the data. Inside one, updates cost 1.7x creates per
 write, because undoing a mutation must capture and hold the OLD value while undoing a create is just a
 delete. So wrapping an import is cheap and wrapping a bulk property update is not.
+
+## `tx-attribute-2509.mjs` — which tx structure holds the per-write cost (item 2509)
+
+```
+cd packages/native && node tx-attribute-2509.mjs
+TX_N=200000 node tx-attribute-2509.mjs
+```
+
+Clears ONE structure, forces a collection, and reads the drop. Breaks rollback on purpose — it
+measures bytes and never commits. **The all-three arm is what makes it readable**: individual drops
+summing to the all-three drop means the structures PARTITION the cost; all-three exceeding the sum
+would mean shared references and no independent reducibility.
+
+```
+      addVertex                        setProperty
+      undo     105.3 B/write  (57%)    undo     129.3 B/write  (46%)
+      events    57.3          (31%)    events   145.3          (51%)
+      tokens    20.8          (11%)    tokens     9.3           (3%)
+      all      183.1                   all      283.6
+      sum 17.49 vs all 17.46 MiB       sum 27.07 vs all 27.05
+```
+
+**They partition it to within 0.03 MiB in both cases** — no shared references.
+
+KEY **`txTokens` is the CHEAPEST by 5-14x**, though it holds TWO entries per create where the others
+hold one. Item 2508 predicted it would be the target on that basis. **Entry COUNT is the wrong proxy
+for bytes.**
+
+KEY The money is `txUndo` on creates (rollback itself — the inverse op is the feature) and `txEvents`
+on updates (145 B/write, the largest single share in the table, and the only one whose necessity is a
+question: the code says events buffer "to be discarded on rollback", not to be deliverable).
+
+WARN The all-three figures (183/284 B/write) sit ~12% above item 2508's two-process deltas (162/273)
+because the baselines differ. Same quantity, two methods; quote 2508's for a headroom budget since it
+has a true no-transaction control.
