@@ -2483,6 +2483,12 @@ export const detectOptionalOrderedProjection = (
    * the value lives in `params` while this decision is cached across bindings. `sortRowsByColumns`
    * then applies `skip`/`limit` itself, including item 701's bounded top-k heap.
    */
+  /*
+   * CONDITIONALLY REDUNDANT AND KEPT (item 2470) — the third member of this family to get the same
+   * verdict, after `chain-projection.ts` at 2468 and `hop2-projection.ts` at 2469. Dropped, it moves
+   * no verdict: `outputColumnSorts` below has no sort to resolve and refuses. Kept as the early exit,
+   * so an ordered-projection detector declines on a stated precondition rather than downstream.
+   */
   if ((projection.orderBy?.length ?? 0) === 0) {
     return null;
   }

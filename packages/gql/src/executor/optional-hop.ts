@@ -280,6 +280,14 @@ export const detectOptionalGroupedHopCount = (
 
   const [m, om, ret] = clauses;
 
+  /*
+   * `!om.optional` IS CONDITIONALLY REDUNDANT AND KEPT (item 2470). A flip sweep moved no verdict
+   * when it was dropped: a second NON-optional match makes this a two-hop chain, which the pattern
+   * and anchor checks below refuse anyway. It stays because it is the only statement that this
+   * detector's SECOND clause must be the optional one — the rewrite below counts a MISS as zero, a
+   * reading that is simply wrong for a required match, so a future relaxation of the shape checks
+   * must not silently inherit it.
+   */
   if (
     m.kind !== 'match' ||
     m.optional ||

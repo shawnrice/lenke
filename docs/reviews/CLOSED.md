@@ -126711,6 +126711,8 @@ differential, fuzz or conformance test can see a mutant in an admission conditio
 
 ```text
     18 detect* route detectors with no test by name
+      [item 2470 TOOK detectOptionalOrderedProjection + detectOptionalGroupedHopCount:
+       14 tests, 4 of 6. count(*) and count(z) route differently because they ANSWER differently.]
       [item 2469 TOOK the detectHop2* trio: 15 tests, 4 of 8 mutants, all survivors
        flip-verified. SKIP alone is the paged arm; SKIP + LIMIT is NOT.]
       [item 2467 TOOK the four reachable detectChain*: 23 tests, 4 of 7 mutants, the three
@@ -127453,3 +127455,82 @@ anchors were already correct.)
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
 **5,617 tests 0 fail** including the 15 new ones. `hop2-projection.ts` restored and verified
 byte-identical after the battery; the only changes to it are the two comments. Scratch probes removed.
+
+## Item 2470 — **the optional-hop pair, and ALL SIX MUTANTS SURVIVED THE FIRST CUT: every fixture varied the PROJECTION while these guards test the SHAPE OF THE CLAUSES.** One flip sweep found four structural shapes, each flipping exactly one mutant. 14 tests, 4 of 6 caught. The semantic keeper: **`count(*)` and `count(z)` route differently because they ANSWER differently** — on a row whose optional side missed, the star form counts it and the expression form does not
+
+`detectOptionalOrderedProjection` and `detectOptionalGroupedHopCount`, neither named in a test and
+neither field name appearing anywhere in `CLOSED.md`.
+
+### THE FIELD MAP SPLITS ON THE AGGREGATE, NOT THE GROUPING
+
+```text
+    OPTIONAL MATCH shape          detector that lights
+      RETURN z.k                    optionalHopProjection
+      RETURN z.k ORDER BY k [DESC]  optionalOrderedProjection
+      RETURN a.k, count(*)          optionalGroupedHopCount
+      RETURN a.k, count(z)          (none)
+      RETURN count(*)               optionalHopCount
+      RETURN count(z)               countShortcut
+      RETURN z.k SKIP 1             (none)
+      RETURN DISTINCT z.k           (none)
+```
+
+**The two count spellings route differently because they answer differently.** `count(*)` counts the
+row; `count(z)` skips it when `z` is NULL. On the fixture's `ak = 2` group — two anchors with no
+outgoing edge — the star form reports **2** and the expression form **0**. The test asserts both
+answers, so a widening that let `count(z)` into the star detector is caught by the ROWS, not merely
+by a field being non-null. That is ISO's rule, and it is the reason for the split rather than a
+coincidence of it.
+
+Also pinned: **the missing optional side sorts LAST in BOTH directions**, under `ORDER BY k` and
+`ORDER BY k DESC` alike. NULLs are placed by the engine's total order, not treated as largest, and
+four of the six rows here have a NULL key so interleaving would be plain to see.
+
+### ALL SIX SURVIVED, AND THE DIAGNOSIS IS ONE SENTENCE
+
+Every fixture in the first cut varied the PROJECTION — ordered, grouped, distinct, skip — while these
+guards test the CLAUSE STRUCTURE: whether the first match is optional, whether the second one is,
+whether the optional side carries a `WHERE`, how many patterns the anchor has, whether the anchor is
+a bare node. Item 2467 made the same mistake one axis over (depth instead of projection), so this is
+the same lesson in a third place: **enumerate the axes the GUARDS read, not the axes the queries
+obviously vary.**
+
+One flip sweep over nine structural candidates moved a verdict for four mutants, each on a distinct
+shape:
+
+```text
+      mutant                     shape that flipped declined -> ADMITTED
+      m.optional                   OPTIONAL MATCH (a:P) OPTIONAL MATCH …
+      om.where !== undefined       optional side carrying a WHERE
+      m.patterns.length !== 1      MATCH (a:P), (b:P) …
+      anchor.segments.length !== 0 anchor itself a hop: MATCH (a:P)-[:E]->(w:P) …
+      !om.optional                 *** nothing flipped ***
+      orderBy.length === 0         *** nothing flipped ***
+```
+
+### THE TWO SURVIVORS, KEPT WITH SHARP COUNTERFACTUALS
+
+- **`!om.optional`**: a second NON-optional match makes the query a two-hop chain, which the pattern
+  and anchor checks refuse anyway. KEPT because it is the only statement that this detector's SECOND
+  clause must be the optional one — **the rewrite counts a MISS as zero, a reading that is simply
+  wrong for a required match**, so a future relaxation of the shape checks must not silently inherit
+  it.
+- **`(projection.orderBy?.length ?? 0) === 0`**: the THIRD member of this family to earn the same
+  verdict, after `chain-projection.ts` at 2468 and `hop2-projection.ts` at 2469. Dropped, it moves
+  nothing, because `outputColumnSorts` has no sort to resolve. Kept as the early exit. Three
+  independent detectors now carry the same dead guard for the same reason, which is itself worth
+  knowing: it is a family idiom, not an oversight in one place.
+
+### ANCHOR UNIQUENESS COST THREE ATTEMPTS, EACH CAUGHT BY AN ASSERT
+
+`optional-hop.ts` holds `detectOptionalHopCount` and `detectOptionalGroupedHopCount` with a
+**byte-identical eight-condition conjunction AND identical preceding lines**, so the conjunction
+occurs twice and so does the `anchor.segments` guard. Anchoring had to start at the FUNCTION
+SIGNATURE to be unique. Each failed attempt aborted with `ANCHOR x2` and wrote nothing. And my first
+diagnosis of which assert fired was wrong — I read the line number and guessed the conjunction, when
+printing the counts showed the conjunction slice was unique and the SEG line was the duplicate.
+**Print the counts; do not infer them from a traceback's line number.**
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
+**5,631 tests 0 fail** including the 14 new ones. Both sources restored and verified byte-identical
+after the battery; the only changes to them are the two comments. Scratch probes removed.
