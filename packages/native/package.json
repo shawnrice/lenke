@@ -69,7 +69,8 @@
     "alloc:wasm": "bun wasmmem-2425.mjs",
     "alloc:write": "node --expose-gc writemem-2432.mjs",
     "alloc:askpolicy": "bun askpolicy-2438.mjs",
-    "alloc:labeltest": "bun labeltest-2441.mjs"
+    "alloc:labeltest": "bun labeltest-2441.mjs",
+    "alloc:gremlin": "node --expose-gc gremlinmem-2449.mjs"
   },
   "dependencies": {
     "@lenke/core": "workspace:*",

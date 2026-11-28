@@ -125737,3 +125737,87 @@ check, and now a missing `bc`. **The common shape is a tool that degrades into a
 
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `git diff` clean for
 `packages/gql` and `packages/core`.
+
+## Item 2449 — **THE GREMLIN SURFACE'S FIRST MEMORY NUMBERS, and the finding is INVERTED: Gremlin allocates 1.80x LESS than GQL on a scan-rooted projection (70.9 against 127.5 B/row) and 12.8x MORE on a one-hop (1117.1 against 87.0).** Adding `out()` costs **~1046 B/row**, 15.8x Gremlin's own scan. Two independent routes reach the same term, so it is `out()` and not a general "Gremlin is heavier"
+
+Items 2416-2448 built churn, retained bytes, GC share, allocation counts, peak live, a minimum-heap
+bisection, the wasm high-water, write-path waste and a fan-in sweep. **Every one measures GQL.**
+`bench:gremlin` and `spelling:gremlin` are TIME only, and the only Gremlin allocation numbers in the
+repo are Rust-side (`alloc_count_probe`'s `gremlin::lex` / `gremlin::parse`). The TS Gremlin
+executor — a separate implementation with its own steps and generator chain — had never had a byte
+measured.
+
+### THE CALIBRATION, first, because seven instruments in this stretch were caught lying
+
+```text
+    cal   100,000 x {a, b, c}   77.2 B/object   PLAUSIBLE (item 2416 measured 80.1-81.6)
+```
+
+Same meter, same object, independently re-verified. Two of the seven caught instruments were mine —
+item 2432's harness reported a 2151.93x waste ratio by measuring an unreachable graph, item 2447's
+sweep a 2.5x band that was a warm-up transient — so the probe prints `OUT OF BAND — do not trust any
+number below this line` when the calibration misses, rather than leaving the reader to check.
+
+### THE NUMBERS
+
+```text
+    N=200,000, one shape per process, median of 7, 3 warm reads
+      shape                            rows      churn        B/row    GC cycles
+      V().count()                          1     0.01 MiB          —       0
+      V().hasLabel('P').count()            1     0.01 MiB          —       0
+      V().values('k')                200,000    13.53 MiB       70.9       0
+      E().values('w')                200,000    20.62 MiB      108.1       0
+      V().out().values('k')          200,000   213.06 MiB     1117.1       6
+      V().out().dedupe()             200,000   270.39 MiB     1417.6       7
+```
+
+The two closed forms allocate 0.01 MiB regardless of N, which is the control working: a `count()`
+that never materialises rows cannot be charged for them.
+
+### AGAINST GQL, AND THE DIRECTION REVERSES
+
+```text
+      query                       GQL                Gremlin              verdict
+        scan projection      127.5 B/row          70.9 B/row       Gremlin 1.80x BETTER
+        one-hop projection    87.0 B/row        1117.1 B/row       Gremlin 12.8x WORSE
+```
+
+**So this is not "Gremlin allocates more".** On a scan-rooted projection it allocates almost half
+what GQL does. The entire gap appears when one `out()` step enters the chain, and two independent
+comparisons agree on the size: 15.8x against Gremlin's own scan (70.9 to 1117.1) and 12.8x against
+GQL's equivalent one-hop.
+
+Worth noting in passing: **GQL's one-hop (87.0 B/row) is CHEAPER than its own scan (127.5)**, which
+is items 2421-2424's level passes and item 2443's routing showing up in bytes — the one-hop rides a
+CSR and emits rows from a fused path, where the scan materialises differently. That is a second
+reason the Gremlin figure is not explained by "a hop is simply more work".
+
+### WHAT THE PRIOR ART PREDICTS, and where it stops
+
+[[gremlin-values-is-the-floor]] records that on this surface "the reduce is free; the cost is the
+generator chain", fused at item 1586 for 1.90x. A generator chain is exactly the structure whose cost
+is allocation rather than arithmetic — a frame and a `{value, done}` per element per step. **But the
+scale does not fit that alone**: an iterator result is tens of bytes, and `out()` is costing ~1046
+B/row. Something larger than the iterator protocol is being allocated per row.
+
+[[element-dedup-identity-vs-key]] is the other half and it is now measurable: it records that
+"Gremlin keeps no dedup set at all on a far-driven walk", a claim about ALLOCATION that had only ever
+been argued from time. The `dedupe()` row costs 300 B/row MORE than `out().values()` (1417.6 against
+1117.1), which is consistent with a set being built — so that claim wants re-examining in bytes, at
+this fixture, before it is relied on again.
+
+### NOT PRICED AS A TARGET YET, deliberately
+
+~1046 B/row on `out()` is a large number and this item does not convert it into a prize. What is
+missing is the mechanism: only an allocation-site profile (`alloc:count`'s approach, pointed at this
+surface) can say WHAT is allocated per row, and CLOSED.md must be checked for it —
+[[gremlin-ts-unmeasured]] records that at item 234 a per-shape FLOOR retracted two of three Gremlin
+targets because "the big ratio was data layout, not overhead", which is exactly the error available
+here.
+
+Wired as `bun run alloc:gremlin`. Knobs: `GM_SHAPE` (vcount / labelled / vvalues / evalues /
+outvalues / dedup / all), `GM_N`, `GM_REPS`, `MECH=cal` for the calibration row.
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
+Two lint rules conflicted on the calibration's verdict string (`no-unnecessary-template-expression`
+against `prefer-template`) and the fix is a hoisted variable rather than suppressing either.
