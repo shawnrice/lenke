@@ -129211,7 +129211,7 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check`
 **2907 pass / 0 fail**; `packages/native` **1438 pass / 0 fail**; `bun run fuzz` all seven **57 pass /
 0 fail**. Only the test file is modified — `predicates.ts` is back to its committed state.
 
-## Item 2495 — **A 19x EQUIVALENT-SPELLING GAP, UNCLOSED AND NOT IN `CLOSED.md` AT ALL: naming an edge variable you never read costs 19x on a PLAIN HOP.** `dropUnreadEdgeVar` requires a quantifier, so item 1568's 71.9x fix covered only the var-length case and the plain-hop mirror was left behind. **The two Gremlin flags are already closed (item 2300) — this came from the GQL probe**
+## Item 2495 — **A 19x EQUIVALENT-SPELLING GAP** (~~on a PLAIN HOP~~ **NARROWED AT ITEM 2496: only when the RETURN reads a FAR-NODE PROPERTY. Under `count(*)` it is HARMLESS — 0.2 vs 0.4 ms — exactly as `dropUnreadEdgeVar`'s own comment claims, so item 1568's comment was RIGHT and the quantifier is NOT the discriminator**) `dropUnreadEdgeVar` requires a quantifier, so item 1568's 71.9x fix covered only the var-length case and the plain-hop mirror was left behind. **The two Gremlin flags are already closed (item 2300) — this came from the GQL probe**
 
 ### THE REGRESSION PASS FIRST, because that is what the tick set out to do
 
@@ -129270,3 +129270,58 @@ and left for a tick that can do it properly. The measurement was the hard part.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No code change — a measurement and a
 diagnosis.
+
+## Item 2496 — **ITEM 2495's FRAMING WAS TOO BROAD AND ITEM 1568's COMMENT WAS RIGHT ALL ALONG: an unread edge variable on a plain hop is HARMLESS under `count(*)` (0.2 vs 0.4 ms, exactly as that comment claims) and costs 7-19x ONLY when the RETURN reads a FAR-NODE PROPERTY.** The shape, not the quantifier, is the discriminator — so the one-line relaxation I was about to make would have been aimed at the wrong condition
+
+### THE COMMENT ADDRESSED MY CASE AND CONTRADICTED MY NUMBER
+
+Before relaxing `rel.quantifier === undefined` I read why it was there, which is the lesson item 2493
+paid for. `dropUnreadEdgeVar`'s own doc comment says:
+
+> **HARMLESS ON A SINGLE HOP, so this does not chase it:** `-[r:E]->` unread measures 0.2 ms against
+> 0.2 for the absent spelling. The cost appears only where a binding disqualifies the var-length
+> rungs.
+
+That is a MEASURED claim about exactly the shape item 2495 flagged at 19x. One of the two had to be
+measuring something else.
+
+### THE SHAPE IS THE DISCRIMINATOR
+
+```text
+      N = 200,000                      no edge var    WITH e      verdict
+      RETURN count(*)                      0.4 ms      0.2 ms     HARMLESS — comment is right
+      RETURN count(b.k)                   16.7 ms    116.8 ms     7.0x
+```
+
+Item 1568 measured `count(*)`; item 2495's probe group measures `count(b.k)`. **Both numbers are
+correct and they are about different queries.** `count(*)` reads nothing, so the binding cannot
+disqualify a projection rung; `count(b.k)` reads a property of the FAR node, and that is the shape
+where the unread binding costs.
+
+So 2495's "the PLAIN-HOP mirror was never covered" is wrong as stated — the plain-hop `count(*)` case
+was covered, by being measured and correctly declined. The real target is narrower: **a plain hop
+whose RETURN reads a far-node property.**
+
+And the comment is not stale: it is accurate, scoped to the shape it measured, and saying so is worth
+more than the relaxation I was about to apply to a condition that is not the cause.
+
+### WHAT THE FIX WOULD HAVE TO BE, WHICH IS NOT WHAT 2495 SAID
+
+Relaxing `rel.quantifier === undefined` alone targets the quantifier, which is not the discriminator.
+The pass that already drops an unread `rel.variable` on a hop is `dropUnreadGroupBinds`, and its own
+refusal is documented in the same comment: it **requires `hopFrom !== undefined`**, i.e. a FUSED hop.
+A plain hop with a far-property projection has neither a quantifier (so `dropUnreadEdgeVar` refuses)
+nor a `hopFrom` (so `dropUnreadGroupBinds` refuses) — it falls between the two passes. Confirming
+which pass should own it, and what `hopFrom` is set to for this shape, is the next step and was not
+done this tick.
+
+### ON THE TWO MAGNITUDES
+
+The probe reports 19x (9.3 against 180 ms, three isolated runs) and this tick's in-process check reads
+7.0x (16.7 against 116.8). Different harnesses — the probe does min-of-9 with warm-up and its own
+fixture — so the DIRECTION is robust and the MULTIPLE is harness-dependent. The probe's isolated
+figure is the better instrument by its own construction, but a 19x headline should not be quoted
+without noting that a second harness reads 7x.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No code change — a correction and a
+narrowing.
