@@ -124904,3 +124904,135 @@ own note at item 2438 says must be re-derived IN SITU rather than decided from a
 
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `git diff` clean for
 `packages/gql` and `packages/core`.
+
+## Item 2440 — **CI WENT RED on the differential fuzzer, and it is the FIRST OBSERVED instance of the one class `divergence-registry.ts` is deliberately NOT permitted to declare: an error against a NON-EMPTY result.** Reproducible at `FUZZ_SEED=766056418`, **pre-existing** (it reproduces with item 2436's engine change reverted), and under ~1 per 100,000 generated queries. **Not registered, not skipped** — both are forbidden, so this records the shape for a conformance decision
+
+```text
+    MATCH (t:T)
+    OPTIONAL MATCH (t)-[:E]->(n WHERE ((n.m.j > (n.nan || null)) AND (n.m.k >= 3)))
+    RETURN t.n AS x, n.n AS y ORDER BY x, y
+
+      ts:     ok  [{"x":3,"y":null},{"x":5,"y":null},{"x":7,"y":null},
+                   {"x":11,"y":null},{"x":13,"y":null},{"x":17,"y":null}]
+      native: err E_INVALID_VALUE
+```
+
+### IT IS NOT MINE, and that was checked rather than assumed
+
+Item 2436 is the only engine change in this stretch (`vertexVersion` plus the `csr-cache` split).
+Swapping both files back to their pre-2436 copies, rebuilding, and replaying the seed reproduces the
+divergence **identically** — `native: err E_INVALID_VALUE`, same shape. Item 2438, whose run went
+red, was documentation plus a probe file and changed no engine code at all; item 2436's own run
+passed. So a random CI seed drew a latent shape.
+
+### WHY THE REGISTRY CANNOT TAKE IT, in its own words
+
+`divergence-registry.ts` holds exactly ONE entry, and its `matches` is deliberately narrow:
+
+```ts
+(erroredWith(c.ts, 'E_INVALID_VALUE') && isEmptyResult(c.native)) ||
+  (erroredWith(c.native, 'E_INVALID_VALUE') && isEmptyResult(c.ts));
+```
+
+with the reason stated beside it: _"NARROW: `E_INVALID_VALUE` on one side against an EMPTY result on
+the other. 'Malformed predicate' against 'no rows' — never wrong data, and never rows. **An error
+against a NON-EMPTY result is a different thing entirely and is NOT covered here.**"_ The module
+header adds that the registry being EMPTY _"is the state to defend, not a gap to fill."_
+
+This result has SIX rows. So the registry is not merely silent on it — it is **built to refuse it**,
+and widening `matches` would dissolve the boundary that makes the registry safe. Skipping the fuzzer
+is equally out ([[never-revert-migration-progress]]: red is the to-do list). **So neither mechanism
+applies, which is why this is an entry and not a fix.**
+
+### THE OBSERVATION THAT MATTERS FOR WHOEVER DECIDES: EVERY `y` IS NULL
+
+The six rows come from the mandatory `MATCH (t:T)`; the OPTIONAL side contributed **nothing** —
+`y` is null on every row. So the TS engine's answer is "the optional pattern matched no edge", and
+the native engine's is "the predicate is malformed". The optional side is EMPTY in both engines; they
+differ only in whether evaluating a doomed predicate raises.
+
+That is the registry's own safe shape — "malformed predicate against no rows" — seen through
+`OPTIONAL MATCH`'s row-preserving semantics, where "no rows" surfaces as "rows with nulls" instead of
+an empty result. `isEmptyResult` cannot see that, which is the mechanical reason the existing entry
+misses it.
+
+**So there is a defensible narrowing** — an entry matching only when every column from the OPTIONAL
+side is null — and it would be as safe as `isEmptyResult` by the registry's own standard. It is NOT
+taken here: the registry's design note says the empty state is to be defended, [[cross-engine-divergences-open]]
+records this 15th divergence as having no entry **by design**, and
+[[conjunct-order-chosen-for-speed]] already accepts as OWNER POLICY that "an error one engine raises
+where the other short-circuits is ACCEPTED". Three recorded decisions bear on it and none of them is
+mine to overturn inside an optimization loop.
+
+### FREQUENCY, measured
+
+```text
+      5 fresh random seeds, 20,000 queries each = 100,000 queries    0 divergences
+      the CI seed 766056418                                          1 divergence, reproducible
+```
+
+Under ~1 per 100,000, the same order as the registered entry's recorded "~1 per 120,000 generated
+queries (6 runs of 20,000)". **So CI will go red at roughly that rate and the next push is likely
+green** — which is the worst property of this situation, not a comfort: an intermittent red on a
+known-and-refused shape trains the reader to re-run rather than look.
+
+### WHAT A DECIDER NEEDS
+
+Two resolutions, both decisions rather than bug fixes:
+
+1. **Narrow the registry to the all-NULL-optional-side shape** above, keeping "error against real
+   rows" refused. Cheap, mechanical, and it ends the intermittent red.
+2. **Make the engines agree** on whether a doomed inline predicate under `OPTIONAL MATCH` raises.
+   That is a conformance call: it would change which queries answer today, and
+   [[conjunct-order-chosen-for-speed]] currently licenses the disagreement on purpose.
+
+Recorded with the seed so neither has to re-find it.
+
+### ITEM 2436 IS EXONERATED BY A 24-RUN A/B, and the evidence is symmetric
+
+A single LIVE run failing where one PRECHANGE run did not is a coin flip at this frequency, so it was
+measured properly — 12 fresh random seeds per arm, arms alternated, every failure's SHAPE printed:
+
+```text
+      ARM         failures   queries     the shape
+      LIVE          0 of 12   240,000    —
+      PRECHANGE     1 of 12   240,000    OPTIONAL MATCH + raising inline predicate
+```
+
+**LIVE had ZERO failures and PRECHANGE had one**, so item 2436 did not introduce this and did not
+raise its rate. Folding in the earlier runs — and correcting for the stale dist described below,
+which means those five "clean" runs were PRECHANGE, not LIVE — each arm stands at **1 failure in 17
+runs, ~1 per 340,000 generated queries. Identical.**
+
+### A SECOND, INDEPENDENT INSTANCE CONFIRMS IT IS A STRUCTURAL CLASS, not one bad query
+
+```text
+    MATCH (t:T)
+    OPTIONAL MATCH (t)-[:E]->(n WHERE ((atan2(1e21, '中a0') IS FALSE)
+                                       AND (null = {a: 3, b: zoned_time('08:30:00+05:30')}.b)))
+    RETURN t.n AS x, n.n AS y ORDER BY x, y
+
+      ts:     ok  [{"x":3,"y":null}, … six rows, every y null]
+      native: err E_INVALID_VALUE
+```
+
+Nothing is shared with the first instance at the expression level — `atan2` on a string and a record
+field against `n.m.j > (n.nan || null)` — yet the STRUCTURE and the symptom are identical:
+`OPTIONAL MATCH`, a raising inline predicate on the far end, six rows with every optional column
+null, `E_INVALID_VALUE` on the native side. **Two independent draws of the same shape** is what makes
+the narrowing proposed above a class-level fix rather than a special case, and it is also why the
+frequency estimate is of a CLASS and not of a query.
+
+### A STALE DIST INVALIDATED FIVE MEASUREMENTS BEFORE THIS RUN
+
+After swapping the PRECHANGE files in and rebuilding, the `restore` function copied the LIVE SOURCE
+back but did NOT rebuild — so `bun run check` failed with _"Property 'vertexVersion' does not exist on
+type 'Graph'"_ and five fuzz runs already attributed to LIVE had in fact executed against the
+pre-2436 dist. [[fuzzers-read-built-dists]] names this exactly. **A restore trap must rebuild, not
+just copy**, and anything measured since the last build has to be re-run; `divfuzz-rate-2440.sh`
+rebuilds inside `restore`.
+
+GATES. No engine change: both engine files restored and verified (`vertexVersion` bumps 2,
+`vertexIndexFor` 2), dist rebuilt, double `diff -q` byte-identical, `git diff` clean for
+`packages/gql` and `packages/core`. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. CI is green
+again on item 2439's push, which is the intermittency this entry is about.
