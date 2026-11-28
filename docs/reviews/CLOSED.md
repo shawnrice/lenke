@@ -132751,3 +132751,59 @@ the gates are run as separate commands reading each exit code — a piped clippy
 
 GATES. `cargo fmt` 0; clippy 0 in BOTH configurations; Rust **default 1366 + 4 + 13 + 725** (+2) and
 **capi 1382 + 4 + 13**, 0 failed; `bun run fmt`/`check` 0.
+
+## Item 2547 — **`cost.rs`'s routing gate was asserted in ONE direction, and a gate that always returns `true` passed all 1366 tests.** The prediction in `perf-gate-needs-its-own-test`, confirmed by measurement
+
+### THE PREDICTION, AND ITS CONFIRMATION
+
+`prefer_bounded_memory(input, store, budget) -> bool` picks a fold/stream operator over
+materializing a batch. Both routes return identical bytes — the gate trades TIME only — so no
+differential, fuzzer or conformance test can observe it. `perf-gate-needs-its-own-test` says exactly
+this, and prescribes extracting the arithmetic as a pure function and unit-testing it.
+
+**The extraction WAS done** (the gate is a pure three-argument function, and `cost/tests.rs` pins the
+estimator's arithmetic properly: `n×deg` for a one-hop, `n×(d+d²)` for a `{1,2}` var-length, the
+dict-distinct group count, the limit cap). What was missing is the gate's own contract. Before this
+item it was asserted **exactly once, in the TRUE direction only** — a 50,000 budget against a
+~60,000 estimate, a 20% margin with no boundary.
+
+```text
+      D1  prefer_bounded_memory returns `true` unconditionally
+            vs the 5 cost tests              5 passed; 0 failed    SURVIVES
+            vs the WHOLE default suite    1366 passed; 0 failed    SURVIVES
+```
+
+Every small query forced onto the streaming path, and the entire repository is green.
+
+### THE THREE MISSING PIECES
+
+- **The FALSE direction.** Nothing asserted that a small intermediate materializes.
+- **The exact boundary.** The contract is `rows > materialize_rows`, strictly. Now pinned at
+  `rows-1` (true), `rows` (false) and `rows+1` (false), with the budgets DERIVED from the measured
+  estimate rather than typed as literals — so the row tests the comparison and cannot drift when the
+  estimator is retuned. The arithmetic is pinned independently by the test above it, which is the
+  half that would otherwise be circular (rule xx).
+- **`default_budget()`, which production actually uses.** It had ZERO mentions in the tests; every
+  existing row built a `Budget` by hand. It is `min(TIME_CROSSOVER_ROWS, available_RAM×0.10/64)`, so
+  the ROUTE is machine-dependent (answer-identical either way). That rules out asserting a number,
+  so what is pinned is what holds on every box: finite, positive, and never exceeding the time
+  crossover — which is what the `min` is for.
+
+```text
+      D1  the gate always returns true                   2 FAIL   (survived 1366 before)
+      D2  strict `>` becomes `>=`                        1 FAIL   (exactly the boundary row)
+      D3  `min` becomes `max` in the default budget      1 FAIL   (exactly the crossover cap)
+      D4  the memory ceiling collapses to zero           2 FAIL
+```
+
+D2 is the grading that matters: an off-by-one at the edge kills ONLY the boundary assertion, so that
+row is carrying its own weight rather than riding on the others.
+
+### WHAT IS DELIBERATELY NOT COVERED, AND WHY
+
+The `PERF_MATERIALIZE_ROWS` override. It reads a process-global env var and Rust runs these tests on
+parallel threads, so setting it would leak into whatever else is mid-flight. An unsound test is worse
+than a missing one (rule xxxviii); it stays a calibration knob verified by hand, and the test says so.
+
+GATES. `cargo fmt` 0; clippy 0 in BOTH configurations; Rust **default 1369 + 4 + 13 + 725** (+3) and
+**capi 1385 + 4 + 13**, 0 failed; `bun run fmt`/`check` 0. Tests-only, so no fuzz run owed.
