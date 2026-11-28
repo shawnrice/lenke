@@ -125,6 +125,41 @@ fn normalize(store: &Store) -> String {
     lines.join("\n")
 }
 
+/// The OTHER half's source, embedded so that DELETING it breaks this build.
+///
+/// `include_str!` on the corpus (above) catches the corpus moving. It does NOT catch what actually
+/// happened at item 2536: the corpus stayed put and the READER disappeared, leaving every comment
+/// still claiming a cross-implementation check that no longer existed. A fixture is cross-engine
+/// only while BOTH sides still read it, so each half now holds the other to that.
+const TS_HALF: &str = include_str!("../../../packages/serialization/src/conformance.test.ts");
+
+/// The audit at item 2537 swept every shared corpus / golden / fixture in the repo and counted its
+/// readers per language. `codec-corpus.json` was the ONLY file that claims to be cross-engine, and
+/// after 2536 both of its readers are present. Three other files tripped a first-pass filter and
+/// all three were co-occurrence artifacts: the claim matched somewhere in the 23,000-line audit
+/// document rather than near the reference. Requiring the claim WITHIN 600 characters of the
+/// filename dropped the count to zero. The remaining one-sided fixtures — the ported TinkerPop
+/// `modern_*` graphs, the GQL corpus shards, a TS-only demo graph — are one-sided BY DESIGN, and
+/// `docs/conformance/order-union.groovy` has no code reader because it is a console oracle a human
+/// pipes into TinkerPop.
+#[test]
+fn the_other_half_of_this_corpus_still_reads_it() {
+    assert!(
+        TS_HALF.contains("codec-corpus.json"),
+        "the TS half no longer reads the shared corpus — this stopped being a \
+         cross-implementation test the moment that happened, which is exactly how item 2536's gap \
+         went unnoticed",
+    );
+
+    // It must also still APPLY the corpus, not merely mention it in prose.
+    for needed in ["canonical_normal", "reject"] {
+        assert!(
+            TS_HALF.contains(needed),
+            "the TS half no longer checks `{needed}`, so the two halves assert different things",
+        );
+    }
+}
+
 fn corpus() -> serde_json::Value {
     serde_json::from_str(CORPUS).expect("the shared corpus is valid JSON")
 }

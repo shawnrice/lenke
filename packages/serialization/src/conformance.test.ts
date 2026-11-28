@@ -57,6 +57,27 @@ const normalize = (g: Graph): string => {
 };
 
 describe('codec conformance (shared cross-impl corpus)', () => {
+  /*
+   * The reciprocal of the Rust half's own guard (item 2537). `include_str!` over there catches the
+   * corpus MOVING; neither side caught what actually happened at 2536 — the corpus stayed put and
+   * the Rust reader was deleted with its crate, leaving this file's docstring claiming a
+   * cross-implementation check that no longer existed.
+   *
+   * So each half now asserts the other still reads the fixture. A shared corpus is cross-engine
+   * only while both sides read it, and a comment cannot be the thing that establishes that.
+   */
+  test('the Rust half of this corpus still exists and still reads it', () => {
+    const rustHalf = readFileSync(
+      `${import.meta.dir}/../../../crates/lenke-engine/tests/codec_conformance.rs`,
+      'utf8',
+    );
+
+    expect(rustHalf).toContain('codec-corpus.json');
+    // And still APPLIES it, rather than merely mentioning it in prose.
+    expect(rustHalf).toContain('canonical_normal');
+    expect(rustHalf).toContain('reject');
+  });
+
   test('the canonical graph round-trips through every format, structurally', () => {
     const g = deserialize(corpus.canonical, 'ndjson', new Graph());
     const want = normalize(g);

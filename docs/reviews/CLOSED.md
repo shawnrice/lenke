@@ -132012,3 +132012,67 @@ and pg-text gap is left as a named gap rather than filled blind.
 GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0; Rust **1361 + 3 + 13 + 725**, 0 failed
 (the 3 are the new file); `bun run fuzz` **57 pass 0 fail**; `bun run fmt`/`lint`/`check` 0;
 serialization 144, 0 failed.
+
+## Item 2537 — **the shared-fixture reader audit: CLEAN, with one correction to my own instrument, and the 2536 failure mode is now impossible to repeat silently.** `codec-corpus.json` is the only cross-engine fixture in the repo, and each half now asserts the other still reads it
+
+### THE AUDIT (item 2536 generalized)
+
+2536 found a cross-engine corpus with one reader. The obvious next question is whether any OTHER
+shared fixture lost a reader the same way, and it is cheap to ask: enumerate every
+corpus / golden / fixture / conformance data file, count its READERS PER LANGUAGE, and flag anything
+that CLAIMS to be cross-engine while only one side reads it.
+
+18 candidate data files. **The result is CLEAN: `conformance/codec-corpus.json` is the only file in
+the repo that claims cross-engine status, and after 2536 both of its readers are present.** Every
+other one-sided file is one-sided BY DESIGN:
+
+```text
+      the ported TinkerPop `modern_*` graphs      Rust-only — fixtures for tests/gremlin_ported.rs
+      the GQL corpus shards (tests_a..f, tck, …)  Rust-only — tests/gql_corpus.rs
+      packages/core/src/fixtures/movies.json      TS-only — a demo graph
+      docs/conformance/order-union.groovy         NO code reader, correctly: it is a console
+                                                  oracle a human pipes into TinkerPop, and it IS
+                                                  cited in CLOSED.md and the audit
+```
+
+### THE CORRECTION TO MY OWN SWEEP (rule iii, twice over)
+
+**First pass: stem matching over-counted.** Matching a file's stem as a substring reported
+`snapshots.jsonl` with 22 TS readers and `hardening.jsonl` with 4 — because "snapshots" and
+"hardening" are ordinary English words appearing in unrelated source. Exact-basename matching put
+both at 0 TS readers, which is the truth.
+
+**Second pass: three files tripped the claim filter and ALL THREE were co-occurrence artifacts.**
+`modern_gremlin.ndjson`, `modern_gremlin_edge_ids.ndjson` and `tests_f.jsonl` looked like
+"claims cross-engine but one-sided" — because my detector searched the WHOLE of each referencing
+file, and one of those referencing files is the 23,000-line audit document, which mentions the
+filename in one place and says "both sides" in hundreds of others. Requiring the claim WITHIN 600
+characters of the reference dropped the confirmed count to **zero**. This is rule (xxvii)/2527 again
+in a new costume: proximity is part of the predicate, not a refinement of it.
+
+Had I stopped at either pass I would have filed three fictional defects.
+
+### THE DURABLE FIX FOR THE 2536 CLASS
+
+2536's `include_str!` catches the corpus MOVING. It does not catch what actually happened: the corpus
+stayed put and the READER was deleted with its crate, leaving every comment still describing a
+cross-implementation check. So each half now holds the other to it:
+
+- the Rust half `include_str!`s the TS half's SOURCE and asserts it still contains
+  `codec-corpus.json`, `canonical_normal` and `reject` — a deleted TS reader now breaks the Rust
+  BUILD;
+- the TS half reads the Rust half's source and asserts the same three.
+
+Mentioning the corpus is not enough — each checks the other still APPLIES it, so a reader degraded to
+a prose reference fails too.
+
+```text
+      M1  the TS half no longer references the corpus      rust guard: 1 FAIL
+      M2  the Rust half no longer applies canonical_normal ts guard:   1 FAIL
+```
+
+A reciprocal pair like this is cheap and self-maintaining in a way a comment is not: there is no
+third place to keep in sync, and the failure names the file that went dark.
+
+GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0; Rust **1361 + 4 + 13 + 725** (+1),
+0 failed; `bun run fmt`/`lint`/`check` 0; serialization **145** (+1), 0 failed.
