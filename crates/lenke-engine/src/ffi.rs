@@ -22,6 +22,9 @@
 #![allow(unsafe_code)]
 #![deny(unsafe_op_in_unsafe_fn)]
 
+#[cfg(test)]
+mod tests;
+
 use crate::store::Store;
 
 /// The ABI version the host asserts in lockstep (see `packages/native/src/abi.ts`).

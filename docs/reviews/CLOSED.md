@@ -132467,3 +132467,63 @@ read changed from `take()` to `clone()`.
 
 **`ffi.rs`'s 1264 lines have no tests of their own.** Now that CI compiles and lints them, that is a
 real and visible gap rather than an invisible one — a candidate for a later tick.
+
+## Item 2543 — **`ffi.rs`'s 1264 lines get their first tests ever**: 7 rows over the 12 `lnk_*` exports, four mutants each caught. And my own first assertion failed against correct code because I inferred an ABI status polarity instead of reading it
+
+### THE TARGET
+
+The gap item 2542 made visible. `ffi.rs` is the C ABI every bun:ffi and wasm consumer crosses — 12
+exports taking raw pointers, lengths and `u8`/`u32` discriminants, returning `null` / `-1` sentinels
+— and it had **no tests at all**. 2542 put the `capi` feature into CI, so tests here now run.
+
+**The assertions are available because of 2542.** Each fallible entry records a report on the
+out-of-band channel, and that channel is now pinned (read takes, `begin()` clears, the JSON is
+valid), so it can be the oracle rather than a second unknown.
+
+### WHAT THE SWEEP COVERS, AND WHAT IT DELIBERATELY DOES NOT
+
+Three shapes per entry where they apply: a **null handle** returns the documented sentinel; an
+**out-of-range discriminant** (`format`, `lang`, `action`, `which`) returns it too and records why;
+and a **valid CONTROL** succeeds AND leaves no report pending — the `begin()` contract observed end
+to end, and the row that stops the other two passing on an engine that errored for every call.
+
+**No invalid pointers.** Null is defined behaviour here — every entry checks it (`store_ref` /
+`store_mut` go through `as_ref()` / `as_mut()`, `in_str` null-checks before `from_raw_parts`).
+Passing a DANGLING pointer would be UB, which tests nothing: the result is meaningless whichever way
+it comes out. And per 2539, a test like this cannot observe an abort — it would die rather than fail.
+
+### MY FIRST ASSERTION WAS WRONG, AGAINST CORRECT CODE
+
+`lnk_config` returns a `u32` status and I asserted `status != 0` for an unknown id — written from
+errno habit, where 0 means OK. The doc comment says the opposite:
+
+> Returns **1 when applied**, **0** for a null handle / unknown id / zero value.
+
+So 0 is correct refusal and my row demanded the reverse. **An ABI status polarity is a documented
+choice, not a convention to infer**, and this one is boolean-style, not errno-style. Recorded because
+the same mistake is SILENT in the other direction: a row asserting `== 0` with no positive control
+would pass against a function that always returns 0. The row now pins both polarities — a known id
+with a real value returns 1, and all three documented refusals return 0.
+
+### A SECOND CONTRACT PINNED RATHER THAN FLAGGED
+
+`lnk_stat` returns `u64` with **no error channel at all**: a null handle and an unknown `which` both
+read 0, which is also a legitimate value (an empty graph has 0 nodes). That is deliberate for an
+infallible getter with no sentinel to spare, not an oversight. Pinned so nobody "fixes" it into
+reporting, and so the ambiguity is on the record as by-construction.
+
+### THE MUTANTS
+
+```text
+      G1  config accepts an unknown id (aliases it to a real one)   1 FAIL
+      G2  tx silently ignores an unknown action                     1 FAIL
+      G3  open stops reporting non-UTF-8 input                      1 FAIL
+      G4  config accepts a ZERO ceiling                             1 FAIL
+```
+
+G1 and G2 are the rule-(xxii) shape — accepting a value and then ignoring it — which is exactly what
+an untested discriminant surface invites.
+
+GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0 in BOTH configurations; Rust
+**default 1364 + 4 + 13 + 725** and **capi 1375 + 4 + 13** (+7), 0 failed; `bun run check` 0. Tests
+only, so no fuzz run was owed.

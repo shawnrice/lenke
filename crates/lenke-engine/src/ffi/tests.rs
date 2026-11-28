@@ -1,0 +1,387 @@
+//! Item 2543: `ffi.rs` is 1264 lines with **no tests at all** — the gap item 2542 made visible when
+//! it put the `capi` feature into CI. This is the C ABI: 12 `lnk_*` exports that every bun:ffi and
+//! wasm consumer crosses.
+//!
+//! ## What this sweep asserts, and why those assertions are available now
+//!
+//! Each fallible entry documents a SENTINEL (`null` or `-1`) and records a report on the
+//! out-of-band channel. Item 2542 pinned that channel — read takes, `begin()` clears, the JSON is
+//! valid — so it can now be the assertion rather than a second unknown. Three rows per entry where
+//! they apply:
+//!
+//! 1. a **null handle** returns the documented sentinel;
+//! 2. an **out-of-range discriminant** (`format`, `lang`, `action`, `which`) returns it too;
+//! 3. a **valid CONTROL** succeeds AND leaves NO report pending — which is the `begin()` contract
+//!    observed end-to-end, and the row that stops the first two passing for the wrong reason.
+//!
+//! ## What it deliberately does NOT do
+//!
+//! **No invalid pointers.** Passing `null` is defined behaviour here — every entry checks it
+//! (`store_ref`/`store_mut` go through `as_ref()`/`as_mut()`, which yield `None`, and `in_str`
+//! null-checks before `from_raw_parts`). Passing a DANGLING or garbage pointer would be undefined
+//! behaviour, which is not a test of anything: the result would be meaningless whichever way it
+//! came out. So the sweep covers the null and discriminant surface, not pointer validity.
+//!
+//! And per item 2539: a test like this cannot observe an ABORT. If an entry aborted, this file
+//! would not fail with a message — it would kill the test binary.
+
+use super::{
+    lnk_abi_version, lnk_clone, lnk_close, lnk_config, lnk_encode, lnk_free, lnk_open, lnk_query,
+    lnk_schema_apply, lnk_schema_dump, lnk_stat, lnk_tx,
+};
+use crate::store::Store;
+
+const NDJSON: &str =
+    "{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"P\"],\"properties\":{\"n\":1}}\n";
+
+/// A live handle from the real entry point, so the sweep never fabricates one.
+fn open() -> *mut Store {
+    // SAFETY: a valid UTF-8 range and format 0 (NDJSON), which is the documented happy path.
+    let s = unsafe { lnk_open(NDJSON.as_ptr(), NDJSON.len(), 0, 1) };
+
+    assert!(
+        !s.is_null(),
+        "the control open must succeed: {:?}",
+        pending()
+    );
+
+    s
+}
+
+/// Whatever report is pending, TAKEN (so it cannot leak into the next row).
+fn pending() -> Option<String> {
+    let mut len: usize = 0;
+    // SAFETY: `len` is a live writable usize.
+    let ptr = unsafe { crate::ffi_error::lnk_last_error_json(&raw mut len) };
+
+    if ptr.is_null() {
+        return None;
+    }
+
+    // SAFETY: the buffer came from `Box<[u8]>::into_raw` with exactly `len` bytes.
+    let bytes = unsafe { Vec::from_raw_parts(ptr, len, len) };
+
+    Some(String::from_utf8(bytes).expect("the report is UTF-8"))
+}
+
+/// Free an engine-returned buffer through the documented entry.
+fn free_out(ptr: *mut u8, len: usize) {
+    if !ptr.is_null() {
+        // SAFETY: the buffer came from this module and is freed exactly once.
+        unsafe { lnk_free(ptr, len) };
+    }
+}
+
+#[test]
+fn the_abi_version_is_a_plain_constant() {
+    // Not fallible and not pointer-taking: the one entry with nothing to get wrong, kept as the
+    // sweep's floor. If this ever needs a handle, the ABI changed shape.
+    assert!(lnk_abi_version() > 0);
+}
+
+#[test]
+fn a_null_handle_returns_the_documented_sentinel_on_every_fallible_entry() {
+    let mut out_len: usize = 0;
+
+    // SAFETY: every call below passes a NULL handle, which each entry is documented to check.
+    unsafe {
+        assert!(
+            lnk_clone(std::ptr::null()).is_null(),
+            "clone: null handle → null"
+        );
+
+        assert_eq!(lnk_tx(std::ptr::null_mut(), 0), -1, "tx: null handle → -1");
+        assert!(
+            pending().is_some(),
+            "tx must record a report for a null handle"
+        );
+
+        assert_eq!(
+            lnk_schema_apply(std::ptr::null_mut(), c"{}".as_ptr().cast(), 2),
+            -1,
+            "schema_apply: null handle → -1",
+        );
+
+        assert!(
+            lnk_schema_dump(std::ptr::null(), &raw mut out_len).is_null(),
+            "schema_dump: null handle → null",
+        );
+
+        assert!(
+            lnk_encode(std::ptr::null(), 0, &raw mut out_len).is_null(),
+            "encode: null handle → null",
+        );
+
+        let q = "MATCH (n:P) RETURN count(*) AS c";
+        assert!(
+            lnk_query(
+                std::ptr::null_mut(),
+                0,
+                q.as_ptr(),
+                q.len(),
+                std::ptr::null(),
+                0,
+                0,
+                &raw mut out_len,
+            )
+            .is_null(),
+            "query: null handle → null",
+        );
+    }
+
+    // Drain anything the rows above recorded, so a later row cannot read a stale report.
+    let _ = pending();
+}
+
+#[test]
+fn an_out_of_range_discriminant_returns_the_sentinel_and_records_why() {
+    let s = open();
+    let mut out_len: usize = 0;
+
+    // SAFETY: `s` is a live handle from `open`; only the DISCRIMINANTS are out of range.
+    unsafe {
+        // `lnk_tx` action: 0 begin, 1 commit, 2 rollback.
+        assert_eq!(lnk_tx(s, 9), -1, "tx: unknown action → -1");
+        let report = pending().expect("tx records why it refused an unknown action");
+        assert!(report.contains("E_"), "the report carries a code: {report}");
+
+        // `lnk_query` lang: 0 GQL, 1 Gremlin.
+        let q = "MATCH (n:P) RETURN count(*) AS c";
+        assert!(
+            lnk_query(
+                s,
+                9,
+                q.as_ptr(),
+                q.len(),
+                std::ptr::null(),
+                0,
+                0,
+                &raw mut out_len
+            )
+            .is_null(),
+            "query: unknown lang → null",
+        );
+        assert!(
+            pending().is_some(),
+            "query records why it refused an unknown lang"
+        );
+
+        // `lnk_query` format: 0 JSON rows, 1 Arrow, 2 Arrow IPC.
+        assert!(
+            lnk_query(
+                s,
+                0,
+                q.as_ptr(),
+                q.len(),
+                std::ptr::null(),
+                0,
+                99,
+                &raw mut out_len
+            )
+            .is_null(),
+            "query: unknown output format → null",
+        );
+        assert!(
+            pending().is_some(),
+            "query records why it refused an unknown format"
+        );
+
+        // `lnk_encode` format.
+        assert!(
+            lnk_encode(s, 99, &raw mut out_len).is_null(),
+            "encode: unknown format → null",
+        );
+        assert!(
+            pending().is_some(),
+            "encode records why it refused an unknown format"
+        );
+
+        lnk_close(s);
+    }
+}
+
+/*
+ * `lnk_stat` and `lnk_config` have a DIFFERENT contract, pinned here rather than flagged.
+ *
+ * `lnk_stat` returns `u64` with no error channel at all: a null handle and an unknown `which` both
+ * read 0, which is also a legitimate value (an empty graph has 0 nodes). That is a deliberate
+ * design for an infallible getter, not an oversight — it has no sentinel to spare. Recording it so
+ * nobody "fixes" it into reporting, and so a future reader knows 0 is ambiguous BY CONSTRUCTION.
+ */
+#[test]
+fn stat_is_infallible_and_answers_zero_rather_than_reporting() {
+    // SAFETY: a null handle, which `store_ref` turns into `None`.
+    let null_stat = unsafe { lnk_stat(std::ptr::null(), 0) };
+
+    assert_eq!(null_stat, 0, "stat on a null handle reads 0");
+    assert!(
+        pending().is_none(),
+        "stat records NO report — it has no sentinel to spare"
+    );
+
+    let s = open();
+
+    // SAFETY: `s` is live.
+    unsafe {
+        assert_eq!(lnk_stat(s, 0), 1, "one node in the fixture");
+        assert_eq!(
+            lnk_stat(s, 9),
+            0,
+            "an unknown `which` also reads 0 — ambiguous by design"
+        );
+        assert!(pending().is_none(), "still no report");
+
+        lnk_close(s);
+    }
+}
+
+#[test]
+fn a_successful_call_leaves_no_report_pending() {
+    // THE CONTROL for the whole sweep, and the `begin()` contract observed end to end. Without it,
+    // every assertion above could pass on an engine that reported an error for EVERY call.
+    let s = open();
+    let mut out_len: usize = 0;
+
+    assert!(
+        pending().is_none(),
+        "a successful open must leave the channel empty — `begin()` clears on entry",
+    );
+
+    // SAFETY: `s` is live, the query is a valid UTF-8 range, `out_len` is writable.
+    unsafe {
+        let q = "MATCH (n:P) RETURN count(*) AS c";
+        let out = lnk_query(
+            s,
+            0,
+            q.as_ptr(),
+            q.len(),
+            std::ptr::null(),
+            0,
+            0,
+            &raw mut out_len,
+        );
+
+        assert!(
+            !out.is_null(),
+            "the control query must succeed: {:?}",
+            pending()
+        );
+        assert!(pending().is_none(), "a successful query leaves no report");
+
+        let rows = std::slice::from_raw_parts(out, out_len);
+        let text = std::str::from_utf8(rows).expect("JSON rows are UTF-8");
+
+        assert!(text.contains("\"c\""), "the column is present: {text}");
+        free_out(out, out_len);
+
+        // A clone is a separate handle that answers the same.
+        let c = lnk_clone(s);
+        assert!(!c.is_null(), "clone succeeds: {:?}", pending());
+        assert_eq!(
+            lnk_stat(c, 0),
+            lnk_stat(s, 0),
+            "the clone has the same node count"
+        );
+
+        lnk_close(c);
+        lnk_close(s);
+    }
+}
+
+/*
+ * A sentinel from a BAD INPUT rather than a bad handle — the row that proves the entries reject
+ * malformed payloads through the same channel. `lnk_open` with format 0 and non-UTF-8 bytes is the
+ * documented `E_FFI` case, and a syntactically invalid query is the `E_SYNTAX` case.
+ */
+#[test]
+fn malformed_input_reports_through_the_same_channel() {
+    // Lone 0xff is not valid UTF-8 in any position.
+    let bad = [0xffu8, 0xfe, 0xff];
+
+    // SAFETY: a readable, initialized range of exactly 3 bytes.
+    let s = unsafe { lnk_open(bad.as_ptr(), bad.len(), 0, 1) };
+
+    assert!(s.is_null(), "non-UTF-8 NDJSON input → null");
+
+    let report = pending().expect("a report says why the open failed");
+
+    assert!(report.contains("E_"), "the report carries a code: {report}");
+
+    let live = open();
+    let mut out_len: usize = 0;
+
+    // SAFETY: `live` is a handle; the query text is a valid range but not valid GQL.
+    unsafe {
+        let q = "THIS IS NOT GQL";
+        let out = lnk_query(
+            live,
+            0,
+            q.as_ptr(),
+            q.len(),
+            std::ptr::null(),
+            0,
+            0,
+            &raw mut out_len,
+        );
+
+        assert!(out.is_null(), "a syntax error → null");
+
+        let report = pending().expect("a report says why the query failed");
+
+        assert!(report.contains("E_"), "the report carries a code: {report}");
+
+        lnk_close(live);
+    }
+}
+
+/*
+ * `lnk_config` returns a `u32` STATUS, and its polarity is the opposite of the errno convention:
+ * the doc says "**Returns 1 when applied, 0 for a null handle / unknown id / zero value**".
+ *
+ * My first version of this row asserted `status != 0` for an unknown id — written from habit, where
+ * 0 means OK — and it failed against correct code. An ABI status code's polarity is a DOCUMENTED
+ * CHOICE, not a convention to infer; this one is boolean-style, not errno-style. Recorded because
+ * the mistake is silent in the other direction: a row asserting `== 0` with no positive control
+ * would pass against a function that always returned 0.
+ *
+ * So both polarities, and the three documented ways to get 0. Item 2527 established that the id
+ * space is shared with the TS engine and append-only (TS holds 0-3 and 5; 4 and 6 are native-only),
+ * so id 0 is a real setting and 9_999 is one nobody has taken — what a host sees when it sends a
+ * newer setting to an older engine.
+ */
+#[test]
+fn config_reports_applied_as_one_and_every_refusal_as_zero() {
+    let s = open();
+
+    // SAFETY: `s` is live for all four calls; only the arguments vary.
+    unsafe {
+        assert_eq!(
+            lnk_config(s, 0, 1_000),
+            1,
+            "a known id with a non-zero value is APPLIED"
+        );
+
+        assert_eq!(
+            lnk_config(s, 9_999, 1),
+            0,
+            "an id nobody has taken is refused"
+        );
+        assert_eq!(
+            lnk_config(s, 0, 0),
+            0,
+            "a zero ceiling is refused (matches the TS engine)"
+        );
+        assert_eq!(
+            lnk_config(std::ptr::null_mut(), 0, 1_000),
+            0,
+            "a null handle is refused"
+        );
+
+        lnk_close(s);
+    }
+
+    assert!(
+        pending().is_none(),
+        "config has no error channel — it answers with its status alone",
+    );
+}
