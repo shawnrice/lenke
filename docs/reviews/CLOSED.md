@@ -128929,3 +128929,77 @@ the opposite of both authorities and needs correcting either way.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No engine change — one probe added,
 `null-3vl-probe-2490.ts`, documented in `PROBES.md`.
+
+## Item 2491 — **MY PREMISE WAS WRONG AND THE REAL NUMBER IS WORSE: the fuzzers' fixture sparsity is DELIBERATE and documented, but the Gremlin differential fuzzer generates EXACTLY ONE PREDICATE — `eq`.** `neq`, `within`, `without`, `between`, `inside`, `outside`, `containing`, `notContaining`, `endingWith`, `regex` are not even IMPORTED. **And even full coverage could not have caught item 2488, which is the structural half**
+
+### THE PREMISE, AND ITS REFUTATION BY THE FIXTURE'S OWN COMMENT
+
+The hypothesis was that the fuzzers never generate SPARSE properties, which would make the whole
+missing-key class (items 2488-2490) invisible. The fixture refutes it, and says so in a comment:
+
+> `st` is a SPARSE STRING, on vertices 1 and 3 only. `nan` plays that role for numbers, and without a
+> string twin the "absent on EITHER side is UNKNOWN" rule of the typed prop-vs-prop string comparison
+> had no coverage at all: a mutant returning FALSE instead of UNKNOWN for an absent right-hand side
+> passed the whole suite, because every other string property here is present on every vertex.
+
+Measured across the differential fuzzer's six nodes: `n`/`s`/`x`/`m` on all six, **`st` on two,
+`nu` on five, `d` on five.** Sparsity is deliberate, reasoned, and already earned its keep. Premise
+dead.
+
+### THE REAL GAP, WHICH IS NARROWER AND LARGER
+
+`packages/native/src/gremlin-fuzz.test.ts`, comments stripped so prose cannot be counted, with the
+import list as the authority on what is even available:
+
+```text
+      predicate        imported   CALLED
+      eq               yes        1
+      gt gte lt lte    yes        0
+      neq              NO         0
+      within without   NO         0
+      between          NO         0
+      inside outside   NO         0
+      containing       NO         0
+      notContaining    NO         0
+      endingWith       NO         0
+      regex            NO         0
+```
+
+**One predicate, called once.** Ten of the family are not imported at all, so they cannot be
+generated; four more are imported and never called. The GQL fuzzers do use `<>` (five and six
+occurrences) — the GQL spelling, which item 2490 showed is ISO-correct — so the gap is specifically
+the Gremlin predicate surface.
+
+### AND THE STRUCTURAL HALF, WHICH NO FIXTURE FIXES
+
+Even a fuzzer generating all sixteen would not have caught item 2488. **A differential fuzzer compares
+TS against Rust, and 2488's defect is in BOTH** — the `gremlin.rs` comment documents the intent, so
+the two engines agree, wrongly, and the comparison is silent by construction.
+
+So the defect had TWO independent reasons to be invisible, and they compose: the shape is never
+generated, and the oracle could not see it if it were. Adding the missing predicates is still worth
+doing — it would guard against the engines DIVERGING there in future — but only a CONFORMANCE oracle
+catches a shared deviation, which is exactly what items 2485-2490 built (the TinkerPop console for
+Gremlin, ISO 39075 for GQL). That is the argument for the conformance-sweep arc not being redundant
+with the fuzzers: it is the only instrument that can see this class at all.
+
+### THREE MEASUREMENTS OF THE SAME THING, THREE DIFFERENT ANSWERS
+
+The eighth instrument-at-fault reading this session, and the most embarrassing because it was the same
+question asked three ways:
+
+```text
+      instrument                        answer      why it was wrong
+      count `k(` call-sites             3 used      misses a predicate passed by reference
+      count BARE WORDS in the body      17 used     `without` x9 and `between` x6 are ENGLISH PROSE
+                                                    in comments ("without a string twin")
+      strip comments, then both         1 used      `startsWith` x4 is JS String.prototype, not
+                                                    the Gremlin predicate; `gte` x1 was a comment
+```
+
+`without` appearing nine times as a predicate in one fuzzer is implausible on its face — the tell was
+there to be read. **The reliable instrument is the IMPORT LIST (authoritative on availability) plus
+call-sites with comments stripped**, and a predicate whose name is also an English word or a JS method
+needs both.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No code change — a measurement.
