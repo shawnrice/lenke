@@ -128930,7 +128930,7 @@ the opposite of both authorities and needs correcting either way.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No engine change — one probe added,
 `null-3vl-probe-2490.ts`, documented in `PROBES.md`.
 
-## Item 2491 — **MY PREMISE WAS WRONG AND THE REAL NUMBER IS WORSE: the fuzzers' fixture sparsity is DELIBERATE and documented, but the Gremlin differential fuzzer generates EXACTLY ONE PREDICATE — `eq`.** `neq`, `within`, `without`, `between`, `inside`, `outside`, `containing`, `notContaining`, `endingWith`, `regex` are not even IMPORTED. **And even full coverage could not have caught item 2488, which is the structural half**
+## Item 2491 — **MY PREMISE WAS WRONG AND THE REAL NUMBER IS WORSE: the fuzzers' fixture sparsity is DELIBERATE and documented, but ~~the Gremlin differential fuzzer generates EXACTLY ONE PREDICATE — `eq`~~ **WRONG, CORRECTED AT ITEM 2492: it generates FIVE (`eq`/`gt`/`gte`/`lt`/`lte`, via `pick(r, preds)`) — my call-site count missed predicates passed BY REFERENCE into an array. The import-list half stands: the other eleven are not importable**.** `neq`, `within`, `without`, `between`, `inside`, `outside`, `containing`, `notContaining`, `endingWith`, `regex` are not even IMPORTED. **And even full coverage could not have caught item 2488, which is the structural half**
 
 ### THE PREMISE, AND ITS REFUTATION BY THE FIXTURE'S OWN COMMENT
 
@@ -129003,3 +129003,70 @@ call-sites with comments stripped**, and a predicate whose name is also an Engli
 needs both.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No code change — a measurement.
+
+## Item 2492 — **ITEM 2491's HEADLINE NUMBER WAS WRONG (the fuzzer generates FIVE predicates, not one), and extending the set to eleven EXPOSED A REAL CROSS-ENGINE DIVERGENCE — which refutes items 2488/2489's claim that "both engines agree, so there is nothing to arbitrate".** Also: the four TEXT predicates cannot be fuzzed at all, because `planToGremlin` cannot emit them. **Change REVERTED, not shipped — it takes the fuzzer from 1-in-30 red to 2-in-6**
+
+### FIRST, THE CORRECTION TO MY OWN MEASUREMENT
+
+Item 2491 reported "exactly ONE predicate, `eq`, called once". The generator is
+`const preds = [eq, gt, gte, lt, lte];` and the call is `pick(r, preds)(pick(r, VALUES))` — **all five
+are generated.** My call-site count looked for `k(` and so missed every predicate passed BY REFERENCE
+into an array, which is the one limitation I had written down for that instrument in the same item.
+
+So the accurate before-picture is 5 of 16, not 1 of 16. The import-list half of 2491 stands: the other
+eleven are not imported and therefore cannot be generated. **Ninth instrument-at-fault reading this
+session, and the first to land inside a committed claim.**
+
+### THE TEXT PREDICATES CANNOT BE FUZZED, AND THE REASON IS NOT THE GENERATOR
+
+Adding `containing`/`notContaining`/`startsWith`/`endingWith` fails immediately — not with a
+divergence but with:
+
+```text
+    a plan could not be BUILT, which is a generator or emitter gap rather than a skip:
+    planToGremlin: unsupported: predicate startsWith
+```
+
+This fuzzer round-trips every plan through Gremlin TEXT for the Rust engine to parse, and the emitter
+has no form for them. Item 2488 found the matching hole on the far side — `gremlin.rs` has no
+`startsWith`/`endingWith` ops at all. **So the text predicates live only in the TS builder surface and
+cannot cross the boundary this fuzzer compares across**, which is a wider gap than a missing generator
+arm. (The fuzzer's own message distinguishes "could not be BUILT" from a skip — good design, and it
+said exactly what was wrong.)
+
+### THE SIX THAT DO CROSS, AND THE DIVERGENCE THEY FOUND
+
+`neq`, `within`, `without`, `between`, `inside`, `outside` all emit and run. And the suite went from
+the documented ~1-in-30 residual to **2 failures in 6 runs**. A captured failure:
+
+```text
+    [seed 472849572544758] g.V().has('lang', neq('lop')).order(local).dedup().path().count()
+        ts:     [7]
+        native: [6]
+```
+
+**That refutes a claim I made twice.** Items 2488 and 2489 both said the missing-key behaviour was in
+BOTH engines deliberately, so "there is no cross-engine divergence here to arbitrate and nothing is
+red". There is at least one shape where they disagree.
+
+**But the cause is NOT localized, and I nearly mis-attributed it.** Reduced, `has('lang', neq('lop'))`
+alone returns all six vertices in TS — identical to the `V().count()` control — so `neq` by itself is
+not the diverging step. The failing plan also carries `order(local)`, `dedup()` and `path()`, any of
+which could be the real term. Reading a composite plan's divergence as belonging to the one step I had
+just added would have been the tenth instrument-at-fault of the session; the reduction is what stopped
+it.
+
+### WHY IT IS REVERTED
+
+A fuzzer that is red one run in three breaks CI for everyone, and the right order is to localize and
+fix the divergence FIRST, then land the generator arms that find it. Registering it is not an option
+either — a VALUE divergence may never go in `divergence-registry.ts` (that is for structural
+differences), so it would need a `test.failing`, and a `test.failing` on a RANDOM seed is not a test.
+
+What survives: the seed and the exact query above, the fact that six predicates emit cleanly and four
+cannot, and the corrected count. The generator change is three lines and can be re-applied the moment
+the composite divergence is understood.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `gremlin-fuzz` 45 pass / 0 fail after the
+revert; working tree clean of the change. No code shipped — a correction, a located divergence, and a
+named emitter gap.
