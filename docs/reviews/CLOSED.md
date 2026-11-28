@@ -132888,7 +132888,7 @@ fmt`/`check` 0; `bun run fuzz` **57 pass, 0 fail**.
 
 Item 2548 made `can_raise` recurse into seven containers. **Five were measured** (`Xor`, a `Case`
 branch value, a `Compare` over `List`/`Record`/`MapLit`). **`Field` and `Index` were not** — they were
-added because a container that holds an expression *should* be transparent. That is exactly the
+added because a container that holds an expression _should_ be transparent. That is exactly the
 reasoning this repo's rules forbid, and it was mine, one tick old.
 
 Reverting just those two arms and re-running the end-to-end table:
@@ -132947,3 +132947,67 @@ a guess where a lookup was available.
 
 GATES. `cargo fmt` 0; clippy 0 in BOTH configurations; Rust **1371 + 4 + 13 + 725**, 0 failed;
 `bun run fmt`/`check` 0; `packages/native` **1441 pass** (+3), 0 fail.
+
+## Item 2550 — CLEAN NULL, and a CORRECTION to item 2548's own sweep: **"zero test mentions" was the wrong predicate.** The two remaining "untested" gates have their ROUTE pinned, and one of them is the exemplar of the discipline item 2547 had to retrofit
+
+### THE HYPOTHESIS, AND ITS REFUTATION
+
+Item 2548's corrected sweep left three `bool` gates with ZERO mentions in the test corpus.
+`can_raise` was one, and it turned out to be a wrong answer (2548/2549). This item took the other
+two — `needs_filter` (`gql.rs`) and `needs_path_elements` (`exec/render.rs`) — expecting the same
+shape. **Both are thoroughly covered.** Five mutants, every one caught:
+
+```text
+      D1  needs_path_elements always FALSE  (suppresses a path somebody reads)    22 FAIL
+      D2  needs_path_elements always TRUE   (ANSWER-EQUIVALENT, just slower)       8 FAIL
+      D3  needs_filter always None          (drops every residual label filter)    4 FAIL
+      D4  only the NOT form loses its filter                                       2 FAIL
+      D5  a bare label gains a REDUNDANT filter (ANSWER-EQUIVALENT, slower)       25 FAIL
+```
+
+**D2 and D5 are the two that matter**, and both refuted a prediction of mine. I expected each to
+survive, because each is answer-equivalent — the exact shape that let `cost.rs`'s gate admit a
+constant-returning mutant past all 1366 tests at item 2547. They do not survive, because these
+tests assert the ROUTE: the failures read `path_length must mark CountOnly` and `SHORTEST k must
+mark CountOnly`. The gate marks its decision in the plan and eight tests assert the marker, with a
+ninth (`a_size_only_path_clears_a_ceiling_the_materialized_one_trips`) asserting the MEMORY
+consequence.
+
+**So `needs_path_elements` is the exemplar of what item 2547 had to retrofit.** Future gate work
+should copy this pattern — have the gate leave an observable marker and assert it — rather than
+re-deriving it.
+
+### THE PREDICATE WAS WRONG, AND THAT IS THE TRANSFERABLE PART
+
+"Is the gate's NAME mentioned in the test corpus" bucketed `can_raise` (a real wrong answer) with
+these two (the best-covered gates in the engine). `needs_path_elements` has **zero name mentions and
+nine tests pinning its route.** The predicate that actually discriminates is **"is the ROUTE
+asserted"** — which a name sweep cannot see, because a route assertion names the MARKER, not the
+function that set it.
+
+That is the third time this session a name-based coverage read misled me (2523's name-count-is-not-a-
+coupling, 2548's `assert!(name(` blindness, and now this).
+
+### ONE DOCSTRING CLAIM VERIFIED
+
+`needs_path_elements`'s docstring says it shares `scan_path` with `needs_lineage` deliberately,
+because that walk "enumerates every `Plan` and every `Expr` variant with no wildcard arm, so a
+variant added later fails to compile until it is classified here too". **Checked: `scan_path` names
+all 35 `Expr` variants, `_ =>` appears 0 times and `other =>` 0 times.** `Xor` is among them.
+
+So the container transparency that `can_raise` lacked — and that cost six wrong-answer shapes at
+2548/2549 — is enforced by the COMPILER two modules away. Same engine, same week, and the module
+that got it right wrote down why.
+
+`needs_filter`'s polarity is right by construction too: `Any | Label(_) => None`, `other =>
+Some(self)`, so a future `LabelExpr` variant defaults to NEEDING a residual filter — more filtering,
+which is answer-safe and only slower.
+
+### NO CODE CHANGE
+
+Nothing to fix, and no test added: all five mutants are caught and a redundant test would be noise.
+Recorded because the next sweep of this class should start from the route predicate, not the name
+one.
+
+GATES. Tree clean (mutation-only tick, all arms restored and verified with `git status --porcelain`);
+Rust **default 1371 + 4 + 13 + 725**, 0 failed on the restored tree.
