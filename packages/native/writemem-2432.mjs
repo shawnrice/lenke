@@ -53,6 +53,7 @@
 import v8 from 'node:v8';
 
 import { Graph } from '@lenke/core';
+import { query } from '@lenke/gql';
 import { deserialize } from '@lenke/serialization';
 
 const OPS = Number(process.env.OPS ?? 50_000);
@@ -127,6 +128,31 @@ const measure = async (fn) => {
   global.gc();
 
   return { out, churn, retained: process.memoryUsage().heapUsed - before, gc: stats.length };
+};
+
+/** A one-hop aggregate — the shape items 2421/2423 moved onto the CSR-cached level pass. */
+const AGG = 'MATCH (a:P)-[:E]->(x:P) RETURN sum(x.k) AS s';
+
+/** The graph the CSR arms read, built OUTSIDE every measured window. */
+const buildGraph = () => {
+  const g = new Graph();
+  const vs = [];
+
+  for (let i = 0; i < OPS; i += 1) {
+    vs.push(g.addVertex({ id: `v${i}`, labels: ['P'], properties: { k: i % 97 } }));
+  }
+
+  for (let e = 0; e < OPS; e += 1) {
+    g.addEdge({
+      id: `e${e}`,
+      from: vs[e],
+      to: vs[(e * 7 + 3) % OPS],
+      labels: ['E'],
+      properties: {},
+    });
+  }
+
+  return g;
 };
 
 /** NDJSON for the bulk arm, built OUTSIDE the measured window — the text is not the write's cost. */
@@ -238,6 +264,52 @@ const PHASES = {
 
       return n;
     });
+  },
+  /*
+   * THE CSR INVALIDATION, and it is a check on items 2421/2423 rather than a general probe.
+   *
+   * `csrFor` is called by `levelWalk` in `chain-fold-levels.ts` — the path items 2421 and 2423 moved
+   * the one-hop aggregates and `RETURN DISTINCT` onto. So those shapes now read a cache keyed on
+   * `graph.topologyVersion`, and ANY adjacency write bumps it: the next read pays an O(|V|+|E|)
+   * rebuild. That is the TS analogue of item 680's `csr_fresh` demotion, and moving the commonest
+   * aggregate shapes onto it is something I did three items ago without measuring the write side.
+   *
+   * `readWarm` measures a second read with the cache hot. `readAfterWrite` measures the read that
+   * follows ONE `addEdge`. The difference is the rebuild.
+   *
+   * `topologyVersion` is the RIGHT key, checked rather than assumed: `core/topology-version.test.ts`
+   * exists to assert it advances SYNCHRONOUSLY where `version` and `epoch` are deferred to the
+   * microtask drain — so this cache is not [[graph-counters-are-async]]'s hazard.
+   */
+  readWarm: () => {
+    const g = buildGraph();
+
+    KEEP = g;
+    // Warm the CSR, twice, so the measured read is unambiguously a cache HIT.
+    query(g, AGG, {});
+    query(g, AGG, {});
+
+    return measure(() => query(g, AGG, {})[0].s);
+  },
+  readAfterWrite: () => {
+    const g = buildGraph();
+
+    KEEP = g;
+    query(g, AGG, {});
+    query(g, AGG, {});
+
+    // ONE edge — item 680's shape. The cache is keyed on topology, so one write voids every shape.
+    const vs = g.verticesById === undefined ? [] : [...g.verticesById.values()];
+
+    g.addEdge({
+      id: 'extra',
+      from: vs[0],
+      to: vs[1],
+      labels: ['E'],
+      properties: {},
+    });
+
+    return measure(() => query(g, AGG, {})[0].s);
   },
   // The BULK arm, for scale: the only write figure that existed before this probe was a bulk load.
   bulkLoad: () => {

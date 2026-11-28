@@ -124281,3 +124281,80 @@ starting heap and its retained figure comes out negative when the drain finally 
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0.
 The churn meter calibrated at 81.8 and 80.6 B/object over a 4x range, matching item 2416's 80.1-81.6
 for the same object — the same mechanism, independently re-verified in this file.
+
+## Item 2433 — **I CHECKED WHETHER ITEMS 2421/2423 REGRESSED THE WRITE PATH, BECAUSE THEY MOVED THE COMMONEST SHAPES ONTO A CSR-CACHED PASS, AND THEY DID NOT: both routes pay the SAME pre-existing penalty — a read following ONE `addEdge` costs 3.49x on the old route and 3.89x on the new one.** And the new write instrument prices the rebuild at **4.21 MiB of churn**, which is the TS analogue of item 680's native `csr_fresh` demotion, measured on this side for the first time
+
+Items 2421 and 2423 moved the one-hop aggregates and `RETURN DISTINCT` onto `levelWalk`, and
+`levelWalk` calls `csrFor` — a cache keyed on `graph.topologyVersion`, which ANY adjacency write
+bumps. So the commonest aggregate shapes in the language now read a structure that one `addEdge`
+voids, and I shipped that three items ago without looking at the write side.
+
+### THE CHURN SIDE, from item 2432's new instrument
+
+```text
+    OPS=200,000, one-hop sum        churn
+      readWarm (cache hot)           12.23 MiB
+      readAfterWrite (one addEdge)   16.44 MiB     +4.21 MiB
+```
+
+**4.21 MiB is the rebuild**, and it is the right size: a CSR over 200,000 vertices and 200,001 edges
+is `off[]` plus `nbr[]` at 8 bytes each, ~3.2 MB, plus the order array. The answers differ by exactly
+1 (the extra edge contributes to the sum), so both arms really ran.
+
+### THE TIME SIDE, AND THE COMPARISON THAT MATTERS
+
+```text
+    N=200,000, one-hop sum          warm        after ONE addEdge     ratio
+      POST-2421 (levelWalk + CSR)   12.55 ms     48.86 ms             3.89x
+      PRE-2421  (hopAggregate)      13.02 ms     45.50 ms             3.49x
+```
+
+**Nearly identical.** The old route does not call `csrFor` at all — `csrFor`'s only callers are in
+`chain-fold-levels.ts` — and it still pays 3.49x. So the penalty is NOT the CSR cache I moved these
+shapes onto, and items 2421/2423 introduced nothing: they are 2.5x faster warm and pay the same
+write penalty the previous route already paid.
+
+**That is the whole point of running it.** The shapes moved onto a cache whose invalidation I had not
+measured, which is exactly the situation where a win on the read path can be a loss on a serving
+workload. It is not, and now that is recorded rather than assumed.
+
+### WHAT IS REAL IS BIGGER AND NOT MINE: a read after a write costs ~3.5-3.9x on EVERY route
+
+The prior art is `bench:usage`'s recorded "interleaving a write with a traversal already costs
+~2.5x", and item 680's native finding that `rebuild_csr` runs only at LOAD and every adjacency write
+clears `csr_fresh` with nothing to re-arm it — **1.96x at one edge in two carrying the queried type,
+24.07x at one in fifty.** Item 680 is about the RUST store. This is the TS engine, measured on a
+specific shape with both quantities:
+
+```text
+    a read that follows ONE addEdge, TS engine, 200,000 elements
+      time    3.49-3.89x, on both the CSR-cached and the non-CSR route
+      churn   +4.21 MiB on the cached route — a full O(|V| + |E|) rebuild
+```
+
+**AND THE PENALTY IS PER READ, NOT PER WRITE.** The after-write series is
+`70.1 58.4 62.7 48.9 48.9 48.1 46.9 48.0 47.0` — one write before each of nine reads, and every read
+pays. A serving workload that interleaves them pays it on every single read, which is the shape
+item 680 described for the native store and `bench:usage` priced at ~2.5x for the whole mix.
+
+**NOT TAKEN HERE.** Fixing it means re-arming whatever the write invalidates — the native side's
+answer was "nothing re-arms `csr_fresh`", and the TS side's equivalent is a cache that is dropped
+WHOLE per topology version by design (`csr-cache.ts`: "a single stale generation is dropped WHOLE
+rather than per shape: every shape built from the old topology is equally invalid, and keeping the
+map would leak one entry per shape per write"). An incremental CSR update is the obvious lever and it
+is a real design change, not a rung.
+
+### ONE CHECK THAT CAME BACK CLEAN, and it corrects my own memory note
+
+[[graph-counters-are-async]] records that `version` and `epoch` advance only on the microtask DRAIN
+and that keying a cache on them is a WRONG ANSWER — it cost item 1646 its design — and concludes
+"only `vertexCount`/`edgeCount` are synchronous". **That list is incomplete.** `csr-cache.ts` keys on
+`graph.topologyVersion`, a THIRD counter, and `core/topology-version.test.ts` exists precisely to
+assert it: its describe reads _"topologyVersion advances SYNCHRONOUSLY, which version and epoch do
+not"_. So the CSR cache keys on the right thing, the hazard does not apply, and the note should say
+so.
+
+GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0.
+`chain-fold-levels.ts` restored from `target/pristine-cfl-2433.ts` and verified byte-identical
+(`git status` clean for `packages/gql`), with the dist rebuilt afterwards. `writemem-2432.mjs` gained
+`readWarm` and `readAfterWrite` phases.
