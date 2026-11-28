@@ -3119,3 +3119,21 @@ wrapped), `sample` having no local-scope overload (1), and an empty window dropp
 TinkerPop where lenke keeps it (1). `dedupe` also has no local overload, so that case is not askable
 at all — and asking it anyway is what produced two FALSE `agree` rows in the first draft, since a
 fixture of distinct values cannot tell a dedupe from a non-dedupe.
+
+### `by-forms-probe-2485.ts` — the `by()` modulator family against TinkerPop
+
+`cd packages/gremlin && bun by-forms-probe-2485.ts`. 15 `by()` forms with the TinkerPop 3.7.3 value
+beside each: `by()`, `by(Order.desc)`, `by(key)`, `by(key, comparator)`, `by(traversal)`,
+`by(traversal, comparator)`, `by(T.label)`, and the modulator on `groupCount`/`dedupe`/`path`/`tree`/
+`project`/`select`/`sample`. Currently **15 expressed, 0 inexpressible, 0 disagreements** — the family
+is complete and conformant.
+
+⚠️ It serializes Maps by hand, and must: `group`/`groupCount` return a real `Map` and
+`JSON.stringify(new Map([['java', 2]]))` is `{}`, which made the first run report
+`groupCount().by('lang')` as a wrong answer when the Map held exactly the right entries. **Any probe
+that `JSON.stringify`s a step's output reads every Map-returning step as empty.**
+
+The fixture is the modern graph because each form's presence CHANGES the answer on it (two labels,
+`java` twice, four vertices missing `age`/`lang`). It also pins two TinkerPop semantics in passing,
+both agreeing: `group().by(trav).by(trav)` reduces to a SINGLE value where `by(key)` collects a LIST,
+and `dedup().by(key)` DROPS vertices missing the key rather than grouping them under null.

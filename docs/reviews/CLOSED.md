@@ -128521,3 +128521,73 @@ The probe was deleted rather than committed: a standing instrument that reports 
 would mislead whoever runs it next, and its conclusion is this entry.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; working tree clean. No code change.
+
+## Item 2485 — **THE ORACLE ITEM 2484 IDENTIFIED, APPLIED TO THE WIDEST FAMILY, FINDS NO GAP: all 15 of TinkerPop's `by()` modulator forms are expressible here and all 15 ANSWER THE SAME.** A clean null on the family with the most surface — and the one apparent divergence was my own serializer, the FOURTH instrument-at-fault this session
+
+### THE ORACLE, USED AS INTENDED
+
+Item 2484 established that sentinel survival cannot see the dropped-argument class, because every real
+instance was "a form TinkerPop SUPPORTS is accepted-and-ignored or not expressible at all" — so the
+oracle has to be TinkerPop's SIGNATURE LIST. `by()` is the widest family to try it on: not a standalone
+export here but a method on nine byable builders (`order`, `group`, `groupCount`, `project`, `select`,
+`path`, `tree`, `dedupe`, `sample`), so a missing form would be wide.
+
+Enumerated from the console (20 rows, row count checked — item 2482's truncation lesson), then each
+asked of lenke:
+
+```text
+      form                       lenke                                    TinkerPop      verdict
+      order.by()                 [27,29,32,35]                            same           agree
+      order.by(Order.desc)       [35,32,29,27]                            same           agree
+      order.by('age')            [vadas,marko,josh,peter]                 same           agree
+      order.by('age', desc)      [peter,josh,marko,vadas]                 same           agree
+      order.by(traversal)        [vadas,marko,josh,peter]                 same           agree
+      order.by(traversal, desc)  [peter,josh,marko,vadas]                 same           agree
+      order.by(T.label)          [marko,vadas,josh,peter,lop,ripple]      same           agree
+      groupCount.by('lang')      {java:2}                                 same           agree
+      dedupe.by('lang')          [lop]                                    same           agree
+      dedupe.by(T.label)         [marko,lop]                              same           agree
+      path.by('name')            [[marko,vadas],[marko,josh],[marko,lop]] same           agree
+      tree.by('name')            marko->{vadas,josh,lop}                  same           agree
+      project.by(trav).by(trav)  {n:marko,a:29}                           same           agree
+      select.by('name')          {x:marko,y:…}                            same           agree
+      sample(2) + names          2 names                                  2 names        agree
+```
+
+**15 expressed, 0 that cannot be expressed, 0 disagreements.** The family is complete and conformant.
+That is worth recording precisely because the previous four ticks found a wrong answer (2480), two
+missing overloads (2483) and a cardinality divergence (2483) in the neighbouring families — the
+absence here is a measurement, not an assumption.
+
+### TWO TINKERPOP SEMANTICS THE SWEEP PINNED IN PASSING
+
+Both agree in lenke, and both are the kind of thing a reimplementation gets wrong:
+
+- **`group().by(trav).by(trav)` reduces to a SINGLE value** (`[[software:ripple, person:peter]]`)
+  where `group().by(T.label).by('name')` collects a **LIST**
+  (`[[software:[lop,ripple], person:[marko,…]]]`). A traversal `valueBy` is not a list-collecting one.
+- **`dedup().by(key)` DROPS vertices missing that key** rather than grouping them under null:
+  `dedup().by('lang')` is `[lop]` on a graph where four of six vertices have no `lang`.
+
+### THE ONE APPARENT DIVERGENCE WAS THE PROBE, AGAIN
+
+`groupCount().by('lang')` first read **`[{}]`** against TinkerPop's `[[java:2]]` and looked exactly
+like a dropped `by`. It was not: `group`/`groupCount` return a real `Map`, and
+**`JSON.stringify(new Map([['java', 2]]))` is `{}`**. The Map held `[["java", 2]]` — agreeing exactly.
+
+Fourth time this session a reading that was wrong for a case I already knew indicted the instrument
+rather than the engine (2477 the AST dump, 2479 `tree('k')`'s null arm, 2483 `dedupe`'s false
+`agree`, this). **The generalisable hazard: any probe that `JSON.stringify`s a step's output reads
+EVERY Map-returning step as empty** — `group` and `groupCount` here, and the same trap waits for
+anything else returning a Map. The probe now serializes Maps explicitly.
+
+### THE PROBE IS A KEEPER, UNLIKE 2484's
+
+Committed as `packages/gremlin/by-forms-probe-2485.ts` and documented in `PROBES.md`. It earns that
+where item 2484's sentinel detector did not: 15 rows, every expected value taken from the console, a
+100% signal rate against 2484's 33 untyped-only false positives. The fixture is the modern graph
+specifically because each form's presence CHANGES the answer on it — two labels, `java` twice, and
+four vertices missing `age`/`lang` — which is item 2483's lesson that an arm whose expected value
+coincides with the control's is not evidence.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change.
