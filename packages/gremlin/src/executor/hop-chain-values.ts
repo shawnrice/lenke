@@ -302,6 +302,49 @@ export const walkKindFor = (hops: number): 'pair' | 'stacked' => (hops > 2 ? 'st
  * snapshot is pinned by a test rather than left to this paragraph, and the asymmetry with depth 2 is
  * recorded in `docs/reviews/CLOSED.md` as an owner decision rather than settled here.
  */
+/**
+ * Does every hop in the chain name an edge label the graph actually HAS?
+ *
+ * **A chain with an empty label anywhere returns ZERO rows, and item 2506 measured what it costs to
+ * discover that the slow way: 25.91 MiB and 7.9 ms at |V|=200,000, against 14.55 MiB / 12.4 ms for
+ * the same chain doing real work** — 1.8x the productive cost to produce nothing. The GQL surface
+ * answers the identical query in 0.35 MiB, which is what established the cost as a missing check
+ * rather than something inherent (74x).
+ *
+ * The waste is structural, not incidental: `buildChainCsr` eagerly numbers every vertex into a
+ * `slotOf` Map, a `vtx` array and the `off`/`len` arrays — four O(|V|) structures — and only THEN
+ * does each per-vertex `byType.get(t)` miss. Worse, the cost is per DISTINCT hop shape, so
+ * `out('E'),out('NOSUCH')` builds TWO CSRs (25.91 MiB) where `out('NOSUCH'),out('NOSUCH')` shares one
+ * numbering and builds one (12.99) — the arithmetic item 2505 predicted and 2506 confirmed.
+ *
+ * ## WHY THIS IS A PURE FUNCTION WITH ITS OWN TEST
+ *
+ * The check is ANSWER-EQUIVALENT by construction: zero rows either way, so no differential test and
+ * no fuzzer can see it, and **every mutation of an inline version would survive the entire suite**
+ * (this repo's `perf-gate-needs-its-own-test` rule). Extracted, it can be mutated and caught —
+ * `chain-labels-present.test.ts` is the gate, not the walks below.
+ *
+ * Takes the label index rather than the `Graph` so the test needs no graph: `edgesByLabel` is a
+ * `Map<string, Set<Edge>>` and only `.size` is read. A label present with an EMPTY set counts as
+ * absent, which is the same answer and the same saving.
+ */
+export const chainLabelsPresent = (
+  edgesByLabel: ReadonlyMap<string, { readonly size: number }>,
+  hops: readonly (readonly [string, boolean])[],
+): boolean => hops.every(([t]) => (edgesByLabel.get(t)?.size ?? 0) > 0);
+
+/**
+ * The zero-row walk returned when {@link chainLabelsPresent} refuses. `drain` and `count` are
+ * supplied, not left to the `Iterable` fallback, so a caller on either fast path also pays nothing.
+ */
+const EMPTY_CHAIN_WALK: HopValues['values'] = {
+  *[Symbol.iterator]() {
+    // Intentionally yields nothing.
+  },
+  drain: () => [],
+  count: () => 0,
+};
+
 const stackedWalk = (
   graph: Graph,
   hops: readonly (readonly [string, boolean])[],
@@ -312,6 +355,13 @@ const stackedWalk = (
   const depth = hops.length;
   const [leadGates] = runs;
   const anyLead = leadGates.length > 0;
+
+  // An empty label anywhere means zero rows, and finding that out by building the CSRs costs
+  // 1.8x a productive chain (item 2506). Checked BEFORE the build, not after.
+  if (!chainLabelsPresent(graph.edgesByLabel, hops)) {
+    return EMPTY_CHAIN_WALK;
+  }
+
   // One CSR per hop shape. They share a slot numbering because every one numbers by
   // `verticesById` order — see the note above.
   const csrs = hops.map(([t, fwd]) => chainCsrFor(graph, fwd, [t]));
@@ -534,6 +584,13 @@ const pairSlotWalk = (
   const depth = hops.length;
   const [leadGates] = runs;
   const anyLead = leadGates.length > 0;
+
+  // An empty label anywhere means zero rows, and finding that out by building the CSRs costs
+  // 1.8x a productive chain (item 2506). Checked BEFORE the build, not after.
+  if (!chainLabelsPresent(graph.edgesByLabel, hops)) {
+    return EMPTY_CHAIN_WALK;
+  }
+
   // One CSR per hop shape. They share a slot numbering because every one numbers by
   // `verticesById` order — see the note above.
   const csrs = hops.map(([t, fwd]) => chainCsrFor(graph, fwd, [t]));

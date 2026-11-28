@@ -129940,7 +129940,7 @@ OPEN — **`out,dedupe,out` at 5.22 MiB is neither floor nor full chain.** `dedu
 so one side may still build a CSR while the other does not. Partial and unexplained; small enough to
 leave, recorded so it is not re-found.
 
-## Item 2506 — **PRICED, AND IT IS A REAL GREMLIN-ONLY LEVER: a chain naming an empty edge label costs 25.91 MiB and 7.9 ms to return ZERO rows, where the GQL surface answers the same query in 0.35 MiB.** 74x, with matched productive controls proving the comparison fair — and GQL is the existence proof that the cheap answer is available
+## Item 2506 — ~~PRICED~~ **FIXED AT ITEM 2507 (25.91 -> 0.07 MiB, 370x).** A REAL GREMLIN-ONLY LEVER: a chain naming an empty edge label costs 25.91 MiB and 7.9 ms to return ZERO rows, where the GQL surface answers the same query in 0.35 MiB.** 74x, with matched productive controls proving the comparison fair — and GQL is the existence proof that the cheap answer is available
 
 ### THE MEASUREMENT
 
@@ -130004,3 +130004,78 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instrument only.
 
 OPEN — the fix above. Also still open and small: `out,dedupe,out` at 5.22 MiB (item 2505), neither
 floor nor full chain.
+
+## Item 2507 — **SHIPPED: the empty-edge-label chain drops from 25.91 MiB to 0.07, a 370x saving, with the productive control unchanged at 14.55.** The guard is a pure function with its own tests, because every mutation of an inline version would have survived the entire suite
+
+### THE CHANGE
+
+`chainLabelsPresent(edgesByLabel, hops)` in `hop-chain-values.ts`, called before the CSR build at
+BOTH chain call sites (`stackedWalk` and `pairSlotWalk`, whose comments require them to stay
+identical):
+
+```ts
+export const chainLabelsPresent = (
+  edgesByLabel: ReadonlyMap<string, { readonly size: number }>,
+  hops: readonly (readonly [string, boolean])[],
+): boolean => hops.every(([t]) => (edgesByLabel.get(t)?.size ?? 0) > 0);
+```
+
+A chain with an empty label anywhere returns zero rows, so it returns `EMPTY_CHAIN_WALK` — which
+supplies `drain` and `count` as well as the iterator, so a caller on either fast path also pays
+nothing.
+
+### THE RESULT
+
+```text
+      arm                              before            after
+      out(E),out(NOSUCH)         25.91 MiB / 7.9 ms   0.07 MiB / 0.0 ms    370x
+      out(NOSUCH),out(NOSUCH)    12.99      / 6.8     0.07      / 0.0
+      out(E),out(E)   PRODUCTIVE 14.55      /12.4    14.55      /12.7     UNCHANGED
+      out(E)          1-hop ctl   0.07      / 4.3     0.07      / 3.2     unchanged
+```
+
+**The productive control did not move**, which is the check that matters — it says the guard is not
+firing where it should not. The no-match chain now costs less than the GQL surface's 0.32 MiB for the
+same query, where item 2506 measured it at 74x MORE.
+
+### WHY THE PREDICATE IS EXTRACTED, AND WHAT THE MUTANTS PROVED
+
+The check is ANSWER-EQUIVALENT by construction — zero rows either way — so this repo's
+`perf-gate-needs-its-own-test` rule applies in its strongest form. `chain-labels-present.test.ts`
+is the gate, and all four mutants were caught:
+
+```text
+      every -> some        CAUGHT (4 failing)      a weakened check
+      > 0   -> >= 0        CAUGHT (5 failing)      a check that never refuses
+      ?? 0  -> ?? 1        CAUGHT (4 failing)      absent treated as present
+      invert the guard     CAUGHT (53 failing)     a check that refuses everything
+```
+
+**The split between them is the point.** Inverting the guard breaks 53 existing tests, so the early
+return sits on a well-covered productive path and the ordinary suites DO catch that. But the three
+WEAKENING mutants — the ones that silently lose the saving or admit an empty label — are caught at 4
+and 5 failures, every one of them in the new pure-function file. Inline, those three would have
+survived green: no differential test, no cross-engine fuzzer and no conformance probe can observe a
+route choice that cannot change the answer.
+
+A label present with an EMPTY SET counts as absent, and that row is what pins `.size` rather than
+`has` — same answer, same saving, and a `has`-based check would wrongly build.
+
+### GATES
+
+```text
+      bun run fmt / lint / check        0 / 0 / 0
+      packages/gremlin                  2915 pass, 0 fail   (8 new tests)
+      packages/gql                      5659 pass, 0 fail
+      packages/native                   1438 pass, 0 fail
+      bun run fuzz (all seven)            57 pass, 0 fail
+      MUTATION                          4 of 4 CAUGHT, live baseline 0 fail taken first
+      nomatch-label-2506.mjs            25.91 -> 0.07 MiB, productive arm unchanged
+```
+
+`rewrite_fuzz` is NOT implicated: this is an executor route guard, not a planner rewrite, and no
+rewrite was touched.
+
+OPEN — still small and unexplained: `out,dedupe,out` read 5.22 MiB at item 2505, neither the floor nor
+the full chain. Unaffected by this change (its labels exist), and worth a look if the dedupe-split
+chain route matters.
