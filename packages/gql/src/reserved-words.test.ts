@@ -4,7 +4,7 @@ import { Graph } from '@lenke/core';
 import { ErrorCode } from '@lenke/errors';
 
 import { query } from './index.js';
-import { GqlSyntaxError, quoteIdent } from './lexer.js';
+import { GqlSyntaxError, isReserved, quoteIdent } from './lexer.js';
 import { parse } from './parser.js';
 
 // Capture the GqlSyntaxError a query is expected to throw (fail loudly if it
@@ -156,5 +156,67 @@ describe('reserved words are valid PROPERTY names (match the native engine)', ()
     // the `Year` property; lowercase `year` would read the (absent) `year` property.
     expect(query(g, 'MATCH (n:N) RETURN n.Year AS y')).toEqual([{ y: 2020 }]);
     expect(query(g, 'MATCH (n:N) RETURN n.year AS y')).toEqual([{ y: null }]);
+  });
+});
+
+/*
+ * Item 2472 added the two things this file did not already cover. It covered reserved words
+ * thoroughly through `parse`, `query` and `quoteIdent` — binding positions with their error-message
+ * quality, the full `quoteIdent` contract including the empty string and backtick doubling, and
+ * property names in five positions — but never named `isReserved` itself, and never exercised the
+ * EDGE TYPE position.
+ *
+ * That gap is the survey's blind spot rather than a real hole in the behaviour: item 2460's survey
+ * reports a SYMBOL named in no test, which is not the same claim as the BEHAVIOUR being untested.
+ */
+describe('isReserved, the exported predicate behind all of the above', () => {
+  test('is CASE-INSENSITIVE, which the lowercasing in its body exists for', () => {
+    for (const spelling of ['match', 'MATCH', 'Match', 'mAtCh']) {
+      expect(isReserved(spelling)).toBe(true);
+    }
+  });
+
+  test('covers reserved-but-NON-structural words, the second shape the parser checks', () => {
+    expect(isReserved('group')).toBe(true);
+    expect(isReserved('product')).toBe(true);
+  });
+
+  test('is false for an ordinary identifier, and for a reserved word with a suffix', () => {
+    for (const word of ['name', 'person', 'full_name2', 'matchy', 'orderly', '']) {
+      expect(isReserved(word)).toBe(false);
+    }
+  });
+
+  test('agrees with `quoteIdent`: every reserved word it reports gets delimited', () => {
+    // The two halves meet here — a reserved word must render in the form the parser accepts in a
+    // position it would otherwise refuse.
+    for (const word of ['match', 'order', 'group', 'product', 'count']) {
+      expect(isReserved(word)).toBe(true);
+      expect(quoteIdent(word)).toBe(`\`${word}\``);
+    }
+  });
+});
+
+describe('the EDGE TYPE position, which no other test here reaches', () => {
+  test('a bare reserved word is rejected as an edge type', () => {
+    const err = reject('MATCH (n)-[:Order]->(z) RETURN n');
+
+    expect(err.code).toBe(ErrorCode.Syntax);
+    expect(err.message).toContain('`Order`');
+    expect(err.message).toContain('reserved word');
+  });
+
+  test('the delimited form parses, and a non-reserved type needs no ceremony', () => {
+    expect(() => parse('MATCH (n)-[:`Order`]->(z) RETURN n')).not.toThrow();
+    expect(() => parse('MATCH (n)-[:KNOWS]->(z) RETURN n')).not.toThrow();
+  });
+
+  test('a reserved word is accepted as a FUNCTION name, or `count(*)` would be unusable', () => {
+    const g = new Graph();
+
+    g.addVertex({ id: 'a', labels: ['N'], properties: {} });
+
+    expect(isReserved('count')).toBe(true);
+    expect(query(g, 'MATCH (n:N) RETURN count(*) AS c')).toEqual([{ c: 1 }]);
   });
 });

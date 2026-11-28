@@ -126711,6 +126711,8 @@ differential, fuzz or conformance test can see a mutant in an admission conditio
 
 ```text
     18 detect* route detectors with no test by name
+      [item 2472 RE-RAN THIS SURVEY: gate-shaped untested is now 8, down from 37. And
+       "named in no test" is NOT "untested" — isReserved had a 160-line test file already.]
       [item 2471 TOOK the last three: 15 tests, 8 of 9. chainGroupedLevels and
        chainPagedProjection are REACHABLE — 2467's 'nothing reaches them' was my probe's fault.]
       [item 2470 TOOK detectOptionalOrderedProjection + detectOptionalGroupedHopCount:
@@ -127603,3 +127605,74 @@ line-removal matched nothing. The assert caught it; printing the `repr` found it
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
 **5,646 tests 0 fail** including the 15 new ones. All three sources restored and verified
 byte-identical after the battery; the only change to them is one comment. Scratch probes removed.
+
+## Item 2472 — **THE SURVEY'S HEADLINE NUMBER IS GOOD (gate-shaped untested 37 -> 8) AND ITS CLAIM IS WEAKER THAN IT READS: "symbol named in no test" is NOT "behaviour untested".** `isReserved` was on the remaining list, and a 160-line `reserved-words.test.ts` already covered reserved words thoroughly without ever naming it. **I overwrote that file, and only `git status` showing `M` instead of `??` caught it.** Restored, complemented with the two things it genuinely lacked, 27 tests, 6 of 6 mutants caught
+
+### THE SURVEY RE-RUN, which is the measurement this item was for
+
+```text
+    test files scanned          810
+    exported symbols            962
+      named in NO test          293      (item 2460 measured 339)
+    route-gate-shaped exports    93
+      named in NO test            8      (item 2460 measured 37)
+```
+
+**29 of 37 gate-shaped symbols were covered by items 2461-2471**, and the eight left are
+`hasAggregate`, `isMemoUncorrelated`, `isPlan`, `isPredicate`, `isReserved`, `isSubPlan`,
+`isSyntheticParam`, `tailLocal`. `isReserved` is the highest-consequence of them — it gates PARSE
+REJECTION of a bare reserved word, decides identifier quoting in `quoteIdent`, and is EXPORTED FROM
+THE PUBLIC API — so by item 2463's rule (a user-visible wrong answer beats a route gate) it was the
+right pick.
+
+### I OVERWROTE A GOOD TEST FILE, AND THE CHEAP CHECK IS THE ONE I SKIPPED
+
+`packages/gql/src/reserved-words.test.ts` ALREADY EXISTED. I wrote a new file at that path without
+looking, and the `Write` result said "has been updated successfully" rather than "created" — a
+distinction I read past. **What caught it was `git status` reporting `M` where every other item this
+session reported `??`, plus the full suite dropping 5,646 -> 5,642.** Restored from `HEAD`
+immediately.
+
+CLAUDE.md states the rule I broke: _"Before deleting or overwriting, look at the target."_ The
+survey's own output made this MORE likely, not less — it said the SYMBOL was untested, and I let that
+stand in for the file's existence.
+
+**And the file was better than mine where they overlapped.** Its `quoteIdent` section already covered
+the empty string, backtick doubling, a lone backtick, and the parser round-trip; its binding-position
+tests assert ERROR-MESSAGE QUALITY (the user's casing preserved, the message naming "reserved word"
+and "delimited identifier") which mine did not touch at all; and it covers reserved words as property
+names in five positions including a map key, a `SET` target and `PROPERTY_EXISTS`. Roughly everything
+I wrote was redundant with stronger existing coverage.
+
+### SO THE SURVEY'S CLAIM NEEDS RESTATING
+
+"Named in no test" is a fact about the SYMBOL TABLE. It does not mean the behaviour is untested: this
+file exercised `isReserved` through `parse`, `query` and `quoteIdent` on every call path without
+importing it. That is the same shape as the lesson at item 2464 — a decline proves only that SOME
+guard fired — one level up: **a symbol's absence proves only that no test NAMES it.**
+
+The practical consequence for the remaining seven: check for an existing test FILE covering the
+subject before writing one, not just for the symbol.
+
+### THE GENUINE COMPLEMENT, which is small
+
+Two things the file truly lacked, now appended to it rather than to a rival file:
+
+- **`isReserved` directly**: case-insensitivity across four spellings (the `toLowerCase` in its body
+  had no test), the reserved-but-non-structural words `group`/`product` that the parser's own comment
+  names as its second token shape, falsity for ordinary identifiers and for a reserved word with a
+  suffix (`matchy`), and agreement with `quoteIdent` on every reserved word it reports.
+- **the EDGE TYPE position**: `-[:Order]->` is rejected with the same message quality the file
+  already demands of labels, and `-[:`Order`]->` parses. No other test here reached that position.
+
+Plus the function-name exemption asserted directly — `count` IS reserved, and `count(*)` must work.
+
+The position map measured on the way (rejected: node variable, alias, variable reference, label, edge
+type; ACCEPTED: function name, property key, and anything delimited) is what made clear which of
+those were already covered.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
+**5,653 tests 0 fail** — up from 5,646, i.e. the original 20 in this file plus 7 new, with nothing
+lost. 6 of 6 mutants caught against the MERGED file (`isReserved` case-sensitive, always-false,
+always-true; `quoteIdent` ignoring reserved words, ignoring the bare-shape test, dropping the
+backtick escape). `lexer.ts` restored and verified byte-identical. Scratch probes removed.
