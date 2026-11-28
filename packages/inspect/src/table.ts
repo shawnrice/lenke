@@ -29,6 +29,13 @@ const columnsOf = (rows: readonly Row[]): string[] => {
   return cols;
 };
 
+/*
+ * One segmenter for the module: constructing it is not free, and it is immutable shared state of the
+ * benign kind (item 2521's distinction — an empty/immutable value is safe to share, a mutable graph
+ * is not).
+ */
+const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
 const pad = (s: string, width: number): string => s + ' '.repeat(width - s.length);
 
 /**
@@ -54,8 +61,25 @@ export const formatRows = (rows: readonly Row[], options: TableOptions = {}): st
   const style = styleFor(options.color);
   const cols = columnsOf(rows);
 
-  const clip = (s: string): string =>
-    s.length > maxColWidth ? `${s.slice(0, maxColWidth - 1)}…` : s;
+  /*
+   * Cut by GRAPHEME CLUSTER, not code units (item 2524). `s.slice` counts UTF-16 units, so a cut
+   * landing between the halves of a surrogate pair emitted a LONE SURROGATE — invalid text, rendered
+   * as a replacement character. Measured: `clip('abcd\u{1F600}efgh')` at maxColWidth 6 produced
+   * `"abcd\ud83d…"`.
+   *
+   * Code points would fix THAT case, but they still split a grapheme cluster — a ZWJ emoji sequence
+   * or a base character plus its combining mark. `Intl.Segmenter` is the unit a reader actually sees,
+   * is built into the runtime (no dependency), and is what oxlint's `no-misused-spread` points at.
+   *
+   * This does NOT fix display WIDTH: a CJK character is one code point but two terminal columns, so
+   * `widths`/`pad` below still under-pad a fullwidth cell (measured: `中村太郎` is allotted 4 columns
+   * and occupies 8). That needs a wcwidth table and is a separate, larger question.
+   */
+  const clip = (s: string): string => {
+    const chars = Array.from(segmenter.segment(s), (seg) => seg.segment);
+
+    return chars.length > maxColWidth ? `${chars.slice(0, maxColWidth - 1).join('')}…` : s;
+  };
 
   const body = rows.map((row) => cols.map((col) => clip(plain(row[col]))));
   const widths = cols.map((col, i) =>

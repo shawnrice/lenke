@@ -131176,3 +131176,75 @@ exporting four more internals for tests that currently do cross.
 
 GATES. `build` 0; `fmt` 0; `lint` 0; `check` 0; core 497 / gremlin 2927 / gql 5666 / sync 179 /
 native 1438 / mcp 14 / cli 46 / serialization 144 / errors 6, all 0 fail.
+
+## Item 2524 — **`inspect`'s table truncation emitted a LONE SURROGATE**: `clip` cut by UTF-16 code units, so a cut between the halves of an astral character produced invalid text. Now cuts by GRAPHEME CLUSTER, and the mutants prove the choice is earned — code units fail 3 rows, code POINTS still fail 1. **The display-WIDTH half is measured and NOT fixed: an 11th decision**
+
+### THE PACKAGE NOBODY HAD LOOKED AT
+
+`packages/inspect` is 421 lines of terminal formatting (color, table, describe) against ONE 164-line
+test file — the thinnest ratio in the repo. For a table formatter the sharp question is width
+measurement, and `table.ts` used `s.length` everywhere: in `widths`, in `pad`, and in `clip`.
+
+### THE DEFECT: CORRUPTION, NOT COSMETICS
+
+```text
+      input                "abcd😀efgh"   (maxColWidth 6)
+      rendered cell line   "│ abcd\ud83d… │"        <- LONE HIGH SURROGATE
+```
+
+`clip` cut at `maxColWidth - 1` CODE UNITS, so a cut landing between an astral character's two halves
+emitted an unpaired surrogate — not valid text, rendered as a replacement glyph. **Nothing pinned
+it**: the only truncation test used `'x'.repeat(100)`, pure ASCII, where every cut falls on a
+boundary by construction, and no test anywhere used a non-ASCII cell.
+
+Fixed with `Intl.Segmenter` (grapheme granularity) rather than code points, because code points still
+split a ZWJ emoji sequence or a base character from its combining mark. Built into the runtime, so no
+dependency, and it is what oxlint's `no-misused-spread` points at — that rule caught my first
+code-point attempt and was right to.
+
+**MUTATION — the suite discriminates all three units, which is what makes the choice earned:**
+
+```text
+      code UNITS      (the original bug)      16 pass  3 FAIL
+      code POINTS     (the partial fix)       18 pass  1 FAIL   <- the ZWJ/combining row
+      grapheme CLUSTERS (shipped)             19 pass  0 fail
+```
+
+### THE WIDTH HALF: MEASURED, NOT FIXED — DECISION 11
+
+`widths`/`pad` still use `s.length`, so a cell's allotted columns and its displayed columns disagree:
+
+```text
+      cell                     allotted   displays
+      CONTROL pure ASCII              5          5   ok
+      CJK name 中村太郎                4          8   UNDER-padded by 4
+      fullwidth latin ｍａｒｋｏ         5         10   UNDER-padded by 5
+      combining mark                  7          6   OVER-padded by 1
+```
+
+Cosmetic rather than corrupting — the table is ragged, not wrong — but it is the user's own domain
+(people data is exactly where non-ASCII names appear). Fixing it needs a wcwidth range table in a
+zero-dependency package, which is a size/scope call: **do nothing, cover the common BMP wide ranges
+(~20 lines), or carry a full wcwidth table?** The measurement is done; the choice is not mine.
+
+### TWO INSTRUMENT ERRORS, BOTH WORTH THE RULE
+
+1. **My first alignment instrument was CIRCULAR.** It reported the border COLUMN INDEX of each
+   rendered line and every row read ALIGNED — because an index into a string counts CODE UNITS, the
+   very unit `pad` uses. It shared the bug it was testing for and could only ever agree. Replaced with
+   an independent `displayWidth` that consults nothing of the table's arithmetic.
+2. **My lone-surrogate detector had a FALSE POSITIVE on the fixed code**: it tested `charCodeAt(0)` of
+   each spread character, but spreading yields code POINTS and an INTACT astral character's first code
+   unit is still a high surrogate. Replaced with an unpaired-surrogate regex.
+
+And one assertion that could not tell pass from fail: the combining-mark row rejected a mark sitting
+before the ellipsis, which happens BOTH when the mark is correctly kept and when it is orphaned. It
+failed on correct code, which is how I noticed; now hand-computed against the 7-grapheme fixture.
+
+**`oxfmt` REWRITES `\uXXXX` ESCAPES INTO THE LITERAL CHARACTER, and in DECOMPOSED form** — so a patch
+anchored on the escaped spelling, or on a precomposed e-acute, cannot match the formatted file. Three
+anchor attempts failed to this before I replaced by line range; the anchor-count assert turned each
+into a loud stop rather than a silent no-op.
+
+GATES. `build` 0; `fmt` 0; `lint` 0; `check` 0; inspect **19** (+6) / core 497 / gremlin 2927 / gql
+5666 / cli 46 / native 1438, all 0 fail.

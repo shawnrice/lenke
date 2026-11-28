@@ -3626,3 +3626,29 @@ is PROCESS-GLOBAL; in the real suite ~5,666 preceding tests have already filled 
 eviction fails 4 full-suite tests. What the isolation DID establish: `parse-cache.test.ts` run ALONE
 passed 18/18 with eviction disabled, so the guard's teeth depended on test ordering. Item 2522 sized
 both loops off the reported `cap` and made each assert the cap is REACHED; alone it now fails 5.
+
+## `width-2524.ts` — allotted vs DISPLAY width, and does clip() split a pair? (item 2524)
+
+```
+cd packages/inspect && bun run width-2524.ts
+```
+
+```
+      cell                     allotted   displays
+      CONTROL pure ASCII              5          5   ok
+      CJK name                        4          8   UNDER-padded by 4
+      fullwidth latin                 5         10   UNDER-padded by 5
+      combining mark                  7          6   OVER-padded by 1
+      clip() on a straddling emoji               no lone surrogate (fixed at 2524)
+```
+
+KEY `displayWidth` is INDEPENDENT of the table's arithmetic. **The first version was circular** — it
+measured border COLUMN INDEXES, which count CODE UNITS, the same unit `pad` uses, so every row read
+ALIGNED. An instrument that shares the bug can only agree with it.
+
+KEY The lone-surrogate test must match an UNPAIRED surrogate. Testing `charCodeAt(0)` of spread
+characters FALSE-POSITIVES on correct code, because an intact astral char starts with a high
+surrogate.
+
+The width rows are the open half (decision 11): wcwidth is not implemented, so a CJK cell is still
+under-padded. The clip row is closed.
