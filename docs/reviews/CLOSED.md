@@ -127814,7 +127814,7 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check`
 two instruments extended (`alloc:peak` gains `vltrail`/`vlacyclic`, `alloc:retained` gains the two
 frontier arms). The calibration gate still fires: ratio 153.7x and 197.3x across the sweep.
 
-## Item 2475 — **ITEM 2474's "`MECH=cap` IS UNFIT" WAS WRONG: the bisection tolerance was a HARD-CODED `while (hi - lo > 8)`, so the mechanism was coarse by a CONSTANT, not blind by construction.** With `CAP_STEP=1` the linear control moves and the question answers: **GQL's `ACYCLIC` path enumeration STREAMS — its heap need is FLAT across a 3x branching change, where holding those paths would cost 37 MiB.** The prediction from the known mechanism is REFUTED
+## Item 2475 — **ITEM 2474's "`MECH=cap` IS UNFIT" WAS WRONG: the bisection tolerance was a HARD-CODED `while (hi - lo > 8)`, so the mechanism was coarse by a CONSTANT, not blind by construction.** With `CAP_STEP=1` the linear control moves and the question answers: **GQL's `ACYCLIC` path enumeration STREAMS — its heap need is FLAT across a 3x branching change, where holding those paths would cost 37 MiB.** The prediction from the known mechanism is REFUTED. **ITEM 2476 THEN CONVICTED THE GREMLIN SIDE: `repeatStep` is a BFS BY LEVELS whose frontier costs exactly what holding every row costs (29.76 MiB vs a 29.60 holding control), where a DFS over the same walk reads 0.00 — open as an OWNER DECISION, because it is a cross-engine walk-order change across 150 call sites**
 
 ### THE INSTRUMENT WAS COARSE, NOT BLIND, AND THE DIFFERENCE IS ONE LINE
 
@@ -127881,3 +127881,80 @@ quantity more precisely.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
 `peakmem-2419.mjs` gains `CAP_STEP` and the default preserves every prior reading.
+
+## Item 2476 — **THE MECHANISM IS CONVICTED AND THE FIX IS STRUCTURALLY SOUND: `repeatStep` is a BFS BY LEVELS, and its frontier costs EXACTLY WHAT HOLDING EVERY ROW COSTS — 29.76 MiB against a holding control's 29.60, where a DFS over the identical walk reads 0.00.** The prize is the whole OOM bound, not a constant factor. **NOT SHIPPED: it is a cross-engine WALK-ORDER change across 150 call sites in 25 test files, including TinkerPop conformance — an owner decision, not a slip-in**
+
+### THE SOURCE SAYS IT PLAINLY
+
+`packages/gremlin/src/executor/iteration.ts`, `repeatStep`:
+
+```js
+    let frontier = [...stream].map(incLoops);          // level 0, materialized
+    ...
+      const stepped = [];                               // level i+1, materialized
+      for (const t of applyPlanToStream(step.body, advancing, graph, ctx)) stepped.push(incLoops(t));
+      frontier = stepped;
+```
+
+Each level's ENTIRE output is collected before the next level runs, so the live set is the WIDEST
+LEVEL — `b^depth`. That is the mechanism behind item 2474's 37.41 MiB at degree 3, depth 3, 20,000
+vertices.
+
+### THE MICRO (`packages/native/frontier-mech-2476.mjs`), NOT THE ENGINE
+
+Priced over a plain adjacency array with no engine in the way — the approach that convicted item
+2456's `length = 0` + `push` in one run after two ticks of fruitless source reading:
+
+```text
+    N=20,000  DEG=3  DEPTH=3  (540,000 paths)
+      arm                              rows   samples   peak MiB
+      streaming  [control: holds 0]   540000       131      0.00
+      BFS BY LEVELS  (engine today)   540000       131     29.76
+      DFS            (candidate)      540000       131      0.00
+      holding    [control: holds N]   540000       131     29.60
+      holding / streaming = 2959.7x   (gate: must exceed 10x)
+```
+
+**The level frontier is indistinguishable from holding every emitted row** (29.76 vs 29.60). That is
+the strongest statement of the defect available: the step pays the full cost of materializing its
+output while presenting as a streaming traversal. The DFS over the SAME walk reads 0.00.
+
+Three things make the comparison trustworthy rather than flattering:
+
+- **Both arms are asserted to emit the same multiset** over 20,000 distinct endpoints, so this is one
+  walk measured two ways and not two different walks.
+- **Both controls are present and both behaved** — 0.00 streaming, 29.60 holding, ratio 2959.7x as a
+  GATE that exits 1 if a retaining walk ever stops being visible.
+- **The fixture is checked for the generator trap** (items 1516/1518): targets are built from the
+  repeat index as well as `k`, because `(k * DEG + d) % N` is invariant under `k -> k + N` and would
+  pile a vertex's whole out-degree onto one target. The probe counts vertex 0's distinct endpoints and
+  exits 1 if they are fewer than DEG.
+
+The readings were re-taken AFTER the lint refactor and are unchanged to the last digit, which is an
+incidental check that the refactor did not alter either arm.
+
+### NOTHING IN `repeat`'s SEMANTICS NEEDS THE LEVEL WHOLE
+
+Read against the source: `until` (both placements), `emit` (both placements), `times`, `loops()` and
+the `REPEAT_BUDGET` work counter are ALL per-traverser or a running total. None inspects the level as
+a collection. **The only thing level-order buys is EMIT ORDER**, and walk order is explicitly not
+contracted (CLAUDE.md, decided 2026-11-22: how a traversal visits elements is
+implementation-dependent).
+
+### SO WHY THIS IS A DECISION AND NOT A COMMIT
+
+`repeat(` appears at **150 call sites across 25 test files**, concentrated in
+`gremlin/src/steps/repeat.test.ts` (42), `native/src/gremlin-hop-chain-count.test.ts` (19) and
+`gremlin/src/integration-tests/repeat.test.ts` (14) — and it reaches
+`native/src/gremlin-conformance.test.ts`, which is TinkerPop ground truth, and the cross-engine
+count tests. The Rust engine implements `repeat` too, so a TS-only DFS makes the two engines disagree
+on emit ORDER: permitted by the contract, but it turns those comparisons into multiset comparisons
+and rewrites order-pinning assertions in both suites.
+
+That is a multi-tick change with a contract-visible surface, so it goes to the owner with the price
+attached rather than being slipped in behind a memory win. `executor-edits-perturb` also applies: a
+new walk variant has cost unrelated rows up to 16%, and item 1466 declined 3.3x on `simplePath` for
+exactly that reason. **The 29.76 MiB is a MEMORY prize and must not be quoted as a time prize** — this
+tick measured no time at all, and a DFS may well be slower per row.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change.

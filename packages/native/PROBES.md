@@ -3098,3 +3098,13 @@ which DUPLICATES `alloc:peak` and should be folded into it or dropped).
 priori; when one of them is wrong, every other row in that run is unusable, however plausible it
 looks. This is the same discipline as [[frame-attribution-trap]], applied to a growth exponent
 rather than a profile frame.
+
+### `frontier-mech-2476.mjs` — BFS-by-levels against DFS, with no engine in the way
+
+`bun --expose-gc packages/native/frontier-mech-2476.mjs` (knobs `MECH_N`, `MECH_DEG`, `MECH_DEPTH`,
+`MECH_STEP`, `MECH_REPS`). Prices the mechanism behind `repeatStep`'s frontier over a plain adjacency
+array: a level-materializing walk against a stack-based one, asserted to emit the SAME multiset, with
+a streaming control, a holding control and the holding/streaming ratio as a GATE (exit 1 under 10x).
+At N=20,000 DEG=3 DEPTH=3 it reads 29.76 MiB for BFS-by-levels, **0.00 for DFS**, and 29.60 for the
+holding control — so the level frontier costs what holding every row costs. The fixture guards the
+`(k * DEG + d) % N` generator trap by counting distinct endpoints.
