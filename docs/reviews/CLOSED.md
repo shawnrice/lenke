@@ -128172,7 +128172,7 @@ and comparing outputs is the cheap form of it.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
 `alloc:retained` gains one arm.
 
-## Item 2480 — **A WRONG ANSWER, FOUND BY CHASING AN "UNTESTED SYMBOL": `tail(Scope.local)` returned the WHOLE list instead of the last element.** Confirmed against TinkerPop 3.7.3 AND against this engine's own Rust parser, which both default `n` to 1. **FIXED**, with the deviation that remains recorded rather than papered over
+## Item 2480 — **A WRONG ANSWER, FOUND BY CHASING AN "UNTESTED SYMBOL": `tail(Scope.local)` returned the WHOLE list instead of the last element.** Confirmed against TinkerPop 3.7.3 AND against this engine's own Rust parser, which both default `n` to 1. **FIXED**, with the deviation that remains recorded rather than papered over (**ITEM 2481 CONFIRMS THE FIX WAS CORRECTLY SCOPED: TinkerPop has NO single-argument `limit(Scope)`/`skip(Scope)`/`range(Scope, lo)`, so `tail` was rightly the only step defaulted — and the n=1 UNWRAPPING is UNIFORM across the family, not a `tail` quirk**)
 
 ### THE SURVEY LED SOMEWHERE REAL THIS TIME, AND THE FIRST JOB WAS STILL TO DISQUALIFY MOST OF IT
 
@@ -128259,3 +128259,69 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check`
 pass / 0 fail (gremlin) and 1430 / 0 (native); `bun run fuzz` all seven, 57 pass / 0 fail. Mutation:
 reverting `b ?? 1` to `b!` under the capped runner fails 2 tests, exit 1 — CAUGHT, restore verified at
 0 occurrences.
+
+## Item 2481 — **THE OBVIOUS WIDENING OF ITEM 2480 IS REFUTED BY GROUND TRUTH, AND THAT IS THE RESULT: TinkerPop has NO single-argument `limit(Scope)`, `skip(Scope)` or `range(Scope, lo)`**, so `tail` was rightly the only step given a default. 11 tests pin the family's agreements, 5 of 5 mutants caught — and the typecheck gate caught a defect in my own test for the SECOND tick running
+
+### THE WIDENING WAS THE OBVIOUS MOVE AND IT WAS WRONG
+
+Item 2480 fixed `tail(Scope.local)` returning the whole list. `take`, `skip`, `limit` and `range` in
+`steps/cardinality.ts` carry the identical `b!`/`c!` pattern, so widening the fix looked like
+housekeeping. The console says no — TinkerPop 3.7.3 on the modern graph (`[29, 27, 32, 35]`):
+
+```text
+      form                  TinkerPop 3.7.3        lenke (forced through a cast)
+      limit(local)          NO SIGNATURE           {kind:'take', scope:'local'}   -> whole list
+      take(local)           NO SIGNATURE           {kind:'take', scope:'local'}   -> whole list
+      skip(local)           NO SIGNATURE           {kind:'skip', scope:'local'}   -> whole list
+      range(local, 1)       NO SIGNATURE           {kind:'range', start:1, …}     -> [[27,32,35]]
+      limit(local, 2)       [[29, 27]]             [[29, 27]]                     agree
+      skip(local, 2)        [[32, 35]]             [[32, 35]]                     agree
+      range(local, 1, 3)    [[27, 32]]             [[27, 32]]                     agree
+      limit(local, 1)       [29]  UNWRAPPED        [[29]]                         the one deviation
+```
+
+**`tail(Scope)` is a real TinkerPop signature; `limit(Scope)`, `skip(Scope)` and `range(Scope, lo)`
+are not.** So there is no correct value to default TO in the other three, and requiring the bound is
+right. Item 2480 was correctly scoped, which is worth knowing precisely because the next step looked
+like a free win. All four no-arg forms are TYPE-PREVENTED here, so only an untyped caller reaches
+them, and what they then produce is not even a well-formed `Step` (see below).
+
+### AND THE n=1 UNWRAPPING IS UNIFORM, WHICH SHARPENS THE OPEN DECISION
+
+Item 2480 recorded the unwrapping from `tail` and `range`. `limit(local, 1)` -> `[29]` against our
+`[[29]]` makes it **every local-scope slicing step**, not a `tail` quirk: at n = 1 TinkerPop yields
+the element, we yield a one-element list, and at n > 1 the two agree exactly. One semantic choice
+across the family — still an owner decision, now with the scope of it established.
+
+### THE COVERAGE THAT WAS MISSING
+
+`limit.test.ts` already had 11 `Scope.local` mentions. **`range.test.ts` and `skip.test.ts` had
+ZERO** — 11 tests added across the two, every expected value taken from the console rather than from
+reasoning. They pin the agreements so the family cannot drift, plus three things worth their own
+assertions:
+
+- **A local skip past the end empties the LIST, not the stream** (`skip(local, 9)` -> `[[]]`, one row
+  out). A global skip would have dropped the row; conflating the two is the available mistake.
+- **A non-sliceable value passes through untouched**, so local scope over a stream of scalars is an
+  identity rather than an error.
+- **The forced no-arg forms**, pinned as traps with TinkerPop's refusal quoted beside them.
+
+MUTATION, 5 of 5 CAUGHT (3 pass/fail counts each, under the capped runner, live baseline verified
+BEFORE the first mutant and the restore verified at 0): an off-by-one on `sliceLocal`'s high bound
+(3 fail), dropping its `isSliceable` guard (2 fail), an off-by-one on `tailLocal`'s start (2 fail),
+dropping ITS `isSliceable` guard (1 fail), and ignoring `sliceLocal`'s low bound (5 fail). Both guard
+mutants dying is what gives the passthrough tests teeth rather than decoration.
+
+### `bun run check` CAUGHT MY TEST AGAIN, AND THE ERROR WAS THE BETTER FINDING
+
+`expect(forced.steps.at(-1)).toEqual({ kind: 'range', start: 1, scope: 'local' })` is **`TS2769`** —
+because the AST type requires `end: number`, so that literal is not a valid `Step`. **The forced
+untyped call produces a malformed AST node, and the typechecker proving it is a stronger statement
+than the assertion I was writing.** Both tests now assert the JSON and say so.
+
+That is the second consecutive tick where `check` exited non-zero while `lint` and `fmt:check` were
+both 0 (item 2480 was the first). It is not `lint` plus `fmt`.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; `bun test` in
+`packages/gremlin` **2907 pass / 0 fail**. No engine change this tick — tests only, so the fuzzers
+were not re-run (item 2480 ran all seven for the code change they cover).
