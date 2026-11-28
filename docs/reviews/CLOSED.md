@@ -130424,3 +130424,62 @@ was only one field-selecting element snapshot in the repo, and item 2511 fixed i
 
 GATES. `bun run check` 0. No code change — a sweep, its null, and a sharper statement of when the
 technique is worth running.
+
+## Item 2513 — **NINE `applyingUndo` GUARDS, ZERO TESTS, AND DISABLING ALL NINE BREAKS NOTHING — because they are REDUNDANT, not untested.** The invariant that makes them so is now documented, and no test was added, deliberately
+
+### THE SURVEY
+
+`applyingUndo` appears **15 times in `Graph.ts` and ZERO times in any test**; only the public
+`isTransacting` getter is referenced anywhere (five times, in one GQL test). Nine sites read the flag
+to skip a validation or constraint gate during a rollback replay — `clone`, `addVertex`,
+`addLabelToVertex`, `addLabelToEdge`, `deferConstraint`, `deferEdgeConstraint`,
+`cardinalityGateOnInsert`, `cardinalityNoteOnRemove`, `isTransacting` — each with a comment saying
+"rollback replay restores known-good state — skip the check".
+
+That reads like a contract with no test. **One mutant disables all nine at once**: set
+`this.applyingUndo = false` where `undoTo` raises it.
+
+```text
+                     core        gremlin      gql
+      baseline       0 fail      0 fail       0 fail
+      MUTANT         0 fail      0 fail       0 fail      SURVIVED all three
+```
+
+### THE REASON IS STRUCTURAL, AND I HAD TO CHASE TWO WRONG EXPLANATIONS FIRST
+
+My first guess was "no test combines a constraint with a rollback" — **wrong, TEN files do**
+(`constraints.test.ts` alone has 55 constraint calls and 10 tx/rollback uses). My second was that the
+cardinality gates lack a `txDepth` term and so must be load-bearing — also wrong: the term is there,
+just AFTER the `applyingUndo` early return.
+
+The actual invariant, verified by reading the three call sites rather than inferred:
+
+1. `undoTo` is reachable **only** from `rollbackTransaction`, which returns early at `txDepth === 0`,
+   so a replay always begins with `txDepth >= 1`.
+2. **`txDepth` is cleared only AFTER the replay** — `applyUndoAndReset` calls `undoTo(0)` and THEN
+   assigns `this.txDepth = 0`; the nested branch likewise decrements after its `undoTo(mark.undo)`.
+3. So `txDepth > 0` holds for the whole replay, and **every guarded method has a `txDepth > 0` branch
+   that already defers or skips the same work** — `cardinalityGateOnInsert` falls into
+   `txTouched.add(…); return;` instead of throwing.
+
+So the flag buys a little skipped work and insurance, not observable behaviour. The survivor is
+correct.
+
+### WHY NO TEST WAS ADDED
+
+**A test asserting that a redundant guard matters would pin belt-and-braces behaviour as contract** —
+it would fail the moment someone legitimately simplified the guard away, for no defect. The useful
+artifact is the INVARIANT, so `undoTo` now carries it, including what would break it: move the
+`txDepth` reset before the replay, or add an `undoTo` call from a path that holds no frame, and these
+nine guards become the only thing between a rollback and a constraint throw mid-replay — with no test
+to say so. The comment is the warning the test would have been.
+
+### THE RULE THIS ADDS
+
+**A guard with no test is not automatically a gap — check whether a NEIGHBOURING condition already
+covers it.** The cheap discriminator is a single mutant that disables the whole family at once: if it
+survives every suite, the question becomes "why is this redundant" rather than "what test is
+missing", and the answer belongs in a comment at the point of change rather than in a new test.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `packages/core` 497 pass, 0 fail.
+Comment only — no behaviour change, and `Graph.ts` restored from the mutant before it.

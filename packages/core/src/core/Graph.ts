@@ -4368,7 +4368,34 @@ export class Graph {
     this.applyUndoAndReset();
   };
 
-  /** Replay inverse ops newest-first down to `mark`, then drop them. */
+  /**
+   * Replay inverse ops newest-first down to `mark`, then drop them.
+   *
+   * ## `applyingUndo` IS DEFENCE IN DEPTH, NOT LOAD-BEARING — AND THE INVARIANT THAT MAKES IT SO
+   *
+   * Nine sites read this flag to skip a validation or constraint gate during the replay
+   * (`clone`, `addVertex`, `addLabelToVertex`, `addLabelToEdge`, `deferConstraint`,
+   * `deferEdgeConstraint`, `cardinalityGateOnInsert`, `cardinalityNoteOnRemove`,
+   * `isTransacting`). **Setting it to `false` here — disabling all nine — breaks NO test in
+   * `core`, `gremlin` or `gql` (item 2513), and that is correct rather than a coverage gap:**
+   *
+   *   1. `undoTo` is reachable only from `rollbackTransaction`, which returns early at
+   *      `txDepth === 0`, so a replay always begins with `txDepth >= 1`.
+   *   2. `txDepth` is cleared only AFTER the replay — `applyUndoAndReset` calls `undoTo(0)` and
+   *      THEN assigns `this.txDepth = 0`; the nested branch likewise decrements after its
+   *      `undoTo(mark.undo)`.
+   *   3. So `txDepth > 0` holds for the whole replay, and every guarded method has a
+   *      `txDepth > 0` branch that already defers or skips the same work — e.g.
+   *      `cardinalityGateOnInsert` falls into `txTouched.add(…); return;` instead of throwing.
+   *
+   * The flag therefore buys a little skipped work and insurance, not observable behaviour.
+   *
+   * ⚠️ **ORDER (2) IS WHAT KEEPS THAT TRUE.** Move the `txDepth` reset BEFORE the replay — or add
+   * an `undoTo` call from a path that does not hold a frame — and these nine guards become the
+   * only thing standing between a rollback and a constraint throw mid-replay, with no test to say
+   * so. Item 2513 deliberately did NOT add one, because a test asserting that a redundant guard
+   * matters would pin belt-and-braces behaviour as contract; this note is the warning instead.
+   */
   private undoTo = (mark: number): void => {
     this.applyingUndo = true;
 
