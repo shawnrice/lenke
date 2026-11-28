@@ -130368,3 +130368,59 @@ behind the blind spot):
 
 `Edge.ts` is byte-identical to its pre-item state — this is a test-only change, verified rather than
 assumed.
+
+## Item 2512 — **THE ASYMMETRY SWEEP IS A CLEAN NULL, AND THE REASON SHARPENS THE RULE: the technique applies to helpers that SELECT fields, never to canonicalizers that ENUMERATE keys.** Item 2511's gap was structurally possible; the other six candidates cannot have one
+
+### THE SWEEP
+
+Item 2511 found a real coverage gap by noticing that a snapshot's vertex row read
+`{ ...v.properties }` and its edge row did not. The obvious follow-up was to run the same check over
+every other snapshot/canonicalizer in the repo. 32 such helpers across 24 files; the ones that could
+plausibly compare elements:
+
+```text
+      helper                                      verdict
+      conformance-harness.ts  canonValue          CANNOT be blind — see below
+      store.ts                canonical           CANNOT be blind — same shape
+      sync/src/snapshot.ts    snapshot            not an element projection: `properties` x0,
+                                                  `ndjson` x17 — it delegates to the codec, which
+                                                  has its own parity tests
+      PropertyIndex.test.ts   snapshot            it is `graph.clone()`, not a field tuple — and
+                                                  that file already has an explicit "edge property
+                                                  indexes work the same way" test
+      store.ts                snapshotOf          a reactive cache cell, unrelated
+      the probe `canon`/`canonical` helpers        value stringifiers, same shape as canonValue
+```
+
+**Nothing found.** That is the honest result and it is worth a commit because it stops the sweep being
+re-run.
+
+### WHY IT IS A NULL BY CONSTRUCTION, WHICH IS THE USEFUL PART
+
+The two shapes have OPPOSITE failure directions, and only one of them can go blind:
+
+- **A SNAPSHOT/PROJECTION helper names the fields it reads.** `[v.id, labels, { ...v.properties }]`
+  is a field LIST, so a field left out is simply not compared and the test is BLIND to it. That is
+  item 2511, and the asymmetry between sibling rows is what exposes it.
+- **A CANONICALIZER enumerates keys.** `canonValue` and `store.ts`'s `canonical` both walk
+  `Object.keys(v).sort()` with NO explicit field list (verified: 2 and 1 occurrences respectively,
+  and no `pick`/`select`), so **they cannot DROP a field** — every key reaches the output string.
+  Failing to NORMALIZE a field (e.g. not sorting a set-valued one) therefore makes the comparison
+  STRICTER, producing a false FAILURE, never a missed defect.
+
+`canonValue` special-cases exactly one key for normalization — `k === 'labels'`, sorted by `keyOf` —
+and labels are the only set-valued field in this model. Any other field that needed it would announce
+itself as a flaky cross-engine failure, not as silence.
+
+### THE RULE, REFINED
+
+**Apply the asymmetry check to helpers that SELECT fields; skip the ones that ENUMERATE keys.** For a
+field-selecting helper, compare the sibling rows (vertex vs edge, left vs right, before vs after) and
+treat a shorter row as a suspect. For a key-enumerating one, the question is not blindness but
+over-strictness, and its symptom is a flaky failure rather than a silent pass.
+
+This is why one pass over one file found two gaps and a pass over everything else found none: there
+was only one field-selecting element snapshot in the repo, and item 2511 fixed it.
+
+GATES. `bun run check` 0. No code change — a sweep, its null, and a sharper statement of when the
+technique is worth running.
