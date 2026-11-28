@@ -125314,7 +125314,7 @@ route-invariance cells identical / 0 DIFFER, worst float error 0.014 of item 240
 `bun run fuzz` 57 pass 0 fail exit 0. `rewrite_fuzz` not run: it guards the RUST optimizer and this
 change is TS-only, touching neither a rewrite nor `hash_join`.
 
-## Item 2444 — **THE SIBLING WALKS DO NOT HAVE ITEM 2443's GAP, so that fix is complete: by ablation, `single` THREW at the CSR arm while `multi` and `filtered` RAN OK — neither reaches a CSR, so neither has a CSR-absence cliff to fall off.** But the measurement found something larger: **the MULTI-TYPE hop is 5.2x slower than the single-type one WARM (42.65 ms against 8.22) for 10% more rows, because it has NO CSR arm at all — and `csrFor` already takes a `types` ARRAY, so that arm is MISSING rather than impossible**
+## Item 2444 — **THE SIBLING WALKS DO NOT HAVE ITEM 2443's GAP, so that fix is complete: by ablation, `single` THREW at the CSR arm while `multi` and `filtered` RAN OK — neither reaches a CSR, so neither has a CSR-absence cliff to fall off.** But the measurement found something larger: ~~[the 5.2x is NOT the prize — CORRECTED at item 2445: at fan-in 1 the multi far-driven route is DECLINED by item 1390's SIGNED gate, so that compared two different ROUTES. Measured where the route actually runs, the missing arm is worth 1.78x, ~1.62x per row.]~~ **the MULTI-TYPE hop is 5.2x slower than the single-type one WARM (42.65 ms against 8.22) for 10% more rows, because it has NO CSR arm at all — and `csrFor` already takes a `types` ARRAY, so that arm is MISSING rather than impossible**
 
 Item 2443 gave the single-type far-driven walk a no-CSR fallback worth 2.25x. `farDrivenHopWalk` has
 two call sites and only one passes the hook, so the obvious question was whether the multi-type arm
@@ -125387,4 +125387,88 @@ wearing a disjunction**, which would have measured the single-type arm and repor
 wrong reason.
 
 GATES. No engine change: `hop-projection.ts` restored from `target/LIVE-hopproj-2444.ts`, ABLATE
+marker count 0, dist rebuilt. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0.
+
+## Item 2445 — **ITEM 2444's "5.2x" IS NOT A PRIZE AND I QUOTED IT ONE ITEM AGO: at fan-in 1 the multi-type far-driven route is DECLINED on purpose by item 1390's SIGNED cost gate, so the comparison was across two different routes.** Measured at the fan-in where that route actually runs, the missing multi-type CSR arm is worth **1.78x, or ~1.62x per row — not 5.2x.** **A FAN-IN-gated route makes a low-fan-in fixture prove nothing**, which is item 2437's size-gating lesson in a dimension I had not instrumented
+
+Item 2444 measured the multi-type hop at 42.65 ms warm against the single-type one's 8.22 and called
+the 5.2x the size of a missing CSR arm. `CLOSED.md` already held the reason that is wrong.
+
+### WHAT THE PRIOR ART SAYS, and it took one search to find
+
+Item 1390 shipped the multi-type far-driven walk **behind a cost gate because the route is SIGNED**:
+
+```text
+    item 1390's own table      FANIN    est. in-degree   route taken                     cost
+                                 1          1.33         start-driven (gate DECLINES)    70.8
+                                 0.1       ~13           far-driven                      29.1
+                                 0.01     ~133           far-driven                      16.1
+```
+
+My fixture had 220,000 edges over 200,000 vertices — **fan-in ≈ 1**, exactly where the gate declines.
+So item 2444 measured `startDrivenMany`, compared it against the single-type arm's far-driven CSR
+walk, and attributed a ROUTE-CHOICE difference to a missing structure. The gate was working as
+designed the whole time.
+
+### THE RE-MEASUREMENT, with a fan-in knob the probe did not have
+
+```text
+    N=200,000, vacuous, WARM, LBL_REPS=11, warmup 3
+      shape              fanin=1      fanin=0.01
+      single (has CSR)     8.31          4.58
+      multi (no CSR)      41.35          8.13
+      ratio                4.98x         1.78x
+```
+
+At `fanin=0.01` the multi shape is 5.1x faster than at `fanin=1` (8.13 against 41.35), which is the
+gate flipping to the far-driven route — the route change is visible in the timing, not assumed.
+
+**So the honest prize is 1.78x**, and less than that per row: `multi` returns 220,000 rows against
+`single`'s 200,000, so adjusted it is ~1.62x. Item 2444's 5.2x was an artifact of comparing a
+declined route against an accepted one.
+
+### THE MISSING ARM IS STILL REAL, and now it is verified at the right fan-in
+
+The ablation was re-run with the CSR arm made to throw, at BOTH fan-ins:
+
+```text
+      fanin=1      single THREW   multi RAN OK
+      fanin=0.01   single THREW   multi RAN OK
+```
+
+So the multi-type form returns before `csrHopRoute` even when the far-driven route IS the one chosen.
+Item 2444's structural claim holds — `csrFor(graph, inward, types)` takes an array, `csrHopRoute`
+narrows to `[typeName]`, and `graph.multiTypeEdgeCount === 0` is the existing soundness gate. **Only
+the price was wrong.**
+
+### WHETHER 1.62-1.78x IS WORTH TAKING, left open deliberately
+
+Two things cut in its favour: item 1390 records that in THIS walk **bucket order is unobservable** —
+every row for a far vertex is identical, so the sequence depends on far-vertex order alone and
+`-[:F|E]->` cannot differ from `-[:E|F]->` by construction — and the one-hop projection reads only
+`off[s+1] - off[s]`, never `nbr` positionally.
+
+Against it: `csrFor` is SHARED. `csr-cache.ts` records that `types` is deliberately not sorted into
+the cache key because `edgesOfTypes` iterates it in order, so two spellings build `nbr` arrays that
+differ in POSITION — and the depth-3/4 trail corrections read `nbr` positionally via
+`pairMultiplicities`. A multi-type entry is therefore safe for this walk and would need checking for
+every other consumer of the same cache, which is a wider blast radius than 1.62x justifies on its
+own.
+
+**Not built.** Recorded with the corrected price so the next reader is choosing against 1.62x rather
+than 5.2x.
+
+### THE RULE THIS ADDS
+
+[[bench-methodology]] carries "match the fixture to the claim" for SIZE and for the edge:node ratio.
+This adds a third axis with the same failure mode: **a route behind a FAN-IN gate is not exercised by
+a uniform graph.** Item 2437 learned the size version (2,000 vertices showed no CSR where 200,000
+showed one) and item 2439 learned the ratio version (item 1895's 1.09x hand floor does not hold at
+1:1). The tell is identical in all three — a route that "is never taken" when the gate is simply
+declining for a reason the fixture created.
+
+`alloc:labeltest` gained `LBL_FANIN` (the fraction of vertices eligible as edge targets; 1 uniform,
+0.01 concentrating onto 1% of the graph), and the probe echoes it so a reading cannot be misattributed.
+
+GATES. No engine change: `hop-projection.ts` restored from `target/LIVE-hopproj-2445.ts`, ABLATE
 marker count 0, dist rebuilt. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0.

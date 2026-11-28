@@ -53,6 +53,22 @@ const MODE = process.env.MIXED_MODE ?? 'vacuous';
  */
 const SHAPE = process.env.LBL_SHAPE ?? 'single';
 
+/*
+ * FAN-IN, and it is load-bearing rather than a sweep axis (item 2445).
+ *
+ * Item 1390's multi-type far-driven route is behind a cost gate that is SIGNED: it WINS at high
+ * fan-in (16.1 ms at in-degree ~133) and LOSES at fan-in 1 (86.1 unconditionally against the
+ * start-driven walk's 70.8), so the gate declines it on a uniform graph. A fixture with one edge per
+ * vertex therefore measures the START-driven walk and can say NOTHING about whether the far-driven
+ * one — the only arm that can reach a CSR — has a gap.
+ *
+ * LBL_FANIN is the fraction of vertices eligible as edge TARGETS: 1 spreads them uniformly
+ * (in-degree ~1.1), 0.01 concentrates them onto 1% of the graph (in-degree ~110). This is the same
+ * class of error as a SIZE-gated route — item 2437 measured a 2,000-vertex fixture showing no CSR
+ * where 200,000 showed one — in a different dimension.
+ */
+const FANIN = Number(process.env.LBL_FANIN ?? 1);
+
 const QUERIES = {
   single: 'MATCH (a:P)-[:E]->(x:P) RETURN x.k AS k',
   multi: 'MATCH (a:P)-[:E|F]->(x:P) RETURN x.k AS k',
@@ -81,11 +97,14 @@ const build = () => {
     vs.push(g.addVertex({ id: `v${i}`, labels: ['P'], properties: { k: i % 97 } }));
   }
 
+  // How many distinct vertices may be an edge TARGET. At FANIN=1 this is every vertex.
+  const targets = Math.max(1, Math.floor(N * FANIN));
+
   for (let e = 0; e < N; e += 1) {
     g.addEdge({
       id: `e${e}`,
       from: vs[e],
-      to: vs[(e * 7 + 3) % N],
+      to: vs[(e * 7 + 3) % targets],
       labels: ['E'],
       properties: {},
     });
@@ -99,7 +118,7 @@ const build = () => {
       g.addEdge({
         id: `f${e}`,
         from: vs[(e * 10) % N],
-        to: vs[(e * 13 + 5) % N],
+        to: vs[(e * 13 + 5) % targets],
         labels: ['F'],
         properties: {},
       });
@@ -159,6 +178,6 @@ for (let i = 0; i < REPS; i += 1) {
 }
 
 console.log(
-  `   ${SHAPE.padEnd(8)} ${MODE.padEnd(8)} ${WRITE_MODE.padEnd(10)} N=${N} warmup=${WARMUP}  median ` +
+  `   ${SHAPE.padEnd(8)} ${MODE.padEnd(8)} ${WRITE_MODE.padEnd(10)} N=${N} fanin=${FANIN} warmup=${WARMUP}  median ` +
     `${median(ts).toFixed(2)} ms  rows ${rows}   series ${ts.map((x) => x.toFixed(1)).join(' ')}`,
 );
