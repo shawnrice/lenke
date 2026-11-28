@@ -124704,7 +124704,7 @@ Arithmetic at this fixture, which is a prediction and not a measurement:
 ```
 
 If that holds, the policy should now accept a 1:1 ratio where it used to refuse, which is a ~1.45x
-win on the commonest serving shape. **Not measured here** — it needs the policy forced on and
+win on the commonest serving shape. ~~[REFUTED at item 2438: forcing the build is 1.40x SLOWER at 1:1. The rebuild is ~43 ms in the engine, not the 22 ms item 2435 measured STANDALONE, and the fallback is 36.6 not 45 - so building LOSES by 15 ms. The policy is correct as tuned.]~~ **Not measured here** — it needs the policy forced on and
 measured against this row, plus a check that the cold one-shot case item 1889 protected does not
 regress, which is the whole reason the policy exists.
 
@@ -124738,3 +124738,83 @@ correction has two parts and I got the second one wrong too:
 GATES. No engine change survives this item: `csr-cache.ts` restored from `target/LIVE-csrcache-2436.ts`
 and verified byte-identical, dist rebuilt afterwards. `bun run fmt` 0; `bun run lint` 0;
 `bun run check` 0.
+
+## Item 2438 — **MY OWN PREDICTION REFUTED, IN THE WRONG DIRECTION: forcing the CSR build at a 1:1 read:write ratio is 1.40x SLOWER, not the ~1.45x faster I forecast.** The second-ask policy is RIGHT and item 2436 did NOT flip it. **The error traces to a number I carried forward past a caveat I had written myself** — item 2435's 22.70 ms phase-3 figure is a STANDALONE approximation; the engine's real fill is ~43 ms
+
+Item 2437 found that `hopRows` declines the CSR at a 1:1 ratio and runs the O(V) fallback. Item 2436
+had cut ~13 ms off a rebuild, so the arithmetic said the policy's bar should move. It does not.
+
+### THE A/B, three cases, arms alternated, one case per process
+
+```text
+    N=200,000                 LIVE      FORCED     LIVE      verdict
+      interleave (1 read/wr)  36.62     51.43      37.26     FORCED 1.40x SLOWER
+      coldOneShot             66.75    100.17      69.73     FORCED 1.47x slower
+      readHeavy (CONTROL)      8.37      8.01       7.90     flat
+```
+
+The two LIVE arms agree to ~2% on every case, which is the noise estimate the alternation exists to
+give. **`readHeavy` is flat, so the instrument is specific to the policy** — both arms build there, and
+a measurement that moved it would be picking up something else.
+
+`coldOneShot` is the case the policy exists to protect and it behaves exactly as item 1889 recorded
+(it measured 0.61x without the policy; this is 0.68x). That protection is still load-bearing.
+
+### WHERE MY ARITHMETIC WENT WRONG, and it is a specific, avoidable mistake
+
+The prediction was: fallback 45 ms against a rebuild of ~22 plus a ~9 ms array walk = 31, so building
+wins by 14. Both terms were wrong, and the rebuild term badly:
+
+```text
+    term                   predicted   actual (derived from this A/B)
+      fallback walk           45 ms      36.6   (LIVE interleave)
+      rebuild                 22         ~43    (FORCED 51.4 minus a ~8.4 warm CSR walk)
+      CSR walk                 9          8.4   (readHeavy, where the CSR is warm)
+      ---------------------------------------------
+      net at 1 read/write     -14        +15    building LOSES by 15 ms
+```
+
+**The 22 ms came from item 2435's standalone phase split, and item 2435 itself says why it does not
+apply**: _"the difference being that phase 3 here iterates `adjFrom` raw where the engine goes through
+`edgesOfTypes`."_ I wrote that caveat, then used the number it disclaims as the input to a decision
+one item later. The engine's fill is ~2x the raw-iteration approximation.
+
+So the lesson is not "measure more" — it is that **a phase split measured OUTSIDE the engine prices
+the phase, not the engine's version of it**, and a standalone number must be re-derived in situ before
+it can carry a decision. Item 2435's split was still the right call: it correctly identified WHICH
+phases are invariant, which is what item 2436 built. It just does not price them.
+
+### AND ITEM 2436's WIN IS NOT IN QUESTION
+
+Item 2436 is measured independently — `hopSum` after-write went 48.86 to 35.61 ms with a warm control
+unmoved and a vertex-add control still slow. This item says only that the saving is not large enough
+to move the policy's bar at a 1:1 ratio. Both facts hold: the rebuild got cheaper, and it is still
+more expensive than the fallback walk it would replace at one read per write.
+
+### A METHODOLOGICAL FINDING WORTH MORE THAN THE REFUTATION: THIS ROUTE'S COST DEPENDS ON READ HISTORY
+
+`interleave` reads 36.62 ms here where item 2437's A/B measured the same shape and fixture at 45.42.
+Not noise — **the two probes differ in how many WARM reads precede the interleaved ones** (seven
+against zero), and `csrAskedBefore` carries the outgoing version's ask count forward as `prior`. So
+the warmup count is not harness hygiene on this route; it is part of the fixture, and it changes which
+arm the engine picks.
+
+That is a new rule for this instrument, and it generalizes to anything behind an adaptive policy:
+**declare the read history, because an adaptive route's cost is a function of it.** Neither figure is
+wrong; they measure different workloads. `askpolicy-2438.mjs` fixes its warmup at 3 and says so.
+
+### WHAT THIS CLOSES
+
+- **The second-ask policy's bar is CORRECT as tuned** (`AMORTIZE_ASKS = 6`,
+  `FIRST_ASK_THRESHOLD = 2`), and item 2436 did not change that. Do not lower it on the arithmetic
+  above; the arithmetic was wrong and the measurement is in the file.
+- **`hopRows`'s ~5x after-write cost is not recoverable by building earlier.** The fallback walk is
+  genuinely the cheaper arm at this ratio. Recovering it needs a cheaper BUILD (the `off`/`nbr` fill,
+  which items 2435/2436 showed is unbuildable incrementally in a packed layout) or a cheaper
+  FALLBACK, which is a separate target nobody has priced.
+
+Wired as `bun run alloc:askpolicy`. Knobs: `CASE` (interleave / coldOneShot / readHeavy), `ASK_N`,
+`ASK_REPS`.
+
+GATES. No engine change: `csr-cache.ts` restored from `target/LIVE-csrcache-2436.ts`, FORCE marker
+count 0, `diff -q` byte-identical, dist rebuilt. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0.
