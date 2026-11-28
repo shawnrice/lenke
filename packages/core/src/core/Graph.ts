@@ -1274,6 +1274,32 @@ export class Graph {
    */
   public topologyVersion = 0;
 
+  /**
+   * HOW MANY TIMES THE VERTEX SET ITSELF CHANGED — the NARROWER sibling of
+   * `topologyVersion`, and it exists because most of a CSR does not depend on the edges.
+   *
+   * `topologyVersion` bumps at six sites: a vertex add and remove, an edge add and remove, and the
+   * two edge-LABEL re-bucketing sites. Only the first two can change a structure derived from
+   * `verticesById` — and a CSR's `order` array (`[...verticesById.values()]`) and its
+   * vertex-to-index `Map` are exactly that. Item 2435 priced them at 3.49 ms and 12.38 ms against a
+   * 22.70 ms `off`/`nbr` fill over 200,000 vertices, so **41% of a rebuild is invariant under an
+   * edge write** and was being discarded on every one.
+   *
+   * SO A CONSUMER KEYS THE VERTEX-INDEXING HALF ON THIS AND THE EDGE HALF ON `topologyVersion`.
+   * While this number is unchanged, `[...verticesById.values()]` is element-for-element what a fresh
+   * copy would produce — `Map` iteration is insertion order, so reuse here is BYTE-IDENTICAL by
+   * construction rather than within a tolerance. That is a stronger guarantee than most caches get
+   * and it is the whole reason this split is safe.
+   *
+   * A VERTEX LABEL OR PROPERTY WRITE DOES NOT BUMP IT, for the same reason it does not bump
+   * `topologyVersion`: neither changes which vertices exist or the order they iterate in.
+   *
+   * Same contract as its sibling otherwise: SYNCHRONOUS (unlike `version` and `epoch`, which are
+   * deferred to a drain), conservative rather than exact, and the only sound question is "is this
+   * the same number I saw before?" — never compare two values for ordering or subtract them.
+   */
+  public vertexVersion = 0;
+
   public subscribe = (callback: () => unknown): (() => void) => {
     this.listeners.add(callback);
 
@@ -1786,6 +1812,7 @@ export class Graph {
 
     this.verticesById.set(vertex.id, vertex);
     this.topologyVersion += 1;
+    this.vertexVersion += 1;
 
     for (const label of vertex.labels) {
       this.indexVertexLabel(label, vertex);
@@ -1862,6 +1889,7 @@ export class Graph {
 
     this.verticesById.delete(vertex.id);
     this.topologyVersion += 1;
+    this.vertexVersion += 1;
 
     vertex.evict();
 

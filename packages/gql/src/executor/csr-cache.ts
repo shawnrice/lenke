@@ -31,6 +31,63 @@ export type CsrTables = {
  * per-level work is 0.3ms. The wanted-type filter can only keep FEWER edges than the graph has, so
  * `edgeCount` is a safe bound and the slack is never touched.
  */
+/**
+ * THE VERTEX-INDEXING HALF OF A CSR, KEYED ON `vertexVersion` RATHER THAN `topologyVersion`
+ * (item 2436), because an edge write cannot invalidate it.
+ *
+ * **41% OF A REBUILD WAS INVARIANT AND WAS BEING THROWN AWAY.** Item 2435 split `buildCsr`'s cost at
+ * 200,000 vertices: `order` 3.49 ms, this `Map` 12.38 ms, the `off`/`nbr` fill 22.70 ms. Only the
+ * fill depends on the edges, yet one `addEdge` dropped the generation whole — so the commonest
+ * serving shape, a read following a write, rebuilt a vertex index identical in every entry to the
+ * one it had just discarded (items 2433/2434 measured that read at 3.36-4.37x a warm one).
+ *
+ * **THE REUSE IS BYTE-IDENTICAL BY CONSTRUCTION, not within a tolerance.** `order` is
+ * `[...graph.verticesById.values()]` and `Map` iteration is insertion order, so while
+ * `vertexVersion` is unchanged a fresh copy would be element-for-element this array, and `idx` would
+ * map the same keys to the same positions. Nothing here re-associates a float or depends on a walk
+ * order, which is what makes this different from most cache reuse in this engine.
+ *
+ * SEPARATE FROM THE SHAPE CACHE, AND THAT IS THE POINT. The entry below is dropped whole per
+ * topology version with the stated reason that "every shape built from the old topology is equally
+ * invalid" — true of `nbr`, which is direction- and type-filtered, and NOT true of these two, which
+ * are shape-INDEPENDENT. One copy serves every shape, so the leak that argument guards against (one
+ * entry per shape per write) cannot arise: there is exactly one entry per graph.
+ *
+ * It also REDUCES retention rather than adding to it — the `MAX_SHAPES` note below counts `order`
+ * and `idx` once per shape, and after this they are shared references.
+ *
+ * `off`/`nbr` are deliberately NOT handled this way. A packed CSR has no slack, so inserting one
+ * neighbour shifts every later entry (O(|E|), which is what a rebuild already costs), and `nbr` is
+ * read POSITIONALLY by the depth-3/4 trail corrections via `pairMultiplicities`. That half needs a
+ * layout change, not a cache key.
+ */
+const vertexIndexCache = new WeakMap<
+  Graph,
+  { vv: number; order: Vertex[]; idx: Map<Vertex, number> }
+>();
+
+const vertexIndexFor = (graph: Graph): { order: Vertex[]; idx: Map<Vertex, number> } => {
+  const vv = graph.vertexVersion;
+  const hit = vertexIndexCache.get(graph);
+
+  if (hit?.vv === vv) {
+    return hit;
+  }
+
+  const order = [...graph.verticesById.values()];
+  const idx = new Map<Vertex, number>();
+
+  for (let i = 0; i < order.length; i += 1) {
+    idx.set(order[i], i);
+  }
+
+  const fresh = { vv, order, idx };
+
+  vertexIndexCache.set(graph, fresh);
+
+  return fresh;
+};
+
 const buildCsr = (graph: Graph, inward: boolean, types: string[] | undefined): CsrTables => {
   // THE ONLY THING DIRECTION CHANGES (item 744): which adjacency box the CSR is built from, and
   // which end of each edge is the neighbour. Everything downstream — the level recurrence, and the
@@ -41,13 +98,7 @@ const buildCsr = (graph: Graph, inward: boolean, types: string[] | undefined): C
 
     return box === undefined ? [] : edgesOfTypes(box, types);
   };
-  const order = [...graph.verticesById.values()];
-  const idx = new Map<Vertex, number>();
-
-  for (let i = 0; i < order.length; i += 1) {
-    idx.set(order[i], i);
-  }
-
+  const { order, idx } = vertexIndexFor(graph);
   const off = new Int32Array(order.length + 1);
   const nbr = new Int32Array(graph.edgeCount);
   let at = 0;

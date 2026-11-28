@@ -124514,7 +124514,7 @@ module header records that `nbr` is read POSITIONALLY by the depth-3/4 trail cor
 `pairMultiplicities`, so a layout change is a correctness question across the whole route, not a
 local one.
 
-**So the realistic prize is phase 1 + 2, not the whole penalty**: ~15.9 ms off a rebuild that turns a
+~~[BUILT at item 2436: 3.89x to 2.76x, after-write read 48.86 to 35.61 ms, warm unmoved.]~~ **So the realistic prize is phase 1 + 2, not the whole penalty**: ~15.9 ms off a rebuild that turns a
 12.7 ms read into 48.6 ms. That is ~1.3x on the after-write read, and nothing at all on a warm one.
 Worth building, and worth saying plainly that it does not remove the cliff — item 2434's 3.36-4.37x
 becomes roughly 2.6-3.3x.
@@ -124534,3 +124534,102 @@ two more, because it stops at the first declaration-shaped line rather than the 
 Printing five lines of context around each site answered it immediately and unambiguously.
 
 GATES. No engine change this item: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0.
+
+## Item 2436 — **BUILT: `vertexVersion` plus a split CSR cache takes the write-then-read penalty from 3.89x to 2.76x** (after-write read 48.86 ms to **35.61 ms**, warm unmoved at 12.92), exactly item 2435's predicted 2.6-3.3x band. The reuse is **byte-identical by construction**, not within a tolerance. **And the mutation battery left the tree on the WRONG ARM once, because my two pristine copies were named `pristine-` and `pristine-…-mut`**
+
+Item 2434 localized the penalty to an O(|V| + |E|) CSR rebuild; item 2435 priced its parts and found
+41% invariant under an edge write. This builds that.
+
+### WHAT CHANGED, and it is two small pieces
+
+**`Graph.ts`: a `vertexVersion` counter, bumped at EXACTLY TWO of `topologyVersion`'s six sites** —
+`verticesById.set` (vertex add) and `verticesById.delete` (vertex remove). The edge add, edge remove
+and two edge-label re-bucketing sites deliberately do not touch it.
+
+**`csr-cache.ts`: `vertexIndexFor(graph)`**, a second `WeakMap` holding `{vv, order, idx}` beside the
+existing `{tv, byShape}`. `buildCsr` now takes its `order` array and vertex-to-index `Map` from
+there instead of rebuilding them, so an edge-only write rebuilds the `off`/`nbr` fill alone.
+
+### THE NUMBERS, with two controls
+
+```text
+    N=200,000, one-hop sum                 item 2433     now
+      warm (CONTROL — must not move)        12.55 ms     12.92 ms
+      after ONE addEdge                     48.86        35.61
+      ratio                                  3.89x        2.76x
+      after a VERTEX add (CONTROL)              —         61.38    <- correctly STILL slow
+```
+
+The after-write read drops **13.25 ms** against item 2435's predicted ~15.9. The warm row is
+unmoved, which matters because this change can only help a read that follows a write — a warm
+regression would mean the extra `WeakMap` lookup cost more than it saved.
+
+**THE VERTEX-ADD ROW IS THE CORRECTNESS CONTROL, and it is the one worth stating.** If the counter
+were not wired, a vertex add would reuse an `order` array that no longer matches `verticesById` and
+the CSR would map indices to the wrong vertices — a WRONG ANSWER, not a slow one. That row staying
+slow is the evidence the invalidation still fires.
+
+### WHY THIS REUSE IS SAFER THAN MOST IN THIS ENGINE
+
+`order` is `[...graph.verticesById.values()]` and `Map` iteration is insertion order, so while
+`vertexVersion` is unchanged a fresh copy would be element-for-element the cached array, and `idx`
+maps the same keys to the same positions. **Byte-identical by construction**, with no appeal to a
+float tolerance or a walk order — unlike most caching questions here.
+
+And the module's existing refusal does not apply. It drops a generation whole because "every shape
+built from the old topology is equally invalid, and keeping the map would leak one entry per shape
+per write" — true of `nbr`, which is direction- and type-filtered, and not of these two, which are
+shape-INDEPENDENT. One copy serves every shape, so there is exactly one entry per graph and nothing
+to leak. It also REDUCES retention: the `MAX_SHAPES` note counts `order` and `idx` once per shape,
+and they are now shared references.
+
+### WHAT IS DELIBERATELY NOT BUILT
+
+The `off`/`nbr` fill, the other 59%. A packed CSR has no slack, so inserting one neighbour shifts
+every later entry — O(|E|), which is what a rebuild already costs — and `nbr` is read POSITIONALLY by
+the depth-3/4 trail corrections via `pairMultiplicities`. That half needs a layout change, not a
+cache key. **So the cliff is reduced, not removed**, and item 2434's 3.36-4.37x band becomes
+~2.6-3.3x.
+
+Item 1895's SECOND builder — the inline CSR arm on the non-`csr-cache.ts` route, which item 2434
+measured going 11 ms warm to 121 ms after a write — is untouched and wants the same treatment. Next.
+
+### THE TEST HAS TEETH, verified against three mutants
+
+A cache-key change is answer-equivalent on every shape that does not hit the stale case, so the
+differential tests and the fuzzers cannot see it — [[perf-gate-needs-its-own-test]]. A dedicated
+`vertex-version.test.ts` pins the three properties, and each mutant breaks one:
+
+```text
+    mutant                                        verdict
+      drop the bump on vertex ADD                 CAUGHT (2 pass / 2 fail)
+      drop the bump on vertex REMOVE              CAUGHT (3 pass / 1 fail)
+      ALSO bump on an edge add (over-invalidate)  CAUGHT (3 pass / 1 fail)
+```
+
+The third is the one no other test could catch: over-invalidating is answer-CORRECT and silently
+makes the whole split a no-op that still looks like an optimization.
+
+### THE HARNESS MISTAKE, and it is the one my own notes warn about twice
+
+The first mutation run used a `cd packages/core` / `cd ..` pair inside the loop. The working
+directory drifted, the second mutant's patch failed on a relative path, and **the run reported
+"CAUGHT" for a verdict produced by the PREVIOUS mutant still sitting in the tree** — then exited with
+the tree possibly mutated. That is [[ab-scripts-need-a-restore-trap]] exactly: a kill or an error
+between the swap and the swap-back leaves the wrong arm in place, still compiling and still green.
+
+Worse, the recovery went wrong too. The two saved copies were `pristine-graph-2436.ts` (the state
+BEFORE the change) and `pristine-graph-mut2436.ts` (the change itself, saved as the mutation base) —
+so "restore the pristine copy" restored the PRE-CHANGE file and silently reverted the whole item.
+[[name-ab-arms-for-what-they-are]] is about exactly this and I hit it anyway. They are now
+`PRECHANGE-graph-2436.ts` and `LIVE-graph-2436.ts`.
+
+The re-run uses absolute paths, a `trap restore EXIT INT TERM`, a LIVE check before the first mutant,
+a bump COUNT printed per mutant (1 / 1 / 3 against the live 2, so each patch is proven to have
+landed), and a closing `diff -q` against the live arm. All three verdicts above come from that run.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0 (one `prefer-optional-chain` fixed).
+`packages/core` 490 tests 0 fail; `packages/gql` 5,498 tests 0 fail; `bun run fuzz` 57 pass 0 fail
+exit 0; `oracle:onehopagg` 2,424 route-invariance cells identical / 0 differ, worst float error 0.014
+of item 2401's bound. `rewrite_fuzz` not run: it guards the RUST optimizer and this change is
+TS-only, touching neither a rewrite nor `hash_join` nor anything either reads.
