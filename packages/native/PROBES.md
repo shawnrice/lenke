@@ -3673,3 +3673,29 @@ neither the value nor the function responsible.
 
 KEY A real `Vertex`/`Edge` renders fine — the circular-adjacency worry that motivated the probe was
 WRONG, and the row stays to keep that recorded.
+
+## `call-config-parity-2526.ts` + `edgetype-honored-2526.ts` — do both engines accept the same CALL config keys? (item 2526)
+
+```
+cd packages/native && bun run call-config-parity-2526.ts
+cd packages/native && bun run edgetype-honored-2526.ts
+```
+
+```
+      CONTROL edgeLabel     ts: ACCEPTED   native: ACCEPTED
+      edgeType              ts: ACCEPTED   native: ACCEPTED    (ts REJECTED before 2526)
+      CONTROL no config     ts: ACCEPTED   native: ACCEPTED
+      a genuine typo        ts: REJECTED   native: REJECTED    (message text differs — item 614)
+```
+
+KEY The second probe answers the question that decides the fix direction: native HONORS `edgeType`
+(degree 1 for `'E'`, 2 for `'F'`, against 3 unfiltered) rather than tolerating it, so TS was missing
+an alias — and the fix had to NORMALIZE the key, since `applyAlgoConfig` writes under the key's own
+name and `cfg.edgeType` is read by nothing.
+
+KEY The fixture forces the distinction: one `E` edge and two `F` edges, so an ignored config reads 3.
+
+WARN The CONTROL rows caught FOUR harness errors of mine here — a wrong method name (`gqlJson` vs
+`queryJson`), decoding a non-buffer success value, `degree(())` from double-interpolation, and a
+`WHERE` between `YIELD` and `RETURN`. None became a false finding. A fifth: the probe reads the BUILT
+DIST, so the fix looked unapplied until `bun run build` (rule 2514).

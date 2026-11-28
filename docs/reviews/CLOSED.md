@@ -131309,3 +131309,82 @@ one branch away from breaking.
 
 GATES. `build` 0; `fmt` 0; `lint` 0; `check` 0; inspect **25** (+6) / cli 46 / mcp 14 / core 497, all
 0 fail.
+
+## Item 2526 — **a cross-engine CALL divergence: `{edgeType: …}` was a valid query on native and an ERROR on TS.** Native honors it as a true alias (measured, not assumed); TS now accepts AND normalizes it, so the fix is not the silent no-op that merely listing the key would have been
+
+### THE CLAIM THAT CHECKED OUT, AND THE ONE THAT DID NOT
+
+`CALL` is heavily covered — 178 `CALL`/`YIELD` mentions across 17 gql test files — so this was not a
+coverage hunt but an input-shape one. Two documented claims:
+
+- **VERIFIED.** `clauses.ts`'s `PROCEDURES` says it "Mirrors native `algo::procedure_result_col`,
+  which answers the same question for the same names". It does: both carry the same **12** names with
+  identical result columns, compared entry by entry.
+- **ASYMMETRIC.** The crate's `CONFIG_KEYS` comment reads "the TS engine's list, PLUS the engine's
+  `edgeType` spelling of `edgeLabel`" — and `clauses.ts` contained the literal `edgeType` **zero**
+  times. Both engines validate config maps and reject unknown keys on purpose, so one accepting what
+  the other refuses means the SAME QUERY has two verdicts.
+
+```text
+      CONTROL edgeLabel     ts: ACCEPTED   native: ACCEPTED
+      edgeType              ts: REJECTED   native: ACCEPTED        <== the divergence
+      CONTROL no config     ts: ACCEPTED   native: ACCEPTED
+      a genuine typo        ts: REJECTED   native: REJECTED        (message text differs — item 614)
+      CONTROL direction     ts: ACCEPTED   native: ACCEPTED
+```
+
+**`edgeType` is not a near-miss spelling — it is this codebase's OWN vocabulary**: `Graph.ts` uses it
+124 times, plus `schema.ts`, the host `graph.ts`, `core/README.md`, and the constraint API is
+`createEdgeTypeConstraint`. A user who knows the host API writes `edgeType`, native accepts it, and
+TS refused.
+
+### THE QUESTION THAT DECIDED THE FIX DIRECTION
+
+Accepting a key is worthless if it is then ignored — and both engines' comments say validation exists
+precisely "so a typo or a wrong key no longer silently no-ops" ("a silently dropped key once hid the
+`pivots` bug"). So: does native HONOR `edgeType`, or merely tolerate it? With a fixture that forces
+the distinction — `a` has one `E` edge and two `F` edges, so the answers are 3 / 1 / 2 and an ignored
+config cannot hide behind a coincidence:
+
+```text
+      native   no config        3      <- all three expectations hit, so the fixture is sound
+               edgeLabel 'E'    1
+               edgeLabel 'F'    2
+               edgeType  'E'    1      <- HONORED, identical to edgeLabel
+               edgeType  'F'    2
+```
+
+So native honors it and **TS was missing an alias.** The fix therefore had to NORMALIZE, not just
+list: `applyAlgoConfig` writes the value under the key's own name, so adding `['edgeType', 'string']`
+alone would have set `cfg.edgeType`, which no algorithm reads — accepted and silently ignored, worse
+than rejecting. One line (`const field = key === 'edgeType' ? 'edgeLabel' : key`) does it, and TS now
+reads 3 / 1 / 2 / 1 / 2 exactly as native does.
+
+This is pure WIDENING: no query that worked before changes, and the engines converge.
+
+**MUTATION — opposite directions, and the second one is the point:**
+
+```text
+      MUTANT A  edgeType de-listed (the original gap)        3 pass  3 FAIL
+      MUTANT B  listed but NOT normalized (silent no-op)     4 pass  2 FAIL   <- the "honored" rows
+      RESTORED                                               6 pass  0 fail
+```
+
+Mutant B is what proves the tests assert HONORING rather than acceptance: a "does not throw" test
+would have passed it.
+
+### FOUR HARNESS ERRORS, ALL CAUGHT BY THE CONTROLS
+
+Worth recording because the controls did their job four times in one item: `backend.gqlJson` does not
+exist (it is `queryJson`); `queryJson` does not return a buffer on success, so decoding it threw;
+`degree(())` — I passed `'()'` into a template that already had `degree(${config})`; and a `WHERE`
+between `YIELD` and `RETURN` does not parse. **Every one surfaced as a CONTROL row disagreeing, never
+as a false finding.** A fifth was rule 2514 biting: the probe imports `@lenke/gql` and so reads the
+BUILT DIST, which made the fix look like it had not applied until `bun run build`.
+
+A third probe (`edgetype-ts-honored-2526.ts`) was DELETED rather than kept: it duplicated what
+`call-edgetype-alias.test.ts` now pins, and keeping it meant suppressing the repo's own
+`lenke/no-raw-interpolation` injection guard to hold a redundant file.
+
+GATES. `build` 0; `fmt` 0; `lint` 0; `check` 0; gql **5672** (+6) / native 1438 / core 497 /
+gremlin 2927 / mcp 14 / cli 46, all 0 fail.

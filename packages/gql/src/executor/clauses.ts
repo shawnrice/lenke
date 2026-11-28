@@ -1078,6 +1078,7 @@ export const ALGO_CONFIG_TYPES: ReadonlyArray<
   readonly [string, 'string' | 'number' | 'stringList' | 'boolean']
 > = [
   ['edgeLabel', 'string'],
+  ['edgeType', 'string'],
   ['direction', 'string'],
   ['weightProperty', 'string'],
   ['dampingFactor', 'number'],
@@ -1167,7 +1168,21 @@ export const applyAlgoConfig = (cfg: AlgorithmConfig, key: string, v: unknown): 
     throw new LenkeError(`config key '${key}' expects ${label}`, { code: ErrorCode.InvalidValue });
   }
 
-  (cfg as Record<string, unknown>)[key] =
+  /*
+   * NORMALIZE THE KEY, do not write it verbatim (item 2526). `edgeType` is the host API's own name
+   * for an edge type — `Graph.ts` uses it 124 times, and the constraint API is
+   * `createEdgeTypeConstraint` — while this surface spells it `edgeLabel`. The native engine accepts
+   * BOTH and honors them identically (measured: on a vertex with one `E` and two `F` edges,
+   * `{edgeType: 'E'}` and `{edgeLabel: 'E'}` both give degree 1, `'F'` both give 2), so a query
+   * valid on native was an error here.
+   *
+   * Writing `cfg.edgeType` would be WORSE than rejecting: the algorithms read `edgeLabel`, so the
+   * filter would be silently dropped — the exact failure both engines' comments say this validation
+   * exists to prevent ("a silently dropped key once hid the `pivots` bug").
+   */
+  const field = key === 'edgeType' ? 'edgeLabel' : key;
+
+  (cfg as Record<string, unknown>)[field] =
     expected === 'stringList' ? (v as unknown[]).filter((x) => typeof x === 'string') : v;
 };
 
