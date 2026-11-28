@@ -126336,7 +126336,7 @@ DECLINE.
 
 ### WHAT THIS LEAVES
 
-- **The residual is real, priced at 2.07x time / 2.42x bytes at degree 5, and unexplained.** The next
+- ~~[EXPLAINED AND FIXED at item 2456: it is `buckets.length = 0` + `push` in the multi-type fill — 152.1 B per vertex in isolation against 0.0 for index-and-overwrite, and the `Map.values()` iterator is FREE. ~160 B/vertex removed; NOT untyped-specific, the multi-label arm shared it.]~~ **The residual is real, priced at 2.07x time / 2.42x bytes at degree 5, and unexplained.** The next
   instrument is `alloc:count`'s allocation SITES on both spellings — it counts rather than times, so
   it is not subject to the perturbation above — and the question it must answer first is whether the
   44.5 B/row is per-edge or per-vertex.
@@ -126349,3 +126349,88 @@ DECLINE.
 
 GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; `git diff` clean for
 `packages/gremlin`, `packages/gql` and `packages/core`.
+
+## Item 2456 — **SHIPPED, and item 2455's unexplained residual has a name: `buckets.length = 0` followed by `push` costs 152.1 B PER VERTEX, against 0.0 for index-and-overwrite.** Truncating to zero lets V8 shrink the backing store, so every `push` re-grows it. **It was never untyped-specific — the MULTI-LABEL arm shares that fill and paid the same.** ~160 B/vertex removed, confirmed in isolation, in the engine at two degrees with a flat control, and in time at degree 1
+
+Item 2455 priced the residual at ~230 B per VERTEX (flat across a 10x degree sweep while the per-ROW
+figure fell as 1/degree) and could not explain it. The degree sweep was the discriminator, and the
+mechanism turned out to be four characters of array handling.
+
+### THE MECHANISM, isolated before the engine was touched
+
+```text
+    200,000 Maps of two entries each, the same work in four spellings
+      get('E') only                          0.0 B per map
+      for..of values() iterator              0.0 B per map     <- the iterator is FREE
+      values().next() once                   0.0 B per map
+      length = 0 then push                 152.1 B per map     <- THIS
+      index-and-overwrite with a count       0.0 B per map
+```
+
+**The `byLabel.values()` iterator is free** — V8 escape-analyses it away, which is worth knowing
+because it was my first suspect and it is exonerated. The cost is `buckets.length = 0` followed by
+`push`: truncating to zero lets V8 shrink the backing store, so each `push` re-grows it. Writing
+through an index and carrying the count separately leaves the store alone after the first few
+vertices.
+
+### THE FIX
+
+`buckets[bucketCount] = …; bucketCount += 1`, with the consumer loop bounded by `bucketCount` instead
+of `buckets.length` — in **both halves** of the branch (the lazy `*[Symbol.iterator]()` and the eager
+`drain()`), each of which had its own copy of the fill AND its own loop bound. Four sites, counted
+before patching; no `buckets.length` remains.
+
+**AND IT IS NOT AN UNTYPED FIX.** The multi-label arm (`out('E','F')`) shares that fill and paid the
+same per-vertex cost, so this lands on every spelling that reaches the branch. Item 2455 framed the
+residual as the untyped arm's; it was the branch's.
+
+### THE EVIDENCE, three independent instruments
+
+```text
+    BYTES, engine, N=200,000 (item 2455's figures as BEFORE)
+      degree   untyped before -> after    removed per VERTEX    typed control
+        1        275.5 -> 116.0 B/row           159.5           31.1 -> 31.1
+        5         76.6 ->  44.5                 160.5           31.3 -> 31.3
+```
+
+~160 B per vertex at both degrees, matching the micro's 152, with the typed control pinned on item
+2450's hand floor. **Degree-invariance of the per-vertex figure is the check** — a per-edge term would
+not divide by degree.
+
+```text
+    TIME, arms alternated CHANGED / BASE / CHANGED, median of 9
+      cell                      CHANGED    BASE   CHANGED    verdict
+        deg 1 untyped              14.4    19.3     16.2     1.19-1.34x faster
+        deg 1 typed   [CONTROL]     8.8     8.5      9.2     flat, 1.08x spread
+        deg 5 untyped             150.5   187.0    179.5     1.04-1.24x
+        deg 5 typed   [CONTROL]   103.1   124.4    116.9     moved 1.21x
+```
+
+**At degree 1 the win clears the control's spread. At degree 5 it does NOT, and the control is why:
+it moved 1.21x on unchanged code**, so the untyped change's 1.04-1.24x there is inside the noise and
+the degree-5 time is **inconclusive**. That is what a per-vertex term predicts once it is amortized
+over five edges — the bytes still fall (76.6 to 44.5) because bytes are not load-sensitive, and the
+time signal shrinks below the harness's resolution.
+
+**Reporting the degree-5 time as a win would have been wrong**, and only the control says so. An
+earlier single-arm run had put the same typed control at 98.5 ms where a previous run gave 50.6 — the
+load sensitivity item 2448 measured (one cell in 30 off by 1.8x), caught here by alternation.
+
+### ONE FUZZ RUN FAILED, AND THE STRUCTURE SETTLES IT RATHER THAN THE COUNT
+
+`bun run fuzz` reported 56 pass / 1 fail once; four subsequent runs were clean at 57. The count alone
+would be weak evidence. What settles it: **`bun run fuzz gremlin` passed 45/45 in EVERY run including
+the failing one**, so the failure was in a non-Gremlin fuzzer — and a change confined to
+`packages/gremlin` cannot reach the GQL-against-Rust differential. That is item 2440's known
+divergence at its measured ~1-in-17 rate.
+
+Also recorded because it nearly hid the failure: my check read `exit=$?` **after** an `echo`
+pipeline, so it printed the echo's status, not the command's. CLAUDE.md names that trap for
+`clippy | grep` and it is the same one.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; build 0. `packages/gremlin` 2,870 tests
+0 fail; `bun run fuzz` 57 pass 0 fail (four consecutive clean runs); `bun run fuzz gremlin` 45 pass 0
+fail. `hop-values.ts` restored to the CHANGED arm after the A/B and verified byte-identical. No new
+test: this is a pure refactor of a fill — same buckets, same order, same values — and item 2454's
+`untyped-hop-walk.test.ts` plus the multi-label suite already pin the observable behaviour, with the
+mutants from that item still covering the dedupe and the bucket enumeration.

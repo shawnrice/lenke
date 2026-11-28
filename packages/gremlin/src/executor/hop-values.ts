@@ -561,21 +561,35 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
               continue;
             }
 
-            buckets.length = 0;
+            /*
+             * INDEX-AND-OVERWRITE, NOT `length = 0` PLUS `push` (item 2456), and the difference is
+             * 152 B PER VERTEX measured in isolation — 0.0 B against 152.1 for the same work over
+             * 200,000 two-entry maps. Truncating to zero lets V8 shrink the backing store, so every
+             * `push` re-grows it; writing through an index and carrying the count separately leaves
+             * the store alone after the first few vertices.
+             *
+             * This was found as the untyped arm's residual (item 2455 priced it at ~230 B per VERTEX,
+             * flat across a 10x degree sweep while the per-ROW figure fell as 1/degree — the
+             * signature of a per-vertex term), but it was never specific to the untyped case: the
+             * MULTI-LABEL arm shares this fill and paid the same.
+             */
+            let bucketCount = 0;
 
             if (manyTypes === undefined) {
               // THE UNTYPED CASE: every bucket, in `byLabel`'s own insertion order, which is the
               // order `iterAllDeduped` uses.
               for (const bucketOfLabel of byLabel.values()) {
-                buckets.push(bucketOfLabel);
+                buckets[bucketCount] = bucketOfLabel;
+                bucketCount += 1;
               }
             } else {
               for (const t of manyTypes) {
-                buckets.push(byLabel.get(t));
+                buckets[bucketCount] = byLabel.get(t);
+                bucketCount += 1;
               }
             }
 
-            for (let i = 0; i < buckets.length; i += 1) {
+            for (let i = 0; i < bucketCount; i += 1) {
               const bucket = buckets[i];
 
               if (bucket === undefined) {
@@ -620,21 +634,35 @@ export const hopValuesShortcut = (plan: Plan, graph: Graph): HopValues | undefin
               continue;
             }
 
-            buckets.length = 0;
+            /*
+             * INDEX-AND-OVERWRITE, NOT `length = 0` PLUS `push` (item 2456), and the difference is
+             * 152 B PER VERTEX measured in isolation — 0.0 B against 152.1 for the same work over
+             * 200,000 two-entry maps. Truncating to zero lets V8 shrink the backing store, so every
+             * `push` re-grows it; writing through an index and carrying the count separately leaves
+             * the store alone after the first few vertices.
+             *
+             * This was found as the untyped arm's residual (item 2455 priced it at ~230 B per VERTEX,
+             * flat across a 10x degree sweep while the per-ROW figure fell as 1/degree — the
+             * signature of a per-vertex term), but it was never specific to the untyped case: the
+             * MULTI-LABEL arm shares this fill and paid the same.
+             */
+            let bucketCount = 0;
 
             if (manyTypes === undefined) {
               // THE UNTYPED CASE: every bucket, in `byLabel`'s own insertion order, which is the
               // order `iterAllDeduped` uses.
               for (const bucketOfLabel of byLabel.values()) {
-                buckets.push(bucketOfLabel);
+                buckets[bucketCount] = bucketOfLabel;
+                bucketCount += 1;
               }
             } else {
               for (const t of manyTypes) {
-                buckets.push(byLabel.get(t));
+                buckets[bucketCount] = byLabel.get(t);
+                bucketCount += 1;
               }
             }
 
-            for (let i = 0; i < buckets.length; i += 1) {
+            for (let i = 0; i < bucketCount; i += 1) {
               const bucket = buckets[i];
 
               if (bucket === undefined) {
