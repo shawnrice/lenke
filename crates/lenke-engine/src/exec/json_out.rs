@@ -414,10 +414,14 @@ fn try_fused_fold_json(plan: &Plan, store: &Store) -> Option<String> {
     Some(out)
 }
 
-/// Serialize a terminal single-column node-map projection directly to JSON, skipping the
-/// per-row `Value::Map` tree. Returns `None` (→ the caller's slower path) for anything
-/// not a node frontier rendered as an element/value map: an edge frontier, a scalar
+/// Serialize a terminal single-column ELEMENT-map projection directly to JSON, skipping the
+/// per-row `Value::Map` tree. Returns `None` (→ the caller's slower path) for a scalar
 /// projection, a lineage-tracked plan, or a non-`Slot` map argument.
+///
+/// It takes an EDGE frontier too: `g.E()` and GQL `MATCH ()-[e]->() RETURN e` are both accepted,
+/// measured at item 2551. This docstring previously listed "an edge frontier" among the declined
+/// shapes, which was false — the route table in `tests.rs` now pins what is accepted so the two
+/// cannot drift apart again.
 fn try_fused_map_json(plan: &Plan, store: &Store) -> Option<String> {
     if needs_lineage(plan) {
         return None;
@@ -878,4 +882,123 @@ fn write_node_value_map(
         }
     }
     out.push('}');
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /*
+     * Item 2551: these three rungs are tried in a chain — `try_fused_map_json`, then
+     * `try_fused_fold_json`, then `try_fused_maplit_json` — and NOTHING pinned which one answers
+     * which shape. `json_out.rs` had no tests at all.
+     *
+     * MEASURED: replacing any of the three with `return None` (so the caller falls back to the
+     * general build-then-serialize path) left **all 1371 tests passing**. That is expected and it
+     * is the problem: the fast and slow paths are byte-identical by design, so no differential,
+     * fuzzer or conformance test can see the route. Only `try_stream_varlen_json` was pinned, by
+     * two tests, which is why it is the control for this instrument.
+     *
+     * So this is the 2550 pattern applied where no plan marker exists: the rungs are PURE
+     * functions of `(&Plan, &Store)`, so the route is pinned by calling them directly. Every
+     * expectation below was measured by printing all three verdicts for each query, not reasoned
+     * out — and one of them refuted this module's own docstring (`g.E()` is accepted).
+     *
+     * The table asserts EXACTLY ONE rung accepts each shape. That is the half `rung-precedence-
+     * decides-speed` cares about: a willing rung starved by a broader one above it is invisible to
+     * timing, and a shape silently moving between rungs is what this catches.
+     */
+    fn fixture() -> Store {
+        let mut b = crate::store::Builder::default();
+        let a = b.node(
+            &["Person"],
+            &[("name", crate::value::Value::Str("alice".into()))],
+        );
+        let c = b.node(
+            &["Person"],
+            &[("name", crate::value::Value::Str("bob".into()))],
+        );
+        b.edge(a, c, "KNOWS");
+        b.build()
+    }
+
+    /// Which rung, if any, answers this plan — as a stable string so a failure NAMES the drift.
+    fn route(query: &str, store: &Store) -> String {
+        let plan = if query.starts_with("g.") {
+            crate::gremlin::parse(query)
+        } else {
+            crate::gql::parse(query)
+        }
+        .unwrap_or_else(|e| panic!("{query}: {e}"));
+
+        let taken: Vec<&str> = [
+            ("map", try_fused_map_json(&plan, store).is_some()),
+            ("fold", try_fused_fold_json(&plan, store).is_some()),
+            ("maplit", try_fused_maplit_json(&plan, store).is_some()),
+        ]
+        .iter()
+        .filter_map(|(name, hit)| if *hit { Some(*name) } else { None })
+        .collect();
+
+        match taken.len() {
+            0 => "general path".to_string(),
+            1 => taken[0].to_string(),
+            _ => format!("MORE THAN ONE: {taken:?}"),
+        }
+    }
+
+    #[test]
+    fn each_fused_json_shape_is_answered_by_exactly_one_rung() {
+        let store = fixture();
+
+        // (query, the rung that must answer it). Measured, item 2551.
+        for (query, want) in [
+            // `map`: an element frontier rendered as a map — nodes AND edges.
+            ("g.V()", "map"),
+            ("g.E()", "map"),
+            ("g.V().valueMap()", "map"),
+            ("MATCH (n:Person) RETURN n", "map"),
+            ("MATCH (n:Person)-[e:KNOWS]->(m) RETURN e", "map"),
+            // `fold`: a whole frontier collected into one list.
+            ("g.V().fold()", "fold"),
+            ("g.E().fold()", "fold"),
+            // `maplit`: a keyed projection, one key and several.
+            ("g.V().project('a').by('name')", "maplit"),
+            ("g.V().project('a','b').by('name').by(id)", "maplit"),
+            // DECLINED — these must reach the general path, or a rung has grown too broad.
+            ("g.V().values('name')", "general path"),
+            ("MATCH (n:Person) RETURN n.name", "general path"),
+            ("MATCH (n:Person) RETURN count(*)", "general path"),
+            ("MATCH (n:Person) RETURN collect(n) AS all", "general path"),
+        ] {
+            assert_eq!(
+                route(query, &store),
+                want,
+                "{query} changed rung — a fused path was lost, widened, or starved by one above it",
+            );
+        }
+    }
+
+    /// The table above is only meaningful if the rungs can DISAGREE. If every row read
+    /// "general path" it would pass with all three rungs disabled — the exact mutant that survived
+    /// 1371 tests.
+    #[test]
+    fn the_route_table_is_productive() {
+        let store = fixture();
+        let routes: Vec<String> = [
+            "g.V()",
+            "g.V().fold()",
+            "g.V().project('a').by('name')",
+            "g.V().values('name')",
+        ]
+        .iter()
+        .map(|q| route(q, &store))
+        .collect();
+
+        assert_eq!(
+            routes,
+            vec!["map", "fold", "maplit", "general path"],
+            "all four outcomes must be reachable, or the table cannot detect a lost rung",
+        );
+    }
 }

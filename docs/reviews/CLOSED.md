@@ -133011,3 +133011,79 @@ one.
 
 GATES. Tree clean (mutation-only tick, all arms restored and verified with `git status --porcelain`);
 Rust **default 1371 + 4 + 13 + 725**, 0 failed on the restored tree.
+
+## Item 2551 — **Five of six `try_*` fast-path rungs survive an always-decline mutant across ALL 1371 tests.** Three are now pinned by a route table, one docstring was false, and CI caught a process error of mine that local gates structurally could not
+
+### THE MEASUREMENT
+
+Item 2550 corrected the coverage predicate from "is the name mentioned" to "is the route asserted".
+Applying it to the six `try_*` rungs with no name mentions, each replaced by `return None` so the
+caller falls back to the general path:
+
+```text
+      try_all_values_bodies     (gremlin.rs)        1371 passed; 0 failed   SURVIVES
+      try_distinct_typed        (exec/distinct.rs)  1371 passed; 0 failed   SURVIVES
+      try_stream_varlen_json    (exec/varlen.rs)    1369 passed; 2 failed   pinned
+      try_fused_maplit_json     (exec/json_out.rs)  1371 passed; 0 failed   SURVIVES
+      try_fused_fold_json       (exec/json_out.rs)  1371 passed; 0 failed   SURVIVES
+      try_fused_map_json        (exec/json_out.rs)  1371 passed; 0 failed   SURVIVES
+```
+
+That is expected and it is exactly the problem: a fused path and the general path are byte-identical
+by design, so no differential, fuzzer or conformance test can see which ran. `try_stream_varlen_json`
+is the control that proves the instrument works.
+
+### THE RUNGS ARE LIVE — MEASURED, NOT ASSUMED
+
+A surviving mutant can mean an unreached line (2511's rule), so before writing anything the three
+`json_out` rungs were probed for what they actually accept. All three are live and the chain is
+cleanly partitioned:
+
+```text
+      g.V()  g.E()  g.V().valueMap()  MATCH … RETURN n  MATCH …-[e]->… RETURN e   -> map
+      g.V().fold()   g.E().fold()                                                 -> fold
+      g.V().project('a').by('name')   …project('a','b').by('name').by(id)         -> maplit
+      g.V().values('name')   RETURN n.name   RETURN count(*)   RETURN collect(n)  -> general path
+```
+
+### A FALSE DOCSTRING, FOUND BY THE PROBE
+
+`try_fused_map_json` documented itself as returning `None` for "an edge frontier, a scalar
+projection, …". **The scalar half is true and the edge half is false**: `g.E()` and GQL
+`MATCH ()-[e]->() RETURN e` are both ACCEPTED. Corrected in place, and the route table now pins what
+is accepted so prose and code cannot drift apart again.
+
+### THE FIX IS 2550'S PATTERN WHERE NO PLAN MARKER EXISTS
+
+`needs_path_elements` is testable because it marks `CountOnly` in the plan. These rungs mark nothing
+— but they are PURE functions of `(&Plan, &Store)`, so the route is pinned by calling them directly.
+The table asserts **exactly one** rung answers each shape, which is the half
+`rung-precedence-decides-speed` cares about, plus a productivity test so an all-"general path" table
+cannot pass.
+
+```text
+      D1  try_fused_map_json declines      2 FAIL   (survived 1371 before)
+      D2  try_fused_fold_json declines     2 FAIL   (survived 1371 before)
+      D3  try_fused_maplit_json declines   2 FAIL   (survived 1371 before)
+      D4  fold accepts EVERYTHING          2 FAIL   (the STARVATION direction)
+```
+
+D4 is the one timing could never distinguish: a rung that grows too broad starves the rungs below it
+while returning correct answers.
+
+**Still unpinned, and named rather than implied:** `try_all_values_bodies` and `try_distinct_typed`.
+Their accepting shapes were not found this tick, so no test was written for them — an unmeasured
+test would be the item 2549 mistake again.
+
+### CI CAUGHT A PROCESS ERROR THE LOCAL GATES CANNOT
+
+**Item 2549's CI went RED** — `fmt:check` on `docs/reviews/CLOSED.md` — while every local gate was
+green. The cause is ordering, and it is mine: I have been appending the CLOSED.md entry **after**
+running `bun run fmt` and `bun run check`, every tick. The appended prose was therefore never
+format-checked, and `prettier-scope-gotcha` already records that oxfmt is non-idempotent on markdown
+lists. HEAD passes now (2550's append happened to move the end-of-file condition), so nothing is
+broken — but the order is fixed from this item on: **write the entry, THEN run the gates, THEN
+commit.** This item did it in that order.
+
+GATES. `cargo fmt` 0; clippy 0 in BOTH configurations; Rust **default 1373 + 4 + 13 + 725** (+2);
+`bun run fmt`/`check` 0, run AFTER this entry was written.
