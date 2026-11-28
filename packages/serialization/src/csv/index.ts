@@ -1011,6 +1011,21 @@ const decodeEdgeRows = (rows: Cell[][], graph: Graph): Graph => {
 
   for (let r = 1; r < rows.length; r += 1) {
     const row = rows[r];
+
+    /*
+     * Item 2538: this loop read `row[1]`/`row[2]` BEFORE `applyEdgeRow` ran the width check, so a
+     * short edge row crashed with a raw `TypeError: undefined is not an object (evaluating
+     * 'row[2].text')` and NO error code — the exact failure `requireFixedColumns` was written to
+     * prevent ("surface a coded error rather than crash with a raw `undefined.text` TypeError").
+     * The guard existed; this caller bypassed it.
+     *
+     * Checking here also settles a cross-engine code difference. On a row that is BOTH short and
+     * referencing a non-node, the Rust codec reports `E_INVALID_VALUE` (width) while this path
+     * reported `E_MISSING_VERTEX` (endpoints), because the two checked in opposite order. Width
+     * first on both sides, so the shared corpus can assert one code.
+     */
+    requireFixedColumns(row, 4, 'edge');
+
     const fromId = unguardField(row[1].text);
     const toId = unguardField(row[2].text);
 

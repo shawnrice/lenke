@@ -775,6 +775,33 @@ fn join_labels<'a>(labels: &'a [&'a str]) -> Cow<'a, str> {
     )
 }
 
+/// A row must carry at least the fixed leading columns — `id` + `:LABEL` for a node, and
+/// `id` + `:START_ID` + `:END_ID` + `:TYPE` for an edge — before any property columns.
+///
+/// Item 2538: the decoder read those positions with `.unwrap_or("")`, so a SHORT row was filled
+/// with empty strings instead of rejected. Measured against the TS codec, which has exactly this
+/// check (`requireFixedColumns`): a node header of `:LABEL` alone with a data row `P` made this
+/// engine build a node with `id: "P"` and NO labels — the label silently promoted to the id —
+/// where TS raises `E_INVALID_VALUE`. The message and code mirror the TS side deliberately.
+///
+/// This is the NARROW rule TS applies. It deliberately does NOT validate the header's NAMES: a
+/// header row of `a,P` with no data rows is accepted by both engines, and a row with FEWER columns
+/// than the header (but at least the fixed prefix) is also accepted by both. Tightening further
+/// here would have created a NEW divergence rather than closing one.
+fn require_fixed_columns(row: &[Cell], fixed: usize, kind: &str) -> CodeResult<()> {
+    if row.len() < fixed {
+        return Err(crate::CodecError::new(
+            crate::codes::INVALID_VALUE,
+            &format!(
+                "csv: malformed {kind} row — expected at least {fixed} columns, got {}",
+                row.len()
+            ),
+        ));
+    }
+
+    Ok(())
+}
+
 fn split_labels(text: &str) -> Vec<String> {
     if text.is_empty() {
         Vec::new()
@@ -1016,6 +1043,8 @@ pub fn decode_into(input: &str, sink: &mut dyn GraphSink) -> CodeResult<()> {
     if let Some(header) = node_rows.first() {
         let prop_cols = prop_cols_from_header(header, 2);
         for row in node_rows.iter().skip(1) {
+            require_fixed_columns(row, 2, "node")?;
+
             let id = unguard_field(row.first().map(|c| c.text.as_ref()).unwrap_or(""));
             let labels = split_labels(row.get(1).map(|c| c.text.as_ref()).unwrap_or(""));
             let props = props_from_row(row, &prop_cols, 2);
@@ -1033,6 +1062,8 @@ pub fn decode_into(input: &str, sink: &mut dyn GraphSink) -> CodeResult<()> {
     if let Some(header) = edge_rows.first() {
         let prop_cols = prop_cols_from_header(header, 4);
         for row in edge_rows.iter().skip(1) {
+            require_fixed_columns(row, 4, "edge")?;
+
             let id = row
                 .first()
                 .map(|c| c.text.to_string())

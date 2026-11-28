@@ -73,6 +73,31 @@
       "format": "ndjson",
       "input": "{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"P\"],\"properties\":{\"k\":\"\\ud800\"}}",
       "code": "E_INVALID_JSON"
+    },
+    {
+      "format": "csv",
+      "input": ":LABEL\nP\n",
+      "code": "E_INVALID_VALUE"
+    },
+    {
+      "format": "csv",
+      "input": "id,:LABEL\na,P\nb,P\n=== EDGES ===\nid,:START_ID,:END_ID,:TYPE\ne1,a,b,\n",
+      "code": "E_INVALID_GRAPH_OP"
+    },
+    {
+      "format": "csv",
+      "input": "id,:LABEL\na,P\n=== EDGES ===\nid,:END_ID,:TYPE\ne1,a,R\n",
+      "code": "E_INVALID_VALUE"
+    },
+    {
+      "format": "pg-text",
+      "input": "a :\n",
+      "code": "E_INVALID_VALUE"
+    },
+    {
+      "format": "csv",
+      "input": "id,:LABEL\na,P\n=== EDGES ===\nid,:START_ID,:END_ID,:TYPE\ne1,a\n",
+      "code": "E_INVALID_VALUE"
     }
   ]
 }

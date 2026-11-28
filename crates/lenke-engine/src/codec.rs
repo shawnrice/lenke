@@ -727,9 +727,27 @@ impl lenke_codec::GraphSink for StoreSink {
         check_ingest_names(labels, props.iter().map(|(k, _)| *k))?;
         let from = endpoint(&mut self.store, from, self.strict)?;
         let to = endpoint(&mut self.store, to, self.strict)?;
-        // First label is the edge type; the rest are secondary (multi-label edges).
-        let mut labels = labels.iter();
-        let etype = labels.next().copied().unwrap_or("");
+        /*
+         * Item 2538: this used to be `labels.next().copied().unwrap_or("")`, so an edge arriving
+         * with NO labels was given the EMPTY STRING as its type rather than rejected. Measured on
+         * csv (`e1,a,b,` — an empty `:TYPE` cell): this engine built an edge with `labels: [""]`,
+         * which is unqueryable by any real type and round-trips, while the TS codec raises
+         * `E_INVALID_GRAPH_OP` from `assertValidEdge` ("an edge needs at least one label").
+         *
+         * The defect is in THIS BRIDGE, not in csv: `split_labels("")` correctly returns an empty
+         * vec, and the default here turned that into a value. So it was reachable from EVERY
+         * format that can present a label-less edge, not just the one that exposed it — which is
+         * why the fix belongs here and the engine's own NDJSON decoder already refuses the shape
+         * ("edge `labels` must have at least one entry").
+         */
+        let Some((etype, extra_labels)) = labels.split_first() else {
+            return Err(CodecError::new(
+                "E_INVALID_GRAPH_OP",
+                "an edge needs at least one label",
+            ));
+        };
+        let etype = *etype;
+        let labels = extra_labels.iter();
         let eid = match id {
             Some(id) => self.store.add_edge_with_id(id, from, to, etype),
             None => self.store.add_edge(from, to, etype),

@@ -132076,3 +132076,73 @@ third place to keep in sync, and the failure names the file that went dark.
 
 GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0; Rust **1361 + 4 + 13 + 725** (+1),
 0 failed; `bun run fmt`/`lint`/`check` 0; serialization **145** (+1), 0 failed.
+
+## Item 2538 — **the csv/pg-text acceptance sweep 2536 named: THREE real defects, two in Rust and one in TS, all found by one 31-row cross-engine diff.** csv and pg-text now have reject rows in the shared corpus, and all 31 rows agree on verdict AND code
+
+### THE INSTRUMENT
+
+2536 named the gap: csv and pg-text had ZERO reject rows in the shared corpus, so their ACCEPTANCE
+surface was unguarded on both sides. 2535's lesson says build the sweep rather than probe conditions,
+so: 31 documents (17 csv, 14 pg-text) generated from ONE table into BOTH a Rust sweep and a TS sweep,
+so the two sides cannot receive different bytes. Verdicts diffed offline.
+
+**29 of 31 agreed immediately.** The two that did not were both csv, both TS-strict / Rust-lax — the
+same direction as 2534 and 2535 — and neither was mere laxity:
+
+```text
+      DOCUMENT                   ts                      rust (before)
+      header `:LABEL`, row `P`   reject E_INVALID_VALUE  ACCEPT -> node id="P", labels=[]
+      edge row `e1,a,b,`         reject E_INVALID_GRAPH  ACCEPT -> edge labels=[""]
+```
+
+The first silently promotes the LABEL to the id. The second builds an edge whose type is the EMPTY
+STRING — unqueryable by any real type, and it round-trips.
+
+### THREE FIXES, AND A CORRECTION TO WHERE THE SECOND ONE LIVED
+
+**(a) csv row width.** `decode_into` read the fixed columns with `.unwrap_or("")`, so a SHORT row was
+filled with empty strings instead of rejected. The TS side already has exactly this check
+(`requireFixedColumns`), so the fix is a port of it — deliberately the NARROW rule: it does NOT
+validate header NAMES, because a header of `a,P` with no data rows and a row with fewer columns than
+the header are both accepted by BOTH engines. Tightening further would have created a new divergence
+instead of closing one.
+
+**(b) the label-less edge is a BRIDGE defect, not a csv one.** My first reading blamed
+`split_labels`; measured, it correctly returns an empty vec. The empty string came from
+`codec.rs`'s sink: `labels.next().copied().unwrap_or("")`. So it was reachable from **every** format
+that can present a label-less edge, not just the one that exposed it, and the engine's own NDJSON
+decoder already refuses the shape ("edge `labels` must have at least one entry"). Fixed in the sink,
+with `E_INVALID_GRAPH_OP` to match TS's `assertValidEdge`.
+
+**(c) a code-less TypeError in TS, found by chasing the last code difference.** After (a) and (b) one
+row still differed: on a document that is BOTH short AND referencing a non-node, Rust reported the
+width error and TS reported `E_MISSING_VERTEX`. Reading the message (not assuming it) showed why —
+TS's batch path resolves endpoints BEFORE `applyEdgeRow` runs the width check. Which means a row with
+fewer than three cells never reaches the check at all:
+
+```text
+      edge row with 2 cells   TypeError, NO CODE: undefined is not an object (evaluating 'row[2].text')
+      edge row with 1 cell    TypeError, NO CODE: … (evaluating 'row[1].text')
+```
+
+**That is precisely the failure `requireFixedColumns` was written to prevent** — its own comment says
+"surface a coded error rather than crash with a raw `undefined.text` TypeError". The guard existed and
+this caller bypassed it. Hoisting the check above endpoint resolution fixes the crash AND settles the
+code difference, so the corpus can assert one code. Item 2519's class, in a codec.
+
+### RESULT
+
+All 31 rows now agree on **verdict and code**. The shared corpus's reject table is 14 -> 19 rows, and
+**csv (4) and pg-text (1) have rows for the first time** — the gap 2536 named is closed. Three
+mutants, each caught by the corpus:
+
+```text
+      D1  csv row-width check removed                        rust: 1 FAIL
+      D2  label-less edge defaults to an empty type again     rust: 1 FAIL
+      D3  TS width check moved back after endpoint resolution ts:   1 FAIL
+```
+
+GATES. `cargo fmt` 0; **`cargo clippy --all-targets -D warnings` caught a real `unused_mut`** left by
+the sink rewrite (exit 101 — which is why the gates run as separate commands with their exit codes
+read), fixed, then 0; Rust **1361 + 4 + 13 + 725**, 0 failed; `bun run fuzz` **57 pass 0 fail**;
+`bun run fmt`/`lint`/`check` 0; serialization 145 / core 511 / native 1438 / gql 5672 / cli 46, 0 failed.
