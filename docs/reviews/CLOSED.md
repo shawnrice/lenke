@@ -123755,7 +123755,7 @@ GATES. `cargo fmt -- --check` 0 and `cargo clippy --all-targets -- -D warnings` 
 `bun run check` 0; `bun run test` 0; `bun run fuzz` 0; the oracle still 4,848/0 with route invariance
 2,424/0. No engine behaviour change: one instantiation seam, one probe, one knob.
 
-## Item 2426 — **THE RUST/WASM MULTI-HOP AGGREGATE'S PEAK MEMORY SCALES WITH THE PATH COUNT, and the engine ALREADY HAS the machinery to avoid it — but that machinery is UNREACHABLE: its gate compares a cost ESTIMATE of 39,600 against a threshold of 1,000,000 while the plan returns 4,320,000 rows.** Panic injection never fires. So the cheapest fix is the GATE, not an architecture change. **PRICED, NOT BUILT** — and the counting allocator could not have found this, because it measures TOTAL allocation and the question is PEAK
+## Item 2426 — **THE RUST/WASM MULTI-HOP AGGREGATE'S PEAK MEMORY SCALES WITH THE PATH COUNT, and the engine ALREADY HAS the machinery to avoid it — but that machinery is UNREACHABLE: its gate compares a cost ESTIMATE of 39,600 against a threshold of 1,000,000 while the plan returns 4,320,000 rows.** Panic injection never fires. ~~So the cheapest fix is the GATE, not an architecture change.~~ **REFUTED AT ITEM 2427: forcing the threshold saves only 6-11% and the streamed arm still scales LINEARLY, because it streams the INPUT chain and still returns ONE `Batch` holding every output row. The gate is not the fix.** **PRICED, NOT BUILT** — and the counting allocator could not have found this, because it measures TOTAL allocation and the question is PEAK
 
 Item 2425 found the Rust aggregate holding 0.77-0.82x of a full row materialisation to return one
 number, against the one-hop 0.14x streaming fold. This item asks where that memory goes and what it
@@ -123849,3 +123849,69 @@ GATES. `cargo fmt -- --check` 0 and `cargo clippy --all-targets -- -D warnings` 
 `--manifest-path`, read UNPIPED); `bun run check` 0. `exec.rs` restored from its pristine copy and
 verified byte-identical (`git status` clean for `crates/`), both the `.so` and the wasm artifact
 rebuilt afterwards, and the restored build re-measured at the original 10.25 MiB.
+
+## Item 2427 — **REFUTED, for one build and no engine change: the existing streamed projection does NOT bound peak memory. Forcing its threshold to 1.0 saves 6-11% and still scales linearly with rows.** So item 2426's "cheapest fix is the GATE" is wrong — making the machinery reachable buys almost nothing, and the aggregate's OOM ceiling needs a genuinely new fold-per-block arm that this path gives no head start on
+
+Item 2426 priced the Rust/wasm multi-hop aggregate's path-proportional peak, found the engine's own
+`pull_top_output_streamed` unreachable (a cost estimate of 39,600 against a 1,000,000 threshold), and
+named the cheap test it stopped short of: **force the threshold and measure whether block-wise
+execution bounds the high water.** It does not.
+
+### THE A/B, one knob, both arms rebuilt, same fixture and probe
+
+`stream_output_threshold()`'s `#[cfg(not(test))]` arm forced from `1_000_000.0` to `1.0`, wasm
+rebuilt, measured with `alloc:wasm` (linear memory, an EXACT high-water mark):
+
+```text
+    hop3, N=20,000           rows        MATERIALISED      STREAMED (forced)     ratio
+      FANOUT=3                540,000      30.88 MiB         27.44 MiB           0.89x
+      FANOUT=4              1,280,000      81.63 MiB         77.13 MiB           0.94x
+```
+
+**6-11%, and still LINEAR**: the streamed arm goes 27.44 to 77.13 MiB for 2.4x the rows — 2.8x the
+memory. Bounding the peak would have meant a figure that barely moved with the row count, which is
+what `hop2sum` looks like on the TS side after item 2421 (flat under 2 MiB across sizes and fanouts).
+
+### WHY, and it is obvious once measured rather than reasoned
+
+`pull_top_output_streamed` streams the INPUT chain — its own comment says the win is "avoiding the
+per-hop intermediate `Col`s" — and then **returns ONE `Batch` holding every output row**. The 6-11%
+IS those intermediate columns. The output itself is still materialised in full, so:
+
+- for the ROW form the peak cannot be bounded by anything, because the rows ARE the answer;
+- for the AGGREGATE the output is one row, so a fold-per-block WOULD bound it — but this path never
+  serves an aggregate (`Plan::Project` only), and nothing in it folds.
+
+**So the existing machinery is not a head start on the aggregate's problem.** It solves a different,
+smaller one. Item 2426's conclusion that "the cheapest fix is the GATE, not an architecture change"
+is REFUTED: the gate is cheap and worth 6-11% on the row form, and the aggregate's ceiling is
+untouched by it.
+
+### WHAT THIS LEAVES, stated precisely so the next person does not re-derive it
+
+The Rust/wasm multi-hop aggregate still holds memory proportional to the PATH count to return one
+row (`hop3sum` 10.25 to 32.75 MiB for 540k to 1.28M paths, item 2426). The only fix that bounds it is
+a fold-per-block arm in the aggregate path, which:
+
+- is a genuinely new arm, not a re-gating of an existing one;
+- sits in the `exec::pull` neighbourhood, where [[pull-alignment-is-load-bearing]] prices any edit at
+  1.08-1.24x on the filtered-count cluster, never a gain — "that's the toll";
+- must preserve summation order for byte-identity (`aggregation.rs`'s own header: "Summation order
+  is fixed for byte-identity: `sum`/`avg` must fold in the same order"), so a per-block fold has to
+  fold blocks in plan order and cannot reassociate across them;
+- needs `LENKE_OPT_FUZZ_SEEDS=500000 rewrite_fuzz` (200000 is NOT deep enough — 500000 found a wrong
+  answer at items 1148-1150) and mutants under `timeout 600 systemd-run … MemoryMax=16G`.
+
+**The 6-11% gate change is separately available and is NOT taken here**, for the reason item 2426
+recorded: the streamed and materialised projections have never been compared for EQUIVALENCE at a
+reachable size — the code says so itself — and promoting an untested-at-scale alternative to the
+default for 6-11% is a bad trade. An item that wants it should first run the two arms against each
+other for identical rows at a size above the threshold.
+
+GATES. `cargo fmt -- --check` 0 and `cargo clippy --all-targets -- -D warnings` 0 (per-crate with
+`--manifest-path`, UNPIPED). `exec.rs` restored from `target/pristine-exec-2427.rs` and verified
+byte-identical (`git status` clean for `crates/`), both the `.so` (`--features capi`) and the wasm
+artifact rebuilt afterwards, and **the restored build re-measured at 30.88 MiB — the materialised
+figure exactly**, which is what makes the A/B above a comparison and not two readings.
+
+No engine change: one forced constant, measured, and reverted.
