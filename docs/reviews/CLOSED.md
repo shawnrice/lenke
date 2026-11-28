@@ -126711,6 +126711,8 @@ differential, fuzz or conformance test can see a mutant in an admission conditio
 
 ```text
     18 detect* route detectors with no test by name
+      [item 2467 TOOK the four reachable detectChain*: 19 tests, 3 of 7 mutants — PARTIAL,
+       four survivors unresolved. chainStarCount declines at RUN TIME on a homogeneous-label graph.]
       [item 2466 TOOK detectNodeDistinctProjection + detectHopDistinctProjection: 11 tests,
        6 of 8; a conjunction's SKIP/LIMIT pair is ASYMMETRIC — skip load-bearing, limit dead.]
       [item 2465 TOOK detectVarLengthCount: 13 tests, 7 of 8 mutants; the mirror guard
@@ -127235,3 +127237,84 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check`
 **5,579 tests 0 fail** including the 11 new ones. Both mutated sources restored and verified
 byte-identical; the only change to `node-scan.ts` is the two comments. Scratch probes removed before
 the commit.
+
+## Item 2467 — **the four reachable `detectChain*` detectors, 19 tests — and the keeper is a FIXTURE finding, not a passing battery: `detectChainStarCount` is ADMITTED at depth >= 2 but declines at RUN TIME on a LABEL-HOMOGENEOUS graph, serving only once one off-label vertex exists.** My all-`P` fixture could reach its `null` and `undefined` states but NEVER its rows. **PARTIAL: 3 of 7 mutants caught; four survivors are UNRESOLVED and named below**
+
+Continuing item 2460's map. These four — `detectChainStarCount`, `detectChainFoldLevels`,
+`detectChainDistinctLevels`, `detectChainOrderedProjection` — were named in no test.
+
+### PROBING THE FIELD MAP FIRST WAS LOAD-BEARING, AGAIN
+
+```text
+    one hop   sum -> chainFoldLevels          DISTINCT -> chainDistinctLevels + distinctProjection
+              count(*) -> countShortcut ONLY  ORDER BY -> hopProjection
+    depth 2   count(*) -> countShortcut + chainStarCount    grouped -> hop2GroupedCount
+              sum -> chainFoldLevels + hop2FoldedAggregate  ORDER BY -> hop2OrderedProjection
+    depth 3   count(*) -> countShortcut + chainStarCount    grouped -> chainGroupedCount
+              sum -> chainFoldLevels + chainFoldedAggregate ORDER BY -> chainOrderedProjection
+```
+
+**At depth 2 the `hop2*` detectors take the grouped and ordered shapes**, so three chain detectors
+never light there; depth 3 is where they appear. And **`detectChainGroupedLevels` is a DIFFERENT
+detector from `detectChainGroupedCount`** — a depth-3 grouped count reaches the latter, so a test
+written from the detector name alone would have asserted the wrong field. `chainGroupedLevels` and
+`chainPagedProjection` were NOT reached by any shape probed here and remain uncovered.
+
+**The one-hop contrast is documented and sharp**: fold and distinct admit a single hop deliberately
+("ONE HOP IS ADMITTED HERE AND NOWHERE ELSE… at one hop the recurrence degenerates to
+`u_1(v) = in-degree(v)`", item 2420, and 2423 for the distinct twin) while star-count requires "TWO
+SEGMENTS MINIMUM". Four detectors over one clause shape, two admitting one hop and two refusing it.
+
+### THE FIXTURE FINDING, which a passing test would have hidden
+
+`detectChainStarCount` returns `Row[] | undefined`. On the all-`P` chain it is ADMITTED at depths 2,
+3 and 4 and returns **`undefined` at every one of them** — then **adding a single `:Q` vertex makes
+the same compiled function return rows**:
+
+```text
+    hops=1   admitted=false   (two segments minimum)          engine [{n:4}]
+    hops=2   admitted=true    UNDEFINED (run-time decline)    engine [{n:3}]
+    hops=3   admitted=true    UNDEFINED                       engine [{n:2}]
+    hops=4   admitted=true    UNDEFINED                       engine [{n:1}]
+    hops=2, one off-label vertex present  ->  [{n:3}]
+```
+
+So a label-homogeneous fixture can exercise `null` and `undefined` but never the rows — **the half a
+test most needs.** This is the first fixture in the survey to reach the third state at all; item 2465
+recorded it as unreached. The file now asserts all three.
+
+**Note the polarity**: `[[label-vacuity-gates-fast-paths]]` records GQL fast paths NEEDING a vacuous
+label, and this gate is the other way round. Both exist, so "label-homogeneous" is not a safe default
+for a route fixture in either direction.
+
+### PARTIAL, AND THE SURVIVORS ARE NAMED RATHER THAN GLOSSED
+
+```text
+    first cut (15 tests)   after 4 projection-shape fixtures (19 tests)
+      star-admits-window      SURVIVED    CAUGHT 18/1
+      star-admits-distinct    SURVIVED    CAUGHT 18/1
+      distinct-drops-distinct CAUGHT      CAUGHT 18/1
+      star-admits-grouped     SURVIVED    *** SURVIVED ***
+      fold-widens-agg-list    SURVIVED    *** SURVIVED ***
+      fold-ignores-far-read   (anchor x2) *** SURVIVED ***
+      ordered-admits-no-order SURVIVED    *** SURVIVED ***
+```
+
+The first cut caught ONE of six: **it covered the DEPTH axis thoroughly and the projection-shape axis
+not at all**, so the depth assertions were doing all the work. Four shape fixtures (a grouped count,
+a windowed count, `RETURN DISTINCT count(*)`, and `sum(DISTINCT …)`) took it to 3 of 7.
+
+**Four survivors remain and each needs its own flip probe** — apply the mutant alone, run a candidate
+list in both arms, and read which verdict moves. The likely shapes, from the guards: `star-admits-
+grouped` is probably refused anyway by `items.length !== 1` (a grouped projection has two items);
+`fold-ignores-far-read` needs an aggregate over the NEAR variable or a mixed expression
+(`sum(a.k)`, `sum(z.k + a.k)`); `ordered-admits-no-order` is probably refused downstream by
+`outputColumnSorts`. **None of that is asserted here, and this entry does not claim otherwise** —
+2461/2464/2465/2466 each resolved their survivors before closing, and this one has not.
+
+The 19 tests are real coverage regardless: four previously untested detectors, the depth and
+projection axes, and all three return states of the one detector that has them.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
+**5,598 tests 0 fail** including the 19 new ones. Both chain sources restored and verified
+byte-identical; no engine file changed. Scratch probes removed.
