@@ -193,6 +193,41 @@ describe('detectChainFoldLevels — one hop IS admitted (item 2420)', () => {
     expect(query(gMixed, text, {})).toHaveLength(1);
   });
 
+  /*
+   * THE FAR-READ GUARD IS LOAD-BEARING, and these three fixtures are the proof (item 2467). Its
+   * mutant survived the first battery; applying it alone and sweeping candidates showed exactly
+   * these three shapes flipping from declined to ADMITTED, while nothing else moved. The level
+   * recurrence folds a weight per FAR vertex, so an aggregate that reads anything else — the near
+   * variable, both, or neither — has no per-level weight to fold.
+   */
+  it('DECLINES an aggregate over the NEAR variable', () => {
+    const text = `${C3} RETURN sum(a.k) AS s`;
+
+    expect(routes(text).chainFoldLevels).toBeNull();
+    expect(query(gMixed, text, {})).toHaveLength(1);
+  });
+
+  it('DECLINES an aggregate over a MIXED expression reading both ends', () => {
+    const text = `${C3} RETURN sum(z.k + a.k) AS s`;
+
+    expect(routes(text).chainFoldLevels).toBeNull();
+    expect(query(gMixed, text, {})).toHaveLength(1);
+  });
+
+  it('DECLINES an aggregate over a CONSTANT, which reads no variable at all', () => {
+    const text = `${C3} RETURN sum(1) AS s`;
+
+    expect(routes(text).chainFoldLevels).toBeNull();
+    expect(query(gMixed, text, {})).toHaveLength(1);
+  });
+
+  it('ADMITS count(DISTINCT far) but not sum/avg(DISTINCT), which its own guard splits', () => {
+    // `if (distinct && name !== 'count')` — so the DISTINCT form is served for `count` alone.
+    expect(routes(`${C3} RETURN count(DISTINCT z.k) AS n`).chainFoldLevels).not.toBeNull();
+    expect(routes(`${C3} RETURN sum(DISTINCT z.k) AS s`).chainFoldLevels).toBeNull();
+    expect(routes(`${C3} RETURN avg(DISTINCT z.k) AS s`).chainFoldLevels).toBeNull();
+  });
+
   it('DECLINES a plain projection with no aggregate', () => {
     expect(routes(`${C3} RETURN z.k AS k`).chainFoldLevels).toBeNull();
   });

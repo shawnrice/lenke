@@ -126711,8 +126711,9 @@ differential, fuzz or conformance test can see a mutant in an admission conditio
 
 ```text
     18 detect* route detectors with no test by name
-      [item 2467 TOOK the four reachable detectChain*: 19 tests, 3 of 7 mutants — PARTIAL,
-       four survivors unresolved. chainStarCount declines at RUN TIME on a homogeneous-label graph.]
+      [item 2467 TOOK the four reachable detectChain*: 23 tests, 4 of 7 mutants, the three
+       survivors CONDITIONALLY REDUNDANT with verified counterfactuals (completed at item 2468).
+       chainStarCount declines at RUN TIME on a homogeneous-label graph.]
       [item 2466 TOOK detectNodeDistinctProjection + detectHopDistinctProjection: 11 tests,
        6 of 8; a conjunction's SKIP/LIMIT pair is ASYMMETRIC — skip load-bearing, limit dead.]
       [item 2465 TOOK detectVarLengthCount: 13 tests, 7 of 8 mutants; the mirror guard
@@ -127238,7 +127239,7 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check`
 byte-identical; the only change to `node-scan.ts` is the two comments. Scratch probes removed before
 the commit.
 
-## Item 2467 — **the four reachable `detectChain*` detectors, 19 tests — and the keeper is a FIXTURE finding, not a passing battery: `detectChainStarCount` is ADMITTED at depth >= 2 but declines at RUN TIME on a LABEL-HOMOGENEOUS graph, serving only once one off-label vertex exists.** My all-`P` fixture could reach its `null` and `undefined` states but NEVER its rows. **PARTIAL: 3 of 7 mutants caught; four survivors are UNRESOLVED and named below**
+## Item 2467 — **the four reachable `detectChain*` detectors, 19 tests — and the keeper is a FIXTURE finding, not a passing battery: `detectChainStarCount` is ADMITTED at depth >= 2 but declines at RUN TIME on a LABEL-HOMOGENEOUS graph, serving only once one off-label vertex exists.** My all-`P` fixture could reach its `null` and `undefined` states but NEVER its rows. ~~PARTIAL: 3 of 7 mutants caught; four survivors are UNRESOLVED and named below~~ **COMPLETED AT ITEM 2468: 23 tests, 4 of 7 caught, and the three remaining survivors are CONDITIONALLY REDUNDANT — each flip-verified to move nothing and commented with its counterfactual.**
 
 Continuing item 2460's map. These four — `detectChainStarCount`, `detectChainFoldLevels`,
 `detectChainDistinctLevels`, `detectChainOrderedProjection` — were named in no test.
@@ -127318,3 +127319,67 @@ projection axes, and all three return states of the one detector that has them.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
 **5,598 tests 0 fail** including the 19 new ones. Both chain sources restored and verified
 byte-identical; no engine file changed. Scratch probes removed.
+
+## Item 2468 — **ITEM 2467's FOUR SURVIVORS, RESOLVED: one was a FIXTURE GAP whose guard is load-bearing, and the three others are CONDITIONALLY REDUNDANT — each flip-verified to move NOTHING.** The load-bearing one, `reads.size !== 1 || !reads.has(farVar)`, is what keeps a fold over the NEAR variable, a MIXED expression or a CONSTANT out of the level recurrence; three fixtures, three new failures. 23 tests, 4 of 7 caught, every survivor with a verdict
+
+Item 2467 closed partial and said so. This finishes it before anything new, which is the only
+difference between a battery and a score.
+
+### THE FLIP SWEEP, one run for all four
+
+Apply each mutant ALONE, run nine candidate shapes through `compileLinear`, print admitted/declined
+per field, and read which verdict MOVES:
+
+```text
+    shape                        LIVE          m1 grouped   m4 distinct   m5 far-read   m7 no-order
+      grouped count              Fold .        .            .             .             .
+      sum(DISTINCT z.k)          Fold .        .            .             .             .
+      count(DISTINCT z.k)        Fold Y        Y            Y             Y             Y
+      avg(DISTINCT z.k)          Fold .        .            .             .             .
+      sum(a.k)   [NEAR var]      Fold .        .            .             *** Y ***     .
+      sum(z.k + a.k) [MIXED]     Fold .        .            .             *** Y ***     .
+      sum(1)     [CONSTANT]      Fold .        .            .             *** Y ***     .
+      plain, no ORDER BY         Ord  .        .            .             .             .
+      ordered                    Ord  Y        Y            Y             Y             Y
+```
+
+**`fold-ignores-far-read` flips three shapes and the other three mutants flip none.** That is the
+whole resolution, and it took one sweep rather than four guesses.
+
+### THE LOAD-BEARING GUARD, and why those three shapes
+
+The level recurrence folds a weight per FAR vertex, so an aggregate that reads anything else has no
+per-level weight to fold: the NEAR variable, BOTH ends, or NEITHER. Three fixtures added; the mutant
+now fails three tests rather than none.
+
+A fourth assertion pins a split the sweep exposed in passing: **`count(DISTINCT far)` IS admitted
+while `sum(DISTINCT)` and `avg(DISTINCT)` are not** — which is what `if (distinct && name !== 'count')`
+says, and is observable even though that guard's own mutant survives.
+
+### THE THREE REDUNDANT GUARDS, each kept with its counterfactual
+
+- **`(proj.groupKeys?.length ?? 0) > 0`** in `detectChainStarCount`: dead because a grouped
+  projection carries two items and `items.length !== 1` refuses it first. KEPT — that test is about
+  the projection's WIDTH, this one about whether a GROUP KEY exists, and a future one-column grouped
+  form (a `GROUP BY` whose key is not projected) would pass the width test while still needing
+  refusal.
+- **`distinct && name !== 'count'`** in `detectChainFoldLevels`: dead because the non-count DISTINCT
+  aggregates are refused further in. KEPT as the only LOCAL statement of that rule — a reader
+  extending the aggregate allowlist above it would otherwise have to discover the restriction
+  downstream.
+- **`(projection.orderBy?.length ?? 0) === 0`** in `detectChainOrderedProjection`: dead because
+  `outputColumnSorts` has no sort to resolve and the plan build refuses. KEPT as the EARLY exit — a
+  detector that exists for ordered projections should decline on a stated precondition, not on a
+  downstream accident.
+
+### AND THE BATTERY NEEDED REGENERATING TWICE IN TWO ITEMS
+
+Adding those three comments invalidated all seven mutant anchors — the same coupling item 2466
+recorded. Regenerated from the live files, anchors re-counted (all x1), battery re-run. **The two
+`starCount` mutants and `distinct-drops-distinct` stayed caught across the regeneration**, which is
+the check that the regeneration did not quietly weaken anything.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. `packages/gql`
+**5,602 tests 0 fail** including the 23 in this file. Both chain sources restored and verified
+byte-identical after the battery; the only changes to them are the three comments. Item 2467's entry
+and item 2460's index line both corrected from PARTIAL in this commit. Scratch probe removed.

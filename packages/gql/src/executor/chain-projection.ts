@@ -1232,6 +1232,15 @@ export const detectChainOrderedProjection = (
    * the value lives in `params` while this decision is cached across bindings. `sortRowsByColumns`
    * then applies `skip`/`limit` itself, including item 701's bounded top-k heap.
    */
+  /*
+   * CONDITIONALLY REDUNDANT AND KEPT (item 2467). Dropping it moves nothing — a depth-3 projection
+   * with no `ORDER BY` still declines, because `outputColumnSorts` further in has no sort to
+   * resolve and the plan build refuses. No candidate shape flipped.
+   *
+   * It stays as the EARLY exit: this detector exists for ordered projections specifically, and
+   * reaching the plan build for every unordered one would make the decline depend on a downstream
+   * accident rather than on a stated precondition.
+   */
   if ((projection.orderBy?.length ?? 0) === 0) {
     return null;
   }

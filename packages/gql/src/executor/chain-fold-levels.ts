@@ -406,6 +406,15 @@ export const detectChainStarCount = (
    * A GROUPED count is a DIFFERENT shape and `chainGroupedLevels` owns it — `sum(u)` is one total,
    * not one per group.
    */
+  /*
+   * CONDITIONALLY REDUNDANT AND KEPT (item 2467). Dropping it moves NOTHING: a grouped projection
+   * carries two items, so the `items.length !== 1` test above already refuses it. Measured by
+   * applying the mutant alone and sweeping candidate shapes — no verdict flipped.
+   *
+   * It stays because it states a different fact. `items.length !== 1` is about the projection's
+   * WIDTH; this is about whether a GROUP KEY exists, and a future one-column grouped form (a bare
+   * `GROUP BY` whose key is not projected) would pass the width test while still needing refusal.
+   */
   if ((proj.groupKeys?.length ?? 0) > 0) {
     return null;
   }
@@ -922,6 +931,15 @@ export const detectChainFoldLevels = (
     return null;
   }
 
+  /*
+   * CONDITIONALLY REDUNDANT AND KEPT (item 2467). With it dropped, `sum(DISTINCT z.k)` and
+   * `avg(DISTINCT z.k)` still decline — something further in refuses them — and no candidate shape
+   * flipped. What IS observable is the split it names: `count(DISTINCT far)` is admitted and the
+   * other DISTINCT aggregates are not, which `chain-level-detectors.test.ts` pins directly.
+   *
+   * It stays because it is the only LOCAL statement of that rule: a reader extending the aggregate
+   * allowlist above would otherwise have to discover the DISTINCT restriction downstream.
+   */
   if (distinct && name !== 'count') {
     return null;
   }
