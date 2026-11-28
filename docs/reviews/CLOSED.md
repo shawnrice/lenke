@@ -131450,3 +131450,60 @@ by hand — naming that limit beats implying the pair stays in sync by itself.
 
 GATES. `build` 0; `fmt` 0; `lint` 0; `check` 0; core **502** (+5) / gql 5672 / gremlin 2927 /
 native 1438 / sync 179 / cli 46 / mcp 14 / inspect 25, all 0 fail.
+
+## Item 2528 — **the `PropertyIndex` mutation survey: 7 mutants on the B+-tree's split path. All THREE wrong-answer mutants CAUGHT, by ONE brute-force differential test; all three survivors are PROVABLY EQUIVALENT.** No gap, no change — and the reason the "only one test reaches it" count is misleading is worth more than the verdict
+
+### THE QUESTION A MUTATION SURVEY ASKS
+
+The last four items asked "what input shape does this mishandle?" and "is this claim true?". This asks
+the third: **would anyone notice if this line were wrong?** `PropertyIndex.ts` is 703 lines, has never
+been mutated, and its most intricate region is the incremental leaf split — reachable only by putting
+more than `BTREE_ORDER` (64) values under one key.
+
+```text
+      MUTANT                                                  RESULT        VERDICT
+      M5  leaf `next` chain not relinked                       1 FAIL       caught
+      M6  separator key `right.values[0]` -> `node.values[0]`  1 FAIL       caught
+      M7  child spliced at `idx` instead of `idx + 1`          1 FAIL       caught
+      M3  bulk-build stride `BTREE_ORDER * 4`                  2 FAIL       caught
+      M1  leaf split `<= BTREE_ORDER` -> `<`                    0 fail      EQUIVALENT
+      M2  internal split `<= BTREE_ORDER` -> `<`                0 fail      EQUIVALENT
+      M8  split midpoint `>> 1` -> `>> 2`                       0 fail      EQUIVALENT
+```
+
+**Every survivor is an equivalent mutant, not a gap** — which is the determination rule (x) demands
+before calling a survivor anything. Splitting at exactly 64 instead of 65, or splitting lopsidedly,
+still produces a VALID B+-tree returning IDENTICAL answers; only the node shape differs. No
+correctness test can distinguish them, and none should.
+
+**The split path is REACHED**, which rules out the other two explanations for a survivor: making the
+branch `throw` fails exactly one test (501 pass / 1 fail), and this is a same-package test reading
+`src`, so no stale build is involved.
+
+### THE PART WORTH MORE THAN THE VERDICT
+
+All four catches come from ONE test — and naming it changes how that reads:
+
+```text
+      PropertyIndex range > B+-tree range scans match brute force across a multi-level tree
+```
+
+It is a **differential test against a naive scan**, so it caught three structurally distinct
+corruptions — a severed leaf chain, a mis-routed separator, a mis-ordered child — **without being
+written for any of them**. "Only one test reaches the split path" sounds like thin coverage and is
+not: for a data structure, one brute-force differential beats many hand-enumerated cases, because the
+oracle does not have to anticipate the failure mode.
+
+### THE 2523 PATTERN IS PRESENT BUT DOES NOT BITE
+
+`BTREE_ORDER = 64` is NOT exported, so every test exercising the split path sizes its fixture with a
+literal — item 2523's exact shape. Here the fixtures are 100 to 12,345, i.e. **78x to 190x the
+threshold**, against 2523's 22%. So the hazard is structurally present and practically irrelevant, and
+exporting the constant to close it would buy nothing measurable. Recorded rather than fixed.
+
+PROCESS. My `echo` wrapped a symbol in BACKTICKS inside double quotes and zsh command-substituted it
+("command not found: next") — the `no-backticks-in-git-commit-m` rule, hit outside a commit message
+this time. The mutant still applied and the row is valid, but the label printed wrong.
+
+GATES. `fmt` 0; `lint` 0; `check` 0; core 502, 0 fail. Tree clean — every mutant restored, verified by
+`git diff --stat` printing nothing.
