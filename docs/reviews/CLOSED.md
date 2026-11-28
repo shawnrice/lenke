@@ -127542,7 +127542,7 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check`
 **5,631 tests 0 fail** including the 14 new ones. Both sources restored and verified byte-identical
 after the battery; the only changes to them are the two comments. Scratch probes removed.
 
-## Item 2471 — **ITEMS 2467 AND 2469 PUT TWO LIVE DETECTORS ON RECORD AS CANDIDATE DEAD CODE, AND THAT WAS WRONG: both are reachable, my probe SHAPES were not.** Reading the guard chains fixed it in one run. 15 tests over the last three detectors on item 2460's map, 8 of 9 mutants caught — and the survivor is **unreachable by any query that PARSES**, which is stronger than the conditional redundancy found seven times before it
+## Item 2471 — **ITEMS 2467 AND 2469 PUT TWO LIVE DETECTORS ON RECORD AS CANDIDATE DEAD CODE, AND THAT WAS WRONG: both are reachable, my probe SHAPES were not.** Reading the guard chains fixed it in one run. **ITS ONE RECORDED OPEN QUESTION IS SETTLED AT ITEM 2477, AND ITS GUESS THERE WAS ALSO WRONG: the parser DOES bind `p =` to `pattern.pathVar`; a rewrite pass (`dropUnreadPathVar`) strips an unread one before the detectors run, and the guard is LIVE — disabling it flips `RETURN count(p)` to ADMITTED.** 15 tests over the last three detectors on item 2460's map, 8 of 9 mutants caught — and the survivor is **unreachable by any query that PARSES**, which is stronger than the conditional redundancy found seven times before it
 
 `detectChainGroupedLevels`, `detectChainPagedProjection` and `detectShortestEndpointCount`. The map
 is now fully covered.
@@ -127958,3 +127958,67 @@ exactly that reason. **The 29.76 MiB is a MEMORY prize and must not be quoted as
 tick measured no time at all, and a DFS may well be slower per row.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change.
+
+## Item 2477 — **ITEM 2471's OPEN QUESTION IS SETTLED AND ITS GUESS WAS WRONG: the parser binds `p =` to `pattern.pathVar` exactly as written. A REWRITE PASS (`dropUnreadPathVar`) strips it before the detectors run.** And the guard is **LIVE, not dead** — disabling it alone flips `RETURN count(p)` from declined to ADMITTED
+
+### THE GUESS, AND WHY IT WAS WRONG
+
+Item 2471 recorded: "`shapeOf` tests `pattern.pathVar !== undefined` yet `MATCH p = ANY SHORTEST …`
+IS admitted. The likeliest explanation is that the parser binds `p =` somewhere other than
+`pattern.pathVar`." It does not. Printed from the real AST at
+`parts[0].clauses[0].patterns[0]`:
+
+```text
+    MATCH p = ANY SHORTEST (a:P)-[:E]->{1,3}(z:P) …    pathVar=p          selector=anyShortest
+    MATCH     ANY SHORTEST (a:P)-[:E]->{1,3}(z:P) …    pathVar=undefined  selector=anyShortest
+    MATCH p = (a:P)-[:E]->(z:P) …                      pathVar=p          selector=walk
+```
+
+The parser is doing its job. Getting here took one wrong navigation of the AST first — my first dump
+read `pathVar=undefined` for ALL THREE spellings, the plain `ANY SHORTEST` included, which cannot be
+right since that one certainly has a selector. **A reading that is wrong for a case you already know
+is the cheapest possible signal that the instrument, not the code, is at fault** — so the fix was to
+dump the whole tree and find the path rather than to reason about the value.
+
+### THE MECHANISM: A REWRITE PASS, NAMED IN THE PASS LIST
+
+`compileLinear` runs its detectors over `fast`, which is `PASSES.reduce(...)` over the clauses — not
+over the parsed clauses. `PASSES` contains **`dropUnreadPathVar`**. A `p` that no RETURN item or
+`WHERE` reads is GONE before `shapeOf` looks, so the guard never sees a value in the `RETURN count(*)`
+shape. The pass list's own comment already says `dropUnreadPathVar` runs before `dropUnreadGroupBinds`
+"because that one REFUSES outright on a pattern carrying a `pathVar`" — the same interaction, one
+layer up, documented and unconnected to this question until now.
+
+### THE GUARD IS LIVE, AND ONLY THE FLIP SWEEP COULD SHOW IT
+
+Both read-`p` shapes decline. **Declining is not evidence about WHICH condition did it** — a guard
+further down rejects just as quietly (`gate-returning-a-value`,
+`rung-precedence-hides-the-code-under-test`). Disabling `pattern.pathVar !== undefined` alone:
+
+```text
+    shape                        guard ON   guard OFF
+      RETURN count(p)              NULL     ADMITTED   <- THIS guard rejects it
+      WHERE path_length(p) > 1     NULL     NULL       <- refused elsewhere (the start-gate)
+      RETURN count(*)  [control]   ADMITTED ADMITTED   <- pass already stripped p
+```
+
+So `count(p)` is the shape that keeps the condition live: without it, a `count(p)` would be handed to
+a `count(*)` endpoint shortcut. **And the `WHERE` form is NOT evidence for this guard** — it declines
+either way, so pinning it as if it were would have been a test that passes for the wrong reason. The
+two are now pinned as separate `it` blocks saying which is which.
+
+### THE RESTORE TRAP FAILED SILENTLY, WHICH IS THE THIRD TIME THIS SHAPE HAS COST SOMETHING
+
+The A/B used `trap restore EXIT` with a RELATIVE pristine path, then `cd packages/gql` to run the
+probe. The trap fired, `cp` could not resolve the path from the new directory, and **the trap printed
+`RESTORED` while restoring nothing** — the mutant stayed in the tree with a success message on screen.
+Caught by checking `grep -c MUTANT` afterwards rather than trusting the message, then restored by hand
+and verified by re-running the probe (`count(p)` declines again).
+
+`ab-scripts-need-a-restore-trap` says to have a trap. **This adds: the trap's paths must be ABSOLUTE,
+and its success must be VERIFIED rather than announced.** A `cp` inside a trap is a command whose exit
+code nobody reads, in a directory nobody checked.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0; `bun test` in
+`packages/gql` **5655 pass / 0 fail**. No behaviour change — a corrected source comment and three tests
+replacing one that recorded the question.

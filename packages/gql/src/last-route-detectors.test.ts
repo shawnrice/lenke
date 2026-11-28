@@ -208,19 +208,50 @@ describe('detectShortestEndpointCount — ANY SHORTEST with a BOUNDED quantifier
     }
   });
 
-  it('ADMITS a path variable, which the `pattern.pathVar` guard looks written to refuse', () => {
+  it('ADMITS an UNREAD path variable, because a REWRITE PASS strips it before the detectors run', () => {
     /*
-     * OPEN QUESTION, recorded rather than claimed (item 2471). `shapeOf` tests
-     * `pattern.pathVar !== undefined` and returns undefined for it, yet
-     * `MATCH p = ANY SHORTEST …` IS admitted. The likeliest explanation is that the parser binds
-     * `p =` somewhere other than `pattern.pathVar`, which would make that condition dead for the
-     * same reason as the one above — but I have not confirmed where the binding lands, so this
-     * pins the OBSERVED behaviour only.
+     * SETTLED AT ITEM 2477, and item 2471's guess was WRONG. It supposed the parser bound `p =`
+     * somewhere other than `pattern.pathVar`. It does not — the parser sets `pattern.pathVar = 'p'`
+     * (verified against the AST at `parts[0].clauses[0].patterns[0]`).
+     *
+     * What actually happens is that `compileLinear` runs its detectors over `fast`, the output of
+     * the `PASSES` rewrite chain, and that chain contains **`dropUnreadPathVar`** — so a `p` that no
+     * RETURN item or WHERE reads is gone by the time `shapeOf` looks. The guard is not dead; it
+     * never sees the value in this shape.
      */
     const text = 'MATCH p = ANY SHORTEST (a:P)-[:E]->{1,3}(z:P) RETURN count(*) AS n';
 
     expect(routes(text).shortestEndpointCount).not.toBeNull();
     expect(query(g, text, {})).toHaveLength(1);
+  });
+
+  it('DECLINES a READ path variable — and the `pathVar` guard is what rejects it', () => {
+    /*
+     * THE FLIP SWEEP IS WHAT MAKES THIS A VERDICT RATHER THAN AN OBSERVATION (item 2477). Both
+     * read-`p` shapes decline, but declining is not evidence about WHICH condition did it — a rung
+     * above or a later guard rejects just as quietly (`gate-returning-a-value`,
+     * `rung-precedence-hides-the-code-under-test`). Disabling `pattern.pathVar !== undefined` alone:
+     *
+     *   RETURN count(p)             NULL -> ADMITTED   <- this guard is the rejecting condition
+     *   WHERE path_length(p) > 1    NULL -> NULL       <- refused elsewhere (the start-gate)
+     *
+     * So `count(p)` is the shape that keeps the guard live, and the WHERE form is NOT evidence for
+     * it. Without the guard, a `count(p)` would be answered by a `count(*)` endpoint shortcut.
+     */
+    expect(
+      routes('MATCH p = ANY SHORTEST (a:P)-[:E]->{1,3}(z:P) RETURN count(p) AS n')
+        .shortestEndpointCount,
+    ).toBeNull();
+  });
+
+  it('a path variable READ BY A CLAUSE WHERE declines too, for a DIFFERENT reason', () => {
+    // Pinned separately from the case above precisely because the flip sweep showed these two are
+    // not the same finding: this one still declines with the `pathVar` guard removed.
+    expect(
+      routes(
+        'MATCH p = ANY SHORTEST (a:P)-[:E]->{1,3}(z:P) WHERE path_length(p) > 1 RETURN count(*) AS n',
+      ).shortestEndpointCount,
+    ).toBeNull();
   });
 });
 

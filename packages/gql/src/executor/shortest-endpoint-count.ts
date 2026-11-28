@@ -75,9 +75,16 @@ const shapeOf = (pattern: PathPattern, clauseWhere: Expr | undefined): Shape | u
    * stands. It is kept, and `last-route-detectors.test.ts` asserts the syntax error so the guard
    * becomes live the moment the grammar admits the shape.
    *
-   * `pattern.pathVar !== undefined` is an OPEN QUESTION, not a verdict: `MATCH p = ANY SHORTEST …`
-   * IS admitted, so the parser appears to bind `p =` somewhere other than `pattern.pathVar`. The
-   * test pins the observed behaviour; where the binding lands is unconfirmed.
+   * `pattern.pathVar !== undefined` IS LIVE, settled at item 2477 — and item 2471's guess about it
+   * was wrong. The parser does NOT bind `p =` elsewhere; it sets `pattern.pathVar` exactly as
+   * written. `MATCH p = ANY SHORTEST … RETURN count(*)` is admitted because the detectors run over
+   * `fast`, the output of `compileLinear`'s `PASSES` chain, and that chain contains
+   * `dropUnreadPathVar` — an unread `p` is gone before `shapeOf` ever looks.
+   *
+   * The guard earns its place on the shape where `p` IS read: disabling this condition alone flips
+   * `RETURN count(p)` from declined to ADMITTED, which would hand a `count(p)` to a `count(*)`
+   * endpoint shortcut. A clause `WHERE` reading `p` declines either way, via the start-gate below,
+   * so that form is NOT evidence for this condition — the flip sweep separated the two.
    */
   if (
     pattern.pathVar !== undefined ||
