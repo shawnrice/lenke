@@ -124893,7 +124893,7 @@ Its hand cost is 2.84 ms, 7.8% of the read. **That is a LOWER bound, not an uppe
 calls `matchesLabel`, where the hand version inlines `labels.has`, so the engine's term may be
 larger. 7.8% is under the bar on its own and plausibly over it in situ, which is exactly the case my
 own note at item 2438 says must be re-derived IN SITU rather than decided from a standalone number.
-**Not taken here, and not declined either** — it needs the ablation A/B, which is the next tick.
+~~[DECIDED at item 2441: ~1 ms of 37 in situ, 2-3%, where this hand estimate said 7.8% — DECLINED. A standalone estimate can err in EITHER direction.]~~ **Not taken here, and not declined either** — it needs the ablation A/B, which is the next tick.
 
 ### WHAT THIS CLOSES
 
@@ -125036,3 +125036,89 @@ GATES. No engine change: both engine files restored and verified (`vertexVersion
 `vertexIndexFor` 2), dist rebuilt, double `diff -q` byte-identical, `git diff` clean for
 `packages/gql` and `packages/core`. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. CI is green
 again on item 2439's push, which is the intermittency this entry is about.
+
+## Item 2441 — **THE FALLBACK'S UNCONDITIONAL FAR-LABEL TEST COSTS ~1 ms OF 37 IN SITU, 2-3%, where the hand estimate said 7.8% — so a standalone estimate can err in EITHER direction** (item 2438's understated a term by 2x; this one OVERSTATED by 2.5x). **DECLINED.** Two bigger findings fell out: **the REALISTIC label mode is 1.3-2.5x FASTER than the vacuous one** on this shape, inverting the usual assumption — and **`MIXED=1` cannot exercise a far-label test at all**, which is a limitation of a fixture this repo leans on heavily
+
+Item 2439 found the fallback applies `if (farLabel !== undefined && !matchesLabel(far, farLabel))` per
+far vertex where the CSR arm reads a `testFarLabel` flag computed once as
+`farLabel !== undefined && !vacuousLabel(graph, farLabel)` (item 1941). Hand-priced at 2.84 ms of
+36.6 and explicitly left for an in-situ measurement.
+
+### IN SITU, arms alternated, both label modes, one shape per process
+
+```text
+    N=200,000, warmup 3, one write per read so the FALLBACK runs
+      mode       LIVE      ABLATED    LIVE      the test costs
+      vacuous    37.25     36.04      36.84     ~1 ms, 2-3%
+      mixed      14.39     16.11      25.94     unusable — see below
+```
+
+**2-3%, not 7.8%.** The two LIVE arms agree to ~1% in the vacuous mode, so that row is solid. The
+likely reason the hand version overstated: in the vacuous mode the branch is TRUE for every vertex,
+so it is perfectly predicted and nearly free, where the standalone loop measured an added `Set`
+lookup in a tighter loop with different surroundings.
+
+**DECLINED, and not narrowly.** 2-3% is under the ~10% floor; the elision is VACUOUS-ONLY so it buys
+nothing for a schema with more than one label; and shipping it would touch up to TEN sites — the bare
+`if (farLabel !== undefined && !matchesLabel(far, farLabel)) {` appears **10 times** in
+`hop-projection.ts` — against [[executor-edits-perturb]]'s measured 16% cost to UNRELATED rows.
+
+**The methodological point is the keeper.** My item 2438 note says a standalone number must be
+re-derived in situ because it understated a rebuild by 2x. This one overstated by 2.5x. **So the rule
+is not "standalone numbers are low" — it is that the ERROR'S SIGN IS UNPREDICTABLE**, and the note has
+been corrected to say so.
+
+### THE REALISTIC LABEL MODE IS FASTER, which inverts the standing assumption
+
+```text
+      mode       isolated runs      stability
+      vacuous    37.40, 37.40       identical
+      mixed      15.23, 28.37       BIMODAL, both modes beat 37.40
+```
+
+[[label-vacuity-gates-fast-paths]] records that 43 gates across 7 files need a VACUOUS label and that
+`MIXED=1` is the realistic mode — the implication throughout being that vacuous is the FAST arm and a
+realistic schema loses the fast paths. **On this shape it is the other way round**: the realistic mode
+is 1.3-2.5x faster, and solidly so, because both of its modes beat the vacuous figure which is itself
+stable to 0.00 ms across runs.
+
+Not chased here — it needs its own instrument and a route ablation to say WHY (a non-vacuous label
+sends `candidateVertexSource` to the label bucket, and item 1688 records that making the walk
+sub-linear where the CSR arm is O(V)). Recorded because the standing assumption is now known to have
+at least one counterexample.
+
+### THE MIXED ARM IS BIMODAL AND SWITCHES MID-SERIES
+
+```text
+      mixed, run 2 series:   29.0  28.4  27.8  28.5  29.5  |  15.4  15.6
+```
+
+A step, not noise, and it lands after five reps. `AMORTIZE_ASKS` is 6 and `csrAskedBefore` carries the
+outgoing version's ask count forward, so this is the adaptive policy arming a different route PART WAY
+THROUGH a measurement. [[floor-arm-must-take-same-route]] predicts exactly this — _"min-of-N hides a
+second-ask arming, the per-rep SERIES shows it as a step"_ — and here a MEDIAN hides it too, which is
+why the two mixed medians came out 15.23 and 28.37 for identical code.
+
+So a mixed-mode figure on this route must be reported as TWO modes with the switch point, never as a
+single statistic. That is also why the A/B's mixed row is unusable rather than merely noisy: its three
+arms sampled different sides of the step.
+
+### `MIXED=1` CANNOT EXERCISE A FAR-LABEL TEST, and that bounds a tool this repo relies on
+
+All four cells of the A/B returned **200,007 rows** — including the ABLATED arm in the mixed mode,
+where removing a real filter should have let extra rows through. The reason is item 1943's design: the
+off-label vertex is ISOLATED, so it has no adjacency bucket and the `bucket === undefined || bucket.size === 0`
+check skips it BEFORE the label test is reached. The far-label test is therefore dead code for this
+fixture in both modes.
+
+**So `MIXED=1` is the right fixture for a ROUTE-CHOICE question (does a non-vacuous label change which
+arm runs?) and the wrong one for a PREDICATE-SELECTIVITY question (what does applying the label
+cost?).** It makes a label non-vacuous without making it selective. A probe that needs the latter has
+to give the off-label vertices EDGES, which changes the answer and so needs its own expected results.
+
+Wired as `bun run alloc:labeltest`. Knobs: `MIXED_MODE` (vacuous / mixed), `LBL_N`, `LBL_REPS`,
+`LBL_WARMUP` (declared, because this route is adaptive).
+
+GATES. No engine change: `hop-projection.ts` restored from `target/LIVE-hopproj-2441.ts`, ABLATE
+marker count 0, `diff -q` byte-identical, dist rebuilt inside the restore trap. `bun run fmt` 0;
+`bun run lint` 0; `bun run check` 0.
