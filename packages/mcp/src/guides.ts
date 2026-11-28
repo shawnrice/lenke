@@ -233,7 +233,7 @@ The **plus** side: unlike JS \`Date\`, lenke's temporal math never consults the 
 - **Store timestamps as temporals, not strings.** A string compared against a temporal silently matches nothing. If your data has string timestamps, wrap them: \`datetime(e.ts)\`, \`date(e.day)\`.
 - **Build temporal values with the constructor functions** \`date(x)\` / \`datetime(x)\` / \`zoned_datetime(x)\` / \`duration(x)\` (rather than \`CAST(x AS DATE)\`). The bare literal prefix is \`DATETIME '…'\`.
 - **Date-part extraction is the \`_year()\`/\`_month()\`/\`_day()\`/\`_hour()\`/\`_minute()\`/\`_second()\` extension** (leading-underscore sigil; see above), NOT SQL \`EXTRACT\`, a \`.year\` accessor, or a bare \`year()\`. Passing a string throws — wrap with \`date()\`/\`datetime()\` first.
-- \`min\`/\`max\` over a duration column work; a duration in a numeric \`sum\`/\`avg\` is a loud \`E_DATA_EXCEPTION\`. Out-of-range date fields (month 13) are a syntax error, but a valid-looking overflow like \`date('2025-02-29')\` rolls to \`2025-03-01\`.`,
+- \`min\`/\`max\` over a duration column work; a duration in a numeric \`sum\`/\`avg\` is a loud \`E_INVALID_VALUE\`. Out-of-range date fields (month 13) are a syntax error, but a valid-looking overflow like \`date('2025-02-29')\` rolls to \`2025-03-01\`.`,
 };
 
 const gremlinGuide: Guide = {

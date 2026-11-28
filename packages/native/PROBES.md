@@ -3553,3 +3553,29 @@ O(distinct) Set — **cheaper than the plain chain at every distinctness measure
 
 The fixture uses `i % distinct` and ASSERTS the distinct endpoint count, because this repo has twice
 been burned by generators whose `(a*k+b) % N` form silently collapsed (702, 1516/1518).
+
+## `error-code-contract-2518.ts` — does the code that ARRIVES match the documented one? (item 2518)
+
+```
+cd packages/native && bun run error-code-contract-2518.ts
+```
+
+The registry says "the CODE is the contract, not the message", so every row prints `error.code`.
+
+```
+      path() then values() — Gremlin            E_DATA_EXCEPTION   <- the one genuine site
+      GQL sum() over a duration column          E_INVALID_VALUE    <- 3 docs said E_DATA_EXCEPTION
+      GQL avg() over a duration column          E_INVALID_VALUE
+      GQL min() over a duration                 NO THROW           (the guide got this half right)
+      CONTROLS  syntax / unknown fn / $param    E_SYNTAX / E_UNKNOWN_FUNCTION / E_MISSING_PARAMETER
+      CONTROL   a valid query                   NO THROW
+```
+
+KEY A row reading `NO CODE` would break the registry contract outright — none do.
+
+KEY The survey behind it: all 17 canonical codes are live, and `E_DATA_EXCEPTION` was the only
+thrown-but-untested one (now 7 tests in `gremlin/src/executor/path-element-step-code.test.ts`).
+
+WARN **Count BOTH spellings when surveying codes.** The first pass searched the literal `'E_*'` string
+and reported seven dead codes; throw sites use the `ErrorCode.Name` symbol. Item 2501's rule, hit
+inside the sweep meant to find coverage gaps.

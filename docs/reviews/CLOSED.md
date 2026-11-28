@@ -130759,3 +130759,67 @@ Nothing to fix: a dedupe that did not hold the distinct set could not dedupe.
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Probe only.
 
 This closes the last open row from item 2505's sweep.
+
+## Item 2518 — **THE ERROR-CODE SURVEY: all 17 codes are live, ONE was thrown-but-untested, and THREE docs named the wrong code.** `E_DATA_EXCEPTION` now has 7 tests that pin the CODE (a code-swap mutant fails 4 of them), and the two `temporal.ts` comments plus the MCP guide that advertised it for duration overflow now say `E_INVALID_VALUE`
+
+### THE SURVEY, AND THE MEASUREMENT TRAP IT WALKED INTO FIRST
+
+`@lenke/errors` states a contract worth testing: "the **code is the contract**, not the message.
+Consumers should branch on `error.code` … so a reworded or typo-fixed message is never a breaking
+change." So: is every canonical code live, and is each one pinned by a test that asserts the CODE?
+
+**The first count said seven codes were never thrown. That was wrong, and wrong in the documented
+way** — it searched the literal `'E_UNSUPPORTED'` string, while nearly every throw site uses the
+`ErrorCode.Unsupported` SYMBOL. This is item 2501's rule (DO NOT INFER COVERAGE FROM A MISSING
+KEYWORD) reproducing itself inside the very sweep meant to find coverage gaps. Counting both spellings:
+
+```text
+      all 17 canonical codes ARE thrown somewhere      <- nothing dead
+      E_DATA_EXCEPTION: 3 src mentions, 0 tests        <- the only thrown-but-unnamed code
+```
+
+### THE ONE GAP, AND WHY IT WAS WORTH A TEST RATHER THAN A SHRUG
+
+`E_DATA_EXCEPTION` has exactly ONE live throw site: the "element step applied to a `path`" guard in
+`gremlin/src/executor/index.ts`. Its behaviour was verified against gremlin-console when written
+(`path().values(…)`, `.hasLabel(…)`, `.inV()`, `.out(…)`, `.id()`/`.label()` all ClassCastException),
+but nothing pinned the CODE — and the code is the half the registry says a consumer may depend on.
+
+`path-element-step-code.test.ts` adds 7 rows asserting `error.code`, including the NEGATIVE half that
+a positive-only test would have left open: `unfold()` first is legal, a CONSUMING `count()` is legal,
+and a plan with no `path()` at all takes the early-return gate.
+
+**MUTATION — all four mutants caught, and the localization is precise:**
+
+```text
+      code-swap    DataException -> InvalidValue        3 pass  4 FAIL   <- the key one
+      gate         always-returns                       3 pass  4 FAIL
+      no-throw     guard disabled                       file-level FAIL
+      no-passthrough  PATH_PASSTHROUGH short-circuits   6 pass  1 FAIL   <- exactly that row
+```
+
+The code-swap mutant is the whole point: **a message-only assertion would have survived it.** (The
+gate mutant's anchor failed to match on the first attempt and the harness SKIPPED it as ambiguous
+rather than reporting a pass — shell `\&` escaping had mangled the needle, not the code. A skip that
+announces itself is the behaviour the anchor-counting rule exists for.)
+
+### THREE DOCS NAMED A CODE THE IMPLEMENTATION DELIBERATELY DOES NOT USE
+
+`core/temporal.ts` states the decision explicitly on `durationOverflow`:
+
+> The engine collapses every runtime fault to `E_INVALID_VALUE` at the FFI boundary, so this matches
+> that code, NOT a distinct `E_DATA_EXCEPTION`.
+
+And then, ten lines below it, the comments on `addDurations` and `scaleDuration` both said "Throws
+`DataException` when a component leaves the safe-integer range", and `mcp/src/guides.ts` told
+consumers "a duration in a numeric `sum`/`avg` is a loud `E_DATA_EXCEPTION`". **Measured: both
+`sum()` and `avg()` over a duration column raise `E_INVALID_VALUE`**, and `min()` does not raise at
+all (which the guide got right). Nothing in any test pinned the wrong spelling, so by the item 2515
+precedent these are defects, not deliberate behaviour. All three now say `E_INVALID_VALUE` and the two
+`temporal.ts` comments cross-reference `durationOverflow` for the reason.
+
+The MCP guide is the one that mattered most: it is served to LLM clients, so it was actively
+instructing consumers to branch on a code this engine never raises for that fault.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0; core 497 / gremlin **2927** (+7) / gql
+5666 / mcp 10 / errors 6, all 0 fail.

@@ -991,7 +991,8 @@ const dateOverflow = (): never => {
 const anchorOrThrow = (t: Temporal, d: Duration): Temporal => addDurationTo(t, d) ?? dateOverflow();
 
 /** Component-wise sum of two nominal durations (nanos carry into secs). Throws
- *  `DataException` when a component leaves the safe-integer range. */
+ *  `E_INVALID_VALUE` when a component leaves the safe-integer range — see
+ *  `durationOverflow` for why this is NOT `E_DATA_EXCEPTION`. */
 const addDurations = (a: Duration, b: Duration): Duration => {
   let secs = a.secs + b.secs;
   let nanos = a.nanos + b.nanos;
@@ -1007,7 +1008,8 @@ const addDurations = (a: Duration, b: Duration): Duration => {
 };
 
 /** Scale every component by an integer factor (nanos carry into secs). Throws
- *  `DataException` when a component leaves the safe-integer range. */
+ *  `E_INVALID_VALUE` when a component leaves the safe-integer range — see
+ *  `durationOverflow` for why this is NOT `E_DATA_EXCEPTION`. */
 const scaleDuration = (d: Duration, n: number): Duration => {
   const totalNanos = d.nanos * n;
   const carry = Math.floor(totalNanos / 1_000_000_000);
