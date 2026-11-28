@@ -797,3 +797,135 @@ fn parallelism_config_sets_effective_thread_count() {
     g.set_limit(crate::store::ConfigId::Parallelism, 4);
     assert_eq!(g.effective_parallelism(), 4);
 }
+
+/// Item 2532: `validate_config` and its "did you mean" hint had NO Rust test. Measured: three
+/// mutants survived the whole 2088-test Rust suite — dropping `edit_distance`'s case folding on one
+/// side, narrowing the hint threshold from `<= 2` to `<= 0`, and picking the FARTHEST key instead of
+/// the nearest. All three are wrong BEHAVIOUR, not equivalent shapes, and the path is reachable
+/// (native emits the hint through `queryJson`), so none of the three usual explanations for a
+/// survivor applied.
+///
+/// The TS twin is pinned by `packages/gql/src/call-edgetype-alias.test.ts` (item 2526), but a TS test
+/// cannot catch a Rust regression — the two implementations share only the CONTRACT.
+///
+/// The hint's contract, as the messages on both engines show it:
+///   `edgeLable`     -> suggests `edgeLabel`  (a transposition: Levenshtein 2)
+///   `edgelabel`     -> suggests `edgeLabel`  (CASE-INSENSITIVE, per `edit_distance`'s own doc line)
+///   `dampingfactor` -> suggests `dampingFactor`
+///   `iteration`     -> suggests `iterations` (one deletion)
+///   `wgtProperty`   -> NO hint (past the distance-2 threshold)
+#[test]
+fn unknown_config_key_suggests_the_nearest_known_key() {
+    let cfg = |k: &str| vec![(k.to_string(), Value::Str("E".into()))];
+
+    // A transposition is distance 2 — inside the threshold.
+    assert_eq!(
+        validate_config(&cfg("edgeLable")),
+        Err("unknown config key 'edgeLable' (did you mean 'edgeLabel'?)".to_string()),
+    );
+
+    // CASE-INSENSITIVE: `edit_distance` lowercases BOTH sides, so an all-lowercase spelling is
+    // distance 0 from the camelCase key. Dropping the fold on either side breaks this row.
+    assert_eq!(
+        validate_config(&cfg("edgelabel")),
+        Err("unknown config key 'edgelabel' (did you mean 'edgeLabel'?)".to_string()),
+    );
+    assert_eq!(
+        validate_config(&cfg("dampingfactor")),
+        Err("unknown config key 'dampingfactor' (did you mean 'dampingFactor'?)".to_string()),
+    );
+
+    // One deletion.
+    assert_eq!(
+        validate_config(&cfg("iteration")),
+        Err("unknown config key 'iteration' (did you mean 'iterations'?)".to_string()),
+    );
+}
+
+#[test]
+fn a_far_key_gets_no_hint_rather_than_a_misleading_one() {
+    let cfg = |k: &str| vec![(k.to_string(), Value::Str("E".into()))];
+
+    // Past the `<= 2` threshold: rejected, but with no guess attached. Raising the threshold would
+    // start inventing hints; lowering it to 0 would silence the rows above.
+    assert_eq!(
+        validate_config(&cfg("wgtProperty")),
+        Err("unknown config key 'wgtProperty'".to_string()),
+    );
+    assert_eq!(
+        validate_config(&cfg("zzzz")),
+        Err("unknown config key 'zzzz'".to_string()),
+    );
+}
+
+#[test]
+fn the_hint_is_the_nearest_key_not_merely_a_reachable_one() {
+    /*
+     * This needs a typo with TWO candidates inside the threshold at DIFFERENT distances, or `min`
+     * and `max` pick the same key and the row proves nothing. My first version used `iteration`,
+     * whose only candidate within 2 is `iterations` — it passed under `max_by_key` too, so it was
+     * not an assertion at all (the item-2524 trap: a check that holds whether the code is right or
+     * wrong).
+     *
+     * Over the 19 `CONFIG_KEYS`, `orm` is the discriminator: `norm` at distance 1, `op` at 2.
+     */
+    let cfg = vec![("orm".to_string(), Value::Str("x".into()))];
+    let msg = validate_config(&cfg).unwrap_err();
+
+    assert_eq!(
+        msg, "unknown config key 'orm' (did you mean 'norm'?)",
+        "expected the NEAREST key"
+    );
+    assert!(!msg.contains("'op'"), "picked a farther candidate: {msg}");
+}
+
+#[test]
+fn edit_distance_is_a_metric_and_folds_case() {
+    // Identity, symmetry and the empty-string length — properties, not typed expectations, so they
+    // hold whatever the implementation. (`edit_distance` is private; this module is a child of
+    // `algo`, so it sees it.)
+    for (a, b) in [
+        ("edgeLabel", "edgeLabel"),
+        ("", ""),
+        ("iterations", "iterations"),
+    ] {
+        assert_eq!(edit_distance(a, b), 0, "identity failed for {a:?}");
+    }
+
+    for (a, b) in [
+        ("edgeLabel", "edgelable"),
+        ("iteration", "iterations"),
+        ("", "abc"),
+    ] {
+        assert_eq!(
+            edit_distance(a, b),
+            edit_distance(b, a),
+            "asymmetric on {a:?}/{b:?}"
+        );
+    }
+
+    assert_eq!(edit_distance("abc", ""), 3);
+    assert_eq!(edit_distance("", "abcd"), 4);
+
+    // The documented case-insensitivity, stated directly.
+    assert_eq!(edit_distance("EDGELABEL", "edgeLabel"), 0);
+    assert_eq!(edit_distance("edgeLabel", "EDGELABEL"), 0);
+
+    // Triangle inequality on a triple that would expose a broken recurrence.
+    let (x, y, z) = ("edgeLabel", "edgelable", "edgeType");
+    assert!(edit_distance(x, z) <= edit_distance(x, y) + edit_distance(y, z));
+}
+
+#[test]
+fn a_valid_config_passes_and_a_wrong_type_does_not() {
+    // CONTROL: widening the key set must not have weakened the type check.
+    assert_eq!(
+        validate_config(&[("edgeLabel".to_string(), Value::Str("E".into()))]),
+        Ok(())
+    );
+    assert_eq!(
+        validate_config(&[("iterations".to_string(), Value::Num(5.0))]),
+        Ok(())
+    );
+    assert!(validate_config(&[("iterations".to_string(), Value::Str("5".into()))]).is_err());
+}

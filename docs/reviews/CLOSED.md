@@ -131674,3 +131674,69 @@ a denominator". The boundary-spanning question is the right one; line counts are
 
 GATES. `fmt` 0; `lint` 0; `check` 0; core 511, 0 fail. Tree clean — `git diff --stat` empty after the
 mutation run.
+
+## Item 2532 — **FIRST MUTATION SURVEY OF THE RUST SIDE, and it found a real gap: three wrong behaviours in `algo.rs`'s "did you mean" hint survived all 2088 Rust tests.** `validate_config` and `edit_distance` had ZERO Rust coverage; 5 tests now catch all three. Plus a correction to item 2526's reading
+
+### WHY RUST, AND WHAT THE STATIC PASS SAID
+
+Every mutation survey so far (2528, 2530, 2531) was TypeScript and all three came back clean. The Rust
+half had never been mutated, and `rewrite_fuzz` guards only the optimizer. Per rule (xxvi) the static
+pass came first — and per rule (2531) NOT by ratio: Rust keeps its tests in dedicated `tests.rs`
+modules, so "0 `#[test]` in `algo.rs`" means nothing on its own.
+
+`algo/tests.rs` turns out to be 800 lines and 23 tests, and good ones — including
+`pagerank_two_cycle_is_uniform_and_sums_to_one` (the same mass-conservation invariant as the TS side)
+and `NOPE` x9 for the unknown-edge-label shape that item 2531 found covered in TS. **But
+`edit_distance` and `validate_config` appear ZERO times**, and no Rust test file anywhere mentions
+"did you mean" or "unknown config key".
+
+### THREE WRONG BEHAVIOURS, ALL SURVIVING 2088 TESTS
+
+```text
+      MUTANT                                            before      after (5 new tests)
+      R1  edit_distance case-folding dropped (one side)  0 fail      2 FAIL
+      R2  hint threshold `<= 2` narrowed to `<= 0`       0 fail      2 FAIL
+      R3  `min_by_key` -> `max_by_key` (farthest key)    0 fail      1 FAIL
+```
+
+None is an equivalent mutant: R1 silently kills the documented case-insensitivity, R2 kills every
+hint, and **R3 makes the engine actively misleading** — it would answer `orm` with "did you mean
+'op'?" instead of `'norm'`. Reachability is proven, not assumed: native emits the hint through
+`queryJson`, measured below.
+
+The TS twin IS pinned (item 2526's `call-edgetype-alias.test.ts` typo row), but **a TS test cannot
+catch a Rust regression** — the two implementations share only the contract. That is rule (xiii) in
+the other direction.
+
+### A CORRECTION TO ITEM 2526
+
+2526's parity table showed native's typo message as `unknown config key 'edgeLable'` with no visible
+hint, and I let that stand. **It was a truncation artifact of my own 44-character slice.** Measured
+untruncated, both engines agree exactly (native only adds its `lenke: query: ` prefix):
+
+```text
+      edgeLable      -> (did you mean 'edgeLabel'?)      both engines
+      edgelabel      -> (did you mean 'edgeLabel'?)      both — CASE-INSENSITIVE, as documented
+      dampingfactor  -> (did you mean 'dampingFactor'?)  both
+      iteration      -> (did you mean 'iterations'?)     both
+      wgtProperty    -> no hint                          both — past the distance-2 threshold
+      zzzz           -> no hint                          both
+```
+
+So the hint's cross-engine parity is CLEAN; what was missing was a Rust-side pin.
+
+### MY OWN ASSERTION THAT COULD NOT FAIL
+
+The first `the_hint_is_the_nearest_key` row used `iteration`, and **R3 survived it.** `iteration` has
+exactly ONE candidate within distance 2 (`iterations`), so `min` and `max` pick the same key — the
+item-2524 trap: a check that holds whether the code is right or wrong. Computing the distance table
+over all 19 `CONFIG_KEYS` found the discriminator: **`orm`, with `norm` at distance 1 and `op` at 2.**
+With that row, R3 fails.
+
+The fifth test is a property check rather than typed expectations — `edit_distance` identity,
+symmetry, empty-string length and the triangle inequality, plus the documented case fold stated
+directly (rule xxvii).
+
+GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0; Rust **1355 + 13 + 725** (+5), 0
+failed; `bun run fmt`/`lint`/`check` 0. Tree clean apart from the new tests (111 insertions, no src
+change).
