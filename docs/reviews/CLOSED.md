@@ -129325,3 +129325,75 @@ without noting that a second harness reads 7x.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No code change — a correction and a
 narrowing.
+
+## Item 2497 — **THE RELAXATION WORKS AND BREAKS 19 TESTS: dropping the quantifier requirement takes the target from 116.8 ms to 14.4 (8.1x, converged with the unbound spelling) and turns red 18 gql + 1 native tests — most of them ANSWER tests over multi-segment chains and interior variables.** Item 1662's composition warning, demonstrated rather than quoted. REVERTED
+
+### THE MISSING FACT, NOW MEASURED
+
+Item 2496 hypothesized that the shape falls between two passes. The AST confirms it — at parse, every
+one of these has `hopFrom === undefined`:
+
+```text
+      shape                                   hopFrom      quantifier   relVar
+      (a:P)-[e:E]->(b)   RETURN count(b.k)    undefined    undefined    e
+      (a:P)-[e:E]->(b)   RETURN count(*)      undefined    undefined    e
+      (a:P)-[e:E]->{1,2}(b:P) RETURN count(*) undefined    {min:1,max:2} e
+```
+
+`dropUnreadEdgeVar` requires a quantifier, so it refuses both plain hops; `dropUnreadGroupBinds`
+requires `hopFrom !== undefined`, so it refuses all three at this stage. **The shape has no owner.**
+
+That also sharpens item 2496's own wording: the quantifier is not the discriminator of the COST (a
+far-property projection is), but it IS the condition blocking the PASS. Two different things, and
+2496 conflated them in one sentence.
+
+### AND THE RELAXATION DELIVERS THE WIN
+
+Removing `rel.quantifier === undefined`, rebuilt (`packages/native` reads dists — the 2494 trap, and
+the first measurement this tick was against a stale one and read 365 ms, meaninglessly):
+
+```text
+      shape                       before     after     note
+      count(b.k)  WITH e          116.8 ms   14.4 ms   8.1x — CONVERGED with the unbound spelling
+      count(b.k)  no var           16.7      18.7      the spelling it must match
+      count(*)    WITH e            0.2       0.3      unchanged, as item 1568 measured
+      count(e.w)  READS e              —     48.9      c=200000, correct — `nameIsUnread` refuses
+      WHERE e.w > 3 READS e            —     14.6      c=85713, correct
+```
+
+The equivalent-spelling invariant is restored for the target, and both controls that READ `e` still
+answer correctly.
+
+### AND IT IS STILL WRONG, WHICH IS THE POINT
+
+```text
+      packages/gql     18 fail / 5655
+      packages/native   1 fail / 1438
+      bun run fuzz      0 fail  (all seven — so the fuzzers do NOT see this either)
+```
+
+One failure names the pin — _"a SINGLE HOP is left alone — no quantifier, and it costs nothing
+there"_ — and that test's rationale is the claim item 2496 already narrowed. **The other seventeen are
+the problem, and they are ANSWER tests, not route tests:** "the rung answers what the general matcher
+answers" over three segments, four segments, several columns and interior variables, an inward chain,
+a self-loop at depth three, and four rows of item 1816's blocked sweep including "agrees when an
+INTERIOR variable is read".
+
+So dropping the binding on a plain hop changes what the LATER passes and rungs see, and some of those
+routes are wrong once a chain carries interior variables. **That is item 1662's warning — "the
+one-line refusal was the easy half, and the rewrite's POSITION in the composition" was the rest —
+demonstrated with a count rather than quoted.** And `bun run fuzz` stayed green through all of it,
+which is its own finding: the differential fuzzers do not generate these chain shapes.
+
+### WHAT A CORRECT FIX NEEDS
+
+Not this condition, and not alone. The refusal is protecting composition, so a fix has to narrow to
+the shape that actually benefits — a SINGLE-SEGMENT pattern whose projection reads no interior
+variable — rather than letting every plain hop through. That is real work with a 19-test acceptance
+set already written, which is a good position to start from and not the tail of a long tick.
+
+REVERTED; tree clean; `packages/gql` 5655 pass / 0 fail and `packages/native` 1438 / 0 after the
+rebuild.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. No code shipped — a measurement, a
+located owner-less shape, and a demonstrated composition failure.
