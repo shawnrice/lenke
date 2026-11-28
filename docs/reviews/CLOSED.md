@@ -131507,3 +131507,65 @@ this time. The mutant still applied and the row is valid, but the label printed 
 
 GATES. `fmt` 0; `lint` 0; `check` 0; core 502, 0 fail. Tree clean — every mutant restored, verified by
 `git diff --stat` printing nothing.
+
+## Item 2529 — **three WRONG calendar answers survived ~10,800 tests**: the century leap exception and November's length had no discriminating fixture anywhere in the repo. 9 tests close it, each mutant now failing exactly one — and two of my own wrong assumptions had to be measured away first
+
+### THE 2528-INVERSE HYPOTHESIS, CONFIRMED
+
+Item 2528 found a brute-force differential makes a path mutation-proof. The inverse predicts that a
+module verified only by TYPED LITERALS is where a mutant hides. `core/temporal.ts` is **1336 lines of
+calendar math against a 274-line test file** whose assertions are hand-typed ("round-trips known
+dates") with no independent oracle — the two `new Date(` uses are fixture construction and a negative
+check.
+
+```text
+      MUTANT                                    core   gql   native   verdict
+      February never has 29 days                 0      1      1      caught, DOWNSTREAM only
+      drop the /400 rule (1600, 2000 not leap)   0      0      0      SURVIVED EVERYTHING
+      drop the /100 rule (1900, 2100 leap)       0      0      0      SURVIVED EVERYTHING
+      November has 31 days                       0      0      0      SURVIVED EVERYTHING
+```
+
+These are WRONG ANSWERS, not equivalent shapes, and `daysInMonth` IS reached (making it throw fails 3
+core tests) — so none of rule (x)'s three explanations applies. The cause is specific:
+`temporal.test.ts` uses 1600 and 2000, **both leap by the /400 rule**, and never 1900 or 2100, which
+are the only years that decide the `% 100` clause.
+
+Also worth its own line: February's rule was covered **only by gql and native**, not by the suite that
+owns the module. Running `bun test` in `packages/core` gave a green on "February never has 29 days".
+
+### TWO WRONG ASSUMPTIONS OF MINE, BOTH CAUGHT BY MEASUREMENT
+
+1. **I assumed `parseDate` REJECTS an impossible day.** It does not — `date('2025-02-29')` rolls to
+   `2025-03-01`, deliberately and documented in the MCP guide. My first version asserted rejection and
+   failed on LIVE code, which is how I learned it. (`Date.UTC` rolls identically, so it stays a usable
+   oracle: lenke and the runtime agree on 2021-02-29, 2023-04-31, 1900-02-29, 2020-02-29, 2023-11-31.)
+   A day of **32** is different again — an out-of-range FIELD like month 13, which THROWS; my sweep
+   asserted `last + 1` unconditionally and hit `1600-01-32`.
+2. **I assumed a `parseDate` differential would cover the leap rules. It does not.** The rewritten
+   roll-over test passed 6/6 and left ALL FOUR mutants alive — the same rule-(x) determination applied
+   to my own test. `daysInMonth` is called from exactly ONE site, `addCalendar`'s
+   `Math.min(d, daysInMonth(ny, nm))`, and `isLeap` only from `daysInMonth`, so **the day-CLAMP when
+   adding months is their entire observable surface.** `parseDate` validates fields and then uses the
+   day-number algebra, which rolls over arithmetically without consulting a month length.
+
+### THE FIX, AND WHY HALF OF IT CANNOT BE A DIFFERENTIAL
+
+`temporal-civil-differential.test.ts`, 9 tests, two halves:
+
+- **Differential (496 expect() calls)**: `daysFromCivil`/`civilFromDays` against `Date.UTC` across 13
+  discriminating years x 12 months, plus the roll-over equivalence. New coverage, independent oracle.
+- **Hand-computed, necessarily**: the month-clamp rows. **JS `Date` is NOT an oracle for month
+  arithmetic** — it ROLLS (Jan 31 + 1 month -> Mar 3) where calendar arithmetic CLAMPS (-> Feb 28/29).
+  No runtime oracle exists for that convention, so the four rules are stated directly.
+
+```text
+      MUTANT                 before (whole repo)      after (this file alone)
+      T1 drop /400            0 fail                   1 FAIL
+      T2 drop /100            0 fail                   1 FAIL
+      T3 February 28          0 fail (core)            1 FAIL
+      T4 November 31          0 fail                   1 FAIL
+```
+
+GATES. `build` 0; `fmt` 0; `lint` 0; `check` 0; core **511** (+9) / gql 5672 / native 1438 /
+gremlin 2927 / sync 179, all 0 fail.
