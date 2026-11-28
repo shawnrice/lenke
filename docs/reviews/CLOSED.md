@@ -124359,7 +124359,7 @@ GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0.
 (`git status` clean for `packages/gql`), with the dist rebuilt afterwards. `writemem-2432.mjs` gained
 `readWarm` and `readAfterWrite` phases.
 
-## Item 2434 — **THE WRITE-THEN-READ PENALTY IS AN O(|V| + |E|) CSR REBUILD, ON BOTH ROUTES, AND THIS CORRECTS MY OWN ITEM 2433's MECHANISM CLAIM ONE ITEM LATER.** `buildCsr` + `csrFor` are **46.4% of the after-write profile and ABSENT from the warm one**; on the old route item 1895's inline CSR arm goes **11 ms warm to 121 ms after a write**. Item 2433 concluded "the penalty is NOT the CSR cache" from a grep; the profile says it is, via TWO cache modules sharing one invalidation key
+## Item 2434 — **THE WRITE-THEN-READ PENALTY IS AN O(|V| + |E|) CSR REBUILD, ON BOTH ROUTES, AND THIS CORRECTS MY OWN ITEM 2433's MECHANISM CLAIM ONE ITEM LATER.** `buildCsr` + `csrFor` are **46.4% of the after-write profile and ABSENT from the warm one**; on the old route item 1895's inline CSR arm goes **11 ms warm to 121 ms after a write**. ~~[the "two separate builders" framing is WRONG, corrected at item 2437: there is ONE `buildCsr` with 20 call sites across nine modules, and `csrHopRoute` is defined IN `csr-cache.ts`. A shape can still DECLINE the CSR entirely, which `hopRows` does.]~~ Item 2433 concluded "the penalty is NOT the CSR cache" from a grep; the profile says it is, via TWO cache modules sharing one invalidation key
 
 Item 2433 measured the penalty (3.49-3.89x) and reasoned about its cause from `grep 'csrFor('`: the
 old route has no call site, therefore the CSR cache cannot be it. **That inference was wrong**, and it
@@ -124451,7 +124451,7 @@ GATES. No engine change: `bun run fmt` 0; `bun run lint` 0; `bun run check` 0.
 `chain-fold-levels.ts` restored from `target/pristine-cfl-2434.ts`, the ablation marker verified
 absent, `git status` clean for `packages/gql`, dist rebuilt.
 
-## Item 2435 — **41% OF THE CSR REBUILD IS INVARIANT UNDER AN EDGE WRITE AND IS THROWN AWAY ANYWAY.** `order` (3.49 ms) and the `idx` Map over |V| object keys (12.38 ms) are derived from `verticesById`, which an `addEdge` does not touch — only the `off`/`nbr` fill (22.70 ms) is actually dirty. **And exactly TWO of `topologyVersion`'s SIX bump sites are vertex-structural**, so the split is a two-line counter, not a redesign. The other 59% is blocked by CSR packing, which is the honest bound
+## Item 2435 — **41% OF THE CSR REBUILD IS INVARIANT UNDER AN EDGE WRITE AND IS THROWN AWAY ANYWAY.** `order` (3.49 ms) and the `idx` Map over |V| object keys (12.38 ms) are derived from `verticesById`, which an `addEdge` does not touch — only the `off`/`nbr` fill (22.70 ms) is actually dirty. **And exactly TWO of `topologyVersion`'s SIX bump sites are vertex-structural**, so the split is a two-line counter, not a redesign. ~~[the "two separate builders" framing is WRONG, corrected at item 2437: there is ONE `buildCsr` with 20 call sites across nine modules, and `csrHopRoute` is defined IN `csr-cache.ts`. A shape can still DECLINE the CSR entirely, which `hopRows` does.]~~ The other 59% is blocked by CSR packing, which is the honest bound
 
 Item 2434 localized the write-then-read penalty to an O(|V| + |E|) CSR rebuild. This prices the
 rebuild's PARTS, which is what decides whether anything is buildable.
@@ -124591,7 +124591,7 @@ the depth-3/4 trail corrections via `pairMultiplicities`. That half needs a layo
 cache key. **So the cliff is reduced, not removed**, and item 2434's 3.36-4.37x band becomes
 ~2.6-3.3x.
 
-Item 1895's SECOND builder — the inline CSR arm on the non-`csr-cache.ts` route, which item 2434
+Item 1895's SECOND builder ~~[the "two separate builders" framing is WRONG, corrected at item 2437: there is ONE `buildCsr` with 20 call sites across nine modules, and `csrHopRoute` is defined IN `csr-cache.ts`. A shape can still DECLINE the CSR entirely, which `hopRows` does.]~~ — the inline CSR arm on the non-`csr-cache.ts` route, which item 2434
 measured going 11 ms warm to 121 ms after a write — is untouched and wants the same treatment. Next.
 
 ### THE TEST HAS TEETH, verified against three mutants
@@ -124633,3 +124633,108 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0 (one `prefer-optiona
 exit 0; `oracle:onehopagg` 2,424 route-invariance cells identical / 0 differ, worst float error 0.014
 of item 2401's bound. `rewrite_fuzz` not run: it guards the RUST optimizer and this change is
 TS-only, touching neither a rewrite nor `hash_join` nor anything either reads.
+
+## Item 2437 — **`hopRows`'s 5x AFTER-WRITE COST IS A POLICY DECLINE, NOT A REBUILD: at 200,000 it builds NO CSR AT ALL**, proven by ablating `vertexIndexFor` to throw (`hopSum` throws, `hopRows` returns 200,000 rows). So item 2436's win reaches the fold/aggregate routes and NOT the plain projection — a 3-arm A/B reads **45.42 / 44.95 / 45.13**, the two LIVE arms bracketing PRECHANGE. **And this corrects BOTH halves of what I wrote one item ago**: there is one `buildCsr`, but "so item 2436 covers every route" is equally wrong
+
+Three separate claims of mine were tested this item. One survived, two did not.
+
+### THE A/B: ITEM 2436 NEITHER HELPS NOR HURTS `rows`
+
+```text
+    hopRows, N=200,000, ONE SHAPE PER PROCESS, arms alternated
+      ARM          vertexIndexFor   warm    afterWrite   ratio
+      LIVE              2           8.68      45.42      5.23x
+      PRECHANGE         0           8.85      44.95      5.08x
+      LIVE              2           8.96      45.13      5.04x
+```
+
+The arms agree to ~1%, and **the two LIVE readings differ from each other by as much as either differs
+from PRECHANGE** — which is the noise estimate the alternation exists to provide. No regression, and
+no improvement.
+
+That also settles the comparison that prompted this: `hopRows` reading 5.00x isolated against item
+2434's 3.36x is **invalid by position**, not a regression. At 2434 it was the FOURTH shape in a
+one-process sweep; isolated it is the first. Item 2430 measured that same bias at 1.6-1.9x on this
+very row.
+
+### THE ABLATION: `rows` BUILDS NO CSR, AND THAT IS WHY THE SPLIT CANNOT REACH IT
+
+A null A/B has two explanations — the change does not help, or the code never runs. Only an ablation
+tells them apart, so `vertexIndexFor` was made to throw:
+
+```text
+    with `vertexIndexFor` throwing, N=200,000
+      hopSum     THREW                      -> DOES build a CSR
+      hopRows    RAN OK, 200,000 rows       -> builds NO CSR
+```
+
+**At a 2,000-vertex fixture BOTH ran fine**, which would have been read as "neither uses it" — the
+route is size-gated, so the small fixture proves nothing. That is the same class of error as judging
+an adjacency change on a degree-4 fixture.
+
+### THE MECHANISM: THE SECOND-ASK POLICY IS DECLINING, DELIBERATELY
+
+The profile puts **+114 ms of the +121 ms** in one closure (`(anon)` at dist `:21666`, 8 ms warm to
+122 ms after a write, 23% to 79.5%), and that closure's own comment names the reason:
+
+> _"AND THE BUILD IS DEFERRED TO THE SECOND ASK (`csrAskedBefore`, item 1890's policy), because the
+> CSR is keyed on `topologyVersion`: a one-shot query and a write-heavy workload never pay for it.
+> Item 1889 measured that trade at 0.61x COLD without the policy and 1.01x with it."_
+
+`csrAskedBefore` counts asks per shape PER TOPOLOGY VERSION, carrying the outgoing version's counts
+forward as evidence (the adaptive form, item 2094, which exists because a fixed threshold always has
+a cliff at `reads == threshold`). A fixture that reads exactly ONCE per write presents a 1:1 ratio
+every version — **exactly the workload the policy is designed to decline** — so the CSR arm never
+arms and the query runs the fallback the comment describes: iterating `verticesById` and reading
+`adjTo.get(type)` per vertex, O(V) with a `Map` in the loop.
+
+So the 5x is not a rebuild and not a bug. **It is the engine choosing the slow arm on purpose**, and
+`hopRows` warm (8.7 ms, the CSR arm) against after-write (45 ms, the fallback) is the price of that
+choice at this ratio.
+
+### WHAT IS GENUINELY OPEN: ITEM 2436 MOVED THE POLICY'S INPUT
+
+The trade was priced when a rebuild cost ~30-38 ms. Item 2436 cut ~13 ms off it, so the read:write
+ratio at which building wins has MOVED, and item 1889's 0.61x-cold figure predates the split.
+Arithmetic at this fixture, which is a prediction and not a measurement:
+
+```text
+      fallback walk (what it does now)            45 ms
+      rebuild POST-2436 + array walk  ~ 22 + 9 =  31 ms
+```
+
+If that holds, the policy should now accept a 1:1 ratio where it used to refuse, which is a ~1.45x
+win on the commonest serving shape. **Not measured here** — it needs the policy forced on and
+measured against this row, plus a check that the cold one-shot case item 1889 protected does not
+regress, which is the whole reason the policy exists.
+
+### BOTH HALVES OF LAST ITEM'S REASONING WERE WRONG
+
+I opened this item believing the task was "apply item 2436's split to a second builder". The
+correction has two parts and I got the second one wrong too:
+
+- **RIGHT:** there is ONE `buildCsr`. `csrFor(` has **20 call sites across nine modules**
+  (`acyclic-count`, `chain-fold-levels`, `csr-cache`, `filtered-chain-csr`, `reachability`,
+  `three-hop-degree-product`, `two-hop-filtered-csr`, `var-length-count`, and `hop-projection` via
+  `csrHopRoute`, which is itself defined in `csr-cache.ts:340` and calls `csrFor` at `:371`). Item
+  2434's "`csrFor`'s only callers are in `chain-fold-levels.ts`" came from a `grep … | head -4`
+  whose TRUNCATED output I read as exhaustive. Items 2434, 2435 and 2436 all carry a "two separate
+  builders" framing that follows from it.
+- **ALSO WRONG:** I then concluded "so item 2436 already covers every route." One builder does not
+  mean every shape reaches it — a shape can decline the CSR entirely, which is exactly what
+  `hopRows` does. **A call graph says what CAN run; only an ablation says what DID.**
+
+### TWO HARNESS FAILURES, 13 MINUTES EACH
+
+- **`grep … | head -4` read as exhaustive.** Never pipe a search through `head` when the conclusion
+  depends on its completeness. (Compounding [[grep-silently-skips-unicode]], which is why `Graph.ts`
+  needs `str.count` in the first place.)
+- **A stray `cat > /dev/null` left in a command blocks forever on stdin.** The first A/B attempt ran
+  13 minutes producing a 0-byte output file; it was an editing artifact, and it is also a `>`
+  redirection this machine's rules forbid outright. Read a long command back before launching it —
+  and note that `| tail` inside a backgrounded subshell keeps the task's output file empty until
+  exit, so an empty file is not evidence of a hang.
+
+GATES. No engine change survives this item: `csr-cache.ts` restored from `target/LIVE-csrcache-2436.ts`
+and verified byte-identical, dist rebuilt afterwards. `bun run fmt` 0; `bun run lint` 0;
+`bun run check` 0.
