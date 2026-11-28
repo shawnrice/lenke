@@ -10,9 +10,17 @@ import type { FormatName } from './index.js';
 
 /**
  * The TS half of the cross-implementation codec conformance corpus. It reads the
- * SAME shared fixture (`/conformance/codec-corpus.json`) as the Rust crate's
- * conformance test and applies the SAME structural normalization, so the two
- * engines' accepted-input / round-trip behaviour cannot drift apart silently.
+ * SAME shared fixture (`/conformance/codec-corpus.json`) as the Rust half
+ * (`crates/lenke-engine/tests/codec_conformance.rs`) and applies the SAME structural
+ * normalization, so the two engines' accepted-input / round-trip behaviour cannot drift
+ * apart silently.
+ *
+ * That claim was FALSE between the retirement of `pl-graph-core` and item 2536: the Rust
+ * reader lived in that crate and was lost with it, so this file was the only reader and
+ * the `canonical_normal` comparison below was TS against a committed string — evidence
+ * that Rust once agreed, not that it still does. Items 2533-2535 then found three JSON
+ * acceptance divergences on exactly this surface. If either half moves, grep for
+ * `codec-corpus` and fix BOTH; one reader is not a cross-implementation test.
  * Edge ids are excluded from the comparison (pg-text drops them; Rust uses
  * `e{index}` while TS uses a random id for an id-less edge) and labels/props are
  * order-normalized.

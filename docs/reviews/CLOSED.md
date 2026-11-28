@@ -131944,3 +131944,71 @@ as the parser changes. It is now the thing that answers "what is left on this su
 GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0; Rust **1361 + 13 + 725** (+1), 0
 failed; `bun run fuzz` **57 pass 0 fail**; `bun run fmt`/`lint`/`check` 0; serialization 144 / core 511 /
 native 1438 / gql 5672 / cli 46 / mcp 14, 0 failed.
+
+## Item 2536 — **the cross-implementation codec conformance corpus had only ONE reader.** The Rust half died with `pl-graph-core` and nothing noticed, so the "cross-impl golden" was TS against a committed string. Restored, and it now catches the 2534/2535 bugs it was built to catch
+
+### THE FINDING
+
+`conformance/codec-corpus.json` exists as the durable fix for silent Rust↔TS codec drift — the notes
+that created it call it exactly that, and say the alternative is parity drifting silently because "each
+side only tests itself". The corpus's own `_comment` claimed it is "read by BOTH the Rust crate
+(crates/lenke-engine, conformance test) and the TS `@lenke/serialization` suite", and the TS half's
+docstring said it reads the same fixture "as the Rust crate's conformance test".
+
+**A sweep for every reference to the corpus found exactly ONE: the TS test.** The Rust reader lived in
+`pl-graph-core/src/codec/conformance.rs` and was lost when that crate was retired. So this line in the
+TS half, labelled the cross-impl golden —
+
+```ts
+expect(want).toBe(corpus.canonical_normal);
+```
+
+— was comparing TS against a COMMITTED STRING. It proves Rust agreed on the day the golden was dumped,
+by a crate that no longer exists. Worse, the comment had been _updated_ to name `lenke-engine` during
+the stale-reference sweep (`e7497a49`) without restoring the reader, so the claim read as current while
+nothing checked it. That is rule (xiv) at its most expensive: a doc claim that is both false and
+reassuring.
+
+**And it is the surface items 2533-2535 walked straight through** — three JSON acceptance divergences
+between the engines, on the codec surface this corpus was supposed to be guarding.
+
+### THE RESTORE
+
+`crates/lenke-engine/tests/codec_conformance.rs` reads the same fixture via `include_str!` (so a moved
+corpus fails at COMPILE time — the failure mode that let the old reader vanish silently) and asserts
+the same three things as the TS half:
+
+1. the canonical graph decodes to the golden normal form — now an actual cross-engine claim, because
+   both sides DERIVE the string from their own store instead of one side trusting it;
+2. it round-trips structurally through all five formats;
+3. every reject row is refused, with the same error CODE for the four shared codecs.
+
+`normalize`/`prop_repr` are a deliberate line-for-line port of the TS originals. `encode_value` is the
+value renderer because it is what the engine already uses for NDJSON and it matches `JSON.stringify`,
+number formatting included. Presence is tested with `has_prop`/`has_edge_prop`, NOT by checking whether
+a value reads as null, because a stored null is PRESENT (`null-first-class-policy`) and the golden
+depends on it — the canonical `KNOWS` edge carries `note=null`.
+
+### IT PASSED FIRST RUN, SO IT HAD TO BE MUTATED (rule x on my own test)
+
+Three mutants, each caught, and the first two are the point of the whole item:
+
+```text
+      T1  re-introduce 2534's number laxity (`01`, `5.` accepted)   1 FAIL
+      T2  re-introduce 2535's control-character hole                1 FAIL
+      G1  normalizer hides a stored null (value-based presence)     1 FAIL
+```
+
+T1 and T2 are the proof that matters: **the instrument that should have caught those two bugs now
+does.** G1 proves the golden half is load-bearing too, not just the reject table.
+
+### THE CORPUS GREW THE ROWS IT WAS MISSING
+
+Its reject table had 10 rows and **no row for any of 2533-2535** — and zero rows for csv and pg-text at
+all. Four ndjson rows added (leading zero, trailing dot, a raw tab in a string, an escaped lone
+surrogate), each `E_INVALID_JSON` as measured on the TS side rather than assumed. 14 rows now. The csv
+and pg-text gap is left as a named gap rather than filled blind.
+
+GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0; Rust **1361 + 3 + 13 + 725**, 0 failed
+(the 3 are the new file); `bun run fuzz` **57 pass 0 fail**; `bun run fmt`/`lint`/`check` 0;
+serialization 144, 0 failed.
