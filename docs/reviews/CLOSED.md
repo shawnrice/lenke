@@ -129939,3 +129939,68 @@ GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instruments only.
 OPEN — **`out,dedupe,out` at 5.22 MiB is neither floor nor full chain.** `dedupe` splits the chain,
 so one side may still build a CSR while the other does not. Partial and unexplained; small enough to
 leave, recorded so it is not re-found.
+
+## Item 2506 — **PRICED, AND IT IS A REAL GREMLIN-ONLY LEVER: a chain naming an empty edge label costs 25.91 MiB and 7.9 ms to return ZERO rows, where the GQL surface answers the same query in 0.35 MiB.** 74x, with matched productive controls proving the comparison fair — and GQL is the existence proof that the cheap answer is available
+
+### THE MEASUREMENT
+
+`nomatch-label-2506.mjs`, N=200,000, one shape per process, min-of-5 for time:
+
+```text
+      shape                       rows       MiB      ms
+      GREMLIN
+      out(E),out(E)      ctl    200000     14.55    12.4     productive
+      out(E)             ctl    200000      0.07     4.3     1 hop
+      out(E),out(NOSUCH)             0     25.91     7.9     THE FINDING
+      out(NOSUCH),out(NOSUCH)        0     12.99     6.8     same label twice
+      out(NOSUCH)                    0      0.05     0.4     zero-row floor
+      GQL, row-returning
+      -[:E]->-[:E]-> RETURN c.k 200000     12.99    11.9     productive
+      -[:NOSUCH]->   RETURN c.k      0      0.35     5.5     the fair comparison
+```
+
+**The productive arms match** — 12.99 MiB / 11.9 ms for GQL against 14.55 / 12.4 for Gremlin — so the
+two surfaces are doing comparable work and the no-match row is a like-for-like comparison.
+
+### THE THREE QUESTIONS, ANSWERED
+
+**(a) TIME is bad but not the worst of it.** 7.9 ms against a 0.4 ms zero-row floor is **20x to
+produce nothing** — so the walk does not fully short-circuit — but it is still LESS than the
+productive chain's 12.4 ms. **Memory is where it goes wrong: 25.91 MiB against 14.55 for the chain
+that actually returns 200,000 rows.** Paying ~1.8x the productive cost for an empty answer.
+
+**(b) GQL DOES NOT HAVE THE PROBLEM, and that is the important half.** 0.35 MiB against Gremlin's
+25.91 — **74x** — and GQL's no-match cost falls BELOW its own productive cost (0.35 vs 12.99) where
+Gremlin's rises ABOVE its own. One store, two planners, and one of them already does the right thing.
+So this is not an inherent cost of the data model; it is a missing check on one route.
+
+**I nearly recorded a confounded version of this.** The first run's GQL arms were all `count(*)`,
+which takes a counting shortcut and answered 200,000 rows in 0.3 ms / 0.35 MiB — a closed form, not a
+walk. Comparing that against Gremlin's row-producing chain would have been apples to oranges, and the
+74x above only means something because the row-returning arms were added and their productive
+controls line up.
+
+**(c) The information for a fix exists and is unused.** `Graph.ts` exposes `edgeLabels` and
+`labelCount`; `labelExists`, `hasEdgeLabel` and `knownEdgeLabel` appear NOWHERE in the tree. So no
+executor consults the label set before building, and the chain route builds a CSR per hop shape
+before it can discover a label is empty.
+
+### AND A THIRD CONFIRMATION OF "ONE CSR PER DISTINCT HOP SHAPE"
+
+`out(NOSUCH),out(NOSUCH)` — the missing label at BOTH hops — reads **12.99 MiB, almost exactly half of
+`out(E),out(NOSUCH)`'s 25.91.** Two DISTINCT labels build two CSRs; the same label twice shares one
+slot numbering. That is the prediction item 2505's arithmetic made, tested here on a third shape, and
+it holds.
+
+### THE FIX, AND WHY IT IS NOT IN THIS COMMIT
+
+A label-existence check ahead of the CSR build in the Gremlin chain route. It is answer-equivalent by
+construction — zero rows either way — which is exactly the shape this repo's `perf-gate-needs-its-own-test`
+rule warns about: **a route choice that cannot change the answer leaves every mutant surviving the
+differential suites.** So it needs the predicate extracted as a pure function with its own unit tests,
+not just a measurement. That is a clean next piece of work and not the tail of a long tick.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Instrument only.
+
+OPEN — the fix above. Also still open and small: `out,dedupe,out` at 5.22 MiB (item 2505), neither
+floor nor full chain.

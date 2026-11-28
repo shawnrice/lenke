@@ -3376,3 +3376,32 @@ WARN **A typo'd edge label in a chain is the most expensive shape in this family
 rows, because the CSRs are built before the engine can know the label is empty.
 
 The structure itself is a one-time bounded topology index and is CORRECT; there is no lever here.
+
+## `nomatch-label-2506.mjs` — what an EMPTY edge label costs (item 2506)
+
+```
+cd packages/native && node nomatch-label-2506.mjs
+SWAP_N=200000 REPS=5 node nomatch-label-2506.mjs
+```
+
+Times AND measures peak retained for a chain whose second hop names a label that matches nothing, on
+BOTH surfaces, one shape per process. N=200,000:
+
+```
+      GREMLIN  out(E),out(E)        200000 rows   14.55 MiB   12.4 ms
+               out(E),out(NOSUCH)        0 rows   25.91 MiB    7.9 ms   <- 1.8x the productive cost
+               out(NOSUCH),out(NOSUCH)   0 rows   12.99 MiB    6.8 ms   <- ~HALF: one CSR, not two
+               out(NOSUCH)               0 rows    0.05 MiB    0.4 ms   zero-row floor
+      GQL      -[:E]->-[:E]-> ROWS  200000 rows   12.99 MiB   11.9 ms
+               -[:NOSUCH]->   ROWS       0 rows    0.35 MiB    5.5 ms   <- 74x cheaper than Gremlin
+```
+
+**GQL already does the right thing; Gremlin pays 1.8x its productive cost to return nothing.** The
+productive arms match across surfaces (12.99 vs 14.55 MiB), which is what makes the 74x readable.
+
+WARN **Use the `gqlRows*` arms, not the `count(*)` ones, for any cross-surface comparison.** `count(*)`
+takes a counting shortcut that answered 200,000 rows in 0.3 ms / 0.35 MiB — a closed form, not a walk.
+Reading that against Gremlin's row-producing chain is apples to oranges.
+
+KEY `out(NOSUCH),out(NOSUCH)` at ~half of `out(E),out(NOSUCH)` is a THIRD confirmation of the code's
+"one CSR per hop shape … they share a slot numbering".
