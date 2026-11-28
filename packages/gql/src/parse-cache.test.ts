@@ -7,7 +7,9 @@ import { gql, parseCacheStats, query } from './index.js';
 // `query()` was `execute(parse(text, …), graph, params)` with no cache, so the same text was
 // re-lexed, re-parsed and re-compiled on every call — roughly HALF the cost of a cheap indexed
 // query, and the dominant term across the whole `bench:usage` serving surface (audit items 227,
-// 228). It is now a bounded LRU of 64 parsed statements with a second-sighting admission filter.
+// 228). It is now a bounded LRU of `PARSE_CACHE_CAP` parsed statements with a second-sighting
+// admission filter. Loop bounds below are sized off the reported `cap`, never a literal — item 2522
+// found the cap raised 64 -> 512 after these tests were written, which left them below it.
 //
 //   read: point lookup              75.4k -> 194.2k ops/s   2.58x   (native 240.1k)
 //   read: permission check          55.6k -> 132.8k         2.39x   (beats native 111.8k)
@@ -132,19 +134,28 @@ describe('eviction past the cap changes no answer', () => {
     g.addVertex({ id: `v${i}`, labels: ['T'], properties: { k: i } });
   }
 
-  test('200 distinct texts, then the first one again', () => {
-    // The cap is 64, so this evicts several times over. Each text is run TWICE so the admission
-    // filter promotes it and the eviction path is actually exercised.
+  test('more distinct texts than the cap, then the first one again', () => {
+    /*
+     * Sized off the REPORTED cap (item 2522). This said "200 distinct texts … the cap is 64, so this
+     * evicts several times over"; the cap was later raised to 512, leaving 200 well below it, so the
+     * block named "eviction past the cap" exercised no eviction when run on its own. Answers are
+     * identical either way, which is why nothing failed.
+     */
+    const { cap } = parseCacheStats();
     const first = 'MATCH (t:T) WHERE t.k = 0 RETURN count(*) AS c';
 
     expect(query(g, first)).toEqual([{ c: 1 }]);
 
-    for (let i = 1; i < 200; i++) {
+    for (let i = 1; i < cap * 2; i++) {
       const q = `MATCH (t:T) WHERE t.k = ${i % 20} RETURN count(*) AS c0${i}`;
 
       query(g, q);
       query(g, q);
     }
+
+    // The eviction path is REACHED, not merely available — without this the block can silently go
+    // vacuous again the next time the cap moves.
+    expect(parseCacheStats().size).toBe(cap);
 
     // Whether this hits or was evicted, the answer is the same — that is the whole requirement.
     expect(query(g, first)).toEqual([{ c: 1 }]);
@@ -171,10 +182,18 @@ describe('the BOUND holds, which no answer-comparing test can see', () => {
 
   g.addVertex({ id: 'x', labels: ['T'], properties: { k: 1 } });
 
-  test('500 distinct texts, each run twice so every one is promoted', () => {
+  test('more distinct texts than the cap, each run twice so every one is promoted', () => {
+    /*
+     * ITEM 2522 — this looped to a literal 500 while the cap was 512, so run ON ITS OWN the cache
+     * never reached the bound and `size <= cap` was VACUOUSLY true. Measured: with eviction disabled
+     * entirely, this file alone passed 18/18 while the full suite failed 4 — the guard worked only
+     * because ~5,666 preceding tests had already filled the PROCESS-GLOBAL cache. A guard whose
+     * teeth depend on test ordering is not a guard, so the bound is now `cap * 2` and the block
+     * asserts the cap is actually REACHED.
+     */
     const { cap } = parseCacheStats();
 
-    for (let i = 0; i < 500; i++) {
+    for (let i = 0; i < cap * 2; i++) {
       const q = `MATCH (t:T) WHERE t.k = 1 RETURN count(*) AS b${i}`;
 
       query(g, q);
@@ -185,6 +204,10 @@ describe('the BOUND holds, which no answer-comparing test can see', () => {
       expect(size).toBeLessThanOrEqual(cap);
       expect(seen).toBeLessThanOrEqual(cap);
     }
+
+    // A bound that is never approached holds trivially. Requiring it to be REACHED is what makes
+    // this fail when eviction is removed, independently of what any other test file ran first.
+    expect(parseCacheStats().size).toBe(cap);
   });
 
   test('and the cache is actually being used, so the bound is not vacuous', () => {

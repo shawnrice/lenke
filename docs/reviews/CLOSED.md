@@ -131050,3 +131050,64 @@ coincidentally empty.
 
 GATES. `build` 0; `fmt` 0; `lint` 0; `check` 0; core 497 / gremlin 2927 / gql 5666 / sync **179**
 (+3) / native 1438 / mcp 14 / cli 46 / serialization 144 / react 26, all 0 fail.
+
+## Item 2522 — **the growing-cache sweep is a CLEAN NULL (17 containers, all bounded or safe by type) — but it found that `parse-cache.test.ts`, written specifically to catch unbounded growth, could not catch it ALONE.** Its loop bounds were literals sized when the cap was 64; the cap is 512. Now sized off `cap`: the file alone goes 18 pass/0 fail → **13 pass/5 FAIL** under the eviction-disabled mutant
+
+### THE SWEEP ITSELF: NOTHING LEAKS
+
+Generalizing item 2521 past `new X()`/`[]`/`{}` to the slow-leak shape — a module-level container
+WRITTEN at runtime, which therefore grows. 17 of them in shipped src, and every one is bounded or
+safe by type:
+
+```text
+      11   WeakMap / WeakSet        keyed on objects, collected with the key   <- safe BY TYPE
+       2   parseCache + seenOnce    LRU, PARSE_CACHE_CAP = 512, evict-oldest
+       1   regexCache               .clear() at 1000 ("bound memory; patterns are typically few")
+       1   KEYWORDS_UPPER           built in a top-level loop over the fixed grammar keyword set
+       2   usage / others           .delete() in their own lifecycle
+```
+
+So there is no unbounded module-level cache. That is the answer to "does a long-lived server leak
+through a memo keyed on query text" — it does not.
+
+### WHAT THE SWEEP ACTUALLY FOUND, AFTER I GOT IT WRONG ONCE
+
+The cap is well tested — `parse-cache.test.ts` has 19 `parseCacheStats` assertions including
+`size <= cap`, LRU-vs-FIFO recency, and the bound holding while the admission gate is closed. Its own
+comment states the stakes exactly: "removing the eviction entirely changes no ANSWER, so every test
+above passes while the cache grows without limit. A memory leak is invisible to a correctness suite,
+so the bound needs its own check."
+
+**My first claim was that the check had gone vacuous, and that was WRONG.** `evict-reach-2522.ts`
+measured 199 entries against a cap of 512 and I read "the loop never evicts" as "the suite cannot
+catch this". Disabling eviction entirely failed **4 tests in the full gql suite**. The probe could not
+see that: the parse cache is PROCESS-GLOBAL, so in the real suite ~5,666 preceding tests have already
+filled it. An isolated-process probe cannot support a claim about the suite.
+
+**The real defect is narrower and it is genuine:**
+
+```text
+      eviction disabled, parse-cache.test.ts ALONE      18 pass  0 fail   <- BLIND
+      eviction disabled, full gql suite                      4 FAIL      <- caught, by accident
+```
+
+The file's loop bounds were literals — 200 in the eviction block, 500 in the bound block — sized when
+the cap was **64**. The cap was later raised to **512**, so run on its own the cache never reaches the
+bound and `size <= cap` is vacuously true. **The guard's teeth depended on test ORDERING**, and the
+file's own header invites running it alone. Two comments still said the cap was 64.
+
+### THE FIX, AND ITS MEASUREMENT
+
+Both loops are now sized off the REPORTED `cap` (`cap * 2`) — the pattern the later blocks in the same
+file already used, one block away, exactly as item 2521's `NO_EDGES` had its readonly sibling one file
+away. And each block now asserts the cap is **REACHED**, not merely respected, because a bound that is
+never approached holds trivially:
+
+```text
+      BEFORE, file alone + mutant      18 pass  0 fail
+      AFTER,  file alone + mutant      13 pass  5 FAIL     <- order-independent teeth
+      AFTER,  file alone + live code   18 pass  0 fail
+      AFTER,  full gql suite           5666 pass 0 fail
+```
+
+GATES. `fmt` 0; `lint` 0; `check` 0; gql 5666, 0 fail.

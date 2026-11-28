@@ -3606,3 +3606,23 @@ path. The probe now asserts `typeof handle === 'function'` and labels a TypeErro
 
 WARN The MCP control needs VALID ndjson. With `'{}'` it raises `E_INVALID_SHAPE` — throwing for an
 unrelated reason, which proves nothing about whether the new throw over-fires.
+
+## `evict-reach-2522.ts` — does the parse cache reach its cap in an ISOLATED process? (item 2522)
+
+```
+cd packages/gql && bun run evict-reach-2522.ts
+```
+
+Replays `parse-cache.test.ts`'s eviction loop verbatim and reads `parseCacheStats()`:
+
+```
+      after 200 distinct texts:   size  199    cap  512    seen    1
+```
+
+KEY The loop does not reach the bound, because its 200 was sized when the cap was 64.
+
+WARN **Do NOT read a claim about the SUITE off this probe** — I did, and it was wrong. The parse cache
+is PROCESS-GLOBAL; in the real suite ~5,666 preceding tests have already filled it, and disabling
+eviction fails 4 full-suite tests. What the isolation DID establish: `parse-cache.test.ts` run ALONE
+passed 18/18 with eviction disabled, so the guard's teeth depended on test ordering. Item 2522 sized
+both loops off the reported `cap` and made each assert the cap is REACHED; alone it now fails 5.
