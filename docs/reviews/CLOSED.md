@@ -125082,7 +125082,7 @@ realistic schema loses the fast paths. **On this shape it is the other way round
 is 1.3-2.5x faster, and solidly so, because both of its modes beat the vacuous figure which is itself
 stable to 0.00 ms across runs.
 
-Not chased here — it needs its own instrument and a route ablation to say WHY (a non-vacuous label
+~~[CHASED at item 2442: it is a ROUTE difference — a vacuous start label short-circuits to `farDriven` before the coverage check, which after a write walks an O(V) fallback. 2.52x available, but it is a TRADE (warm is 1.83x the other way) and a `csrIsBuilt` gate would be self-defeating.]~~ Not chased here — it needs its own instrument and a route ablation to say WHY (a non-vacuous label
 sends `candidateVertexSource` to the label bucket, and item 1688 records that making the walk
 sub-linear where the CSR arm is O(V)). Recorded because the standing assumption is now known to have
 at least one counterexample.
@@ -125122,3 +125122,101 @@ Wired as `bun run alloc:labeltest`. Knobs: `MIXED_MODE` (vacuous / mixed), `LBL_
 GATES. No engine change: `hop-projection.ts` restored from `target/LIVE-hopproj-2441.ts`, ABLATE
 marker count 0, `diff -q` byte-identical, dist rebuilt inside the restore trap. `bun run fmt` 0;
 `bun run lint` 0; `bun run check` 0.
+
+## Item 2442 — **ITEM 2441's "REALISTIC MODE IS FASTER" IS A ROUTE BUG, AND IT IS A 2.52x WIN AFTER A WRITE — but the obvious fix is SELF-DEFEATING and that is the finding.** A vacuous start label short-circuits to `farDriven` BEFORE the coverage check, so after a write it walks an O(V) fallback at 36.19 ms where the edge-driven path does 14.35. Warm it is the other way round — 8.54 against 15.62, **1.83x** — so this is a TRADE, and **gating on `csrIsBuilt` would stop the CSR ever being built**
+
+Item 2441 found the same query measuring 37.40 ms with a vacuous `:P` and 15.23 with one off-label
+vertex. That is not a label-cost difference; the two modes run DIFFERENT CODE.
+
+### THE CAUSE, from a profile rather than a reading of the dispatch
+
+```text
+    N=200,000, one write per read, 5 reads
+      vacuous   (anon) :21666   123 ms   81.7%
+      mixed     (anon) :21135    79 ms   56.3%
+```
+
+Different closures. `hop-projection.ts:3077`:
+
+```ts
+if (startLabel === undefined || vacuousLabel(graph, startLabel)) {
+  return farDriven(graph, params);
+}
+// … only now does `labelCoverage` decide between startDriven and the EDGE-driven walk
+```
+
+A vacuous start label takes `farDriven` **before the coverage check is reached**. A non-vacuous one
+falls through and, at coverage ≥ `EDGE_DRIVEN_MIN_COVERAGE` (0.4), takes the edge-driven walk. And
+`candidateVertexSource` is NOT the difference — it branches on `seedLabel`, not vacuity, so both
+modes iterate the same 200,000-vertex `verticesByLabel` Set.
+
+### THE TRADE, measured four ways with the ablation
+
+```text
+    N=200,000, LBL_REPS=11, warmup 3, arms alternated
+      cell                   LIVE     ABLATED    LIVE     verdict
+      vacuous  interleave    36.19     14.35     36.19    2.52x FASTER ablated
+      vacuous  WARM           8.54     15.62      8.57    1.83x SLOWER ablated
+      mixed    interleave    15.23     15.01     14.84    flat (control)
+      mixed    WARM          17.05     15.72     14.92    flat (control)
+```
+
+All twelve cells answer identically (200,011 rows interleaved, 200,000 warm). The two LIVE arms agree
+to 0.00 ms on `vacuous interleave` and to 0.03 on `vacuous warm`, so both rows are solid, and the
+`mixed` controls do not move — the ablation touches only the route a vacuous start label takes.
+
+**So the short-circuit is RIGHT warm and WRONG after a write.** Warm, `farDriven` walks the CSR and
+beats the edge-driven walk 8.54 to 15.62. After a write there is no CSR — `csrAskedBefore` declines
+at a 1:1 ratio (item 2438) — so `farDriven` degrades to the O(V) Map-in-the-loop fallback item 2439
+priced, and loses 36.19 to 14.35. Deleting the short-circuit trades the warm case away.
+
+### WHY THE OBVIOUS FIX IS SELF-DEFEATING, which is the part worth keeping
+
+The natural shape is "take `farDriven` only when the CSR is already there", and `csrIsBuilt` exists
+for exactly that — item 2005 built it as a pure peek so _"a caller can decline the BUILD rather than
+the STRUCTURE"_. **It would not work here.** The CSR only ever gets built because `farDriven` asks
+`csrHopRoute` for it; gate `farDriven` on the CSR existing and nothing ever asks, so it never exists,
+so the gate never opens. **The warm case's 8.54 ms would be lost permanently** — a gate that destroys
+the state it tests for.
+
+That is a general trap for any "use the fast structure if present" gate sitting ABOVE the code that
+populates it, and it is the reason this item does not ship a one-line change.
+
+### THE SHAPE THAT WORKS, not yet built
+
+Decide AFTER `csrHopRoute` has answered, not before it is asked:
+
+```text
+      csrHopRoute returns tables   -> the CSR walk, as today (8.54 ms, and the ask still counts)
+      csrHopRoute returns undefined -> prefer the EDGE-DRIVEN walk (14.35) over farDriven's own
+                                       O(V) fallback (36.19), when coverage permits it
+```
+
+This keeps the arming path intact — `csrAskedBefore` is still asked every read, so the second-ask and
+amortize policies behave exactly as item 2438 verified them — and only replaces what happens when the
+answer is "no CSR". The change therefore belongs in `farDrivenHopWalk`'s `viaCsr === undefined`
+branch, not in the dispatch gate above it.
+
+**Expected: warm unchanged at ~8.5, interleaved 36.19 to ~14.4 (2.52x), controls flat.** Worth
+building, and it needs the route decision as a PURE FUNCTION with its own unit test and mutants,
+because a route choice is answer-equivalent and every mutant otherwise survives
+([[perf-gate-needs-its-own-test]]); plus `onehopfam-2415.mjs` against
+[[executor-edits-perturb]]'s 16%.
+
+### TWO CAUTIONS ON THE EVIDENCE
+
+- **`mixed warm` is BIMODAL in the LIVE arm** and the step is visible in the series —
+  `27.1 35.6 29.5 27.6 27.9 | 14.8 15.1 14.8 17.1 15.3 15.0` — which is `csrAskedBefore` arming after
+  five reps. Its two LIVE medians (17.05 and 14.92) differ by 1.14x for identical code, so that row
+  bounds the noise rather than measuring the change. The ABLATED arm is flat there (15.72), which is
+  consistent with it never taking the CSR route at all.
+- **An env var did not reach the child.** A first profiling attempt prefixed `MIXED_MODE=$M` to a
+  `systemd-run` command; the variable never arrived and BOTH arms silently profiled the same mode
+  (153 and 151 ms, identical frames). It was caught only because the probe PRINTS the mode it ran —
+  without that line the conclusion would have been "the modes run identical code", the exact opposite
+  of the finding. `--setenv=` is required, and a probe should echo its own configuration.
+
+GATES. No engine change this item: `hop-projection.ts` restored, ABLATE marker count 0, `diff -q`
+byte-identical, dist rebuilt inside the restore trap, `git diff` clean for `packages/gql` and
+`packages/core`. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. `alloc:labeltest` gained a
+`WRITE_MODE` knob (interleave / warm), which is what made the deciding row measurable.

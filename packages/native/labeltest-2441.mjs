@@ -83,20 +83,34 @@ for (let i = 0; i < WARMUP; i += 1) {
   query(g, Q, {});
 }
 
+/*
+ * WRITE_MODE decides whether a CSR can exist at all, and it is the axis item 2442 needs.
+ *
+ *   interleave  one write per read, so `csrAskedBefore` declines and no CSR is ever built. This is
+ *               the case where the `vacuousLabel(startLabel) -> farDriven` short-circuit sends the
+ *               query to a `farDriven` walk with no CSR to walk.
+ *   warm        NO writes after the warmup, so the CSR is built and reused. This is the case the
+ *               short-circuit was presumably tuned for, and the one a route change must not
+ *               regress — measuring only `interleave` would report a win that costs more elsewhere.
+ */
+const WRITE_MODE = process.env.WRITE_MODE ?? 'interleave';
+
 const ts = [];
 let z = 0;
 let rows = 0;
 
 for (let i = 0; i < REPS; i += 1) {
-  // One write per read: the ratio at which `csrAskedBefore` declines, so the FALLBACK runs.
-  g.addEdge({
-    id: `z${z}`,
-    from: vs[0],
-    to: vs[1],
-    labels: ['E'],
-    properties: {},
-  });
-  z += 1;
+  if (WRITE_MODE === 'interleave') {
+    // One write per read: the ratio at which `csrAskedBefore` declines, so the FALLBACK runs.
+    g.addEdge({
+      id: `z${z}`,
+      from: vs[0],
+      to: vs[1],
+      labels: ['E'],
+      properties: {},
+    });
+    z += 1;
+  }
 
   const t = performance.now();
   const out = query(g, Q, {});
@@ -106,6 +120,6 @@ for (let i = 0; i < REPS; i += 1) {
 }
 
 console.log(
-  `   ${MODE.padEnd(8)} N=${N} warmup=${WARMUP}  median ${median(ts).toFixed(2)} ms  rows ${rows}` +
-    `   series ${ts.map((x) => x.toFixed(1)).join(' ')}`,
+  `   ${MODE.padEnd(8)} ${WRITE_MODE.padEnd(10)} N=${N} warmup=${WARMUP}  median ` +
+    `${median(ts).toFixed(2)} ms  rows ${rows}   series ${ts.map((x) => x.toFixed(1)).join(' ')}`,
 );
