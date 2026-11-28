@@ -132299,3 +132299,71 @@ alternative is a later pass re-deriving the same negative.
 GATES. Probe and branch instrumentation fully reverted (`git checkout`, then counted the needles back
 to 0); `cargo build --tests` 0; Rust **1363 + 4 + 13 + 725**, 0 failed. No source change, so no fuzz
 run was owed.
+
+## Item 2541 — **`bind.rs` had ZERO tests and one param position pinned; the source audit came back CLEAN, and then TWO of my own nine new rows turned out VACUOUS.** The vacuity is the finding worth keeping
+
+### WHY THIS MODULE
+
+`bind.rs` replaces every `Expr::Param` in a prepared plan with its value. 446 lines, **no in-file
+tests**, and exactly two references from test code: `a_param_prefix_seeds_like_a_literal_one` (ONE
+position — a `STARTS WITH` operand) and one parse-cache test. That is item 2539's shape again: a
+surface with many entry points pinned at one of them.
+
+### THE SOURCE AUDIT WAS CLEAN, AND NARROWED WHAT COULD EVEN BE WRONG
+
+The module's docstring claims both walks are exhaustive with no `_` arm, so a new `Plan`/`Expr`
+variant fails to compile until handled. **I suspected that claim** — the file contains exactly one
+`_ =>`. Read in context it belongs to an unrelated re-lowering check (`Plan::InsertFrom` over
+`Plan::Row`), itself documented at length with a recorded mutation survivor. **The claim holds**, and
+all 55 `Plan` variants are matched.
+
+So the compiler already guarantees variant coverage, which leaves exactly one uncatchable gap: a
+matched variant whose `Expr`-carrying FIELD is never recursed into — `Plan::Foo { a, .. }` compiles
+while ignoring `b`. Audited mechanically: **9 variants carry such fields, all 9 recurse into all of
+them.** Clean.
+
+**One phantom, from my own extractor.** The first pass flagged `ShortestPath { edge_pred }` as
+unrecursed. The real arm does `if let Some(p) = edge_pred`; my scan had searched forward from the
+first `ShortestPath` hit, which was **`ShortestPathEnum`** — a prefix of the name — and read the
+wrong arm. A source-text audit needs the variant matched with a word boundary.
+
+### THE TEST, AND THE TWO ROWS THAT PROVED NOTHING
+
+Nine rows, one per param position, each asserting the bound prepared plan **answers the same as the
+identical query with the value inlined**. The direct parse never produces a `Param`, so it is an
+independent path; a position where binding silently fails shows up as a different answer or an
+unbound-parameter error, with no hand-written expectation. (The alternative oracle — "no `Param`
+remains" — needs a visitor over every `Expr` variant, i.e. the same exhaustiveness problem one level
+down.)
+
+It passed first run, so it was mutated. **Two of the nine rows did not bite:**
+
+```text
+      MUTANT                                  first rows   after the fix
+      Q1  the IN needle no longer bound        1 passed     1 FAIL
+      Q2  ShortestPath edge_pred not bound     1 passed     1 FAIL
+      Q3  the NOT operand no longer bound      1 FAIL       1 FAIL
+```
+
+Both survivors were **my fixture's fault, and differently** — diagnosed by printing the plan shape
+rather than guessing:
+
+- **`x.s IN [$p, 'carol']` never becomes `Expr::In`** (`has Expr::In=false`). The parser lowers a
+  literal list to something else, so that row exercises a position but not the `In` arm. Added a row
+  with the parameter on the LEFT (`$p IN x.tags` over a list property), which does keep an
+  `Expr::In`.
+- **The ANY SHORTEST row was written `e.w IS NULL OR e.w > $p` over property-less edges.** `IS NULL`
+  short-circuits TRUE and the parameter is never evaluated — the row passed with `edge_pred` binding
+  DISABLED. **A guard added to make a row safe made it vacuous.** The fixture now builds through
+  NDJSON (`Builder` has no edge-property method) so the edges carry `w`, and the predicate is plain
+  `e.w > $p`.
+
+That second one is the same trap as `reproduce-the-short-circuit`, arriving from the opposite
+direction: there I added realistic data and the bug vanished; here I added a null-guard and the TEST
+vanished.
+
+All three mutants bite now. The module keeps its clean bill of health — this item buys the behaviour
+a pin it did not have, and buys the next reader the two vacuity traps.
+
+GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0; Rust **1364 + 4 + 13 + 725** (+1),
+0 failed; `bun run check` 0. No source change outside tests, so no fuzz run was owed.

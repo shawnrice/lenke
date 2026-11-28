@@ -4722,6 +4722,149 @@ fn group_by_a_temporal_key_over_a_frontier() {
 /// path that optimizes a still-parameterized plan — would silently drop the seek and leave a
 /// 72x-slower query that still answers correctly. Verified by plan, not by timing, because the
 /// claim is that the two spellings produce the SAME plan.
+/*
+ * Item 2541: a parameter must bind in EVERY position it can occupy, not just the one position a
+ * test happened to use.
+ *
+ * `bind.rs` has no in-file tests, and the only two references to it from test code are
+ * `a_param_prefix_seeds_like_a_literal_one` below (one position: a `STARTS WITH` operand) and one
+ * parse-cache test. That is the item-2539 shape — a surface with many entry points pinned at one
+ * of them.
+ *
+ * A SOURCE-LEVEL AUDIT CAME BACK CLEAN FIRST, which is why this test is a backstop rather than a
+ * bug fix. `bind_plan`/`bind_expr` match all 55 `Plan` variants with no wildcard arm, so a NEW
+ * variant is a compile error, not a silent gap (the module's own docstring claims this and the
+ * claim holds — the single `_ =>` in the file belongs to an unrelated re-lowering check). The one
+ * thing the compiler CANNOT catch is a matched variant whose `Expr`-carrying FIELD is never
+ * recursed into: `Plan::Foo { a, .. }` compiles while ignoring `b`. Nine variants carry such
+ * fields and all nine recurse into all of them.
+ *
+ * (My first pass flagged `ShortestPath { edge_pred }` as unrecursed. That was my extractor
+ * matching `ShortestPathEnum` — a prefix of the name — and reading the wrong arm. The real arm
+ * does `if let Some(p) = edge_pred`. An audit that scans source text needs the variant matched
+ * with a word boundary, and the phantom is worth recording because `edge_pred` is the least
+ * obvious of the nine and is now covered by a row below.)
+ *
+ * ## THE ORACLE
+ *
+ * Not "no `Param` remains" — that needs a visitor over every `Expr` variant, which is the same
+ * exhaustiveness problem one level down. Instead: the bound prepared plan must ANSWER THE SAME as
+ * the identical query with the value written in as a literal. The direct parse is an independent
+ * path (it never produces a `Param` at all), so a position where binding silently fails shows up
+ * as a different answer or an unbound-parameter error, and no hand-written expectation is needed.
+ */
+#[test]
+fn a_parameter_binds_in_every_position_it_can_occupy() {
+    /*
+     * Built through NDJSON rather than `Builder`, which has no edge-property method — and the
+     * edges NEED a `w`. My first version wrote the ANY SHORTEST row as
+     * `e.w IS NULL OR e.w > $p` over property-less edges: `IS NULL` short-circuits TRUE, the
+     * parameter is never evaluated, and the row passed with `edge_pred` binding DISABLED. A
+     * guard added to make a row safe can make it vacuous.
+     *
+     * `tags` is a list so the `IN` needle row has something to search.
+     */
+    let store = crate::ndjson::from_ndjson(
+        "{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"P\"],\"properties\":{\"s\":\"alice\",\"n\":1,\"tags\":[\"x\",\"z\"]}}\n{\"type\":\"node\",\"id\":\"b\",\"labels\":[\"P\"],\"properties\":{\"s\":\"bob\",\"n\":2,\"tags\":[\"y\"]}}\n{\"type\":\"node\",\"id\":\"c\",\"labels\":[\"P\"],\"properties\":{\"s\":\"carol\",\"n\":3,\"tags\":[\"z\"]}}\n{\"type\":\"edge\",\"id\":\"e1\",\"from\":\"a\",\"to\":\"b\",\"labels\":[\"R\"],\"properties\":{\"w\":5}}\n{\"type\":\"edge\",\"id\":\"e2\",\"from\":\"b\",\"to\":\"c\",\"labels\":[\"R\"],\"properties\":{\"w\":7}}\n",
+    )
+    .expect("the fixture decodes");
+
+    // Each row is (label, query with `$p`, the same query with the value inlined, the value).
+    let rows: &[(&str, &str, &str, Value)] = &[
+        (
+            "a WHERE comparison",
+            "MATCH (x:P) WHERE x.n > $p RETURN count(*) AS c",
+            "MATCH (x:P) WHERE x.n > 1 RETURN count(*) AS c",
+            Value::Num(1.0),
+        ),
+        (
+            "an inline property pattern",
+            "MATCH (x:P {s: $p}) RETURN count(*) AS c",
+            "MATCH (x:P {s: 'bob'}) RETURN count(*) AS c",
+            Value::Str("bob".into()),
+        ),
+        (
+            "a RETURN expression",
+            "MATCH (x:P) RETURN count(*) AS c, $p AS lit",
+            "MATCH (x:P) RETURN count(*) AS c, 7 AS lit",
+            Value::Num(7.0),
+        ),
+        (
+            "inside a function call",
+            "MATCH (x:P) WHERE upper(x.s) = upper($p) RETURN count(*) AS c",
+            "MATCH (x:P) WHERE upper(x.s) = upper('bob') RETURN count(*) AS c",
+            Value::Str("bob".into()),
+        ),
+        (
+            // The NEEDLE position. A literal `IN [a, b]` list does NOT survive as `Expr::In` —
+            // measured, the parser lowers it to something else, so the row below exercises a
+            // position but not that arm. Putting the parameter on the left keeps an `Expr::In`
+            // in the plan, which is what pins `bind_expr`'s `In` arm.
+            "the needle of an IN over a list property",
+            "MATCH (x:P) WHERE $p IN x.tags RETURN count(*) AS c",
+            "MATCH (x:P) WHERE 'z' IN x.tags RETURN count(*) AS c",
+            Value::Str("z".into()),
+        ),
+        (
+            "an IN list element",
+            "MATCH (x:P) WHERE x.s IN [$p, 'carol'] RETURN count(*) AS c",
+            "MATCH (x:P) WHERE x.s IN ['bob', 'carol'] RETURN count(*) AS c",
+            Value::Str("bob".into()),
+        ),
+        (
+            "under a NOT",
+            "MATCH (x:P) WHERE NOT x.s = $p RETURN count(*) AS c",
+            "MATCH (x:P) WHERE NOT x.s = 'bob' RETURN count(*) AS c",
+            Value::Str("bob".into()),
+        ),
+        (
+            "an arithmetic operand",
+            "MATCH (x:P) WHERE x.n + $p > 3 RETURN count(*) AS c",
+            "MATCH (x:P) WHERE x.n + 1 > 3 RETURN count(*) AS c",
+            Value::Num(1.0),
+        ),
+        (
+            "an ORDER BY expression",
+            "MATCH (x:P) RETURN x.s AS s ORDER BY x.n * $p",
+            "MATCH (x:P) RETURN x.s AS s ORDER BY x.n * 1",
+            Value::Num(1.0),
+        ),
+        (
+            "a per-hop edge predicate on ANY SHORTEST",
+            "MATCH ANY SHORTEST (x:P)-[e:R WHERE e.w > $p]->*(y:P) RETURN count(*) AS c",
+            "MATCH ANY SHORTEST (x:P)-[e:R WHERE e.w > 6]->*(y:P) RETURN count(*) AS c",
+            Value::Num(6.0),
+        ),
+    ];
+
+    let answer = |plan: &crate::ir::Plan| -> String {
+        let out = run(plan, &store);
+
+        format!("{:?}", out.rows)
+    };
+
+    for (label, prepared_q, literal_q, value) in rows {
+        let mut plan = crate::gql::parse_prepared(prepared_q)
+            .unwrap_or_else(|e| panic!("{label}: the prepared form must parse: {e}"));
+
+        crate::bind::bind_params(&mut plan, &[("p".to_string(), value.clone())])
+            .unwrap_or_else(|e| panic!("{label}: binding failed: {e}"));
+
+        let bound = crate::opt::optimize_indexed(plan, &store);
+        let direct = crate::opt::optimize_indexed(
+            crate::gql::parse(literal_q)
+                .unwrap_or_else(|e| panic!("{label}: the literal form must parse: {e}")),
+            &store,
+        );
+
+        assert_eq!(
+            answer(&bound),
+            answer(&direct),
+            "{label}: the bound parameter did not answer like the inlined literal",
+        );
+    }
+}
+
 #[test]
 fn a_param_prefix_seeds_like_a_literal_one() {
     let mut b = Builder::default();
