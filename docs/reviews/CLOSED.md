@@ -131808,3 +131808,67 @@ serialization 144 / core 511 / native 1438 / gql 5672, 0 failed.
 My probe guessed a `Graph` accessor wrong TWICE (`getVertex`, then `getVertices`; it is `verticesById`).
 Both surfaced as a `TypeError` in my own harness, not as a false finding — but the second one cost a test
 run, and the fix was to LOOK THE API UP rather than guess a third time.
+
+## Item 2534 — **the same hand-rolled JSON parser, the OPPOSITE direction: four malformed numbers that native LOADED and the TS engine refuses.** `f64::from_str` is not the JSON number grammar. Tightened to RFC 8259 s6, pinned by a `serde_json` differential — plus a correction to my own framing of the overflow case
+
+### THE FINDING
+
+Item 2533's pattern, repeated on the number path of the same parser. `number_f64` scanned a RUN of
+number-ish bytes (`[0-9] - + . e E`) and handed the text straight to `f64::from_str`, which is far
+laxer than JSON's grammar. Measured against the TS codec (`JSON.parse`) on the same line:
+
+```text
+      INPUT                 ts          native (before)    RFC 8259 s6
+      1, -1, 1.5, 1e5, …    OK          OK                 7 CONTROL rows, all unmoved
+      5.    trailing dot    REJECTED    OK -> 5            frac needs a digit AFTER the dot
+      01    leading zero    REJECTED    OK -> 1            int = '0' | [1-9][0-9]*
+      -01                   REJECTED    OK -> -1
+      00                    REJECTED    OK -> 0
+      1e999 overflow        null        null               agrees (see below)
+```
+
+**Four documents this engine loaded and the other refuses** — the mirror image of 2533, and the same
+class of defect: the two engines disagreed on which documents are VALID, which is the one thing an
+interchange format cannot afford. The TS side follows `JSON.parse`, which cannot be loosened, so the
+only available direction was to tighten here. All 17 rows now agree.
+
+### A HYPOTHESIS THIS REFUTED, AND IT CHANGED THE FIX
+
+I expected `+5` and `.5` to be accepted too, since `f64::from_str` takes both. **They were already
+rejected**: the value dispatcher routes only `-` and a digit to a number, so a leading `+` or `.` never
+reaches the scanner. The lax forms are precisely those that START legally and then break the grammar —
+which is the characteristic failure of a scan-then-parse design, and the reason the fix is a grammar
+check on the collected text rather than a narrower scan set.
+
+### AND A CORRECTION TO MY OWN TEST (rule xxv)
+
+I wrote the overflow row as "valid JSON both decoders accept". **`serde_json` REJECTS `1e999`** —
+"number out of range" — so it is NOT an oracle there. RFC 8259 s6 explicitly permits an implementation
+to limit a number's range; `JSON.parse` takes the other option and yields `Infinity`, as does this
+engine. My first version then asserted the stored value was `Null` and failed on live code: measured,
+the store holds **`Num(inf)`**, and the nulling of a non-finite happens further out at result rendering
+/ codec egress. That matches the TS side, whose own test pins `normalizeValue(Infinity)` as `Infinity`
+while "a non-finite property renders as null at codec egress". **Asserting null there would have pinned
+the wrong layer and contradicted both engines.** The row now says which half is a differential and
+which is our layering policy, and records that serde is stricter than the RFC requires so nobody
+reaches for it there again.
+
+### THE PIN
+
+A `serde_json` differential in both directions: 18 ACCEPTED forms compared by VALUE (not merely by
+verdict), and 13 REJECTED forms where **the oracle's refusal is asserted first**, so a row that cannot
+discriminate fails loudly. `+5` and `.5` are kept in the rejected list although already unreachable —
+they must STAY rejected if the dispatcher ever changes. Three graded mutants:
+
+```text
+      N1  grammar check bypassed (the original bug)   1 FAIL
+      N2  leading zeros allowed again                 1 FAIL
+      N3  trailing dot allowed (frac digit optional)  1 FAIL
+```
+
+N1's first anchor missed (`cargo fmt` had reflowed the indentation) and the **anchor-count assert
+printed a loud SKIP** rather than a silent pass — the sixth time that guard has earned its place.
+
+GATES. `cargo fmt` 0; `cargo clippy --all-targets -D warnings` 0; Rust **1360 + 13 + 725** (+2), 0
+failed; `bun run fuzz` **57 pass 0 fail**; `bun run fmt`/`lint`/`check` 0; serialization 144 / core 511
+/ native 1438 / gql 5672 / cli 46, 0 failed. No existing fixture anywhere relied on the lax forms.

@@ -1255,6 +1255,77 @@ impl<'a> JsonParser<'a> {
         // ASCII by construction, so `from_utf8` is infallible in practice.
         let text =
             core::str::from_utf8(&self.b[start..self.i]).map_err(|_| "bad number".to_string())?;
+
+        /*
+         * Item 2534: the scan above collects a RUN of number-ish bytes and used to hand it
+         * straight to `f64::from_str`, which is far more permissive than JSON's grammar. That
+         * accepted four forms `JSON.parse` rejects, so the TS engine refused documents this one
+         * loaded — measured `5.` -> 5, `01` -> 1, `-01` -> -1, `00` -> 0.
+         *
+         * RFC 8259 s6:  number = '-'? int frac? exp?
+         *                  int = '0' | [1-9][0-9]*          <- NO leading zeros
+         *                 frac = '.' [0-9]+                 <- at least one digit AFTER the dot
+         *                  exp = [eE] [+-]? [0-9]+
+         *
+         * A leading '+' or a bare '.5' never reach here (the value dispatcher routes only '-' and
+         * a digit to a number), so those two were already rejected — the lax forms are exactly the
+         * ones that START legally and then break the grammar.
+         */
+        fn is_json_number(t: &[u8]) -> bool {
+            let mut k = 0;
+
+            if t.get(k) == Some(&b'-') {
+                k += 1;
+            }
+
+            // int: a single '0', or a non-zero digit followed by any digits.
+            match t.get(k) {
+                Some(b'0') => k += 1,
+                Some(b'1'..=b'9') => {
+                    while t.get(k).is_some_and(u8::is_ascii_digit) {
+                        k += 1;
+                    }
+                }
+                _ => return false,
+            }
+
+            // frac: a '.' must be followed by at least one digit.
+            if t.get(k) == Some(&b'.') {
+                k += 1;
+
+                if !t.get(k).is_some_and(u8::is_ascii_digit) {
+                    return false;
+                }
+
+                while t.get(k).is_some_and(u8::is_ascii_digit) {
+                    k += 1;
+                }
+            }
+
+            // exp: [eE] with an optional sign and at least one digit.
+            if matches!(t.get(k), Some(b'e' | b'E')) {
+                k += 1;
+
+                if matches!(t.get(k), Some(b'+' | b'-')) {
+                    k += 1;
+                }
+
+                if !t.get(k).is_some_and(u8::is_ascii_digit) {
+                    return false;
+                }
+
+                while t.get(k).is_some_and(u8::is_ascii_digit) {
+                    k += 1;
+                }
+            }
+
+            k == t.len()
+        }
+
+        if !is_json_number(text.as_bytes()) {
+            return Err(format!("bad number `{text}`"));
+        }
+
         text.parse::<f64>()
             .map_err(|_| format!("bad number `{text}`"))
     }
@@ -2323,6 +2394,143 @@ mod tests {
         match again.prop(n, "k") {
             Value::Str(got) => assert_eq!(got.as_ref(), "\u{1F600}"),
             other => panic!("not a string after the round trip: {other:?}"),
+        }
+    }
+
+    /*
+     * Item 2534: the number scanner handed its collected run to `f64::from_str`, which is far
+     * laxer than JSON's grammar. Measured against the TS codec (`JSON.parse`) on the same line:
+     *
+     *     INPUT   ts          rust (before)     RFC 8259 s6
+     *     "5."    REJECTED    OK -> 5           frac needs a digit AFTER the dot
+     *     "01"    REJECTED    OK -> 1           int is '0' | [1-9][0-9]* — no leading zeros
+     *     "-01"   REJECTED    OK -> -1
+     *     "00"    REJECTED    OK -> 0
+     *
+     * So this engine LOADED four documents the TS engine refuses — the opposite direction from
+     * item 2533's bug and the same class of defect: the two engines disagreed on which documents
+     * are valid, which is exactly what an interchange format cannot afford. The TS side follows
+     * `JSON.parse`, which cannot be loosened, so the only available direction was to tighten here.
+     *
+     * A HYPOTHESIS THIS REFUTED, worth recording because it changed the fix: I expected `+5` and
+     * `.5` to be accepted too, since `f64::from_str` takes both. They were already rejected — the
+     * value dispatcher routes only `-` and a digit to a number, so a leading `+` or `.` never
+     * reaches the scanner. The lax forms are precisely those that START legally and then break the
+     * grammar, which is why a scan-then-parse design let them through.
+     *
+     * The oracle is `serde_json` (same RFC, independent implementation), and the NEGATIVE rows
+     * assert the oracle rejects them too — without that, a row that proves nothing passes silently.
+     */
+    #[test]
+    fn json_number_grammar_matches_serde_json_in_both_directions() {
+        let line = |num: &str| {
+            format!("{{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"N\"],\"properties\":{{\"k\":{num}}}}}")
+        };
+
+        // ACCEPTED, and the VALUE must agree — not merely the verdict.
+        let good = [
+            "0",
+            "-0",
+            "1",
+            "-1",
+            "1.5",
+            "-1.5",
+            "1e5",
+            "1E5",
+            "1e+5",
+            "1e-5",
+            "1E+5",
+            "0.5",
+            "-0.25e-3",
+            "123456789",
+            "1.0",
+            "0e0",
+            "9007199254740993",
+            "1.7976931348623157e308",
+        ];
+
+        for num in good {
+            let want: f64 = serde_json::from_str(num)
+                .unwrap_or_else(|e| panic!("the ORACLE rejected {num:?}: {e}"));
+            let st = from_ndjson(&line(num))
+                .unwrap_or_else(|e| panic!("lenke rejected the valid number {num:?}: {e}"));
+            let n = st.node_by_ext("a").expect("the node exists");
+
+            match st.prop(n, "k") {
+                Value::Num(got) => assert_eq!(
+                    got, want,
+                    "decoded {num:?} as {got} where serde_json read {want}",
+                ),
+                other => panic!("{num:?} did not decode to a number: {other:?}"),
+            }
+        }
+
+        // REJECTED. Each row asserts the ORACLE refuses it first, so a row that cannot
+        // discriminate fails loudly instead of passing for the wrong reason.
+        let bad = [
+            "01",    // leading zero
+            "-01",   // leading zero, negative
+            "00",    // two zeros
+            "012",   //
+            "5.",    // trailing dot, no fractional digit
+            "-5.",   //
+            "+5",    // leading plus (already unreachable; kept so it STAYS rejected)
+            ".5",    // bare fraction (same)
+            "1.2.3", // two dots
+            "1e",    // exponent with no digits
+            "1e+",   //
+            "-",     // sign alone
+            "1.e5",  // dot with no digit before the exponent
+        ];
+
+        for num in bad {
+            assert!(
+                serde_json::from_str::<f64>(num).is_err(),
+                "the ORACLE accepted {num:?}, so this row proves nothing",
+            );
+            assert!(
+                from_ndjson(&line(num)).is_err(),
+                "lenke accepted the malformed number {num:?}",
+            );
+        }
+    }
+
+    /*
+     * The overflow row is deliberately NOT in the table above, and the reason is a correction to my
+     * own framing (rule xxv: say which half of a test is differential and which is a policy).
+     *
+     * I expected `1e999` to be "valid JSON both decoders accept". **serde_json REJECTS it** —
+     * "number out of range" — so it is NOT an oracle here. RFC 8259 s6 permits that: an
+     * implementation MAY set limits on the range of a number. `JSON.parse` takes the other option
+     * and yields `Infinity`, and so does this engine.
+     *
+     * So this row asserts a LAYERING decision of ours, measured rather than assumed: the store
+     * holds `Num(inf)`, and the nulling of a non-finite happens further out, at result rendering /
+     * codec egress. That matches the TS side, whose own test pins `normalizeValue(Infinity)` as
+     * `Infinity` while "a non-finite property renders as null at codec egress". Asserting null HERE
+     * — which is what I first wrote — would have pinned the wrong layer and contradicted both.
+     */
+    #[test]
+    fn an_unrepresentable_magnitude_is_stored_as_infinity_not_rejected() {
+        let line =
+            "{\"type\":\"node\",\"id\":\"a\",\"labels\":[\"N\"],\"properties\":{\"k\":1e999}}";
+
+        // Recorded so a future reader does not reach for serde here: it is STRICTER than the RFC
+        // requires, and disagrees with both of this project's engines.
+        assert!(
+            serde_json::from_str::<f64>("1e999").is_err(),
+            "serde_json started accepting 1e999 — re-read this test's reasoning",
+        );
+
+        let st = from_ndjson(line).expect("1e999 is well-formed JSON; the grammar must accept it");
+        let n = st.node_by_ext("a").expect("the node exists");
+
+        match st.prop(n, "k") {
+            Value::Num(got) => assert!(
+                got.is_infinite() && got.is_sign_positive(),
+                "expected the stored value to be +inf, got {got}",
+            ),
+            other => panic!("expected a number at the storage layer, got {other:?}"),
         }
     }
 }
