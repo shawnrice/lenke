@@ -130634,3 +130634,82 @@ This closes item 2514's open question. The new probe `addv-label-2515.ts` runs a
 engines with a valid control on each — an earlier attempt at it had the control FAILING because shell
 quoting mangled the argument, which is the "an arm wrong for a case you already know is an instrument
 bug" rule catching a probe rather than an engine.
+
+## Item 2516 — **THE FALSY SWEEP: 26 candidates, 25 safe BY TYPE, and ONE reachable inconsistency.** An EMPTY binding name is grammatically valid in ISO, lenke's parser accepts it, and `withBinding`'s falsy test silently DROPS it in a MATCH pattern while `LET` binds it fine
+
+### THE SWEEP
+
+Item 2515's defect was `labels: label ? [label] : []` — a falsy test conflating "no argument" with
+"an empty value". `0`, `''` and `false` are all legitimate property values in this model, so every
+falsy test on a value-like operand is a candidate. A scan of `packages/*/src` (excluding tests and
+fixtures) for `X ? …` ternaries and `if (!X)` guards whose operand names a
+value/label/key/id/limit/count found **26**.
+
+**25 are safe BY TYPE, which is the right kind of safe** — no reachability argument needed:
+
+```text
+      value ? 'true' : 'false'          x3   boolean SERIALIZATION; the operand IS a boolean
+      seen < n ? … : …                  x4   a comparison, not a falsy test
+      adjacency.ts  if (!label)          1   `label: LabelExpr | undefined` — an AST OBJECT
+      PropertyIndex if (!idx)           x5   a Map VALUE (an index object)
+      matching.ts   end ? 1 : 0          2   a Vertex object
+      snapshot.ts   key ? … : …          2   a crypto key object / absence
+      …the rest                              probe output formatting, lengths, offsets
+```
+
+### THE ONE EXCEPTION, AND IT IS REACHABLE
+
+`bindings.ts`:
+
+```ts
+      export const withBinding = (binding, name: string | undefined, value) => {
+        if (!name) { return binding; }     // '' is treated as "no name"
+```
+
+That is 2515's exact shape on a `string | undefined`, and it is safe only if an empty name is
+UNREACHABLE — a reachability argument, which is precisely what 2515 got wrong. It is not unreachable:
+
+```text
+      MATCH (`` :P) RETURN ``.k AS v        THREW "variable `` is not defined"
+      MATCH (`` :P) RETURN count(*) AS c    OK    [{"c":2}]
+      MATCH (n:P) LET `` = n.k RETURN ``    OK    [{"v":1},{"v":2}]        <- the SAME name binds
+      MATCH (n:P) RETURN n.k AS ``          OK    [{"":1},{"":2}]
+      CONTROL normal variable / normal LET  OK    both correct
+```
+
+**The first row's error message is false**: the pattern DID name the variable, `withBinding` dropped
+the binding because `''` is falsy, and the later read then reported it undefined. And the third row
+shows the same empty name binding correctly through `LET` — **so lenke's two binding paths
+disagree**, which cannot be right whichever answer is intended.
+
+### ISO PERMITS IT GRAMMATICALLY, SO THE PARSER IS NOT THE BUG
+
+From the free BNF artifact:
+
+```text
+      <delimited identifier> ::= <double quoted character sequence>
+                               | <accent quoted character sequence>
+      <unbroken accent quoted character sequence> ::=
+          <grave accent> [ <accent quoted character representation>... ] <grave accent>
+```
+
+The body is in SQUARE BRACKETS — **optional** — so ` ` `` is a grammatically valid delimited
+identifier and accepting it is conformant. ISO's _Syntax Rules_ (the paywalled prose) may forbid it
+semantically, and the free artifact cannot settle that, which is exactly why the resolution is not
+mine to pick.
+
+### WHY THIS IS A DECISION AND NOT A FIX
+
+Three self-consistent answers exist and the free oracle does not choose between them:
+
+1. **Reject an empty identifier at parse**, consistent with `validatePropertyKey` refusing an empty
+   KEY — the strictest, and it matches how the engine already treats the adjacent empty-string case.
+2. **Bind it everywhere**, so the MATCH path matches `LET` — the smallest change, and it makes the
+   misleading error go away.
+3. Leave it, and accept that an empty identifier is pathological input with undefined-ish behaviour.
+
+(2) is a one-character change (`name === undefined`), but it would make ` ` `` a usable variable
+name, which is a surface-semantics commitment rather than a bug fix. (1) rejects input ISO's grammar
+allows. So this is the **ninth owner decision**, with the measurement done.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0. Probe only, no code change.

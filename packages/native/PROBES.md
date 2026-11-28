@@ -3498,3 +3498,30 @@ KEY The no-tx control reads NEGATIVE at every degree — outside a transaction a
 which is what makes the delta attributable rather than fixture noise.
 
 Not a defect: rollback must restore the cascaded edges. A budget correction, not a lever.
+
+## `empty-binding-name-2516.ts` — is an EMPTY GQL identifier reachable? (item 2516)
+
+```
+cd packages/gql && bun run empty-binding-name-2516.ts
+```
+
+Built for the falsy-test sweep that followed item 2515. Six rows, two of them CONTROLS:
+
+```
+      MATCH (`` :P) RETURN ``.k AS v        THREW "variable `` is not defined"
+      MATCH (`` :P) RETURN count(*) AS c    OK    [{"c":2}]
+      MATCH (n:P) LET `` = n.k RETURN ``    OK    [{"v":1},{"v":2}]   <- the SAME name BINDS
+      MATCH (n:P) RETURN n.k AS ``          OK    [{"":1},{"":2}]
+      CONTROL normal variable / LET         OK    both correct
+```
+
+KEY **The first row's error is FALSE** — the pattern named the variable; `withBinding`'s
+`if (!name)` dropped the binding because `''` is falsy, and the read then called it undefined. Row 3
+shows the same name binding fine via `LET`, so **the two binding paths disagree.**
+
+KEY ISO's free BNF PERMITS an empty delimited identifier — `<unbroken accent quoted character
+sequence> ::= <grave accent> [ … ] <grave accent>`, body bracketed/optional — so the parser is
+conformant and the inconsistency is lenke's own. ISO's paywalled Syntax Rules may differ.
+
+Resolution is the NINTH owner decision: reject at parse (like an empty property key), bind everywhere
+(one character: `name === undefined`), or leave it.
