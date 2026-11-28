@@ -118,6 +118,23 @@ const SHAPES = {
   hop1order: 'MATCH (a:P)-[:E]->(x1:P) RETURN x1.k AS k ORDER BY k',
   hop1orderlimit: 'MATCH (a:P)-[:E]->(x1:P) RETURN x1.k AS k ORDER BY k LIMIT 10',
   hop1orderdeepskip: 'MATCH (a:P)-[:E]->(x1:P) RETURN x1.k AS k ORDER BY k SKIP 150000 LIMIT 10',
+  /*
+   * THE VAR-LENGTH FRONTIER (item 2474), the one buffering shape with no memory row — `CLOSED.md`
+   * mentions `frontier` 239 times and NOT ONCE alongside a memory quantity.
+   *
+   * These two differ by ONE KEYWORD and, per `acyclic-reachset-2003.mjs`, by mechanism: TRAIL takes
+   * `reachability.ts`'s BFS over the REACHED SET, O(|V| + |E|) at any bound, while ACYCLIC is
+   * refused by `needsGeneralMatcher` and runs the general matcher, which ENUMERATES PATHS and is
+   * exponential in the bound. That is a claim about TIME and it is already measured (629.47 ms
+   * against 28.61 at 20,000 vertices, 22x). Its MEMORY consequence is the open question: a reached
+   * set is bounded by |V| whatever the branching; a path enumeration is not.
+   *
+   * SWEEP FANOUT, NOT SIZE. This file's own header calls fanout "the axis that separates a
+   * CONSTANT-FACTOR memory win from a COMPLEXITY one", and it is the third axis after item 2473's N
+   * and cardinality — a frontier scales with neither.
+   */
+  vltrail: 'MATCH TRAIL (a:P)-[:E]->{1,3}(z:P) RETURN DISTINCT z.n AS n',
+  vlacyclic: 'MATCH ACYCLIC (a:P)-[:E]->{1,3}(z:P) RETURN DISTINCT z.n AS n',
 };
 
 // ── the CHILD: builds the graph, optionally runs the query, reports its own high-water mark ─────

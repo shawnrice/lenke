@@ -32,7 +32,19 @@
  * than silently reporting occupancy.
  */
 import { Graph } from '@lenke/core';
-import { V, dedupe, fold, groupCount, order, run, traversal, values } from '@lenke/gremlin';
+import {
+  V,
+  dedupe,
+  fold,
+  groupCount,
+  order,
+  out,
+  repeat,
+  run,
+  simplePath,
+  traversal,
+  values,
+} from '@lenke/gremlin';
 
 if (typeof global.gc !== 'function') {
   console.error('retained-2457: needs --expose-gc (node --expose-gc retained-2457.mjs)');
@@ -153,8 +165,24 @@ const CALIBRATION = 'CALIBRATION (holds every row)';
  * it should be bounded by the number of DISTINCT values (97 on this fixture) and therefore FLAT in N,
  * while `order` and `fold` must hold every row.
  */
+/*
+ * THE FRONTIER ARMS (item 2474). `alloc:peak` MECH=cap could not resolve this question at all — its
+ * 8 MiB bisection step swallowed the signal at every size tried, and the LINEAR control said so
+ * (`hop1` read 8 MiB at both fanout 1 and 3 while the graph-alone baseline moved 47 -> 71 MiB). This
+ * probe resolves 0.01 MiB, so it can.
+ *
+ * `repeat(out).times(3)` walks a frontier; adding `simplePath()` forces per-path state, which is the
+ * Gremlin analogue of the mechanism `acyclic-reachset-2003.mjs` describes on the GQL side (a reached
+ * SET is bounded by |V| whatever the branching; a path enumeration is not). Sweep RET_DEG — the
+ * out-degree — because a frontier scales with BRANCHING, not with N (item 2473) or cardinality.
+ *
+ * This measures the GREMLIN surface. It is NOT a measurement of GQL's TRAIL/ACYCLIC modes, which
+ * remain unresolved for want of a fine enough GQL-side instrument.
+ */
 const arms = [
   ['streaming values()  [control]', traversal(V(), values('k')), false],
+  ['repeat(out).times(3)', traversal(V(), repeat(out('E')).times(3)), false],
+  ['repeat(out,simplePath).x3', traversal(V(), repeat(out('E'), simplePath()).times(3)), false],
   ['order()', traversal(V(), values('k'), order()), false],
   ['dedupe()', traversal(V(), values('k'), dedupe()), false],
   ['fold()', traversal(V(), values('k'), fold()), false],

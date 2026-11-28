@@ -127744,3 +127744,72 @@ changes.
 
 GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
 instrument only. `retained-2457.mjs` restored and verified byte-identical after the teeth check.
+
+## Item 2474 — **THE VAR-LENGTH FRONTIER RETAINS O(PATH COUNT), NOT O(|V|): a 3x branching at depth 3 costs 26.5x the memory — 1.41 MiB to 37.41 at N=20,000.** First memory measurement of a frontier anywhere in this repo (`frontier` appears 239 times in `CLOSED.md` and NOT ONCE beside a memory quantity). **And `MECH=cap` could not answer it at all — its own LINEAR CONTROL said so**, which is the third stated domain limit for the memory mechanisms
+
+### THE QUESTION WAS GENUINELY OPEN, established by search rather than silence
+
+`CLOSED.md` mentions `frontier` 239 times — all TIME and routing, none memory. `frontier-order-probe.mjs`
+(item 1816) prices VISIT ORDER; `acyclic-reachset-2003.mjs` establishes the mechanism (TRAIL takes a
+BFS over the REACHED SET, O(|V| + |E|) at any bound; ACYCLIC is refused by `needsGeneralMatcher` and
+runs the general matcher, which ENUMERATES PATHS) and measures it in TIME, 22x at 20,000 vertices.
+Nothing measured the memory, and item 2471's lesson — "nothing reaches it" is a claim about the
+prober — is why this one is stated with the search behind it.
+
+### `MECH=cap` IS UNFIT HERE, AND ITS CONTROL IS WHAT PROVED IT
+
+```text
+    alloc:peak MECH=cap, N=20,000, query-only MiB above a graph-only arm
+      shape                     FANOUT=1   FANOUT=3
+      hop1   [LINEAR CONTROL]       8          8     <- must have grown; it did not
+      vltrail                       8          8
+      vlacyclic                     8          8
+      (graph alone)                47         71     <- the FIXTURE did respond
+```
+
+Every cell is exactly one 8 MiB bisection step. The graph-alone baseline moved 47 -> 71 MiB, so the
+fanout reached the fixture; the QUERY delta did not move at all, **including the control that returns
+every row and must scale with it.** So the step swallows the signal, and the rows below it are
+unreadable — not "flat". An earlier cell at N=2,000 had every shape including the CONSTANT control at
+0 MiB, which is the same thing one size down.
+
+That is the third domain limit for these mechanisms, and all three were found by their own controls:
+`MECH=rss` refuted at item 2419, `MECH=highwater` unfit for growth at 2458 (it called an all-rows
+projection `n^0.05 CONSTANT`), and `MECH=cap` unfit below its ~8 MiB step here.
+
+### THE ANSWER, FROM THE INSTRUMENT THAT RESOLVES 0.01 MiB
+
+```text
+    alloc:retained, N=20,000, sweeping OUT-DEGREE
+      arm                            DEG=1    DEG=3     rows DEG=1 -> DEG=3
+      streaming values()  [control]   0.00     0.00      20,000 -> 20,000
+      repeat(out).times(3)            1.41    37.41      20,000 -> 540,000
+      repeat(out,simplePath).x3       1.40    37.39      20,000 -> 540,000
+      order()                         0.19     0.18      20,000 (linear in N: 2.00 at 200k, item 2473)
+      CALIBRATION                     0.18     0.17      20,000
+```
+
+**Rows go up 27x (3^3) and retained goes up 26.5x.** The frontier holds the TRAVERSERS, so its live
+set tracks the PATH COUNT — `b^depth` — and not |V|. That is a real OOM bound at unremarkable inputs:
+37 MiB for a depth-3 walk over 20,000 vertices of out-degree 3, and the exponent means depth 4 at the
+same branching would be ~112 MiB.
+
+Both controls held flat across the sweep (streaming 0.00, calibration 0.18 -> 0.17), which is what
+makes the moving rows readable, and `order()` reading 0.19 here against 2.00 at ten times the rows
+(item 2473) is an independent linearity check on the instrument.
+
+### `simplePath()` COSTS NOTHING EXTRA — AND THE FIXTURE IS WHY, SO THE CLAIM IS NARROW
+
+37.39 against 37.41, and 1.40 against 1.41: per-path state adds no measurable retained memory. **But
+both arms emitted the SAME 540,000 rows**, so `simplePath()` pruned nothing on this fixture — the
+generator's fan-out produces no revisiting paths for it to cut. So the finding is "when it prunes
+nothing, it costs nothing", not "path tracking is free". The frontier itself dominates either way,
+which is the part that generalizes.
+
+**This measures the GREMLIN surface.** GQL's `TRAIL` and `ACYCLIC` remain unresolved: they are the
+shapes `MECH=cap` could not see, and no GQL-side instrument resolves below 8 MiB. That is the open
+follow-up, not a result.
+
+GATES. `bun run fmt` 0; `bun run lint` 0; `bun run fmt:check` 0; `bun run check` 0. No engine change —
+two instruments extended (`alloc:peak` gains `vltrail`/`vlacyclic`, `alloc:retained` gains the two
+frontier arms). The calibration gate still fires: ratio 153.7x and 197.3x across the sweep.
