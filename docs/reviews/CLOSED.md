@@ -125313,3 +125313,78 @@ fail (plus the 4 new ones); `packages/core` 490 tests 0 fail; `oracle:onehopagg`
 route-invariance cells identical / 0 DIFFER, worst float error 0.014 of item 2401's bound;
 `bun run fuzz` 57 pass 0 fail exit 0. `rewrite_fuzz` not run: it guards the RUST optimizer and this
 change is TS-only, touching neither a rewrite nor `hash_join`.
+
+## Item 2444 — **THE SIBLING WALKS DO NOT HAVE ITEM 2443's GAP, so that fix is complete: by ablation, `single` THREW at the CSR arm while `multi` and `filtered` RAN OK — neither reaches a CSR, so neither has a CSR-absence cliff to fall off.** But the measurement found something larger: **the MULTI-TYPE hop is 5.2x slower than the single-type one WARM (42.65 ms against 8.22) for 10% more rows, because it has NO CSR arm at all — and `csrFor` already takes a `types` ARRAY, so that arm is MISSING rather than impossible**
+
+Item 2443 gave the single-type far-driven walk a no-CSR fallback worth 2.25x. `farDrivenHopWalk` has
+two call sites and only one passes the hook, so the obvious question was whether the multi-type arm
+and the predicated family have the same gap.
+
+### THEY DO NOT, and the ablation is why that is known rather than inferred
+
+```text
+    with the CSR arm made to throw, N=200,000, two asks each
+      single     THREW     -> DOES reach the CSR arm
+      multi      RAN OK    -> never reaches it
+      filtered   RAN OK    -> never reaches it
+```
+
+`csrHopRoute` has exactly ONE call site in `hop-projection.ts` and it sits inside
+`farDrivenHopWalk`'s single-type section. A call graph said the multi-type arm COULD reach it — it
+shares the function — and the ablation says it does not. That distinction is item 2437's lesson and
+it saved building a second hook for a path that would never fire.
+
+The timings agree, which is the cross-check:
+
+```text
+    N=200,000, vacuous, LBL_REPS=11, warmup 3      interleave     warm      ratio
+      single (post-2443)                             15.36        8.22      1.87x
+      multi                                          42.92       42.65      1.01x
+      filtered                                       33.81       33.04      1.02x
+```
+
+A warm/interleave ratio of 1.0 is the signature of a route that never had a CSR: nothing changes when
+a write removes one. **So item 2443's fix is complete for this family — there is no second
+instance.**
+
+### THE REAL FINDING: THE MULTI-TYPE ARM HAS NO CSR AT ALL, AND THAT IS 5.2x
+
+`multi` returns 220,000 rows against `single`'s 200,000 — 10% more work — and costs **42.65 ms warm
+against 8.22, a 5.2x gap**. The single-type arm's advantage is entirely the CSR, which the ablation
+above shows the multi-type arm never touches.
+
+**And it is missing, not impossible.** `csrFor(graph, inward, types)` already takes an ARRAY of edge
+types and keys the cache on all of them (`shapeKey` joins `types` with a NUL separator, and
+`csr-cache.ts` records that `types` is deliberately NOT sorted into the key because `edgesOfTypes`
+iterates it in order). It is `csrHopRoute` that narrows to a single type, hardcoding
+`csrFor(graph, out, [typeName])`.
+
+**The soundness gate also already exists.** A multi-type hop must count the UNION of the per-type
+buckets, which differs from their SUM exactly when an edge carries two of the named types — and the
+multi-type walk already reads `const sumIsExact = graph.multiTypeEdgeCount === 0` for precisely that
+reason. A CSR over several types has the same question and the same answer available.
+
+So the shape of the opportunity is: extend `csrHopRoute` to admit a type SET when
+`graph.multiTypeEdgeCount === 0`, and give the multi-type dispatch the same CSR arm the single-type
+one has. **Not built here** — it needs its own measurement (the 5.2x is the gap to a DIFFERENT query,
+not a measured prize on this one), the `unionCount` path replaced by `off[s+1] - off[s]` only where
+the sum is exact, and the equivalent-spelling rule checked: `-[:E|F]->` and `-[:F|E]->` must stay
+identical, which the existing key comment says is why `types` order is preserved rather than sorted.
+
+### WHAT THE PREDICATED FAMILY TELLS US, as a control
+
+`filtered` at 33.81 / 33.04 never reaches a CSR either, and that is expected rather than a gap: the
+predicated walk must look at each edge to apply the predicate, so a structure that only COUNTS
+adjacency cannot serve it. It is included as the control that confirms a 1.0 ratio means "no CSR"
+rather than "CSR present but useless".
+
+### THE PROBE
+
+`alloc:labeltest` gained `LBL_SHAPE` (single / multi / filtered), and the `multi` fixture adds one
+`F` edge per ten vertices — enough that the `F` bucket is real, few enough that `E` still dominates
+so the row counts stay comparable. **Without those edges `-[:E|F]->` is a single-type question
+wearing a disjunction**, which would have measured the single-type arm and reported no gap for the
+wrong reason.
+
+GATES. No engine change: `hop-projection.ts` restored from `target/LIVE-hopproj-2444.ts`, ABLATE
+marker count 0, dist rebuilt. `bun run fmt` 0; `bun run lint` 0; `bun run check` 0.

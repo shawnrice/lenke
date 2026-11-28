@@ -39,7 +39,31 @@ const REPS = Number(process.env.LBL_REPS ?? 7);
 const WARMUP = Number(process.env.LBL_WARMUP ?? 3);
 const MODE = process.env.MIXED_MODE ?? 'vacuous';
 
-const Q = 'MATCH (a:P)-[:E]->(x:P) RETURN x.k AS k';
+/*
+ * SHAPE picks which walk family the query lands in (item 2444).
+ *
+ *   single  `-[:E]->`      the single-type far-driven walk, which item 2443 gave a no-CSR fallback.
+ *   multi   `-[:E|F]->`    the MULTI-TYPE arm. It shares `farDrivenHopWalk` — and therefore the
+ *                          `noCsr` hook — but its call site passes no thunk, so when `csrHopRoute`
+ *                          declines it still runs the O(V) adjacency count. Whether that costs
+ *                          anything is what this measures.
+ *   filtered `(x:P WHERE …)` the predicated family. `csrHopRoute` has exactly ONE call site in the
+ *                          file and it is inside `farDrivenHopWalk`, so this family never touches a
+ *                          CSR at all — included as a CONTROL that cannot have the gap.
+ */
+const SHAPE = process.env.LBL_SHAPE ?? 'single';
+
+const QUERIES = {
+  single: 'MATCH (a:P)-[:E]->(x:P) RETURN x.k AS k',
+  multi: 'MATCH (a:P)-[:E|F]->(x:P) RETURN x.k AS k',
+  filtered: 'MATCH (a:P)-[:E]->(x:P WHERE x.k >= 0) RETURN x.k AS k',
+};
+
+const Q = QUERIES[SHAPE];
+
+if (Q === undefined) {
+  throw new Error(`unknown LBL_SHAPE=${SHAPE}; expected ${Object.keys(QUERIES).join(', ')}`);
+}
 
 const median = (xs) => {
   const s = [...xs].sort((a, b) => a - b);
@@ -65,6 +89,21 @@ const build = () => {
       labels: ['E'],
       properties: {},
     });
+  }
+
+  // BOTH edge types must exist or `-[:E|F]->` is a single-type question wearing a disjunction.
+  // One F edge per ten vertices: enough that the F bucket is real, few enough that E still
+  // dominates and the `single` and `multi` rows stay comparable in row count.
+  if (SHAPE === 'multi') {
+    for (let e = 0; e < N / 10; e += 1) {
+      g.addEdge({
+        id: `f${e}`,
+        from: vs[(e * 10) % N],
+        to: vs[(e * 13 + 5) % N],
+        labels: ['F'],
+        properties: {},
+      });
+    }
   }
 
   if (MODE === 'mixed') {
@@ -120,6 +159,6 @@ for (let i = 0; i < REPS; i += 1) {
 }
 
 console.log(
-  `   ${MODE.padEnd(8)} ${WRITE_MODE.padEnd(10)} N=${N} warmup=${WARMUP}  median ` +
+  `   ${SHAPE.padEnd(8)} ${MODE.padEnd(8)} ${WRITE_MODE.padEnd(10)} N=${N} warmup=${WARMUP}  median ` +
     `${median(ts).toFixed(2)} ms  rows ${rows}   series ${ts.map((x) => x.toFixed(1)).join(' ')}`,
 );
